@@ -1,0 +1,27 @@
+[project]
+name = "athena-eval-engine"
+version = "0.1.0"
+description = "Athena 知识图谱2.0 评测引擎 — Trace→Fact→Metric→Report"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "pydantic>=2",
+    "pymysql>=1.1",
+    "PyYAML>=6",
+    "numpy>=1.26",
+    "scipy>=1.11",
+    "uvicorn[standard]>=0.27",
+    "python-dotenv>=1",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "-q"
+
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["athena_eval_engine*"]

@@ -1,0 +1,10 @@
+{
+  "pair": {
+    "pair_match_status": "VALID_PAIR",
+    "pair_experiment_valid": true,
+    "outcome_valid": true,
+    "pair_transition": "RECOVERED",
+    "nogk_outcome": "FAIL",
+    "kg_outcome": "SUCCESS"
+  }
+}

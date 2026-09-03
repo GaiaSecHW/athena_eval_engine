@@ -1,0 +1,9 @@
+{
+  "pair": {
+    "pair_match_status": "VALID_PAIR",
+    "pair_transition": "NA",
+    "outcome_valid": false,
+    "jsd": 0.0,
+    "jsd_status": "CALCULATED"
+  }
+}

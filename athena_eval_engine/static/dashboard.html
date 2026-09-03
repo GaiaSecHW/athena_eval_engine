@@ -1,0 +1,771 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>知识测评</title>
+<style>
+:root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--bd:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);font-size:18px;line-height:1.6;display:flex;height:100vh;overflow:hidden}
+nav{width:76px;background:#1a1d23;border-right:1px solid var(--bd);display:flex;flex-direction:column;padding:16px 10px;gap:8px;flex-shrink:0}
+nav .logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,var(--acc),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;margin-bottom:18px;font-size:20px}
+nav a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:#9ca3af;text-decoration:none;gap:4px;transition:.15s;position:relative;font-size:22px}
+nav a span{font-size:14px}
+nav a:hover{background:rgba(255,255,255,.1);color:#fff}
+nav a.active{background:rgba(37,99,235,.15);color:#60a5fa}
+nav a.active::before{content:"";position:absolute;left:-10px;top:14px;bottom:14px;width:3px;background:#60a5fa;border-radius:2px}
+.wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
+header{height:64px;border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 28px;gap:14px;flex-shrink:0;background:#ffffff;border-bottom:1px solid var(--bd)}
+header .title{font-size:18px;font-weight:600}
+header .sub{color:var(--sub);font-size:15px}
+header .sp{flex:1}
+header button{background:var(--acc);color:#fff;border:none;padding:10px 18px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500;transition:.15s}
+header button:hover{filter:brightness(1.1)}
+header button.ghost{background:#f3f4f6;border:1px solid var(--bd);color:var(--txt)}
+main{flex:1;overflow-y:auto;padding:28px}
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--sub);text-align:center;gap:16px}
+.empty .ic{width:72px;height:72px;border-radius:18px;background:var(--p2);color:var(--sub);display:flex;align-items:center;justify-content:center;font-size:32px}
+.empty h3{color:var(--txt);font-size:19px}
+.empty p{max-width:440px;font-size:16px}
+.cols{display:flex;gap:20px;height:100%}
+.lst{width:360px;background:var(--panel);border:1px solid var(--bd);border-radius:14px;display:flex;flex-direction:column;overflow:hidden}
+.lst .h{padding:16px 18px;border-bottom:1px solid var(--bd);font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
+.lst .b{flex:1;overflow-y:auto;padding:8px}
+.it{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;transition:background .15s}
+.it:hover{background:var(--p2)}
+.it.act{background:rgba(91,156,246,.12)}
+.it .n{font-size:17px;font-weight:500;margin-bottom:4px}
+.it .m{font-size:14px;color:var(--sub);display:flex;gap:8px;align-items:center}
+.bdg{font-size:14px;padding:2px 8px;border-radius:12px;font-weight:600}
+.b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
+.b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
+.b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
+.b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.rep{flex:1;overflow-y:auto}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1100px}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
+.card.f{grid-column:1/-1}
+.card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.tier{font-size:14px;padding:3px 8px;border-radius:12px;font-weight:600}
+.t-p0{background:rgba(91,156,246,.18);color:var(--acc)}
+.t-p1{background:rgba(251,191,36,.18);color:var(--amber)}
+.t-p2{background:rgba(107,114,128,.18);color:var(--gray)}
+table{width:100%;border-collapse:collapse;font-size:17px}
+th{color:var(--sub);font-weight:500;text-align:left;padding:10px 8px;border-bottom:1px solid var(--bd);font-size:14px;text-transform:uppercase;letter-spacing:.4px}
+td{padding:12px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
+.ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
+.na{color:var(--red);font-style:italic;font-size:16px}
+.dp{color:var(--green)}.dn{color:var(--red)}
+.diag{background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:12px 14px;margin:8px 0}
+.diag .rid{color:var(--amber);font-weight:600;font-size:14px;font-family:monospace}
+.diag .ob{font-weight:500;font-size:17px}.diag .ip{color:var(--sub);font-size:15px;margin-top:4px}
+.narr{font-size:17px;line-height:1.8}.narr b{color:var(--sub);font-weight:500}
+.note{font-size:14px;color:var(--sub);margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
+svg{display:block;margin:0 auto;max-width:100%}
+.lg{display:flex;gap:18px;justify-content:center;margin-top:10px}.lg span{font-size:14px;color:var(--sub);display:flex;align-items:center;gap:6px}.lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.sel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px;max-height:300px;overflow-y:auto}
+.opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;font-size:17px}
+.opt:hover{background:var(--p2)}
+.opt.sel{background:rgba(91,156,246,.12);border-left:3px solid var(--acc)}
+.opt .l{font-size:17px}.opt .r{font-size:14px;color:var(--sub)}
+.btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
+label{display:block;font-size:15px;color:var(--sub);margin:12px 0 5px}
+input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:var(--txt);border-radius:10px;padding:11px 13px;font-size:17px;font-family:inherit}
+.inp-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+.st{font-size:16px;color:var(--amber);margin:10px 0;min-height:18px}
+.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+.knd.k-opencode{background:rgba(74,222,128,.18);color:var(--green)}
+.knd.k-argo{background:rgba(96,165,250,.18);color:var(--acc)}
+.knd.k-turing{background:rgba(217,119,6,.18);color:var(--amber)}.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px 16px;text-align:center;transition:transform .15s}
+.mcard:hover{transform:translateY(-2px);border-color:var(--acc)}
+.mc-icon{font-size:24px;margin-bottom:6px}
+.mc-label{font-size:14px;color:var(--sub);margin-bottom:6px}
+.mc-val{font-size:24px;font-weight:700;font-family:"SF Mono",Consolas,monospace}
+.mc-ci{font-size:14px;color:var(--sub);margin-top:6px;font-family:"SF Mono",Consolas,monospace}
+.mc-n{font-size:14px;color:var(--gray)}
+.barr{display:flex;align-items:center;gap:10px;margin:10px 0}
+.bar-l{font-size:16px;width:140px;flex-shrink:0}
+.bar-track{flex:1;height:28px;background:var(--p2);border-radius:14px;overflow:hidden;border:1px solid var(--bd)}
+.bar-fill{height:100%;border-radius:14px;transition:width .5s}
+.bar-v{font-size:18px;font-weight:600;width:60px;text-align:right;font-family:"SF Mono",Consolas,monospace}
+.ps{display:flex;gap:14px;padding:0 0 0 0;position:relative}
+.ps:not(:last-child)::after{content:"";position:absolute;left:15px;top:36px;bottom:0;width:2px;background:var(--bd)}
+.ps-n{width:32px;height:32px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex-shrink:0;z-index:1}
+.ps-body{flex:1;padding-bottom:20px;font-size:16px;line-height:1.8}
+.ps-det{font-size:14px;color:var(--sub);font-family:"SF Mono",Consolas,monospace}
+.ps-body b{font-size:17px}
+.ef-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:14px;flex:1}
+.ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.ef-btn:hover{border-color:var(--acc)}
+</style>
+</head>
+<body>
+<nav>
+  <div class="logo">知</div>
+  <a id="nav-evaluations" onclick="go('evaluations')" class="active">📊<span>评测</span></a>
+  <a id="nav-create" onclick="go('create')">➕<span>新建</span></a>
+  <a id="nav-system" onclick="go('system')">⚙️<span>系统</span></a>
+</nav>
+<div class="wrap">
+  <header><div class="title" id="h-title">知识测评</div><div class="sub" id="h-sub"></div><div class="sp"></div>
+    <button class="ghost" onclick="go('create')">+ 新建评测</button>
+    <button class="ghost" onclick="render()">刷新</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()" style="font-size:18px;padding:8px 12px">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script>
+const F=(u,...a)=>fetch(location.pathname.indexOf("/eval")===0&&u.indexOf("/api/")===0?"/eval"+u:u,...a);let view="evaluations";let activeId=null;
+const THEMES={
+  light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
+  dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#9aa3b2","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#6b7280","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
+};
+function applyTheme(t){
+  const v=THEMES[t];const r=document.documentElement;
+  for(const[k,val]of Object.entries(v))r.style.setProperty(k,val);
+  const btn=$("theme-btn");if(btn)btn.textContent=t==="dark"?"☀️":"🌙";
+  localStorage.setItem("eval-theme",t);
+}
+function toggleTheme(){const cur=localStorage.getItem("eval-theme")||"light";applyTheme(cur==="light"?"dark":"light");}
+applyTheme(localStorage.getItem("eval-theme")||"light");
+
+let w={proj:"",task:"",kg:"",nogk:"",biid:"BI-T001",tfid:"F-T001",eid:""};
+
+function go(v){view=v;document.querySelectorAll("nav a").forEach(a=>a.classList.remove("active"));document.getElementById("nav-"+v).classList.add("active");const t={evaluations:["评测","评测列表与报告"],create:["新建评测","从平台选 trace 跑一次评测"],system:["系统","数据库健康"]} ;document.getElementById("h-title").textContent=t[v][0];document.getElementById("h-sub").textContent=t[v][1];render();}
+function $(i){return document.getElementById(i);}
+function el(h){const d=document.createElement("div");d.innerHTML=h;return d.firstChild;}
+function fmtMtime(mt){if(!mt)return'-';const d=new Date(mt*1000+8*3600000);const p=n=>String(n).padStart(2,'0');return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes());}
+function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
+async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
+async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
+
+async function render(){
+  const v=$("view");v.innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载中…</h3></div>';
+  try{await({evaluations:renderEvals,create:renderCreate,system:renderSystem}[view])();}
+  catch(e){v.innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>错误</h3><p>'+e+'</p></div>';}
+}
+
+// ===== ① 评测 =====
+async function renderEvals(){
+  const d=await jget("/api/v1/evaluations?page_size=9999");const evs=d.evaluations||[];
+  let filter="all",q="";
+  window._evData=evs;window._evPage=1;
+  $("view").innerHTML=`<div class="cols">
+    <div class="lst">
+      <div class="h">评测列表<span style="font-weight:400;background:var(--p2);padding:2px 8px;border-radius:12px;font-size:14px">${evs.length}</span></div>
+      <div style="padding:10px 12px;border-bottom:1px solid var(--bd)">
+        <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="margin-bottom:8px">
+        <div style="display:flex;gap:6px">
+          <button class="ef-btn active" onclick="setEvFilter('all',this)">全部</button>
+          <button class="ef-btn" onclick="setEvFilter('COMPLETED',this)">完成</button>
+          <button class="ef-btn" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
+          <button class="ef-btn" onclick="setEvFilter('FAILED',this)">失败</button>
+        </div>
+      </div>
+      <div class="b" id="ev-list-body"></div>
+    </div>
+    <div class="rep" id="rep"><div class="empty"><div class="ic">📊</div><h3>选择左侧评测查看报告</h3></div></div>
+  </div>`;
+  renderEvList();
+}
+function setEvFilter(f,btn){window._evFilter=f;window._evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
+function filterEvals(){window._evQ=$("ev-search").value.toLowerCase();window._evPage=1;renderEvList();}
+function evPage(p){window._evPage=p;renderEvList();}
+const EV_PAGE_SIZE=10;
+function renderEvList(){
+  const evs=window._evData||[];const f=window._evFilter||"all";const q=window._evQ||"";
+  let filtered=evs;
+  if(f!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(f));
+  if(q)filtered=filtered.filter(e=>(e.evaluation_id+e.name).toLowerCase().includes(q));
+  const total=filtered.length;
+  const pages=Math.ceil(total/EV_PAGE_SIZE)||1;
+  const page=Math.min(window._evPage||1,pages);
+  const start=(page-1)*EV_PAGE_SIZE;
+  const pageItems=filtered.slice(start,start+EV_PAGE_SIZE);
+  const el=$("ev-list-body");
+  if(!el)return;
+  let html=pageItems.length?pageItems.map(e=>`<div class="it ${e.evaluation_id===activeId?'act':''}" onclick="selEv('${e.evaluation_id}')">
+    <div class="n">${e.name||e.evaluation_id}</div>
+    <div class="m"><span class="bdg b-${(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED')}">${e.status||'-'}</span><span>${fmtDate(e.created_at)}</span></div>
+  </div>`).join(""):'<div style="padding:24px;text-align:center;color:var(--sub);font-size:16px">无匹配评测</div>';
+  // 分页控件
+  if(pages>1){
+    let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--bd)">';
+    pgHtml+=`<button class="ef-btn" ${page<=1?'disabled':''} onclick="evPage(${page-1})" style="padding:4px 10px;font-size:14px">‹</button>`;
+    for(let i=1;i<=pages;i++){
+      if(i===1||i===pages||(i>=page-1&&i<=page+1)){
+        pgHtml+=`<button class="ef-btn ${i===page?'active':''}" onclick="evPage(${i})" style="padding:4px 8px;font-size:14px;min-width:28px">${i}</button>`;
+      }else if(i===page-2||i===page+2){
+        pgHtml+='<span style="color:var(--sub);font-size:14px">…</span>';
+      }
+    }
+    pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:4px 10px;font-size:14px">›</button>`;
+    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:4px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span>`;
+    pgHtml+='</div>';
+    html+=pgHtml;
+  }
+  el.innerHTML=html;
+}
+
+async function selEv(id){
+  activeId=id;await renderEvals();
+  try{const s=await jget(`/api/v1/evaluations/${id}`);
+    // FAILED: 直接显示错误 + 重试
+    if(s.status==="FAILED"){
+      var name=s.name||"";
+      var m1=name.match(/FAILED at (\w+):\s*(.+)/)||[];
+      var m2=name.match(/\| ERROR:\s*(.+)/)||[];
+      var phase=m1[1]||"";
+      var phaseLabel={"PARSING":"解析 Trace","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
+      var errMsg=m1[2]||m2[1]||"无详细错误信息";
+      $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p><button class="btn" style="margin-top:16px" id="retry-btn">重试</button></div>';
+      var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
+      return;
+    }
+    // 运行中: 显示进度
+    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="PARSING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
+      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"REPORTING",label:"生成报告"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"RESOLVING":2,"PAIRING":3,"CALCULATING":4,"REPORTING":5,"FINALIZING":5};
+      var curStep=phaseMap[s.status]||0;
+      var totalSteps=phases.length;
+      var progressPct=Math.round((curStep/(totalSteps+1))*100);
+      var stepsHtml='<div style="margin:24px 0">';
+      stepsHtml+='<div style="height:5px;background:var(--p2);border-radius:5px;margin-bottom:20px;overflow:hidden"><div style="height:100%;width:'+progressPct+'%;background:linear-gradient(90deg,var(--acc),#7c3aed);transition:width .5s;border-radius:5px"></div></div>';
+      phases.forEach(function(p,i){
+        var done=curStep>i+1;var active=curStep===i+1;var stepNum=i+1;
+        var bg=done?"rgba(74,222,128,.12)":active?"rgba(124,58,237,.12)":"var(--p2)";
+        var borderC=done?"rgba(74,222,128,.4)":active?"rgba(124,58,237,.4)":"transparent";
+        var color=done?"var(--green)":active?"var(--acc)":"var(--gray)";
+        var icon=done?"✅":(active?"⏳":"⏸");
+        stepsHtml+='<div style="display:flex;align-items:center;gap:14px;padding:10px;margin-bottom:8px;background:'+bg+';border:1px solid '+borderC+';border-radius:10px;transition:all .3s">';
+        stepsHtml+='<span style="font-size:18px;width:38px;height:38px;border-radius:50%;background:'+(done?"rgba(74,222,128,.2)":active?"rgba(124,58,237,.2)":"rgba(107,114,128,.1)")+';display:flex;align-items:center;justify-content:center;color:'+color+';font-size:16px">'+icon+'</span>';
+        stepsHtml+='<div><div style="font-size:16px;color:'+color+';font-weight:'+(active?'700':'400')+'">'+stepNum+'. '+p.label+(active?'…':'')+'</div>';
+        if(done){stepsHtml+='<div style="font-size:12px;color:var(--sub)">已完成</div>';}
+        else if(active){stepsHtml+='<div style="font-size:12px;color:var(--acc)">进行中</div>';}
+        else{stepsHtml+='<div style="font-size:12px;color:var(--gray)">等待中</div>';}
+        stepsHtml+='</div></div>';
+      });
+      stepsHtml+='</div>';
+      $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span></div>'+stepsHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
+      let cnt=0;const poll=async()=>{cnt++;if(cnt>100)return;
+        try{const st=await jget(`/api/v1/evaluations/${id}`);
+          if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
+          else if(st.status==="FAILED"){selEv(id);}
+          else{setTimeout(poll,3000);}
+        }catch(e){}};
+      setTimeout(poll,3000);return;
+    }
+  }catch(e){}
+  // COMPLETED: 加载报告
+  $("rep").innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
+  catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
+}
+function retryEval(eid){
+  // 清理旧数据
+  jget('/api/v1/evaluations/'+eid+'/report').then(r=>{}).catch(e=>{});
+  // 重置状态为 RUNNING
+  F('/api/v1/evaluations/'+eid+'/retry',{method:'POST'}).then(r=>r.json()).then(d=>{
+    if(d.status==='QUEUED'||d.status==='RUNNING'){
+      selEv(eid);
+    }else{
+      alert('重试失败: '+JSON.stringify(d));
+    }
+  }).catch(e=>alert('重试失败: '+e));
+}
+
+function fmtDur(ms){
+  if(ms===null||ms===undefined)return'<span class="na">NA</span>';
+  var abs=Math.abs(ms);var sign=ms<0?'-':'';
+  if(abs>=3600000){var h=Math.floor(abs/3600000);var m=Math.floor((abs%3600000)/60000);return sign+h+'<span class="ci">时</span> '+m+'<span class="ci">分</span>';}
+  if(abs>=60000){var m2=Math.floor(abs/60000);var s=Math.floor((abs%60000)/1000);return sign+m2+'<span class="ci">分</span> '+s+'<span class="ci">秒</span>';}
+  if(abs>=1000){return sign+(abs/1000).toFixed(1)+'<span class="ci">秒</span>';}
+  return sign+Math.round(abs)+'<span class="ci">ms</span>';
+}
+function fmt(v,u){
+  if(v===null||v===undefined)return'<span class="na">NA</span>';
+  if(u==="ratio")return (v*100).toFixed(1)+'<span class="ci">%</span>';
+  if(u==="ms")return fmtDur(v);
+  if(u==="steps"||u==="tokens"){const a=Math.abs(v);let s;
+    if(a>=1e9)s=(v/1e9).toFixed(2)+'B';else if(a>=1e6)s=(v/1e6).toFixed(2)+'M';else if(a>=1e3)s=(v/1e3).toFixed(1)+'K';else s=Math.round(v).toString();
+    return s+'<span class="ci">'+(u==="tokens"?" tok":" steps")+'</span>';}
+  return Number(v).toFixed(3);
+}
+const MI={
+  M1:{n:"准确率变化(ΔBA)",short:"准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
+     range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无差异",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
+     interp:(v)=>v==null?"无基准，无法计算":v>0.05?`KG 准确率高出 ${(v*100).toFixed(1)}pp`:v<-0.05?`KG 准确率低 ${(-v*100).toFixed(1)}pp`:"准确率无明显差异",
+     formula:"BA_KG - BA_NoKG, BA=(TPR+TNR)/2, TPR=TP/(TP+FN), TNR=TN/(TN+FP)"},
+  M2:{n:"救回率(IR)",short:"救回率",d:"No-KG 失败的任务里 KG 救回的比例。越高越好。",u:"ratio",
+     range:[{v:0,t:"无救回",c:"red"},{v:0.3,t:"一般",c:"amber"},{v:0.7,t:"高效",c:"green"}],
+     interp:(v)=>v==null?"无失败任务可分析":v>=0.7?`救回率 ${v*100}%, 高效`:v>=0.3?`救回率 ${v*100}%, 一般`:`救回率 ${v*100}%, 偏低`,
+     formula:"C / (C + D), C=救回(NoKG失败->KG成功), D=持续失败"},
+  M3:{n:"回归率(RR)",short:"回归率",d:"No-KG 成功的任务里 KG 反而搞坏的比例。越低越好。",u:"ratio",
+     range:[{v:0,t:"无回归",c:"green"},{v:0.1,t:"少量",c:"amber"},{v:0.3,t:"严重",c:"red"}],
+     interp:(v)=>v==null?"无成功任务可分析":v<0.1?`回归率 ${v*100}%, 安全`:v<0.3?`回归率 ${v*100}%, 需关注`:`回归率 ${v*100}%, 严重`,
+     formula:"B / (A + B), B=回归(NoKG成功->KG失败), A=保持"},
+  M4:{n:"漏报率变化(ΔFNR)",short:"漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
+     range:[{v:-1,t:"KG 漏报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 漏报多",c:"red"}],
+     interp:(v)=>v==null?"无基准":v<0?`KG 漏报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 漏报增加 ${(v*100).toFixed(1)}pp`:"漏报率无变化",
+     formula:"FNR_KG - FNR_NoKG, FNR=FN/(FN+TP)"},
+  M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
+     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 极低`,
+     formula:"kg_count / total_tool_calls (知识查询次数 / 总工具调用次数)"},
+  M6:{n:"知识交付率(KDR)",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
+     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到知识交付":v>=0.8?`知识交付率 ${v*100}%, 充分`:v>=0.5?`知识交付率 ${v*100}%, 部分`:`知识交付率 ${v*100}%, 不足`,
+     formula:"successful_read_count / access_event_count (有效回复次数 / 总查询次数)"},
+  M7:{n:"行为偏移(JSD)",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
+     range:[{v:0,t:"无差异",c:"green"},{v:0.1,t:"轻微",c:"amber"},{v:0.3,t:"显著",c:"red"}],
+     interp:(v)=>v==null?"无法计算":v<0.1?`行为偏移 ${v*100}%, 轻微`:v<0.3?`行为偏移 ${v*100}%, 明显`:`行为偏移 ${v*100}%, 显著`,
+     formula:"median(JSD_i), JSD_i=(0.5*KL(P||M)+0.5*KL(Q||M))/ln2, M=(P+Q)/2, P/Q=工具使用概率分布"},
+  M8:{n:"Token变化(ΔToken)",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
+     range:[{v:-1,t:"KG 更省",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更耗",c:"red"}],
+     interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${Math.abs(v).toLocaleString()} token`:v>0?`KG 多用 ${v.toLocaleString()} token`:"token 消耗无差异",
+     formula:"median(KG_tokens - NoKG_tokens)"},
+  M9:{n:"步数变化(ΔSteps)",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
+     range:[{v:-1,t:"KG 更少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更多",c:"red"}],
+     interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${Math.abs(v)} 步`:v>0?`KG 多 ${v} 步`:"步数无差异",
+     formula:"median(KG_steps - NoKG_steps)"},
+  M10:{n:"时长变化(ΔTime)",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
+     range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
+     interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${(-v/1000).toFixed(1)}s`:v>0?`KG 慢 ${(v/1000).toFixed(1)}s`:"时长无差异",
+     formula:"median(KG_duration_ms - NoKG_duration_ms)"}
+};
+function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
+function dc(v,u){if(v===null||v===undefined)return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
+function ci(m){if(!m||m.ci_lower===null||m.ci_lower===undefined)return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(1):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(1):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
+function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
+
+function renderReport(d){
+  const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{},mc=p0.m2_m3_mcnemar||{};
+
+  // 指标卡片：名称 + 值 + 解读 + 参考范围条
+  function mCard(mid,m){
+    const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
+    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足"};
+    if(!m||m.calculation_status!=="CALCULATED"){
+      const rc=m?m.reason_code||m.calculation_status:"无数据";
+      const reason=RC[rc]||rc||"无数据";
+      const nNote=m&&m.n!=null?` (N=${m.n})`:"";
+      return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">${reason}${nNote}</div></div>`;
+    }
+    const v=m.estimate;
+    const interp=mi.interp?mi.interp(v):"";
+    let col="var(--gray)";
+    if(mi.range){
+      for(let i=mi.range.length-1;i>=0;i--){if(v>=mi.range[i].v){col=mi.range[i].c==="green"?"var(--green)":mi.range[i].c==="red"?"var(--red)":"var(--amber)";break;}}
+    }
+    const valStr=fmt(v,m.unit);
+    let rangeBar="";
+    if(mi.range&&mi.range.length>=2){
+      const min=mi.range[0].v,max=mi.range[mi.range.length-1].v;
+      const pct=Math.min(100,Math.max(0,((v-min)/(max-min))*100));
+      rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
+    }
+    var formulaHtml=mi.formula?"<details style='margin-top:4px'><summary style='cursor:pointer;font-size:12px;color:var(--gray)'>计算公式</summary><div style='font-size:12px;color:var(--sub);font-family:monospace;background:var(--p2);padding:4px 6px;border-radius:4px;margin-top:4px'>"+mi.formula+"</div></details>":"";
+    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
+  }
+
+  // 知识图谱介入情况
+  const kar=p1.M5,kdr=p1.M6;
+  const kgAccess=kar&&kar.calculation_status==="CALCULATED"?kar.estimate:null;
+  const kgDelivery=kdr&&kdr.calculation_status==="CALCULATED"?kdr.estimate:null;
+  const kgActive=(kgAccess!==null&&kgAccess>0)||callCount>0;
+  const kgInteractions=d.knowledge_interactions||[];
+  const allInteractions=[];
+  kgInteractions.forEach(k=>{(k.interactions||[]).forEach(i=>allInteractions.push(i))});
+  // outcome 数据用于判断 TP/FP
+  const outcomeDetails=d.outcome_details||[];
+  const kgOc=outcomeDetails.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
+
+  // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
+  var callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
+  var resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
+  let kgHtml="";
+  // 概要
+  kgHtml+="<div style='display:flex;gap:12px;align-items:center;margin-bottom:12px'>";
+  kgHtml+=kgActive?"<span style='font-size:28px'>✅</span>":"<span style='font-size:28px'>❌</span>";
+  kgHtml+="<div><span style='font-weight:600;font-size:16px'>"+(kgActive?"知识图谱已介入":"知识图谱未介入")+"</span>";
+  kgHtml+="<div style='font-size:14px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+resultCount+"</b> 次</div></div></div>";
+
+  // 知识质量统计：基于 RESULT 分类
+  var kgFail=0,kgBlind=0,kgSuccess=0;
+  allInteractions.forEach(function(iv){
+    if(iv.type!=="RESULT"||!iv.output)return;
+    var out=(iv.output||"").toLowerCase();
+    if(out.indexOf("terminated")>=0||out.indexOf("timeout")>=0||out.indexOf("error")>=0||out.indexOf("404")>=0||out.indexOf("failed")>=0||out.indexOf("exception")>=0||out.indexOf("unreachable")>=0||out.indexOf("connection refused")>=0){
+      kgFail++;
+    }else if(out.indexOf("知识库暂无此类知识")>=0){
+      kgBlind++;
+    }else{
+      kgSuccess++;
+    }
+  });
+  if(resultCount>0){
+    kgHtml+="<div style='display:flex;gap:12px;margin-bottom:12px'>";
+    kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>有效返回 "+kgSuccess+"</span>";
+    kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>返回失败 "+kgFail+"</span>";
+    kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>知识盲区 "+kgBlind+"</span>";
+    kgHtml+="</div>";
+  }
+
+  // 知识对漏洞判定的影响（正向/负向/中性），来源 per_case_kg_analysis.impact
+  var pcAnalysis=r.per_case_kg_analysis||[];
+  if(pcAnalysis.length){
+    var posCount=pcAnalysis.filter(p=>p.impact==="POSITIVE").length;
+    var negCount=pcAnalysis.filter(p=>p.impact==="NEGATIVE").length;
+    var neuCount=pcAnalysis.filter(p=>p.impact==="NEUTRAL").length;
+    kgHtml+="<div style='display:flex;gap:12px;margin-bottom:12px'>";
+    kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>正向 "+posCount+"</span>";
+    kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>负向 "+negCount+"</span>";
+    kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>中性 "+neuCount+"</span>";
+    kgHtml+="</div>";
+  }
+
+  // 基线漏洞 per-case 分析
+  var caseResults=d.case_results||[];
+  if(caseResults.length){
+    kgHtml+="<div style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
+    caseResults.forEach(function(c,idx){
+      var conf=c.confusion||"NA";
+      var nogkConf=c.nogk_confusion||"NA";
+      function confBadge(label,conf){
+        var icon=conf==="TP"?'✅':conf==="FP"?'❌':conf==="FN"?'❌':conf==="TN"?'✅':'⏳';
+        var color=conf==="TP"?"var(--green)":(conf==="FP"||conf==="FN")?"var(--red)":conf==="TN"?"var(--green)":"var(--amber)";
+        var text=conf==="TP"?"命中":conf==="FP"?"误报":conf==="FN"?"漏报":conf==="TN"?"正确跳过":"待定";
+        return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+text+"</span>";
+      }
+      kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
+      kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
+      kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>#"+(idx+1)+"</span>";
+      kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||"漏洞")+"</span>";
+      kgHtml+="</div>";
+      kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      if(c.description){
+        var desc=String(c.description).replace(/</g,"&lt;").slice(0,300);
+        kgHtml+="<div style='font-size:13px;color:var(--sub);margin-top:4px;line-height:1.5'>"+desc+"</div>";
+      }
+      // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
+      var pcKa=(r.per_case_kg_analysis||[]).find(function(p){return p.case_id===c.case_id;});
+      if(pcKa&&kgActive){
+        var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
+        var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
+        var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
+        kgHtml+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-top:8px'>";
+        kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📊 KG 知识介入分析</div>";
+        kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
+        // 原始交互：command（问题）+ output（回答）
+        var ivs=pcKa.interactions||[];
+        if(ivs.length){
+          kgHtml+="<div style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
+          kgHtml+="<div style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px'>原始知识交互（"+ivs.length+" 条）</div>";
+          ivs.forEach(function(iv,i){
+            kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
+            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>["+(i+1)+"] "+(iv.tool||"")+"</div>";
+            // 优先显示解析后的可读文本（argo: command_parsed/output_parsed, turing: question/answer），原始 JSON 折叠
+            var qp=iv.command_parsed||iv.question||"";
+            var op=iv.output_parsed||iv.answer||"";
+            var rawQ=iv.command||iv.question||"";
+            var rawA=iv.answer||"";
+            if(qp){
+              kgHtml+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>问题:</b> "+qp.replace(/</g,"&lt;")+"</div>";
+            }
+            if(op){
+              kgHtml+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
+            }
+            // 原始 JSON 折叠（点击展开）——仅在原始数据与解析后不同时才显示
+            if(rawQ||rawA){
+              kgHtml+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
+              if(rawQ)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
+              if(rawA)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
+              kgHtml+="</details>";
+            }
+            kgHtml+="</div>";
+          });
+          kgHtml+="</div>";
+        }
+        if(pcKa.query_summary)kgHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>AI 概括: "+pcKa.query_summary+"</div>";
+        if(pcKa.reason)kgHtml+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
+        kgHtml+="</div>";
+      }
+      kgHtml+="<div style='font-size:12px;color:var(--gray);margin-top:4px'>基线标签: "+(c.expected_label||"NA")+" · Case ID: "+(c.case_id||"").slice(0,8)+"</div>";
+      kgHtml+="</div>";
+    });
+  }
+
+  // 自动生成通俗摘要
+  let summaryParts=[];
+  const m7v=p1.M7&&p1.M7.calculation_status==="CALCULATED"?p1.M7.estimate:null;
+  const m8v=p2.M8&&p2.M8.calculation_status==="CALCULATED"?p2.M8.estimate:null;
+  const m9v=p2.M9&&p2.M9.calculation_status==="CALCULATED"?p2.M9.estimate:null;
+  if(kgActive)summaryParts.push("知识图谱已介入");
+  else summaryParts.push("知识图谱未介入");
+  if(m8v!==null)summaryParts.push(m8v<0?"KG 模式更省 token":"KG 模式更耗 token");
+  if(m9v!==null)summaryParts.push(m9v<0?"KG 步数更少":"KG 步数更多");
+  if(m7v!==null)summaryParts.push(m7v<0.1?"行为几乎无变化":"行为有明显变化");
+  if(rw.undetermined)summaryParts.push(`${rw.undetermined} 个任务结果待定`);
+
+  // 评测元信息
+  const evalName=d.evaluation_name||d.evaluation_id;
+  const vbenchName=d.vbench_project_name||"";
+  const entriesInfo=d.entries_info||[];
+  const kgInfo=entriesInfo.find(e=>e.condition==="KG")||{};
+  const nogkInfo=entriesInfo.find(e=>e.condition==="NOGK")||{};
+
+  $("rep").innerHTML=`
+  <div style="margin-bottom:22px">
+    <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
+    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
+      <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
+      <div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>
+      <div><span style="color:var(--gray)">测评数据集：</span><b>${vbenchName||"无（无 GT 模式）"}</b></div>
+      <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
+    </div>
+  </div>
+
+  <!-- 1. AI 综合分析（合并摘要 + 漏洞对比 + 指标结论） -->
+  ${(()=>{
+    const nt=r.narrative||{};
+    const va=r.vuln_analysis||{};
+    // 总结论：优先 narrative.summary，fallback report.summary，再 fallback 规则摘要
+    const topSummary=nt.summary||r.summary||summaryParts.join("；")+"。";
+    // 详细分析：优先 narrative.conclusion，fallback 旧字段拼接
+    let concl=nt.conclusion||"";
+    if(!concl){const parts=[];if(nt.outcome_interpretation)parts.push("【准确性】"+nt.outcome_interpretation);if(nt.risk_interpretation)parts.push("【风险】"+nt.risk_interpretation);if(nt.mechanism_interpretation)parts.push("【行为/机制】"+nt.mechanism_interpretation);if(nt.cost_interpretation)parts.push("【成本】"+nt.cost_interpretation);if(nt.statistical_significance)parts.push("【统计显著性】"+nt.statistical_significance);if(nt.diagnostic_alerts)parts.push("【诊断告警】"+nt.diagnostic_alerts);concl=parts.join("\n\n");}
+    return`<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,var(--p2),var(--panel))">
+    <h3>📋 AI 综合分析</h3>
+    <div style="font-size:18px;font-weight:600;margin-bottom:14px;line-height:1.6">${topSummary.replace(/</g,"&lt;")}</div>
+    ${concl?`<div style="font-size:16px;line-height:1.8;white-space:pre-wrap;margin-bottom:10px">${concl.replace(/</g,"&lt;")}</div>`:""}
+    ${nt.limitations&&nt.limitations.length?`<div style="font-size:14px;color:var(--sub);margin-top:8px;padding-top:10px;border-top:1px solid var(--bd)"><b>局限性：</b>${nt.limitations.join("；")}</div>`:""}
+  </div>`})()}
+
+  <!-- 2. 漏洞统计表 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>📊 漏洞检测统计</h3>
+    ${(()=>{
+      const baseline=d.baseline_count||0;const tools=d.tool_stats||[];const res=d.resource_stats||[];
+      const va=r.vuln_analysis||{};
+      const kgTool=tools.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
+      const nogkTool=tools.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const kgRes=res.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
+      const nogkRes=res.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
+      const kgKg=kgTool.kg_count||0;const nogkKg=nogkTool.kg_count||0;
+      const kgTokens=kgRes.tokens||0;const nogkTokens=nogkRes.tokens||0;
+      const kgTools=kgTool.total_tools||0;const nogkTools=nogkTool.total_tools||0;
+      const kgSteps=kgRes.steps||0;const nogkSteps=nogkRes.steps||0;
+      const kgDur=kgRes.duration||0;const nogkDur=nogkRes.duration||0;
+      // TP/FP/FN/TN 从 vuln_analysis 取（由后端从 case_results 统计）
+      const kgTP=va.kg_tp||0;const kgFP=va.kg_fp||0;const kgFN=va.kg_fn||0;const kgTN=va.kg_tn||0;
+      const nogkTP=va.nogk_tp||0;const nogkFP=va.nogk_fp||0;const nogkFN=va.nogk_fn||0;const nogkTN=va.nogk_tn||0;
+      return `<div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div><table><tr><th>统计项</th><th>KG（开知识图谱）</th><th>No-KG（对照）</th></tr><tr><td>Agent 提交发现数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr><tr><td>Athena 查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr><tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr><tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr><tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr><tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td><td class="num">${fmtDur(nogkDur)}</td></tr><tr><td>已确认 (TP)</td><td class="num" style="color:var(--green)">${kgTP}</td><td class="num" style="color:var(--green)">${nogkTP}</td></tr><tr><td>误报 (FP)</td><td class="num" style="color:var(--red)">${kgFP}</td><td class="num" style="color:var(--red)">${nogkFP}</td></tr><tr><td>漏报 (FN)</td><td class="num" style="color:var(--amber)">${kgFN}</td><td class="num" style="color:var(--amber)">${nogkFN}</td></tr><tr><td>正确跳过 (TN)</td><td class="num" style="color:var(--green)">${kgTN}</td><td class="num" style="color:var(--green)">${nogkTN}</td></tr></table>`;
+    })()}
+  </div>
+
+  <!-- 3. 效果指标 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>🎯 效果指标</h3>
+    ${[
+      ["① 价值结果","衡量知识图谱对漏洞判定准确性的净贡献",
+        [["M1",p0.M1],["M2",p0.M2],["M3",p0.M3],["M4",p0.M4]]],
+      ["② 作用机制","揭示行为变化的来源（知识访问/交付/行为漂移）",
+        [["M5",p1.M5],["M6",p1.M6],["M7",p1.M7]]],
+      ["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
+        [["M8",p2.M8],["M9",p2.M9],["M10",p2.M10]]]
+    ].map(g=>`<div style="margin-bottom:14px">
+      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
+        <span style="font-weight:700;font-size:15px">${g[0]}</span>
+        <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
+      </div>
+      <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        ${g[2].map(m=>mCard(m[0],m[1])).join("")}
+      </div>
+    </div>`).join("")}
+  </div>
+
+  <!-- 4. 诊断 -->
+  ${h.length?`<div class="card" style="margin-bottom:16px"><h3>🔍 诊断发现</h3>${h.map(x=>`<div class="diag"><span class="rid">${x.rule_id}</span> <span class="ob">${x.observed}</span><div class="ip">${x.interpretation}<br>建议：${x.suggestion}</div></div>`).join("")}</div>`:""}
+
+  <!-- 5. 知识图谱介入 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>🧠 知识图谱介入情况</h3>
+    ${kgHtml}
+  </div>`;
+  const diagEl=$("diag-body");if(diagEl)diagEl.innerHTML=diagHtml+`<button class="btn g" style="margin-top:8px" id="diag-retry-btn">重新评测</button>`;
+  var drb=$("diag-retry-btn");if(drb)drb.onclick=function(){retryEval(d.evaluation_id);};
+}
+
+function loadPipeline(eid){
+  F(`/api/v1/evaluations/${eid}/pipeline`).then(r=>r.json()).then(d=>{
+    const el=$("pipeline-card");if(!el)return;
+    const tr=d.task_runs||[],oc=d.outcomes||[],kn=d.knowledge||[],to=d.tools||[],rs=d.resources||[],pr=d.pairs||[],dv=d.derived||[],me=d.metrics||[];
+    const calc=me.filter(m=>m.status==="CALCULATED").length;
+    const na=me.filter(m=>m.status!=="CALCULATED").length;
+    let steps=`<div style="display:flex;flex-direction:column;gap:0">
+    <div class="ps"><span class="ps-n done">1</span><div class="ps-body"><b>Trace 解析</b><br>
+    ${tr.map(t=>`<span class="ps-det">${t.condition} TaskRun: ${t.task_id} · trace_valid=${t.trace_valid} · runtime_valid=${t.runtime_valid} · kg_state=${t.kg_runtime_state}</span>`).join("<br>")}</div></div>
+    <div class="ps"><span class="ps-n done">2</span><div class="ps-body"><b>Fact 提取</b><br>
+    ${oc.map(o=>`<span class="ps-det">${o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK")?"KG":"No-KG"}: outcome=${o.outcome} · prediction=${o.prediction} · resolver=${o.resolver_status} · validation=${o.validation_result||"NA"}</span>`).join("<br>")}
+    ${kn.map(k=>`<span class="ps-det">${k.task_run_id.includes("KG")&&!k.task_run_id.includes("NOGK")?"KG":"No-KG"}: access=${k.access} · delivery=${k.delivery} · mount=${k.mount_status}</span>`).join("<br>")}
+    ${to.map(t=>`<span class="ps-det">${t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK")?"KG":"No-KG"}: tools=${t.total} (KG=${t.kg} F=${t.finding} C=${t.code} S=${t.shell} O=${t.other})</span>`).join("<br>")}
+    ${rs.map(r=>`<span class="ps-det">${r.task_run_id.includes("KG")&&!r.task_run_id.includes("NOGK")?"KG":"No-KG"}: tokens=${r.tokens} · steps=${r.steps} · duration=${r.duration}ms · time_valid=${r.time_valid}</span>`).join("<br>")}</div></div>
+    <div class="ps"><span class="ps-n done">3</span><div class="ps-body"><b>配对</b><br>
+    ${pr.length?pr.map(p=>`<span class="ps-det">${p.match_status} · exp_valid=${p.exp_valid} · outcome_valid=${p.outcome_valid} · transition=${p.transition||"NA"}</span>`).join("<br>"):"无配对"}</div></div>
+    <div class="ps"><span class="ps-n done">4</span><div class="ps-body"><b>Pair Derived Facts</b><br>
+    ${dv.length?dv.map(d=>`<span class="ps-det">${d.type}: ${d.value_num!=null?Number(d.value_num).toFixed(3):d.value_str||"-"} [${d.status}]${d.reason?" "+d.reason:""}</span>`).join("<br>"):"无"}</div></div>
+    <div class="ps"><span class="ps-n done">5</span><div class="ps-body"><b>指标计算</b><br>
+    <span class="ps-det">CALCULATED=${calc} · NA=${na} · 总计=${me.length}</span><br>
+    ${me.map(m=>`<span class="ps-det">${m.metric_id}: ${m.status}${m.reason?" ("+m.reason+")":""} N=${m.n}</span>`).join("<br>")}</div></div>
+    <div class="ps"><span class="ps-n done">6</span><div class="ps-body"><b>报告生成</b><br><span class="ps-det">status=READY</span></div></div>
+    </div>`;
+    el.innerHTML="<h3>分析过程日志</h3>"+steps;
+  }).catch(e=>{const el=$("pipeline-card");if(el)el.innerHTML="<h3>分析过程日志</h3><div style=color:var(--red)>加载失败："+e+"</div>";});
+}
+
+// ===== ② 新建评测（KG / No-KG 分别选 trace，各自 项目→任务→trace）=====
+let sel={kg:{proj:"",projName:"",task:"",taskName:"",trace:""},nogk:{proj:"",projName:"",task:"",taskName:"",trace:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:""};
+let _allVbProjs=[];let _vbCases=null;
+let _allProjs=[];let _sideTasks=null;let _sideTraces=null;
+async function renderCreate(){
+  $("view").innerHTML=`<div style="max-width:1100px">
+    <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
+      <div class="card" id="kg-col"></div>
+      <div class="card" id="nogk-col"></div>
+    </div>
+    <div class="card" id="run-conf"></div>`;
+  if(!_allProjs.length) _allProjs=(await jget("/api/v1/platform/projects")).projects||[];
+  renderSide("kg");renderSide("nogk");renderRunConf();
+}
+function renderSide(side){
+  const s=sel[side];const label=side==="kg"?"KG（开）":"No-KG（关）";const col=side==="kg"?"var(--acc)":"var(--amber)";
+  const p1=s.proj?col:"var(--p2)";const p2=s.task?col:"var(--p2)";const p3=s.trace?col:"var(--p2)";
+  const steps=`<div style="display:flex;gap:6px;font-size:14px;margin-bottom:12px">
+    <span style="padding:2px 8px;border-radius:8px;background:${p1};color:#fff">${s.proj?"✓ ":""}1 项目</span>
+    <span style="padding:2px 8px;border-radius:8px;background:${p2};color:#fff">${s.task?"✓ ":""}2 任务</span>
+    <span style="padding:2px 8px;border-radius:8px;background:${p3};color:#fff">${s.trace?"✓ ":""}3 trace</span></div>`;
+  let body="";
+  if(!s.proj){
+    body=`<input id="${side}-search" placeholder="搜索项目名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
+  }else if(!s.task){
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].proj='';_sideTasks=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索任务名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
+  }else{
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> · 任务：<b>${s.taskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideTraces=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
+  }
+  $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
+  if(!s.proj){renderSideList(side);}
+  else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideTasks=d.tasks||[];renderSideList(side);});}
+  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session");renderSideList(side);});}
+}
+function renderSideList(side){filterSideList(side);}
+function filterSideList(side){
+  const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
+  if(!s.proj){
+    if(!_allProjs)return;
+    const f=_allProjs.filter(p=>(p.name+" "+p.id+" "+(p.department_name||"")+" "+(p.product_path||"")).toLowerCase().includes(q));
+    $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span>${p.department_name?`<span style="font-size:12px;color:var(--sub)">${p.department_name}</span>`:""}${p.product_path?`<span style="font-size:12px;color:var(--acc)">${p.product_path}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+  }else if(!s.task){
+    if(!_sideTasks)return;
+    const f=_sideTasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
+    $(side+"-list").innerHTML=f.map(t=>`<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.test_target}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+  }else{
+    if(!_sideTraces)return;
+    const f=_sideTraces.filter(t=>(t.path+" "+(t.tool_task_id||"")+" "+t.file).toLowerCase().includes(q));
+    $(side+"-list").innerHTML=f.map(t=>{
+      // 根据路径生成可读名称
+      var path=t.path||"";var name=t.tool_task_id||t.file||"";
+      var label=t.kind;
+      if(path.indexOf("/subagents")>=0){label="子 Agent Session";}
+      else if(path.indexOf("/hook-watch")>=0){label="Hook Watch";}
+      else if(path.indexOf("/run/logs")>=0){label="运行日志";}
+      else if(path.indexOf("/run/projects")>=0||path.indexOf("/run/projects")>=0){label="项目数据";}
+      else if(path.indexOf("/run")>=0&&path.indexOf("/session")<0){label="运行目录";}
+      else if(t.kind==="session"&&path.indexOf("/tools/")<0){label="任务级 Session（主）";}
+      else if(t.kind==="session"){label="Session";}
+      else if(t.kind==="argo_session"&&path.indexOf("/subagents")<0&&path.indexOf("/run")<0){label="Argo Session（主）";}
+      else if(t.kind==="argo_session"){label="Argo Session";}
+      else if(t.kind==="opencode_session"){label="Turing opencode.db";}
+      else if(t.kind==="findings"){label="Findings DB";}
+      const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Findings DB":`<span class="knd">Findings</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`};
+      const badge=badges[label]||`<span class="knd">${label}</span>`;
+      const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
+      // 显示工具名或目录名
+      var display=t.tool_task_id||t.file||"";
+      return `<div class="opt" onclick="pick('${side}','trace','${t.path}','${t.file}')">${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
+    }).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+  }
+}
+function pick(side,field,id,name){
+  sel[side][field]=id;
+  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].trace="";_sideTasks=null;}
+  else if(field==="task"){sel[side].taskName=name;sel[side].trace="";_sideTraces=null;}
+  else if(field==="trace"){sel[side].traceName=name;}
+  renderSide(side);renderRunConf();
+}
+async function renderRunConf(){
+  const ready=sel.kg.trace&&sel.nogk.trace;
+  if(!_allVbProjs.length){try{_allVbProjs=(await jget("/api/v1/vbench/projects")).projects||[];}catch(e){}}
+  let vbHtml="";
+  if(!sel.vbProj){
+    vbHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div><a href="http://secflow.ai.icsl.huawei.com/vbench/static/index.html#/dashboard" target="_blank" style="font-size:13px;color:var(--acc)">前往 V-Bench 管理 →</a></div>`;
+  }else{
+    // 项目已选，自动加载全部 case 作为基线（只读展示）
+    if(!_vbCases){_vbCases=(await jget(`/api/v1/vbench/projects/${sel.vbProj}/benchmark`)).cases||[];}
+    const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vulnerability_type||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");
+    vbHtml=`<div style="margin-bottom:8px;font-size:14px">V-Bench 项目：<b>${sel.vbProjName}</b> · 基线漏洞 <b>${_vbCases.length}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vbProj='';sel.vbProjName='';_vbCases=null;renderRunConf()">重选</button></div><div class="sel" style="max-height:150px;margin-bottom:10px">${casesHtml||'<div style="padding:16px;color:var(--sub)">无 case</div>'}</div>`;
+  }
+  $("run-conf").innerHTML=`<h3>测评数据集基线</h3>
+  <div style="display:none"><input id="eid" value="${genId()}"></div>
+  ${vbHtml}
+  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>'}${sel.vbProj?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未选基线项目 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
+  <div class="st" id="run-st"></div>
+  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完两侧 trace"}</button>`;
+  if(!sel.vbProj){renderVbList();}
+}
+function renderVbList(){filterVbList();}
+function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const ready=sel.kg.trace&&sel.nogk.trace;btn.disabled=!(ready&&name);}
+function filterVbList(){
+  if(!_allVbProjs)return;
+  const list=$("vb-list");if(!list)return;
+  const q=($("vb-search")?($("vb-search").value||"").toLowerCase():"");
+  const f=_allVbProjs.filter(p=>(p.name+" "+(p.tags||[]).join(" ")).toLowerCase().includes(q));
+  list.innerHTML=f.slice(0,30).map(p=>`<div class="opt" onclick="pickVbProj('${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="bdg b-${p.status==='EXPORTED'?'COMPLETED':'RUNNING'}">${p.status}</span>${p.tags&&p.tags.length?`<span style="font-size:12px;color:var(--sub)">${p.tags.join(" · ")}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+}
+function pickVbProj(id,name){sel.vbProj=id;sel.vbProjName=name;_vbCases=null;renderRunConf();}
+function genId(){const d=new Date(Date.now()+8*3600000);const p=n=>String(n).padStart(2,"0");return `EV-${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}-${Math.floor(Math.random()*9000+1000)}`;}
+async function runEval(){
+  let eid=$("eid").value.trim()||genId();
+  $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
+  const evalName=$("eval-name")?$("eval-name").value.trim():"";
+  const caseIds=_vbCases?_vbCases.map(c=>c.case_id):[];
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:sel.vbProj||"BS001",vbench_project_name:sel.vbProjName||undefined,entries:[{task_id:"T001",condition:"KG",source_uri:sel.kg.trace,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task},{task_id:"T001",condition:"NOGK",source_uri:sel.nogk.trace,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task}]});
+    $("run-st").textContent="✅ 评测已创建，排队中…";
+    activeId=r.evaluation_id;go("evaluations");setTimeout(selEv,500,r.evaluation_id);
+    // 轮询状态
+    let pollCount=0;const pollEval=async()=>{pollCount++;if(pollCount>120)return;
+      try{const s=await jget(`/api/v1/evaluations/${eid}`);if(s.status==="COMPLETED"||s.status==="FAILED"){
+        $("run-st").textContent=s.status==="COMPLETED"?"✅ 评测完成":"⚠ 评测失败";
+        selEv(eid);
+      }else{setTimeout(pollEval,3000);}}catch(e){}};
+    setTimeout(pollEval,3000);
+  }
+  catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}}
+
+// ===== ④ 系统 =====
+async function renderSystem(){let h=await jget("/api/v1/system/health");let s=await jget("/api/v1/system/schema");
+  $("view").innerHTML=`<div style="max-width:700px"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</div></div>
+  <div class="card" style="margin-top:16px"><h3>表清单（${s.tables.length}）</h3><table><tr><th>表</th><th>行数</th></tr>${s.tables.map(t=>`<tr><td class="num">${t.table}</td><td>${t.rows}</td></tr>`).join("")}</table></div></div>`;}
+
+render();
+</script>
+</body>
+</html>
+

@@ -1,0 +1,27 @@
+{
+  "outcome": {
+    "prediction": "NEGATIVE",
+    "outcome": "FAIL",
+    "confusion": "FN",
+    "validation_result": "FALSE_POSITIVE",
+    "resolver_status": "RESOLVED"
+  },
+  "knowledge": {
+    "access": false,
+    "delivery": false,
+    "mount_status": "UNKNOWN"
+  },
+  "behavior": {
+    "kg_count": 0,
+    "finding_count": 2,
+    "code_count": 0,
+    "shell_count": 0,
+    "other_count": 0
+  },
+  "resource": {
+    "effective_tokens": 1500,
+    "steps": 1,
+    "duration_ms": 93000,
+    "time_valid": true
+  }
+}

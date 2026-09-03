@@ -1,0 +1,32 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+build/
+dist/
+
+# Virtual env
+.venv/
+venv/
+
+# Test / cache
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+tests/fixtures/real_turing/
+tests/fixtures/fetched/
+
+# Logs
+*.log
+
+# Local config / secrets
+.env
+.env.*
+*.local
+
+# OS / editor
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

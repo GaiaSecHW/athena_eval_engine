@@ -1,0 +1,26 @@
+{
+  "outcome": {
+    "outcome": "UNDETERMINED",
+    "prediction": "UNDETERMINED",
+    "resolver_status": "NO_FINDING",
+    "validation_result": "NA"
+  },
+  "knowledge": {
+    "access": true,
+    "delivery": true,
+    "mount_status": "FAILED"
+  },
+  "behavior": {
+    "kg_count": 2,
+    "finding_count": 0,
+    "code_count": 0,
+    "shell_count": 0,
+    "other_count": 0
+  },
+  "resource": {
+    "effective_tokens": 1500,
+    "steps": 1,
+    "duration_ms": 93000,
+    "time_valid": true
+  }
+}
