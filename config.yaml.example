@@ -1,0 +1,33 @@
+# 知识测评 (eval-engine) 配置文件
+# 复制本文件为 config.yaml 并填入真实值后使用（config.yaml 已被 .gitignore 忽略）。
+# 本地开发：用 port-forward 地址（127.0.0.1:18xxx）
+# k8s 部署：用内部 service 域名（ConfigMap 覆盖）
+
+# MySQL 数据库
+database:
+  host: "127.0.0.1"            # dev: port-forward 地址; k8s: eval-engine-mysql.secflow-ns.svc.cluster.local
+  port: 3306
+  user: "eval"
+  password: "REPLACE_WITH_DB_PASSWORD"
+  database: "athena_eval"
+  schema_sql: "schema.sql"
+
+# LLM（OpenAI 兼容端点）
+llm:
+  base_url: "http://127.0.0.1:3030/v1"
+  model: "glm-5.2"
+  api_key: "REPLACE_WITH_LLM_API_KEY"
+
+# V-Bench benchmark 基线 API
+vbench:
+  api_url: "http://127.0.0.1:18083/api/v1"  # dev: port-forward; k8s: http://vbench-api.secflow-ns.svc.cluster.local/api/v1
+
+# 平台 API（项目/任务/trace 发现）
+platform:
+  project_api: "http://127.0.0.1:18081"
+  schedule_api: "http://127.0.0.1:18082"
+  sched_pod: ""                 # 留空时由 _get_sched_pod() 动态发现
+  data_root: "/data/files"     # k8s 部署时 /data 直接挂载；dev 改为本地路径
+
+# 平台全局 token
+platform_token: "REPLACE_WITH_PLATFORM_TOKEN"

@@ -20,10 +20,11 @@ tests/fixtures/fetched/
 # Logs
 *.log
 
-# Local config / secrets
+# Local config / secrets（含真实凭据，勿入库；用 config.yaml.example 作模板）
 .env
 .env.*
 *.local
+config.yaml
 
 # OS / editor
 .DS_Store
