@@ -631,7 +631,7 @@ function loadPipeline(eid){
 }
 
 // ===== ② 新建评测（KG / No-KG 分别选 trace，各自 项目→任务→trace）=====
-let sel={kg:{proj:"",projName:"",task:"",taskName:"",trace:""},nogk:{proj:"",projName:"",task:"",taskName:"",trace:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:""};
+let sel={kg:{proj:"",projName:"",task:"",taskName:"",trace:"",traceKind:"",traceCategory:""},nogk:{proj:"",projName:"",task:"",taskName:"",trace:"",traceKind:"",traceCategory:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:""};
 let _allVbProjs=[];let _vbCases=null;
 let _allProjs=[];let _sideTasks=null;let _sideTraces=null;
 async function renderCreate(){
@@ -658,14 +658,43 @@ function renderSide(side){
   }else if(!s.task){
     body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].proj='';_sideTasks=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索任务名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
   }else{
-    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> · 任务：<b>${s.taskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideTraces=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> · 任务：<b>${s.taskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideTraces=null;sel['${side}'].trace='';sel['${side}'].traceKind='';sel['${side}'].traceCategory='';renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div id="${side}-mining" style="margin-bottom:12px"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞挖掘 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-mining"></div></div><div id="${side}-verify"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞验证 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-verify"></div></div>`;
   }
   $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
   if(!s.proj){renderSideList(side);}
   else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideTasks=d.tasks||[];renderSideList(side);});}
-  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session");renderSideList(side);});}
+  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session");renderSideList(side);});}
 }
 function renderSideList(side){filterSideList(side);}
+function _traceLabel(t){
+  var path=t.path||"";var label=t.kind;
+  if(path.indexOf("/subagents")>=0){label="子 Agent Session";}
+  else if(path.indexOf("/hook-watch")>=0){label="Hook Watch";}
+  else if(path.indexOf("/run/logs")>=0){label="运行日志";}
+  else if(path.indexOf("/run/projects")>=0){label="项目数据";}
+  else if(path.indexOf("/run")>=0&&path.indexOf("/session")<0){label="运行目录";}
+  else if(t.kind==="session"&&path.indexOf("/tools/")<0){label="任务级 Session（主）";}
+  else if(t.kind==="session"){label="Session";}
+  else if(t.kind==="argo_session"&&path.indexOf("/subagents")<0&&path.indexOf("/run")<0){label="Argo Session（主）";}
+  else if(t.kind==="argo_session"){label="Argo Session";}
+  else if(t.kind==="opencode_session"){label="Turing opencode.db";}
+  else if(t.kind==="webverify_session"){label="WebVulnVerify Session";}
+  else if(t.kind==="cvuln_verify_session"){label="CVulnVerify Session";}
+  
+  return label;
+}
+function _traceBadge(label){
+  const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`,"CVulnVerify Session":`<span class="knd k-argo">CVulnVerify</span>`};
+  return badges[label]||`<span class="knd">${label}</span>`;
+}
+function _isVerifyKind(kind){return kind==="webverify_session"||kind==="cvuln_verify_session";}
+function _renderTraceItem(side,t){
+  const label=_traceLabel(t);const badge=_traceBadge(label);
+  const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
+  var display=t.tool_task_id||t.file||"";
+  const selMark=t.path===sel[side].trace?'<span style="color:var(--green)">✓ </span>':'';
+  return `<div class="opt" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${selMark}${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
+}
 function filterSideList(side){
   const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
   if(!s.proj){
@@ -679,39 +708,25 @@ function filterSideList(side){
   }else{
     if(!_sideTraces)return;
     const f=_sideTraces.filter(t=>(t.path+" "+(t.tool_task_id||"")+" "+t.file).toLowerCase().includes(q));
-    $(side+"-list").innerHTML=f.map(t=>{
-      // 根据路径生成可读名称
-      var path=t.path||"";var name=t.tool_task_id||t.file||"";
-      var label=t.kind;
-      if(path.indexOf("/subagents")>=0){label="子 Agent Session";}
-      else if(path.indexOf("/hook-watch")>=0){label="Hook Watch";}
-      else if(path.indexOf("/run/logs")>=0){label="运行日志";}
-      else if(path.indexOf("/run/projects")>=0||path.indexOf("/run/projects")>=0){label="项目数据";}
-      else if(path.indexOf("/run")>=0&&path.indexOf("/session")<0){label="运行目录";}
-      else if(t.kind==="session"&&path.indexOf("/tools/")<0){label="任务级 Session（主）";}
-      else if(t.kind==="session"){label="Session";}
-      else if(t.kind==="argo_session"&&path.indexOf("/subagents")<0&&path.indexOf("/run")<0){label="Argo Session（主）";}
-      else if(t.kind==="argo_session"){label="Argo Session";}
-      else if(t.kind==="opencode_session"){label="Turing opencode.db";}      else if(t.kind==="webverify_session"){label="WebVulnVerify Session";}
-      else if(t.kind==="findings"){label="Findings DB";}
-      const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Findings DB":`<span class="knd">Findings</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`};
-      const badge=badges[label]||`<span class="knd">${label}</span>`;
-      const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
-      // 显示工具名或目录名
-      var display=t.tool_task_id||t.file||"";
-      return `<div class="opt" onclick="pick('${side}','trace','${t.path}','${t.file}')">${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
-    }).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    const mining=f.filter(t=>!_isVerifyKind(t.kind));
+    const verify=f.filter(t=>_isVerifyKind(t.kind));
+    const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
+    if(miningList)miningList.innerHTML=mining.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
+    if(verifyList)verifyList.innerHTML=verify.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
   }
 }
 function pick(side,field,id,name){
   sel[side][field]=id;
-  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].trace="";_sideTasks=null;}
-  else if(field==="task"){sel[side].taskName=name;sel[side].trace="";_sideTraces=null;}
-  else if(field==="trace"){sel[side].traceName=name;}
+  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideTasks=null;}
+  else if(field==="task"){sel[side].taskName=name;sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideTraces=null;}
+  renderSide(side);renderRunConf();
+}
+function pickTrace(side,path,name,trace_kind,category){
+  sel[side].trace=path;sel[side].traceName=name;sel[side].traceKind=trace_kind;sel[side].traceCategory=category;
   renderSide(side);renderRunConf();
 }
 async function renderRunConf(){
-  const ready=sel.kg.trace&&sel.nogk.trace;
+  const kgCat=sel.kg.traceCategory;const nogkCat=sel.nogk.traceCategory;const paired=!kgCat||!nogkCat||kgCat===nogkCat;const ready=sel.kg.trace&&sel.nogk.trace&&paired;
   if(!_allVbProjs.length){try{_allVbProjs=(await jget("/api/v1/vbench/projects")).projects||[];}catch(e){}}
   let vbHtml="";
   if(!sel.vbProj){
@@ -725,13 +740,13 @@ async function renderRunConf(){
   $("run-conf").innerHTML=`<h3>测评数据集基线</h3>
   <div style="display:none"><input id="eid" value="${genId()}"></div>
   ${vbHtml}
-  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>'}${sel.vbProj?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未选基线项目 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
+  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':(sel.kg.trace&&sel.nogk.trace&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（一边挖掘一边验证），请选同类型</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>')}${sel.vbProj?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未选基线项目 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
   <div class="st" id="run-st"></div>
   <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完两侧 trace"}</button>`;
   if(!sel.vbProj){renderVbList();}
 }
 function renderVbList(){filterVbList();}
-function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const ready=sel.kg.trace&&sel.nogk.trace;btn.disabled=!(ready&&name);}
+function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const kgCat=sel.kg.traceCategory;const nogkCat=sel.nogk.traceCategory;const paired=!kgCat||!nogkCat||kgCat===nogkCat;const ready=sel.kg.trace&&sel.nogk.trace&&paired;btn.disabled=!(ready&&name);}
 function filterVbList(){
   if(!_allVbProjs)return;
   const list=$("vb-list");if(!list)return;
@@ -746,7 +761,7 @@ async function runEval(){
   $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
   const evalName=$("eval-name")?$("eval-name").value.trim():"";
   const caseIds=_vbCases?_vbCases.map(c=>c.case_id):[];
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:sel.vbProj||"BS001",vbench_project_name:sel.vbProjName||undefined,entries:[{task_id:"T001",condition:"KG",source_uri:sel.kg.trace,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task},{task_id:"T001",condition:"NOGK",source_uri:sel.nogk.trace,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task}]});
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:sel.vbProj||"BS001",vbench_project_name:sel.vbProjName||undefined,entries:[{task_id:"T001",condition:"KG",source_uri:sel.kg.trace,trace_kind:sel.kg.traceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task},{task_id:"T001",condition:"NOGK",source_uri:sel.nogk.trace,trace_kind:sel.nogk.traceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task}]});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;go("evaluations");setTimeout(selEv,500,r.evaluation_id);
     // 轮询状态
