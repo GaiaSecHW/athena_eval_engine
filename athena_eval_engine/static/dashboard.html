@@ -633,7 +633,7 @@ function loadPipeline(eid){
 // ===== ② 新建评测（KG / No-KG 分别选 trace，各自 项目→任务→trace）=====
 let sel={kg:{proj:"",projName:"",task:"",taskName:"",trace:"",traceKind:"",traceCategory:""},nogk:{proj:"",projName:"",task:"",taskName:"",trace:"",traceKind:"",traceCategory:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:""};
 let _allVbProjs=[];let _vbCases=null;
-let _allProjs=[];let _sideTasks=null;let _sideTraces=null;
+let _allProjs=[];let _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
 async function renderCreate(){
   $("view").innerHTML=`<div style="max-width:1100px">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
@@ -656,14 +656,14 @@ function renderSide(side){
   if(!s.proj){
     body=`<input id="${side}-search" placeholder="搜索项目名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
   }else if(!s.task){
-    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].proj='';_sideTasks=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索任务名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].proj='';_sideData['${side}'].tasks=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索任务名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
   }else{
-    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> · 任务：<b>${s.taskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideTraces=null;sel['${side}'].trace='';sel['${side}'].traceKind='';sel['${side}'].traceCategory='';renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div id="${side}-mining" style="margin-bottom:12px"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞挖掘 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-mining"></div></div><div id="${side}-verify"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞验证 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-verify"></div></div>`;
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> · 任务：<b>${s.taskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideData['${side}'].traces=null;sel['${side}'].trace='';sel['${side}'].traceKind='';sel['${side}'].traceCategory='';renderSide('${side}');renderRunConf()">重选</button>${s.trace?` · 已选 <b>${s.traceName||''}</b>`:''}</div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div id="${side}-mining" style="margin-bottom:12px"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞挖掘 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-mining"></div></div><div id="${side}-verify"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞验证 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-verify"></div></div>`;
   }
   $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
   if(!s.proj){renderSideList(side);}
-  else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideTasks=d.tasks||[];renderSideList(side);});}
-  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session");renderSideList(side);});}
+  else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideData[side].tasks=d.tasks||[];renderSideList(side);});}
+  else{if(_sideData[side].traces){renderSideList(side);}else{renderSideList(side);jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideData[side].traces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session");renderSideList(side);});}}
 }
 function renderSideList(side){filterSideList(side);}
 function _traceLabel(t){
@@ -692,8 +692,10 @@ function _renderTraceItem(side,t){
   const label=_traceLabel(t);const badge=_traceBadge(label);
   const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
   var display=t.tool_task_id||t.file||"";
-  const selMark=t.path===sel[side].trace?'<span style="color:var(--green)">✓ </span>':'';
-  return `<div class="opt" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${selMark}${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
+  const isSel=t.path===sel[side].trace;
+  const selMark=isSel?'<span style="color:var(--green)">✓ </span>':'';
+  const selStyle=isSel?'background:rgba(0,0,0,0.06);font-weight:600':'';
+  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${selMark}${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
 }
 function filterSideList(side){
   const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
@@ -702,27 +704,36 @@ function filterSideList(side){
     const f=_allProjs.filter(p=>(p.name+" "+p.id+" "+(p.department_name||"")+" "+(p.product_path||"")).toLowerCase().includes(q));
     $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span>${p.department_name?`<span style="font-size:12px;color:var(--sub)">${p.department_name}</span>`:""}${p.product_path?`<span style="font-size:12px;color:var(--acc)">${p.product_path}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else if(!s.task){
-    if(!_sideTasks)return;
-    const f=_sideTasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
+    if(!_sideData[side].tasks)return;
+    const f=_sideData[side].tasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
     $(side+"-list").innerHTML=f.map(t=>`<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.test_target}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else{
-    if(!_sideTraces)return;
-    const f=_sideTraces.filter(t=>(t.path+" "+(t.tool_task_id||"")+" "+t.file).toLowerCase().includes(q));
+    const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
+    if(!_sideData[side].traces){
+      const loading='<div style="padding:12px;color:var(--sub);font-size:13px">⏳ 加载 trace…</div>';
+      if(miningList)miningList.innerHTML=loading;
+      if(verifyList)verifyList.innerHTML=loading;
+      return;
+    }
+    const f=_sideData[side].traces.filter(t=>(t.path+" "+(t.tool_task_id||"")+" "+t.file).toLowerCase().includes(q));
     const mining=f.filter(t=>!_isVerifyKind(t.kind));
     const verify=f.filter(t=>_isVerifyKind(t.kind));
-    const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
     if(miningList)miningList.innerHTML=mining.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
     if(verifyList)verifyList.innerHTML=verify.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
   }
 }
 function pick(side,field,id,name){
   sel[side][field]=id;
-  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideTasks=null;}
-  else if(field==="task"){sel[side].taskName=name;sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideTraces=null;}
+  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideData[side].tasks=null;}
+  else if(field==="task"){sel[side].taskName=name;sel[side].trace="";sel[side].traceKind="";sel[side].traceCategory="";_sideData[side].traces=null;}
   renderSide(side);renderRunConf();
 }
 function pickTrace(side,path,name,trace_kind,category){
-  sel[side].trace=path;sel[side].traceName=name;sel[side].traceKind=trace_kind;sel[side].traceCategory=category;
+  if(sel[side].trace===path){
+    sel[side].trace='';sel[side].traceName='';sel[side].traceKind='';sel[side].traceCategory='';
+  }else{
+    sel[side].trace=path;sel[side].traceName=name;sel[side].traceKind=trace_kind;sel[side].traceCategory=category;
+  }
   renderSide(side);renderRunConf();
 }
 async function renderRunConf(){
@@ -754,7 +765,14 @@ function filterVbList(){
   const f=_allVbProjs.filter(p=>(p.name+" "+(p.tags||[]).join(" ")).toLowerCase().includes(q));
   list.innerHTML=f.slice(0,30).map(p=>`<div class="opt" onclick="pickVbProj('${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="bdg b-${p.status==='EXPORTED'?'COMPLETED':'RUNNING'}">${p.status}</span>${p.tags&&p.tags.length?`<span style="font-size:12px;color:var(--sub)">${p.tags.join(" · ")}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
 }
-function pickVbProj(id,name){sel.vbProj=id;sel.vbProjName=name;_vbCases=null;renderRunConf();}
+function pickVbProj(id,name){
+  if(sel.vbProj) return;          // 已在加载中，防重复点击
+  sel.vbProj=id;sel.vbProjName=name;_vbCases=null;
+  // 立即替换列表为加载态，避免 await 期间仍可点击
+  var rc=$("run-conf");
+  if(rc) rc.innerHTML='<h3>测评数据集基线</h3><div style="padding:16px;color:var(--sub)">⏳ 加载基线数据…</div>';
+  renderRunConf();
+}
 function genId(){const d=new Date(Date.now()+8*3600000);const p=n=>String(n).padStart(2,"0");return `EV-${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}-${Math.floor(Math.random()*9000+1000)}`;}
 async function runEval(){
   let eid=$("eid").value.trim()||genId();

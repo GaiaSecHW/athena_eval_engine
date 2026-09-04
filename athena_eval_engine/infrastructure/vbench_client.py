@@ -86,24 +86,38 @@ def get_exported_projects() -> list[dict]:
     return [p for p in list_projects() if p.get("status") == "EXPORTED"]
 
 
+def _read_benchmark_zip(zip_path: str) -> dict:
+    """从 benchmark.zip 提取 benchmark.json + ground_truths（纯本地，无 kubectl）。"""
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        bn = [n for n in names if n.endswith("benchmark.json")]
+        if not bn:
+            return {"benchmark_id": None, "name": None, "cases": []}
+        benchmark = json.loads(zf.read(bn[0]))
+        cases = benchmark.get("cases", [])
+        for c in cases:
+            gt = [n for n in names if n.endswith("ground_truths/" + c["case_id"] + ".json")]
+            c["findings"] = json.loads(zf.read(gt[0])).get("findings", []) if gt else []
+        return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
+                "schema_version": benchmark.get("schema_version"), "cases": cases}
+
+
 def get_benchmark(benchmark_set_id: str) -> dict:
-    """从本地 benchmark.zip 读取基准漏洞信息。
+    """从 benchmark.zip 读取基准漏洞信息。
 
-    benchmark_set_id = V-Bench workspace 目录名 = evaluation.benchmark_set_id
-    返回 {benchmark_id, name, cases: [{case_id, vulnerability_type, findings: [{finding_id, explanation}]}]}
-
-    k8s: /data/files/vbench/workspaces/{benchmark_set_id}/output/benchmark.zip
-    dev: 同路径（DATA_ROOT 不存在时走 kubectl exec）
+    优先直接读本地文件（k8s 共享存储 / 本地 dev），路径不存在时 fallback 到 kubectl exec。
     """
-    # 用正斜杠路径（兼容 k8s Linux 和 kubectl exec）
     zip_path = f"{DATA_ROOT}/vbench/workspaces/{benchmark_set_id}/output/benchmark.zip"
 
-    # 在 pod 内用 Python 提取 benchmark.json + ground_truths（避免 cat 483MB 文件）
+    # ① 本地文件存在 → 直接读（毫秒级，k8s 共享存储 + 本地 dev 均走此路径）
+    if os.path.isfile(zip_path):
+        return _read_benchmark_zip(zip_path)
+
+    # ② fallback: kubectl exec 进 schedule pod 读取（本地 dev 无共享存储时）
     import subprocess
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
     from ..application.platform_service import _get_sched_pod
     pod = _get_sched_pod()
-    # Python 脚本在 pod 内运行，输出 JSON 到 stdout（用真实换行，不用 ; 连接 for 循环）
     py_script = (
         "import zipfile,json\n"
         f"zf=zipfile.ZipFile('{zip_path}')\n"
@@ -122,10 +136,8 @@ def get_benchmark(benchmark_set_id: str) -> dict:
         capture_output=True, timeout=120, env=env)
     if not r.stdout:
         return {"benchmark_id": None, "name": None, "cases": []}
-
     bm = json.loads(r.stdout.decode("utf-8").strip())
     benchmark = bm.get("benchmark", {})
     cases = benchmark.get("cases", [])
-
     return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
             "schema_version": benchmark.get("schema_version"), "cases": cases}
