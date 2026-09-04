@@ -11,8 +11,8 @@ echo "=== 启动端口映射 ==="
 kubectl -n $NS port-forward svc/eval-engine-mysql 3306:3306 &
 echo "MySQL: localhost:3306"
 
-# Platform API（项目/任务列表）
-kubectl -n $NS port-forward svc/chirmera-platform-nazhua 18081:80 &
+# Platform API（项目/任务列表） - 修正为正确的 service 名称
+kubectl -n $NS port-forward svc/secflow-platform-project 18081:80 &
 echo "Platform API: localhost:18081"
 
 # Schedule API（kubectl exec 读取 trace）

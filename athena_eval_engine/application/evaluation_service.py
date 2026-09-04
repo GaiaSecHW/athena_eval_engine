@@ -50,7 +50,8 @@ EVAL_CONFIG = {
         "reject_patterns": [r"^404", r"404\s*Not Found", r"unreachable", r"Connection refused",
                            r"service.*not.*running", r"^$", r"^\[\]$", r'^{"result":""}',
                            "知识库暂无此类知识",
-                           "Terminated", "timeout"],
+                           "Terminated", "timeout", "超时",
+                           "command not found", "not found"],
         "kg_success_patterns": ["knowledge persisted", "Success: knowledge", "知识已", r'"result":"Success"'],
     },
     "token_schema": {"reasoning_in_output": True, "cache_excluded": True},
@@ -200,11 +201,34 @@ def run(evaluation_id: str) -> dict:
         return cur.fetchone()[0] > 0
     facts_already_exist = _db_query(_facts_exist)
 
-    def _get_parser(uri):
+    def _get_parser(uri, trace_kind: str | None = None):
         import os as _os
-        if _os.path.isdir(uri) or uri.endswith(".jsonl"):
+        if trace_kind == "cvuln_verify":
+            from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
+            return CVulnVerifyTraceParser()
+        if trace_kind == "argo":
             from ..workers.argo_trace_parser import ArgoTraceParser
             return ArgoTraceParser()
+        if trace_kind == "turing":
+            from ..workers.turing_trace_parser import TuringTraceParser
+            return TuringTraceParser()
+        # 兼容：无 trace_kind 时按路径推断
+        p = _os.path.normpath(uri)
+        cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
+        argo_suffix = _os.path.join("session", "argo")
+        if _os.path.isdir(p) and p.endswith(cvuln_suffix):
+            from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
+            return CVulnVerifyTraceParser()
+        if _os.path.isdir(p) and p.endswith(argo_suffix):
+            from ..workers.argo_trace_parser import ArgoTraceParser
+            return ArgoTraceParser()
+        if p.endswith("opencode.db") or p.endswith("findings.db"):
+            from ..workers.turing_trace_parser import TuringTraceParser
+            return TuringTraceParser()
+        if _os.path.isdir(p) or p.endswith(".jsonl"):
+            from ..workers.argo_trace_parser import ArgoTraceParser
+            return ArgoTraceParser()
+        from ..workers.turing_trace_parser import TuringTraceParser
         return TuringTraceParser()
 
     task_runs: list[TaskRun] = []
@@ -282,7 +306,7 @@ def run(evaluation_id: str) -> dict:
                 trace_valid=True, runtime_valid=True, benchmark_item_id=biid,
             )
             local_path = _resolve_trace_path(e["source_uri"], e.get("project_id", ""), e["task_id"])
-            parser = _get_parser(local_path)
+            parser = _get_parser(local_path, e.get("trace_kind"))
             events = list(parser.parse({"trace_id": tr.trace_id, "source_uri": local_path,
                                          "turing_session_id": "sess"}))
             # 跨 JSONL 文件时按时间戳排序，确保事件顺序正确
@@ -366,7 +390,7 @@ def run(evaluation_id: str) -> dict:
             return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}
 
         # 并行解析所有 trace（KG + No-KG 独立，无共享状态）
-        with ThreadPoolExecutor(max_workers=min(len(entries), 4)) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
             results = list(pool.map(_parse_one, entries))
         for tr, f in results:
             task_runs.append(tr)

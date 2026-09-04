@@ -33,17 +33,20 @@ class TuringTraceParser(TraceParser):
         trace_id = trace_source["trace_id"]
         session_id = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
 
-        conn = sqlite3.connect(uri)
+        conn = self._connect(uri)
         conn.row_factory = sqlite3.Row
         try:
-            # Schema Gate
             self._check_schema(conn)
-            # Session row（用于 ResourceResolver，此处仅取 session_id）
-            # Part rows
             for row in conn.execute("SELECT * FROM part ORDER BY id"):
                 yield self._part_to_event(row, trace_id, session_id)
         finally:
             conn.close()
+
+    def _connect(self, uri):
+        """以只读 immutable 模式打开 SQLite，避免 NFS 上 WAL 冲突。"""
+        if uri.startswith("/"):
+            return sqlite3.connect(f"file:{uri}?immutable=1", uri=True)
+        return sqlite3.connect(uri)
 
     def _check_schema(self, conn):
         cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")

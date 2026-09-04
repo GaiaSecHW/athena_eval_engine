@@ -40,9 +40,9 @@ def _get(url):
 
 
 def get_projects():
-    d = _get(f"{PROJECT_API}/api/project/list")
-    items = d.get("data", []) if isinstance(d, dict) else d
-    return [{"id": p["id"], "name": p["name"],
+    d = _get(f"{PROJECT_API}/api/project")
+    items = d.get("projects", []) if isinstance(d, dict) else d
+    return [{"id": p["id"], "name": p.get("name"),
              "department_name": p.get("department_name"),
              "product_path": p.get("category_path") or p.get("category_node_name"),
              "category": p.get("category"),
@@ -77,34 +77,50 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
 
 def _classify_trace(p: str, mtime: float | None = None) -> dict:
     """分类单个 trace 文件。"""
-    p = p if p.startswith("/") else "/" + p
+    # Normalize path separators for consistent matching
+    norm_path = p.replace("\\", "/")
+    if not norm_path.startswith("/"):
+        norm_path = "/" + norm_path
     tool_task_id = ""
     kind = "other"
+    trace_kind = "other"
     if "opencode.db" in p:
         kind = "opencode_session"
-        if "/tools/" in p:
-            seg = p.split("/tools/")[1]
+        trace_kind = "turing"
+        if "/tools/" in norm_path:
+            seg = norm_path.split("/tools/")[1]
             tool_task_id = seg.split("/")[0] if seg else ""
     elif "findings.db" in p:
         kind = "findings"
+        trace_kind = "turing"
     elif p.endswith(".jsonl"):
         kind = "turing_session"
-    return {"path": p, "tool_task_id": tool_task_id, "kind": kind, "file": p.split("/")[-1], "mtime": mtime}
+        trace_kind = "argo"
+    return {"path": p, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind, "file": os.path.basename(p), "mtime": mtime}
 
 
 def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
     """构造 session 目录 trace（整个 session 目录作为一个 trace）。"""
-    dir_path = dir_path if dir_path.startswith("/") else "/" + dir_path
+    # Normalize path separators for consistent matching
+    norm_path = dir_path.replace("\\", "/")
+    if not norm_path.startswith("/"):
+        norm_path = "/" + norm_path
     tool_task_id = ""
-    if "/tools/" in dir_path:
+    trace_kind = "other"
+    if "/tools/" in norm_path:
         kind = "argo_session"
-        seg = dir_path.split("/tools/")[1]
+        trace_kind = "argo"
+        seg = norm_path.split("/tools/")[1]
         tool_task_id = seg.split("/")[0] if seg else ""
+    elif norm_path.endswith("/tasks/c_vuln_verify"):
+        kind = "cvuln_verify_session"
+        trace_kind = "cvuln_verify"
     else:
-        kind = "session"  # tasks/{task_id}/session/ 下的 .jsonl，不标记为 turing
+        kind = "session"
+        trace_kind = "argo"
     # 取上一级目录名（session 的父目录，如 argo-20260823_023850-03d75c31 或 task_id）
     parent = os.path.basename(os.path.dirname(dir_path.rstrip("/")))
-    return {"path": dir_path, "tool_task_id": tool_task_id, "kind": kind,
+    return {"path": dir_path, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind,
             "file": parent, "mtime": mtime}
 
 
@@ -143,8 +159,8 @@ def _scan_dir(base: str, out: list) -> None:
     for d in glob.glob(f"{base}/**/session", recursive=True):
         if not os.path.isdir(d):
             continue
-        # 统计目录下的 .jsonl 文件数和最新 mtime
-        jsonl_files = glob.glob(os.path.join(d, "*.jsonl"))
+        # 统计目录下的 .jsonl 文件数和最新 mtime（包括子目录如 argo/）
+        jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
         if not jsonl_files:
             continue
         latest_mt = 0.0
@@ -304,13 +320,21 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
         if os.path.exists(extracted) and extracted != local:
             os.rename(extracted, local)
         return local
-    # 单文件：kubectl cat
+    # 单文件：kubectl exec cat（带重试，避免大文件截断）
     name = remote_path.split("/")[-1]
     local = os.path.join(local_dir, f"{h}_{name}")
-    if os.path.exists(local) and os.path.getsize(local) > 0:
-        return local
+    if os.path.exists(local):
+        # 校验完整性：用 sqlite3 打开测试
+        try:
+            import sqlite3 as _sql
+            _conn = _sql.connect(local)
+            _conn.execute("SELECT COUNT(*) FROM sqlite_master")
+            _conn.close()
+            return local
+        except:
+            os.remove(local)  # 截断的缓存，删掉重新拉
     cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--", "cat", remote_path]
-    r = subprocess.run(cmd, capture_output=True, timeout=180, env=env)
+    r = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
     if not r.stdout:
         raise FileNotFoundError(f"kubectl cat 失败：{remote_path}")
     with open(local, "wb") as f:
