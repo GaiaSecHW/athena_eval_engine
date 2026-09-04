@@ -25,7 +25,7 @@ def _get_sched_pod() -> str:
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
     cmd = ["kubectl", "-n", "secflow-ns", "get", "pod", "-l", _SCHED_LABEL,
            "-o", "jsonpath={.items[0].metadata.name}"]
-    r = subprocess.run(cmd, capture_output=True, text=True, timeout=10, env=env)
+    r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10, env=env)
     pod = r.stdout.strip()
     if not pod:
         raise RuntimeError(f"找不到 schedule pod（label={_SCHED_LABEL}）")
@@ -193,7 +193,7 @@ def _kubectl_find(base: str) -> list[dict]:
            "find", base, "-type", "d", "-name", "session",
            "-printf", "%T@ %p\n"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
         for line in (r.stdout or "").splitlines():
             line = line.strip()
             if not line:
@@ -207,7 +207,7 @@ def _kubectl_find(base: str) -> list[dict]:
             # 统计该 session 目录下的 .jsonl 文件数
             cmd2 = ["kubectl", "-n", "secflow-ns", "exec", pod, "--",
                     "find", p, "-maxdepth", "1", "-name", "*.jsonl", "-printf", "%T@ %p\n"]
-            r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30, env=env)
+            r2 = subprocess.run(cmd2, capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
             jsonl_lines = [l for l in (r2.stdout or "").splitlines() if l.strip()]
             if not jsonl_lines:
                 continue
@@ -231,7 +231,7 @@ def _kubectl_find(base: str) -> list[dict]:
     cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--",
            "find", base, "-name", "*.db", "-printf", "%T@ %p\n"]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
         for line in (r.stdout or "").splitlines():
             line = line.strip()
             if not line:
