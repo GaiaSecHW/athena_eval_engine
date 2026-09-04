@@ -1,30 +1,49 @@
 #!/bin/bash
-# 评测引擎 k8s 端口映射脚本
-# 用法：bash port-forward.sh
-# 按 Ctrl+C 停止所有映射
+# port-forward.sh — k8s 端口映射（自动重连）
+# 用法：bash port-forward.sh    Ctrl+C 停止
 
 NS="secflow-ns"
 
-echo "=== 启动端口映射 ==="
+echo "=== 启动端口映射（自动重连） ==="
 
-# MySQL（评测引擎数据库）
-kubectl -n $NS port-forward svc/eval-engine-mysql 3306:3306 &
-echo "MySQL: localhost:3306"
+cleanup() {
+    echo ""; echo "Stopping all port-forwards..."
+    kill ${PIDS[@]} 2>/dev/null
+    wait 2>/dev/null
+    exit 0
+}
+trap cleanup INT TERM
 
-# Platform API（项目/任务列表） - 修正为正确的 service 名称
-kubectl -n $NS port-forward svc/secflow-platform-project 18081:80 &
-echo "Platform API: localhost:18081"
+start_forward() {
+    local svc=$1 ports=$2
+    while true; do
+        echo "[$(date +%H:%M:%S)] start $svc ..."
+        kubectl -n $NS port-forward $svc $ports 2>&1
+        echo "[$(date +%H:%M:%S)] WARN: $svc down, retry in 3s..."
+        sleep 3
+    done
+}
 
-# Schedule API（kubectl exec 读取 trace）
-kubectl -n $NS port-forward svc/chirmera-platform-schedule 18082:80 &
-echo "Schedule API: localhost:18082"
+PIDS=()
 
-# V-Bench API（benchmark 基线）
-kubectl -n $NS port-forward svc/vbench-api 18083:80 &
-echo "V-Bench API: localhost:18083"
+start_forward svc/eval-engine-mysql        3306:3306 &
+PIDS+=($!)
+echo "  svc/eval-engine-mysql -> localhost:3306"
+
+start_forward svc/secflow-platform-project 18081:80 &
+PIDS+=($!)
+echo "  svc/secflow-platform-project -> localhost:18081"
+
+start_forward svc/chirmera-platform-schedule 18082:80 &
+PIDS+=($!)
+echo "  svc/chirmera-platform-schedule -> localhost:18082"
+
+start_forward svc/vbench-api 18083:80 &
+PIDS+=($!)
+echo "  svc/vbench-api -> localhost:18083"
 
 echo ""
-echo "=== 端口映射已启动，按 Ctrl+C 停止 ==="
-echo "提示：svc 名称可用 kubectl -n secflow-ns get svc 确认"
+echo "=== 端口映射已启动（自动重连），Ctrl+C 停止 ==="
+echo "hint: kubectl -n secflow-ns get svc"
 
 wait

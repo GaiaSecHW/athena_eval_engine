@@ -1,6 +1,7 @@
-"""MySQL 连接 + 配置（dev: port-forward / k8s: ConfigMap 注入）。"""
+"""MySQL connection + config (dev: port-forward / k8s: ConfigMap)."""
 from __future__ import annotations
 import os
+import time
 import pymysql
 from ..config_loader import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
 
@@ -12,6 +13,10 @@ DEFAULTS = {
     "password": DB_PASSWORD,
     "database": DB_DATABASE,
 }
+
+# Retry config: port-forward may briefly drop; retry before giving up.
+MAX_RETRIES = 3
+RETRY_DELAY = 2  # seconds
 
 
 def connect(autocommit: bool = False):
@@ -26,13 +31,21 @@ def connect(autocommit: bool = False):
         "connect_timeout": 30,
         "read_timeout": 600,
         "write_timeout": 600,
-        "ssl_disabled": True,  # 防止防火墙 reset SSL 连接
+        "ssl_disabled": True,  # prevent firewall SSL reset
     }
-    return pymysql.connect(**cfg)
+    last_err = None
+    for attempt in range(1, MAX_RETRIES + 1):
+        try:
+            return pymysql.connect(**cfg)
+        except (pymysql.err.OperationalError, OSError) as e:
+            last_err = e
+            if attempt < MAX_RETRIES:
+                time.sleep(RETRY_DELAY)
+    raise last_err
 
 
 def ensure_schema():
-    """从 schema.sql 建表（幂等）。"""
+    """Create tables from schema.sql (idempotent)."""
     import re
     from ..config_loader import SCHEMA_SQL
     sql_path = SCHEMA_SQL
