@@ -663,7 +663,7 @@ function renderSide(side){
   $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
   if(!s.proj){renderSideList(side);}
   else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideTasks=d.tasks||[];renderSideList(side);});}
-  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session");renderSideList(side);});}
+  else if(!s.trace){jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideTraces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session");renderSideList(side);});}
 }
 function renderSideList(side){filterSideList(side);}
 function filterSideList(side){
@@ -692,9 +692,9 @@ function filterSideList(side){
       else if(t.kind==="session"){label="Session";}
       else if(t.kind==="argo_session"&&path.indexOf("/subagents")<0&&path.indexOf("/run")<0){label="Argo Session（主）";}
       else if(t.kind==="argo_session"){label="Argo Session";}
-      else if(t.kind==="opencode_session"){label="Turing opencode.db";}
+      else if(t.kind==="opencode_session"){label="Turing opencode.db";}      else if(t.kind==="webverify_session"){label="WebVulnVerify Session";}
       else if(t.kind==="findings"){label="Findings DB";}
-      const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Findings DB":`<span class="knd">Findings</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`};
+      const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Findings DB":`<span class="knd">Findings</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`};
       const badge=badges[label]||`<span class="knd">${label}</span>`;
       const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
       // 显示工具名或目录名

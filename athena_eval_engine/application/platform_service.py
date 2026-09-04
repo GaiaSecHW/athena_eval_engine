@@ -7,14 +7,41 @@ from __future__ import annotations
 import glob
 import json
 import os
+import shutil
 import subprocess
 import urllib.request
 from ..config_loader import PROJECT_API, SCHEDULE_API, PLATFORM_TOKEN, DATA_ROOT
 
 # k8s 部署时 /data 直接挂载；dev 时 DATA_ROOT 不存在 → 走 kubectl exec
 _K8S_MODE = os.path.isdir(DATA_ROOT)
+
+
+def _find_kubectl() -> str:
+    """查找 kubectl 可执行文件路径（WinGet / Program Files / PATH），带缓存。"""
+    global _kubectl_cache
+    if _kubectl_cache:
+        return _kubectl_cache
+    k = shutil.which("kubectl")
+    if k:
+        _kubectl_cache = k
+        return k
+    for p in (
+        os.path.join(os.environ.get("LOCALAPPDATA", ""),
+                     "Microsoft", "WinGet", "Packages",
+                     "Kubernetes.kubectl_Microsoft.Winget.Source_8wekyb3d8bbwe"),
+        os.path.join(os.environ.get("ProgramFiles", ""), "Kubernetes", "bin"),
+        r"C:\Program Files\Kubernetes\bin",
+    ):
+        exe = os.path.join(p, "kubectl.exe")
+        if os.path.isfile(exe):
+            _kubectl_cache = exe
+            return exe
+    _kubectl_cache = "kubectl"
+    return _kubectl_cache  # fallback
+
 _SCHED_LABEL = "app=chirmera-platform-schedule"  # schedule pod 标签选择器
 _sched_pod_cache: str | None = None
+_kubectl_cache: str | None = None
 
 
 def _get_sched_pod() -> str:
@@ -23,7 +50,7 @@ def _get_sched_pod() -> str:
     if _sched_pod_cache:
         return _sched_pod_cache
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    cmd = ["kubectl", "-n", "secflow-ns", "get", "pod", "-l", _SCHED_LABEL,
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "get", "pod", "-l", _SCHED_LABEL,
            "-o", "jsonpath={.items[0].metadata.name}"]
     r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=10, env=env)
     pod = r.stdout.strip()
@@ -94,8 +121,12 @@ def _classify_trace(p: str, mtime: float | None = None) -> dict:
         kind = "findings"
         trace_kind = "turing"
     elif p.endswith(".jsonl"):
-        kind = "turing_session"
-        trace_kind = "argo"
+        if "/session/WebVerify/" in norm_path:
+            kind = "webverify_session"
+            trace_kind = "webvulnverify"
+        else:
+            kind = "turing_session"
+            trace_kind = "argo"
     return {"path": p, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind, "file": os.path.basename(p), "mtime": mtime}
 
 
@@ -115,6 +146,9 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
     elif norm_path.endswith("/tasks/c_vuln_verify"):
         kind = "cvuln_verify_session"
         trace_kind = "cvuln_verify"
+    elif "/session/WebVerify" in norm_path:
+        kind = "webverify_session"
+        trace_kind = "webvulnverify"
     else:
         kind = "session"
         trace_kind = "argo"
@@ -123,32 +157,6 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
     return {"path": dir_path, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind,
             "file": parent, "mtime": mtime}
 
-
-def _group_traces(file_list: list[tuple[str, float | None]]) -> list[dict]:
-    """把文件列表分组：.jsonl 按 session 目录合并；.db 单独返回。"""
-    session_dirs: dict[str, float] = {}  # dir_path → latest mtime
-    session_counts: dict[str, int] = {}
-    out: list[dict] = []
-    for p, mt in file_list:
-        p_norm = p if p.startswith("/") else "/" + p
-        if p.endswith(".jsonl"):
-            # .jsonl：按 session 目录分组
-            dir_path = os.path.dirname(p)
-            if dir_path not in session_dirs:
-                session_dirs[dir_path] = mt or 0.0
-                session_counts[dir_path] = 1
-            else:
-                if mt and mt > session_dirs[dir_path]:
-                    session_dirs[dir_path] = mt
-                session_counts[dir_path] += 1
-        else:
-            # .db 等其他文件：单独返回
-            out.append(_classify_trace(p, mt))
-    for dir_path, mt in session_dirs.items():
-        t = _make_session_dir_trace(dir_path, mt)
-        t["file_count"] = session_counts[dir_path]
-        out.append(t)
-    return out
 
 
 def _scan_dir(base: str, out: list) -> None:
@@ -161,6 +169,8 @@ def _scan_dir(base: str, out: list) -> None:
             continue
         # 统计目录下的 .jsonl 文件数和最新 mtime（包括子目录如 argo/）
         jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+        # WebVerify .jsonl 由下方单独处理，此处排除避免重复
+        jsonl_files = [f for f in jsonl_files if "/WebVerify/" not in f.replace("\\", "/")]
         if not jsonl_files:
             continue
         latest_mt = 0.0
@@ -174,7 +184,25 @@ def _scan_dir(base: str, out: list) -> None:
         t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
         t["file_count"] = len(jsonl_files)
         out.append(t)
-    # 2. 找 .db 文件（opencode.db / findings.db）
+    # 2. 找 WebVerify 目录（WebVulnVerify trace）
+    for d in glob.glob(f"{base}/**/WebVerify", recursive=True):
+        if not os.path.isdir(d):
+            continue
+        wv_files = glob.glob(os.path.join(d, "*.jsonl"))
+        if not wv_files:
+            continue
+        latest_mt = 0.0
+        for f in wv_files:
+            try:
+                mt = os.path.getmtime(f)
+                if mt > latest_mt:
+                    latest_mt = mt
+            except OSError:
+                pass
+        t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
+        t["file_count"] = len(wv_files)
+        out.append(t)
+    # 3. 找 .db 文件（opencode.db / findings.db）
     for p in glob.glob(f"{base}/**/*.db", recursive=True):
         try:
             mt = os.path.getmtime(p)
@@ -183,14 +211,11 @@ def _scan_dir(base: str, out: list) -> None:
         out.append(_classify_trace(p, mt))
 
 
-def _kubectl_find(base: str) -> list[dict]:
-    """dev 模式：kubectl exec 找 session 目录 + .db 文件。"""
-    env = dict(os.environ, MSYS_NO_PATHCONV="1")
-    pod = _get_sched_pod()
+def _kubectl_find_dirs(pod: str, base: str, dir_name: str, env: dict) -> list[dict]:
+    """dev 模式：kubectl exec 找指定名称的目录，统计 .jsonl 文件。"""
     out = []
-    # 1. 找 session 目录
-    cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--",
-           "find", base, "-type", "d", "-name", "session",
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+           "find", base, "-type", "d", "-name", dir_name,
            "-printf", "%T@ %p\n"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
@@ -204,14 +229,12 @@ def _kubectl_find(base: str) -> list[dict]:
                 try: mt = float(parts[0])
                 except ValueError: mt = None
                 p = parts[1]
-            # 统计该 session 目录下的 .jsonl 文件数
-            cmd2 = ["kubectl", "-n", "secflow-ns", "exec", pod, "--",
+            cmd2 = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
                     "find", p, "-maxdepth", "1", "-name", "*.jsonl", "-printf", "%T@ %p\n"]
             r2 = subprocess.run(cmd2, capture_output=True, text=True, encoding="utf-8", timeout=30, env=env)
             jsonl_lines = [l for l in (r2.stdout or "").splitlines() if l.strip()]
             if not jsonl_lines:
                 continue
-            # 取最新 mtime
             latest_mt = mt or 0.0
             for jl in jsonl_lines:
                 jl_parts = jl.split(" ", 1)
@@ -227,8 +250,19 @@ def _kubectl_find(base: str) -> list[dict]:
             out.append(t)
     except Exception:
         pass
-    # 2. 找 .db 文件
-    cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--",
+    return out
+
+
+def _kubectl_find(base: str) -> list[dict]:
+    """dev 模式：kubectl exec 找 session 目录 + .db 文件。"""
+    env = dict(os.environ, MSYS_NO_PATHCONV="1")
+    pod = _get_sched_pod()
+    out = []
+    # 1+2. 找 session 目录和 WebVerify 目录（逻辑相同，dir_name 不同）
+    out.extend(_kubectl_find_dirs(pod, base, "session", env))
+    out.extend(_kubectl_find_dirs(pod, base, "WebVerify", env))
+    # 3. 找 .db 文件
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
            "find", base, "-name", "*.db", "-printf", "%T@ %p\n"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", timeout=60, env=env)
@@ -247,21 +281,6 @@ def _kubectl_find(base: str) -> list[dict]:
         pass
     return out
 
-
-def _parse_find_lines(lines: list[str]) -> list[dict]:
-    """解析 kubectl find 输出（每行 "%T@ %p"），分组后返回。"""
-    files: list[tuple[str, float | None]] = []
-    for line in lines:
-        parts = line.split(" ", 1)
-        mt = None; p = line
-        if len(parts) == 2 and parts[0].replace(".", "").isdigit():
-            try:
-                mt = float(parts[0])
-            except ValueError:
-                mt = None
-            p = parts[1]
-        files.append((p, mt))
-    return _group_traces(files)
 
 
 def find_traces(project_id: str, task_id: str) -> list[dict]:
@@ -307,7 +326,7 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
             return local
         parent = os.path.dirname(remote_path.rstrip("/"))
         base = os.path.basename(remote_path.rstrip("/"))
-        cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--", "tar", "cf", "-", "-C", parent, base]
+        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--", "tar", "cf", "-", "-C", parent, base]
         r = subprocess.run(cmd, capture_output=True, timeout=180, env=env)
         if not r.stdout:
             raise FileNotFoundError(f"kubectl tar 失败：{remote_path}")
@@ -333,7 +352,7 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
             return local
         except:
             os.remove(local)  # 截断的缓存，删掉重新拉
-    cmd = ["kubectl", "-n", "secflow-ns", "exec", pod, "--", "cat", remote_path]
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--", "cat", remote_path]
     r = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
     if not r.stdout:
         raise FileNotFoundError(f"kubectl cat 失败：{remote_path}")

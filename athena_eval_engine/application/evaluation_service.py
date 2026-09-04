@@ -218,6 +218,9 @@ def run(evaluation_id: str) -> dict:
 
     def _get_parser(uri, trace_kind: str | None = None):
         import os as _os
+        if trace_kind == "webvulnverify":
+            from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
+            return WebVulnVerifyTraceParser()
         if trace_kind == "cvuln_verify":
             from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
             return CVulnVerifyTraceParser()
