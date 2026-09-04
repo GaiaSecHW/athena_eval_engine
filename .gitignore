@@ -31,3 +31,8 @@ config.yaml
 Thumbs.db
 .idea/
 .vscode/
+
+# Dev Log
+devlog.md
+*.local
+AGENTS.md
