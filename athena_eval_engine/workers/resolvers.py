@@ -58,7 +58,7 @@ class OutcomeResolverImpl:
             )
         pred = "POSITIVE" if validation == "CONFIRMED" else "NEGATIVE"
         confusion, outcome = self._classify(benchmark.expected_label.value, pred)
-        evs = [e for e in events if e.tool_name and (e.tool_name.startswith("vuln-hunt_") or e.tool_name.startswith("vuln_hunt_") or e.tool_name == "ReportFindings")][:1]
+        evs = [e for e in events if e.tool_name and (e.tool_name.startswith("vuln-hunt_") or e.tool_name.startswith("vuln_hunt_") or e.tool_name == "ReportFindings" or e.tool_name in ("vulnerability_analyze", "vulnerability_verify"))][:1]
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
@@ -72,30 +72,40 @@ class OutcomeResolverImpl:
         )
 
     def _latest_validation(self, events: list[RawEvent], target_finding_id: str | None) -> str | None:
-        """取该 finding_id 的最后一个有效 update.validation_result（按 timestamp 排序）。
-        CONFIRMED→POSITIVE / FALSE_POSITIVE→NEGATIVE / 无 update→None(UNDETERMINED)。
-        支持 Turing（vuln-hunt_update_finding）和 Argo（ReportFindings outcome）。"""
+        """取该 finding 的最后一个有效 validation_result（按 timestamp 排序）。
+        CONFIRMED→POSITIVE / FALSE_POSITIVE→NEGATIVE / 无→None(UNDETERMINED)。
+        支持 Turing（vuln-hunt_update_finding）、Argo（ReportFindings outcome）、
+        WebVulnVerify（vulnerability_analyze status）。"""
         candidates = []
         for e in events:
             if not (e.tool_name and e.is_tool_call()):
                 continue
+            d = e.input_json or {}
             # Turing: vuln-hunt_update_finding
             if e.tool_name in ("vuln-hunt_update_finding", "vuln_hunt_update_finding"):
-                continue
-            d = e.input_json or {}
-            fid = str(d.get("finding_id") or "")
-            if target_finding_id and fid and fid != target_finding_id:
-                continue
-            vr = d.get("validation_result")
-            if vr in ("CONFIRMED", "FALSE_POSITIVE"):
-                candidates.append((e.timestamp_ms or 0, vr))
+                fid = str(d.get("finding_id") or "")
+                if target_finding_id and fid and fid != target_finding_id:
+                    continue
+                vr = d.get("validation_result")
+                if vr in ("CONFIRMED", "FALSE_POSITIVE"):
+                    candidates.append((e.timestamp_ms or 0, vr))
+            # WebVulnVerify: vulnerability_analyze / vulnerability_verify
+            elif e.tool_name in ("vulnerability_analyze", "vulnerability_verify"):
+                fid = str(d.get("vulnerability_id") or "")
+                if target_finding_id and fid and fid != target_finding_id:
+                    continue
+                status = d.get("status")
+                if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE"):
+                    candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
+                elif status == "NOT_VULNERABLE":
+                    candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
         if not candidates:
             return None
         candidates.sort(key=lambda x: x[0])
         return candidates[-1][1]
 
     def _has_insert(self, events) -> bool:
-        return any(e.tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings") for e in events)
+        return any(e.tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "vulnerability_analyze", "vulnerability_verify") for e in events)
 
     @staticmethod
     def _classify(gt: str, pred: str) -> tuple[Confusion, Outcome]:

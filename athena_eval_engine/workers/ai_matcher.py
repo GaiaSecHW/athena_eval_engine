@@ -81,6 +81,26 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                     "session_id": e.session_id,
                 }
 
+        # --- WebVulnVerify: vulnerability_analyze / vulnerability_verify ---
+        elif tool in ("vulnerability_analyze", "vulnerability_verify"):
+            vid = str(inp.get("vulnerability_id", "?"))
+            status = inp.get("status", "")
+            vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE") else ("FALSE_POSITIVE" if status == "NOT_VULNERABLE" else None)
+            findings[vid] = {
+                "finding_id": vid,
+                "display_id": vid,
+                "title": inp.get("category", ""),
+                "description": inp.get("result", ""),
+                "vuln_type": inp.get("category", ""),
+                "severity": "",
+                "source": "",
+                "sink": "",
+                "validation_result": vr,
+                "platform": "webvulnverify",
+                "confidence": inp.get("confidence"),
+                "session_id": e.session_id,
+            }
+
     # 关联 Turing: vuln-hunt_update_finding 的 validation_result
     for e in events:
         if not e.is_tool_call():

@@ -201,6 +201,21 @@ def run(evaluation_id: str) -> dict:
         return cur.fetchone()[0] > 0
     facts_already_exist = _db_query(_facts_exist)
 
+    def _is_webvulnverify_trace(path):
+        """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。"""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    import json as _json
+                    d = _json.loads(line)
+                    return d.get("type") == "session_meta"
+        except Exception:
+            pass
+        return False
+
     def _get_parser(uri, trace_kind: str | None = None):
         import os as _os
         if trace_kind == "cvuln_verify":
@@ -226,6 +241,15 @@ def run(evaluation_id: str) -> dict:
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
         if _os.path.isdir(p) or p.endswith(".jsonl"):
+            # Check WebVulnVerify format (has session_meta line type)
+            _check_path = p
+            if _os.path.isdir(p):
+                import glob as _glob
+                _jfiles = sorted(_glob.glob(_os.path.join(p, "*.jsonl")))
+                _check_path = _jfiles[0] if _jfiles else ""
+            if _check_path and _is_webvulnverify_trace(_check_path):
+                from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
+                return WebVulnVerifyTraceParser()
             from ..workers.argo_trace_parser import ArgoTraceParser
             return ArgoTraceParser()
         from ..workers.turing_trace_parser import TuringTraceParser
