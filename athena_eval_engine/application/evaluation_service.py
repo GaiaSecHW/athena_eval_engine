@@ -426,14 +426,15 @@ def run(evaluation_id: str) -> dict:
                         for s2 in sids:
                             if s1 != s2:
                                 session_graph['edges'][s1].add(s2)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}, e["source_uri"]
 
         # 并行解析所有 trace（KG + No-KG 独立，无共享状态）
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
             results = list(pool.map(_parse_one, entries))
-        for tr, f in results:
+        for tr, f, src in results:
             task_runs.append(tr)
             facts[tr.task_run_id] = f
+            facts[tr.task_run_id]["_source_uri"] = src
 
         # Phase 3: 写入 facts（单连接批量，重试整体幂等）
         def _insert_facts(cur):
@@ -441,7 +442,7 @@ def run(evaluation_id: str) -> dict:
             for tr in task_runs:
                 f = facts[tr.task_run_id]
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
-                fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, entries[0]["source_uri"] if entries else "")
+                fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
                 fact_repo.insert_task_run(cur, tr)
                 fact_repo.insert_outcome_fact(cur, f["outcome"])
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
