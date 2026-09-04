@@ -51,7 +51,8 @@ EVAL_CONFIG = {
                            r"service.*not.*running", r"^$", r"^\[\]$", r'^{"result":""}',
                            "知识库暂无此类知识",
                            "Terminated", "timeout", "超时",
-                           "command not found", "not found"],
+                           "command not found", "not found",
+                           "unavailable"],
         "kg_success_patterns": ["knowledge persisted", "Success: knowledge", "知识已", r'"result":"Success"'],
     },
     "token_schema": {"reasoning_in_output": True, "cache_excluded": True},
@@ -230,16 +231,27 @@ def run(evaluation_id: str) -> dict:
         if trace_kind == "turing":
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
+        if trace_kind == "dataflow":
+            from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+            return DataflowVulnScanTraceParser()
         # 兼容：无 trace_kind 时按路径推断
         p = _os.path.normpath(uri)
         cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
         argo_suffix = _os.path.join("session", "argo")
+        dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
         if _os.path.isdir(p) and p.endswith(cvuln_suffix):
             from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
             return CVulnVerifyTraceParser()
         if _os.path.isdir(p) and p.endswith(argo_suffix):
             from ..workers.argo_trace_parser import ArgoTraceParser
             return ArgoTraceParser()
+        if _os.path.isdir(p) and (p.endswith(dataflow_suffix) or "dataflow_vuln_scan" in p):
+            from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+            return DataflowVulnScanTraceParser()
+        # 单个 dataflow jsonl 文件（路径含 dataflow_vuln_scan）也用 dataflow 解析器
+        if "dataflow_vuln_scan" in p and (p.endswith(".jsonl") or _os.path.isdir(p)):
+            from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+            return DataflowVulnScanTraceParser()
         if p.endswith("opencode.db") or p.endswith("findings.db"):
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()

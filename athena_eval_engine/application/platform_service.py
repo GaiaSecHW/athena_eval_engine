@@ -146,6 +146,9 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
     elif norm_path.endswith("/tasks/c_vuln_verify"):
         kind = "cvuln_verify_session"
         trace_kind = "cvuln_verify"
+    elif norm_path.endswith("/session/dataflow_vuln_scan") or "/dataflow_vuln_scan/" in norm_path:
+        kind = "dataflow_session"
+        trace_kind = "dataflow"
     elif "/session/WebVerify" in norm_path:
         kind = "webverify_session"
         trace_kind = "webvulnverify"
@@ -169,6 +172,8 @@ def _scan_dir(base: str, out: list) -> None:
             continue
         # 统计目录下的 .jsonl 文件数和最新 mtime（包括子目录如 argo/）
         jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+        # dataflow_vuln_scan 子目录单独作为 dataflow trace（见下），此处排除避免重复计数
+        jsonl_files = [f for f in jsonl_files if "dataflow_vuln_scan" not in f.replace("\\", "/")]
         # WebVerify .jsonl 由下方单独处理，此处排除避免重复
         jsonl_files = [f for f in jsonl_files if "/WebVerify/" not in f.replace("\\", "/")]
         if not jsonl_files:
@@ -201,6 +206,25 @@ def _scan_dir(base: str, out: list) -> None:
                 pass
         t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
         t["file_count"] = len(wv_files)
+        out.append(t)
+    # 2b. 找 dataflow_vuln_scan 目录（新工具：.../session/dataflow_vuln_scan/<dvs_run>/*.jsonl）
+    for d in glob.glob(f"{base}/**/dataflow_vuln_scan", recursive=True):
+        if not os.path.isdir(d):
+            continue
+        jsonl_files = [f for f in glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+                       if "system-prompt" not in os.path.basename(f)]
+        if not jsonl_files:
+            continue
+        latest_mt = 0.0
+        for f in jsonl_files:
+            try:
+                mt = os.path.getmtime(f)
+                if mt > latest_mt:
+                    latest_mt = mt
+            except OSError:
+                pass
+        t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
+        t["file_count"] = len(jsonl_files)
         out.append(t)
     # 3. 找 .db 文件（opencode.db / findings.db）
     for p in glob.glob(f"{base}/**/*.db", recursive=True):
@@ -261,6 +285,45 @@ def _kubectl_find(base: str) -> list[dict]:
     # 1+2. 找 session 目录和 WebVerify 目录（逻辑相同，dir_name 不同）
     out.extend(_kubectl_find_dirs(pod, base, "session", env))
     out.extend(_kubectl_find_dirs(pod, base, "WebVerify", env))
+    # 2b. 找 dataflow_vuln_scan 目录（新工具：.../session/dataflow_vuln_scan/<dvs_run>/*.jsonl）
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+           "find", base, "-type", "d", "-name", "dataflow_vuln_scan",
+           "-printf", "%T@ %p\n"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+        for line in (r.stdout or "").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            parts = line.split(" ", 1)
+            mt = None; p = line
+            if len(parts) == 2 and parts[0].replace(".", "").isdigit():
+                try: mt = float(parts[0])
+                except ValueError: mt = None
+                p = parts[1]
+            # 递归统计该目录下的 .jsonl 文件数（含 dvs_* 子目录，排除 system-prompt 旁路文件）
+            cmd2 = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+                    "find", p, "-name", "*.jsonl", "-printf", "%T@ %p\n"]
+            r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30, env=env)
+            jsonl_lines = [l for l in (r2.stdout or "").splitlines()
+                           if l.strip() and "system-prompt" not in l]
+            if not jsonl_lines:
+                continue
+            latest_mt = mt or 0.0
+            for jl in jsonl_lines:
+                jl_parts = jl.split(" ", 1)
+                if len(jl_parts) == 2 and jl_parts[0].replace(".", "").isdigit():
+                    try:
+                        jmt = float(jl_parts[0])
+                        if jmt > latest_mt:
+                            latest_mt = jmt
+                    except ValueError:
+                        pass
+            t = _make_session_dir_trace(p, latest_mt if latest_mt > 0 else None)
+            t["file_count"] = len(jsonl_lines)
+            out.append(t)
+    except Exception:
+        pass
     # 3. 找 .db 文件
     cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
            "find", base, "-name", "*.db", "-printf", "%T@ %p\n"]
