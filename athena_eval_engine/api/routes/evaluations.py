@@ -264,7 +264,9 @@ def get_report(evaluation_id: str):
             entries = manifest.get("entries", [])
             r["vbench_project_name"] = manifest.get("vbench_project_name", "")
             r["entries_info"] = [{"condition": e.get("condition"), "project_name": e.get("project_name", ""),
-                                  "task_name": e.get("task_name", "")} for e in entries]
+                                  "task_name": e.get("task_name", ""),
+                                  "task_id": e.get("task_id", ""),
+                                  "category": e.get("category", "")} for e in entries]
         # 知识介入
         cur.execute("SELECT task_run_id, access, delivery, access_event_count, "
                     "read_event_count, evidence_json FROM knowledge_interaction_fact "

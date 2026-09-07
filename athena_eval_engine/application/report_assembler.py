@@ -21,6 +21,7 @@ class ReportModel:
     kg_analysis: dict = field(default_factory=dict)
     vuln_analysis: dict = field(default_factory=dict)
     per_case_kg_analysis: list = field(default_factory=list)
+    metric_groups: list = field(default_factory=list)
     summary: str = ""
     coverage: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
