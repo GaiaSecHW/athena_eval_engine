@@ -344,7 +344,7 @@ def run(evaluation_id: str) -> dict:
                 condition=cond, condition_source=ConditionSource.MANIFEST,
                 trace_valid=True, runtime_valid=True, benchmark_item_id=biid,
             )
-            local_path = _resolve_trace_path(e["source_uri"], e.get("project_id", ""), e["task_id"])
+            local_path = _local_paths.get(e["source_uri"]) or _resolve_trace_path(e["source_uri"], e.get("project_id", ""), e["task_id"])
             parser = _get_parser(local_path, e.get("trace_kind"))
             events = list(parser.parse({"trace_id": tr.trace_id, "source_uri": local_path,
                                          "turing_session_id": "sess"}))
@@ -378,21 +378,21 @@ def run(evaluation_id: str) -> dict:
                 'fact_to_sessions': _dd(set),  # fact_id → session_ids
                 'edges': _dd(set),  # session_id → related session_ids
             }
-            for e in events:
-                sid = e.session_id
+            for ev in events:
+                sid = ev.session_id
                 if sid not in session_graph['sessions']:
                     session_graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
                 sg = session_graph['sessions'][sid]
                 # 1. SYSTEM_EVENT（queue-operation enqueue）里的 fact 引用
-                if e.event_type == "SYSTEM_EVENT" and e.output_json:
-                    refs = _re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(e.output_json))
+                if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
+                    refs = _re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json))
                     for fid in refs:
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             session_graph['fact_to_sessions'][fid].add(sid)
                 # 2. argo.memory get fXXX 命令
-                if e.is_tool_call() and e.tool_name == "bash":
-                    cmd = str((e.input_json or {}).get("command", ""))
+                if ev.is_tool_call() and ev.tool_name == "bash":
+                    cmd = str((ev.input_json or {}).get("command", ""))
                     if "argo.memory" in cmd and " get" in cmd:
                         fids = _re.findall(r'f\d{3,5}', cmd)
                         for fid in fids:
@@ -408,8 +408,8 @@ def run(evaluation_id: str) -> dict:
                         if fm not in _EXCLUDE_FILES:
                             sg['files'].add(fm)
                             session_graph['file_to_sessions'][fm].add(sid)
-                if e.is_tool_call() and e.tool_name == "read":
-                    fp = str((e.input_json or {}).get("file_path", ""))
+                if ev.is_tool_call() and ev.tool_name == "read":
+                    fp = str((ev.input_json or {}).get("file_path", ""))
                     for fm in _re.findall(r'(\w+\.(?:c|h|py|java))', fp):
                         if fm not in _EXCLUDE_FILES:
                             sg['files'].add(fm)
@@ -428,6 +428,12 @@ def run(evaluation_id: str) -> dict:
                                 session_graph['edges'][s1].add(s2)
             return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}, e["source_uri"]
 
+        # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
+        _local_paths = {}
+        for e in entries:
+            key = e["source_uri"]
+            if key not in _local_paths:
+                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
         # 并行解析所有 trace（KG + No-KG 独立，无共享状态）
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
             results = list(pool.map(_parse_one, entries))
@@ -510,6 +516,63 @@ def run(evaluation_id: str) -> dict:
                           kg_tool_calls=kg_tool_calls, total_tool_calls=total_tool_calls,
                           seed=42)
 
+    # ===== Phase 4b: 分组计算指标（挖掘/验证各自独立）=====
+    # 按 task_id 分组 pair_views，每组独立算指标
+    from collections import defaultdict as _dd2
+    # 建立 pair_view → task_id 的映射（pair_views 与 pairs 顺序一致）
+    _pv_task_ids: list[str] = []
+    for pair in pairs:
+        _pv_task_ids.append(pair.task_id)
+    _groups_pv: dict[str, list[PairView]] = _dd2(list)
+    for i, pv in enumerate(pair_views):
+        tid = _pv_task_ids[i] if i < len(_pv_task_ids) else "T001"
+        _groups_pv[tid].append(pv)
+    # 为每组计算指标
+    _metric_groups: list[dict] = []
+    for tid, gvs in _groups_pv.items():
+        if not gvs:
+            continue
+        # 计算 group 级别的 kg_access 等
+        _g_kg_valid = _g_access = _g_kg_delivery = 0
+        _g_kg_access_events = _g_kg_successful_reads = 0
+        _g_kg_tool_calls = _g_total_tool_calls = 0
+        for pair in pairs:
+            if pair.task_id != tid:
+                continue
+            kg_f = facts[pair.kg_task_run_id]
+            kg_f_run = next(t for t in task_runs if t.task_run_id == pair.kg_task_run_id)
+            if kg_f_run and kg_f_run.condition == Condition.KG and kg_f_run.trace_valid and kg_f_run.runtime_valid:
+                _g_kg_valid += 1
+                kn = kg_f["knowledge"]
+                if kn.access: _g_access += 1
+                if kn.access and kn.delivery: _g_kg_delivery += 1
+                _g_kg_access_events += kn.access_event_count
+                _g_kg_successful_reads += kn.successful_read_count
+                ta = kg_f["tool"]
+                _g_kg_tool_calls += ta.kg_count
+                _g_total_tool_calls += ta.total_tool_calls
+        g_out = run_all_metrics(gvs, kg_access=_g_access, kg_valid=_g_kg_valid,
+                                  kg_delivery=_g_kg_delivery, access=_g_access,
+                                  kg_access_events=_g_kg_access_events, kg_successful_reads=_g_kg_successful_reads,
+                                  kg_tool_calls=_g_kg_tool_calls, total_tool_calls=_g_total_tool_calls,
+                                  seed=42)
+        g_hits = diagnose(g_out["metric_results"], g_out["statistical_results"])
+        g_report = assemble(evaluation_id, g_out["metric_results"], g_out["statistical_results"], g_hits,
+                            pair_views=gvs)
+        # 找到这个 task_id 对应的 category
+        _g_category = ""
+        for e in entries:
+            if e.get("task_id") == tid:
+                _g_category = e.get("category", "")
+                break
+        _metric_groups.append({
+            "task_id": tid,
+            "category": _g_category,
+            "label": "漏洞验证" if _g_category == "verify" else "漏洞挖掘",
+            "p0": g_report.p0, "p1": g_report.p1, "p2": g_report.p2,
+            "pair_count": len(gvs),
+        })
+
     # ===== Phase 5: 写入指标（短连接）=====
     cr_id = f"CR-{evaluation_id}"; pop_id = f"PS-{evaluation_id}"
     def _insert_metrics(cur):
@@ -529,6 +592,7 @@ def run(evaluation_id: str) -> dict:
     hits = diagnose(out["metric_results"], out["statistical_results"])
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
                       pair_views=pair_views)
+    report.metric_groups = _metric_groups
     report.narrative = ai_narrative(out["metric_results"], out["statistical_results"], hits)
     # 取 KG 任务的 outcome（用于 AI 分析）
     kg_outcome_for_analysis = None
