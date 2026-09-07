@@ -26,6 +26,7 @@ header button.ghost{background:#f3f4f6;border:1px solid var(--bd);color:var(--tx
 main{flex:1;overflow-y:auto;padding:28px}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--sub);text-align:center;gap:16px}
 .empty .ic{width:72px;height:72px;border-radius:18px;background:var(--p2);color:var(--sub);display:flex;align-items:center;justify-content:center;font-size:32px}
+@keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .empty h3{color:var(--txt);font-size:19px}
 .empty p{max-width:440px;font-size:16px}
 .cols{display:flex;gap:20px;height:100%}
@@ -267,12 +268,27 @@ async function selEv(id){
   catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
 function retryEval(eid){
+  // 立即显示加载态，避免用户以为没反应
+  var rep=$("rep");if(rep)rep.innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
   // 清理旧数据
   jget('/api/v1/evaluations/'+eid+'/report').then(r=>{}).catch(e=>{});
   // 重置状态为 RUNNING
   F('/api/v1/evaluations/'+eid+'/retry',{method:'POST'}).then(r=>r.json()).then(d=>{
     if(d.status==='QUEUED'||d.status==='RUNNING'){
-      selEv(eid);
+      // 轮询等待状态从 FAILED 切换到 RUNNING
+      var pollCnt=0;
+      var retryPoll=function(){
+        pollCnt++;if(pollCnt>30)return; // 最多等 ~30s
+        jget('/api/v1/evaluations/'+eid).then(s=>{
+          if(s.status==='FAILED'){
+            // 后台还没来得及改状态，继续等
+            setTimeout(retryPoll,1000);
+          }else{
+            selEv(eid);
+          }
+        }).catch(()=>setTimeout(retryPoll,1000));
+      };
+      setTimeout(retryPoll,500);
     }else{
       alert('重试失败: '+JSON.stringify(d));
     }
@@ -548,48 +564,80 @@ function renderReport(d){
   </div>`})()}
 
   <!-- 2. 漏洞统计表 -->
-  <div class="card" style="margin-bottom:16px">
-    <h3>📊 漏洞检测统计</h3>
-    ${(()=>{
-      const baseline=d.baseline_count||0;const tools=d.tool_stats||[];const res=d.resource_stats||[];
-      const va=r.vuln_analysis||{};
-      const kgTool=tools.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkTool=tools.find(t=>t.task_run_id.includes("NOGK"))||{};
-      const kgRes=res.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkRes=res.find(t=>t.task_run_id.includes("NOGK"))||{};
+  ${(()=>{
+    const mg=r.metric_groups||[];
+    function _statsTable(tid,label){
+      const tools=d.tool_stats||[];const res=d.resource_stats||[];const oc=d.outcome_details||[];
+      const kgTool=tools.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||tools.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
+      const nogkTool=tools.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||tools.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const kgRes=res.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||res.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
+      const nogkRes=res.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||res.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const kgOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-KG"))||oc.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
+      const nogkOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{};
       const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
       const kgKg=kgTool.kg_count||0;const nogkKg=nogkTool.kg_count||0;
       const kgTokens=kgRes.tokens||0;const nogkTokens=nogkRes.tokens||0;
       const kgTools=kgTool.total_tools||0;const nogkTools=nogkTool.total_tools||0;
       const kgSteps=kgRes.steps||0;const nogkSteps=nogkRes.steps||0;
       const kgDur=kgRes.duration||0;const nogkDur=nogkRes.duration||0;
-      // TP/FP/FN/TN 从 vuln_analysis 取（由后端从 case_results 统计）
-      const kgTP=va.kg_tp||0;const kgFP=va.kg_fp||0;const kgFN=va.kg_fn||0;const kgTN=va.kg_tn||0;
-      const nogkTP=va.nogk_tp||0;const nogkFP=va.nogk_fp||0;const nogkFN=va.nogk_fn||0;const nogkTN=va.nogk_tn||0;
-      return `<div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div><table><tr><th>统计项</th><th>KG（开知识图谱）</th><th>No-KG（对照）</th></tr><tr><td>Agent 提交发现数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr><tr><td>Athena 查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr><tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr><tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr><tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr><tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td><td class="num">${fmtDur(nogkDur)}</td></tr><tr><td>已确认 (TP)</td><td class="num" style="color:var(--green)">${kgTP}</td><td class="num" style="color:var(--green)">${nogkTP}</td></tr><tr><td>误报 (FP)</td><td class="num" style="color:var(--red)">${kgFP}</td><td class="num" style="color:var(--red)">${nogkFP}</td></tr><tr><td>漏报 (FN)</td><td class="num" style="color:var(--amber)">${kgFN}</td><td class="num" style="color:var(--amber)">${nogkFN}</td></tr><tr><td>正确跳过 (TN)</td><td class="num" style="color:var(--green)">${kgTN}</td><td class="num" style="color:var(--green)">${nogkTN}</td></tr></table>`;
-    })()}
-  </div>
+      const baseline=d.baseline_count||0;
+      return `<div class="card" style="margin-bottom:16px">
+        ${label?`<h3>📊 ${label} — 漏洞检测统计</h3>`:'<h3>📊 漏洞检测统计</h3>'}
+        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div>
+        <table><tr><th>统计项</th><th>KG（开知识图谱）</th><th>No-KG（对照）</th></tr>
+        <tr><td>Agent 提交发现数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
+        <tr><td>Athena 查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
+        <tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr>
+        <tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr>
+        <tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr>
+        <tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td><td class="num">${fmtDur(nogkDur)}</td></tr>
+        <tr><td>检测结果</td><td class="num">${kgOc.outcome||"N/A"}</td><td class="num">${nogkOc.outcome||"N/A"}</td></tr>
+        <tr><td>验证结果</td><td class="num">${kgOc.validation||"N/A"}</td><td class="num">${nogkOc.validation||"N/A"}</td></tr>
+        </table></div>`;
+    }
+    if(mg.length>1){
+      return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">`+mg.map(g=>{
+        const html=_statsTable(g.task_id,g.label);
+        // 去掉最外层 card 的 margin-bottom，由 grid gap 控制
+        return html.replace('margin-bottom:16px','');
+      }).join("")+`</div>`;
+    }
+    return _statsTable("","");
+  })()}
+
 
   <!-- 3. 效果指标 -->
-  <div class="card" style="margin-bottom:16px">
-    <h3>🎯 效果指标</h3>
-    ${[
-      ["① 价值结果","衡量知识图谱对漏洞判定准确性的净贡献",
-        [["M1",p0.M1],["M2",p0.M2],["M3",p0.M3],["M4",p0.M4]]],
-      ["② 作用机制","揭示行为变化的来源（知识访问/交付/行为漂移）",
-        [["M5",p1.M5],["M6",p1.M6],["M7",p1.M7]]],
-      ["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
-        [["M8",p2.M8],["M9",p2.M9],["M10",p2.M10]]]
-    ].map(g=>`<div style="margin-bottom:14px">
-      <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
-        <span style="font-weight:700;font-size:15px">${g[0]}</span>
-        <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
-      </div>
-      <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-        ${g[2].map(m=>mCard(m[0],m[1])).join("")}
-      </div>
-    </div>`).join("")}
-  </div>
+  ${(()=>{
+    const mg=r.metric_groups||[];
+    function _metricCards(gp0,gp1,gp2,glabel){
+      return `${[
+        ["① 价值结果","衡量知识图谱对漏洞判定准确性的净贡献",
+          [["M1",gp0.M1],["M2",gp0.M2],["M3",gp0.M3],["M4",gp0.M4]]],
+        ["② 作用机制","揭示行为变化的来源（知识访问/交付/行为漂移）",
+          [["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7]]],
+        ["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
+          [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]
+      ].map(g=>`<div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
+          <span style="font-weight:700;font-size:15px">${g[0]}</span>
+          <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
+        </div>
+        <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          ${g[2].map(m=>mCard(m[0],m[1])).join("")}
+        </div>
+      </div>`).join("")}`;
+    }
+    if(mg.length>1){
+      return `<div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">`+mg.map(g=>`<div class="card">
+        <h3>🎯 ${g.label} — 效果指标</h3>
+        ${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label)}
+      </div>`).join("")+`</div>`;
+    }
+    return `<div class="card" style="margin-bottom:16px">
+      <h3>🎯 效果指标</h3>
+      ${_metricCards(p0,p1,p2,"")}
+    </div>`;
+  })()}
 
   <!-- 4. 诊断 -->
   ${h.length?`<div class="card" style="margin-bottom:16px"><h3>🔍 诊断发现</h3>${h.map(x=>`<div class="diag"><span class="rid">${x.rule_id}</span> <span class="ob">${x.observed}</span><div class="ip">${x.interpretation}<br>建议：${x.suggestion}</div></div>`).join("")}</div>`:""}
@@ -693,9 +741,8 @@ function _renderTraceItem(side,t){
   const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
   var display=t.tool_task_id||t.file||"";
   const isSel=t.path===sel[side].miningTrace||t.path===sel[side].verifyTrace;
-  const selMark=isSel?'<span style="color:var(--green)">✓ </span>':'';
-  const selStyle=isSel?'background:rgba(0,0,0,0.06);font-weight:600':'';
-  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${selMark}${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
+  const selStyle=isSel?'background:rgba(0,0,0,0.06);font-weight:600;border-left:3px solid var(--green)':'';
+  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
 }
 function filterSideList(side){
   const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
@@ -781,11 +828,11 @@ async function runEval(){
   const caseIds=_vbCases?_vbCases.map(c=>c.case_id):[];
   const entries=[];
   let tid=1;
-  if(sel.kg.miningTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.miningTrace,trace_kind:sel.kg.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
-  if(sel.kg.verifyTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.verifyTrace,trace_kind:sel.kg.verifyTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
+  if(sel.kg.miningTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.miningTrace,trace_kind:sel.kg.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
+  if(sel.kg.verifyTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.verifyTrace,trace_kind:sel.kg.verifyTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
   let tid2=1;
-  if(sel.nogk.miningTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.miningTrace,trace_kind:sel.nogk.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
-  if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
+  if(sel.nogk.miningTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.miningTrace,trace_kind:sel.nogk.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
+  if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
   try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:sel.vbProj||"BS001",vbench_project_name:sel.vbProjName||undefined,entries:entries});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;go("evaluations");setTimeout(selEv,500,r.evaluation_id);
