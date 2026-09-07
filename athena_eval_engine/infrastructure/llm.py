@@ -3,11 +3,13 @@
 配置来自 config_loader。失败自动重试（最多 3 次）。
 SSE 流式读取：首 token 超时 5 分钟，后续 token 断流超时 10 分钟。
 429 限流：持续重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
+每个评测任务内 LLM 并发上限由信号量控制（默认 6）。
 """
 from __future__ import annotations
 import json
 import time
 import socket
+import threading
 import http.client
 from urllib.parse import urlparse
 from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
@@ -23,15 +25,25 @@ RETRY_DELAY = 5  # 秒，重试间隔
 FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 
+# 每个评测任务内 LLM 并发上限（信号量）
+# 由 evaluation_service.run() 在每个评测启动时 set_max_concurrency 设置
+_MAX_CONCURRENCY = 6
+_llm_semaphore: threading.Semaphore | None = None
+
+
+def set_max_concurrency(n: int):
+    """评测启动时调用，设置本评测的 LLM 并发上限。"""
+    global _llm_semaphore
+    _llm_semaphore = threading.Semaphore(n)
+
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
             api_base=None, api_key=None, **_unused) -> str:
     """单次 LLM 调用（SSE 流式），不重试。
 
-    首 token 超时 5 分钟：模型在 5 分钟内不产首 token → 超时。
-    后续 token 断流超时 10 分钟：两个 chunk 间隔超过 10 分钟 → 超时。
-    429 限流：持续重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
-    timeout kwarg 被忽略（用固定超时）。
+    首 token 超时 5 分钟，后续 token 断流超时 10 分钟。
+    429 限流持续重试（3 秒间隔，不占用 MAX_RETRIES 额度）。
+    LLM 并发受信号量控制（每评测最多 6 个）。
     """
     base = api_base or DEFAULT_API_BASE
     parsed = urlparse(base)
@@ -57,65 +69,70 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
         "Accept": "text/event-stream",
     }
 
-    # ── Phase 1: 发请求，429 限流持续重试，拿到 200 响应头 ──
+    # 获取 LLM 并发槽位（信号量控制每评测最多 6 个并发）
+    if _llm_semaphore is not None:
+        _llm_semaphore.acquire()
     conn = None
-    while True:
-        conn = http.client.HTTPConnection(host, port, timeout=FIRST_TOKEN_TIMEOUT)
-        conn.request("POST", path, body=body, headers=headers)
-        resp = conn.getresponse()
-        status = resp.status
-        if status == 429:
-            retry_after = resp.getheader("Retry-After")
-            delay = 3
-            if retry_after:
-                try: delay = int(retry_after)
-                except ValueError: pass
-            print(f"[LLM] 429 rate limited, retry in {delay}s", flush=True)
-            conn.close()
-            conn = None
-            time.sleep(delay)
-            continue
-        if status != 200:
-            data = resp.read().decode("utf-8")
-            err_preview = data[:500]
-            print(f"[LLM] HTTP {status} from {base}: {err_preview}", flush=True)
-            conn.close()
-            raise RuntimeError(f"LLM HTTP {status}: {err_preview}")
-        break  # 200，进入 SSE 读取
-
-    # ── Phase 2: 逐行读 SSE 流 ──
-    content_parts = []
-    reasoning_parts = []
-    first_token = True
-
     try:
+        # ── Phase 1: 发请求，429 限流持续重试，拿到 200 响应头 ──
+        while True:
+            conn = http.client.HTTPConnection(host, port, timeout=FIRST_TOKEN_TIMEOUT)
+            try:
+                conn.request("POST", path, body=body, headers=headers)
+                resp = conn.getresponse()
+            except (socket.timeout, TimeoutError) as e:
+                conn.close()
+                conn = None
+                print(f"[LLM] 首 token 超时（连接/请求/响应头阶段, {FIRST_TOKEN_TIMEOUT}s）: {e}", flush=True)
+                raise RuntimeError(f"LLM 首 token 超时（{FIRST_TOKEN_TIMEOUT}s）: 服务器未在 5 分钟内响应")
+            status = resp.status
+            if status == 429:
+                retry_after = resp.getheader("Retry-After")
+                delay = 3
+                if retry_after:
+                    try: delay = int(retry_after)
+                    except ValueError: pass
+                print(f"[LLM] 429 rate limited, retry in {delay}s", flush=True)
+                conn.close()
+                conn = None
+                time.sleep(delay)
+                continue
+            if status != 200:
+                data = resp.read().decode("utf-8")
+                err_preview = data[:500]
+                print(f"[LLM] HTTP {status} from {base}: {err_preview}", flush=True)
+                conn.close()
+                conn = None
+                raise RuntimeError(f"LLM HTTP {status}: {err_preview}")
+            break  # 200，进入 SSE 读取
+
+        # ── Phase 2: 逐行读 SSE 流 ──
+        content_parts = []
+        reasoning_parts = []
+        first_token = True
+
         while True:
             line = resp.readline()
             if not line:
                 break  # 连接关闭
-
             line_str = line.decode("utf-8", errors="replace").strip()
             if not line_str:
                 continue  # SSE 事件分隔空行
             if not line_str.startswith("data: "):
-                continue  # 非 data 行（如 event: ping）
-
+                continue  # 非 data 行
             data_str = line_str[6:]
             if data_str == "[DONE]":
                 break
-
             try:
                 chunk = json.loads(data_str)
             except json.JSONDecodeError:
                 continue
-
             # 首 token 到达后，切换到后续 token 断流超时
             if first_token:
                 first_token = False
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
                 print(f"[LLM] first token received, stream timeout -> {STREAM_TIMEOUT}s", flush=True)
-
             choices = chunk.get("choices") or []
             if not choices:
                 continue
@@ -124,6 +141,15 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
                 content_parts.append(delta["content"])
             if delta.get("reasoning_content"):
                 reasoning_parts.append(delta["reasoning_content"])
+
+        content = "".join(content_parts)
+        if not content and reasoning_parts:
+            content = "".join(reasoning_parts)
+
+        if content:
+            print(f"[LLM] OK stream done content_len={len(content)}", flush=True)
+            return content
+        raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
     except (socket.timeout, TimeoutError) as e:
         phase = "首 token" if first_token else "后续 token 断流"
         print(f"[LLM] {phase}超时: {e}", flush=True)
@@ -131,22 +157,12 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
     finally:
         if conn:
             conn.close()
-
-    content = "".join(content_parts)
-    if not content and reasoning_parts:
-        content = "".join(reasoning_parts)
-
-    if content:
-        print(f"[LLM] OK stream done content_len={len(content)}", flush=True)
-        return content
-    raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
+        if _llm_semaphore is not None:
+            _llm_semaphore.release()
 
 
 def chat(messages, **kwargs) -> str:
-    """OpenAI-compatible chat completion（SSE 流式）。返回 assistant 消息文本。
-
-    失败自动重试（网络失败、空 content、超时）。
-    """
+    """OpenAI-compatible chat completion（SSE 流式）。返回 assistant 消息文本。"""
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
     for attempt in range(retries):
@@ -162,10 +178,7 @@ def chat(messages, **kwargs) -> str:
 
 
 def chat_json(messages, **kwargs) -> dict:
-    """chat 但要求 JSON 输出，自动解析。
-
-    LLM 调用 + JSON 解析整体重试：网络失败、空 content、JSON 解析失败 都触发重试。
-    """
+    """chat 但要求 JSON 输出，自动解析。"""
     msgs = list(messages)
     if not any("json" in str(m.get("content", "")).lower() for m in msgs):
         msgs.append({"role": "user", "content": "只返回 JSON，不要任何额外文字。"})

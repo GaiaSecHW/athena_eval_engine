@@ -82,7 +82,7 @@ CREATE TABLE evaluation (
     environment_version    VARCHAR(128),
     evaluation_status      VARCHAR(32) NOT NULL DEFAULT 'CREATED'
                             CHECK (evaluation_status IN
-                            ('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING','PARSING','RESOLVING','PAIRING',
+                            ('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING','PARSING','AI_MATCHING','RESOLVING','PAIRING',
                              'CALCULATING','STATISTICAL_ANALYSIS','DIAGNOSING','REPORTING','FINALIZING',
                              'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',
                              'CANCEL_REQUESTED','CANCELLING','CANCELLED')),
@@ -712,3 +712,11 @@ ALTER TABLE trace_artifact
 ALTER TABLE evaluation
     ADD CONSTRAINT fk_eval_bset
     FOREIGN KEY (benchmark_set_id) REFERENCES benchmark_set(benchmark_set_id);
+
+-- Migration: add AI_MATCHING to evaluation_status CHECK (for existing deployments)
+ALTER TABLE evaluation DROP CHECK evaluation_chk_1;
+ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_status IN
+    ('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING','PARSING','AI_MATCHING','RESOLVING','PAIRING',
+     'CALCULATING','STATISTICAL_ANALYSIS','DIAGNOSING','REPORTING','FINALIZING',
+     'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',
+     'CANCEL_REQUESTED','CANCELLING','CANCELLED'));

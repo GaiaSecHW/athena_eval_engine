@@ -36,6 +36,62 @@ app.include_router(vbench_router)
 app.include_router(sys_router)
 
 
+@app.on_event("startup")
+def resume_stuck_evaluations():
+    """Pod 重启后自动续跑卡住的评测。
+
+    状态在 RUNNING_STATES 里的评测 = 后台线程已死（pod 重启），但 DB 里还显示运行中。
+    重新提交到线程池，run() 会检查 facts 是否已存在自动跳过已完成的阶段。
+    """
+    try:
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                            'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                            'DIAGNOSING', 'REPORTING', 'FINALIZING')
+            placeholders = ','.join(['%s'] * len(stuck_states))
+            cur.execute(f"SELECT evaluation_id, evaluation_status FROM evaluation "
+                        f"WHERE evaluation_status IN ({placeholders})", stuck_states)
+            stuck = cur.fetchall()
+            if stuck:
+                print(f"[STARTUP] 发现 {len(stuck)} 个卡住的评测，准备续跑:", flush=True)
+                for eid, status in stuck:
+                    print(f"[STARTUP]   {eid} (was {status}) → 续跑", flush=True)
+                    _executor.submit(_run_bg_resume, eid)
+            else:
+                print(f"[STARTUP] 无卡住的评测", flush=True)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[STARTUP] 扫描卡住评测失败（DB 可能未就绪）: {e}", flush=True)
+
+
+def _run_bg_resume(evaluation_id: str):
+    """续跑单个评测（与 _run_bg 相同，但不设 RUNNING——保留原状态给 run() 覆盖）。"""
+    from ...infrastructure.database import connect
+    try:
+        es.run(evaluation_id)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        err_msg = str(e)[:500]
+        print(f"[EVAL RESUME FAILED] {evaluation_id}: {err_msg}", flush=True)
+        try:
+            conn = connect(autocommit=True)
+            cur = conn.cursor()
+            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+            row = cur.fetchone()
+            phase = row[0] if row else "UNKNOWN"
+            cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
+                        "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) "
+                        "WHERE evaluation_id=%s", (phase, err_msg, evaluation_id))
+            conn.close()
+        except Exception:
+            pass
+
+
 @app.get("/health")
 def health():
     return {"status": "ok"}

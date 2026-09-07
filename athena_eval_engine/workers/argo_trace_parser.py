@@ -37,17 +37,29 @@ class ArgoTraceParser:
         self.parser_version = parser_version
         self._last_tool_name = None
 
+    @staticmethod
+    def _resolve_jsonl_files(uri: str) -> list[str]:
+        """解析 .jsonl 文件列表。
+
+        Argo session 的 .jsonl 固定在 uri/argo/ 目录下（Claude Code 标准布局），
+        含 argo/ 下的子目录（子 session）。
+        """
+        if not os.path.isdir(uri):
+            return [uri]
+        argo_dir = os.path.join(uri, "argo")
+        if not os.path.isdir(argo_dir):
+            return []
+        # argo/ 下所有 .jsonl（含子目录）
+        return sorted(glob.glob(os.path.join(argo_dir, "**", "*.jsonl"), recursive=True))
+
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""
         uri = trace_source["source_uri"]
         trace_id = trace_source.get("trace_id", uri)
         session_id = trace_source.get("turing_session_id", "")
 
-        # 如果是目录，读所有 .jsonl；如果是单文件，读它
-        if os.path.isdir(uri):
-            files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
-        else:
-            files = [uri]
+        # 如果是目录，读所有 .jsonl（含 argo/ 子目录）；如果是单文件，读它
+        files = self._resolve_jsonl_files(uri)
 
         # 先收集所有 tool_use 的 is_kg 标记（按 tool_use_id），用于 RESULT 继承
         tool_use_kg = {}  # tool_use_id -> is_kg
@@ -223,10 +235,7 @@ class ArgoTraceParser:
     def load_session(self, trace_source) -> dict:
         """从 JSONL 累计 token + step 数（替代 SQLite session 表）。"""
         uri = trace_source["source_uri"]
-        if os.path.isdir(uri):
-            files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
-        else:
-            files = [uri]
+        files = self._resolve_jsonl_files(uri)
 
         ti = to = tr = tcr = 0
         n_step_start = n_step_finish = 0

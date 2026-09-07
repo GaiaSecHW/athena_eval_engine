@@ -43,7 +43,7 @@ main{flex:1;overflow-y:auto;padding:28px}
 .b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
 .b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
-.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1100px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
@@ -222,16 +222,16 @@ async function selEv(id){
       var m1=name.match(/FAILED at (\w+):\s*(.+)/)||[];
       var m2=name.match(/\| ERROR:\s*(.+)/)||[];
       var phase=m1[1]||"";
-      var phaseLabel={"PARSING":"解析 Trace","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
+      var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
       var errMsg=m1[2]||m2[1]||"无详细错误信息";
       $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p><button class="btn" style="margin-top:16px" id="retry-btn">重试</button></div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
     // 运行中: 显示进度
-    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="PARSING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
-      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"REPORTING",label:"生成报告"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"RESOLVING":2,"PAIRING":3,"CALCULATING":4,"REPORTING":5,"FINALIZING":5};
+    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="PARSING"||s.status==="AI_MATCHING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
+      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"REPORTING",label:"生成报告"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"AI_MATCHING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"REPORTING":6,"FINALIZING":6};
       var curStep=phaseMap[s.status]||0;
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
@@ -679,7 +679,7 @@ function loadPipeline(eid){
 }
 
 // ===== ② 新建评测（KG / No-KG 分别选 trace，各自 项目→任务→trace）=====
-let sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
+let sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
 let _allVbProjs=[];let _vbCases=null;let _vcCases=null;let _vcKey="";let _vcTasks=null;
 let _allProjs=[];let _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
 async function renderCreate(){
@@ -785,13 +785,13 @@ function pickTrace(side,path,name,trace_kind,category){
 }
 async function renderRunConf(){
   const kgM=!!sel.kg.miningTrace,kgV=!!sel.kg.verifyTrace,nogkM=!!sel.nogk.miningTrace,nogkV=!!sel.nogk.verifyTrace;const paired=(kgM===nogkM)&&(kgV===nogkV);const ready=(kgM||kgV)&&(nogkM||nogkV)&&paired;
-  const isVb=sel.bsrc!=='vuln';
+  const isVb=sel.bsrc!=='vuln_center';
   const srcToggle=`<div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px;margin-bottom:14px">
-    <button onclick="switchBsrc('vbench')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">📦 测评数据集基线</button>
-    <button onclick="switchBsrc('vuln')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${!isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">🔍 漏洞中心数据</button>
+    <button onclick="switchBsrc('vbench_zip')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">📦 测评数据集基线</button>
+    <button onclick="switchBsrc('vuln_center')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${!isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">🔍 漏洞中心数据</button>
   </div>`;
   let bodyHtml="";let bound=false;
-  if(sel.bsrc==='vuln'){
+  if(sel.bsrc==='vuln_center'){
     if(!sel.vcProj){
       if(!_allProjs.length)try{_allProjs=(await jget("/api/v1/platform/projects")).projects||[];}catch(e){}
       bodyHtml=`<div style="margin-bottom:8px;font-size:13px;color:var(--sub)">从漏洞中心取基线：先选项目，再选任务，自动拉取该任务的人工确认漏洞</div><input id="vc-search" placeholder="搜索项目名…" oninput="filterVcList()" style="margin-bottom:8px"><div class="sel" id="vc-list" style="max-height:200px"></div>`;
@@ -823,8 +823,8 @@ async function renderRunConf(){
   <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':((kgM||kgV)&&(nogkM||nogkV)&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（挖掘/验证需对应），请选同类型</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
   <div class="st" id="run-st"></div>
   <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完两侧 trace"}</button>`;
-  if(sel.bsrc==='vuln'&&!sel.vcProj){filterVcList();}
-  else if(sel.bsrc!=='vuln'&&!sel.vbProj){renderVbList();}
+  if(sel.bsrc==='vuln_center'&&!sel.vcProj){filterVcList();}
+  else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
 }
 function switchBsrc(s){sel.bsrc=s;renderRunConf();}
 function filterVcList(){
@@ -866,8 +866,8 @@ async function runEval(){
   let eid=$("eid").value.trim()||genId();
   $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
   const evalName=$("eval-name")?$("eval-name").value.trim():"";
-  const caseIds=sel.bsrc==='vuln'?(_vcCases?_vcCases.map(c=>c.case_id):[]):(_vbCases?_vbCases.map(c=>c.case_id):[]);
-  const bSetId=sel.bsrc==='vuln'?(sel.vcProj||"BS001"):(sel.vbProj||"BS001");
+  const caseIds=sel.bsrc==='vuln_center'?(_vcCases?_vcCases.map(c=>c.case_id):[]):(_vbCases?_vbCases.map(c=>c.case_id):[]);
+  const bSetId=sel.bsrc==='vuln_center'?(sel.vcProj||"BS001"):(sel.vbProj||"BS001");
   const entries=[];
   let tid=1;
   if(sel.kg.miningTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.miningTrace,trace_kind:sel.kg.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
@@ -875,7 +875,7 @@ async function runEval(){
   let tid2=1;
   if(sel.nogk.miningTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.miningTrace,trace_kind:sel.nogk.miningTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
   if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln'?(sel.vcTask||undefined):undefined,entries:entries});
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,entries:entries});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;go("evaluations");setTimeout(selEv,500,r.evaluation_id);
     // 轮询状态

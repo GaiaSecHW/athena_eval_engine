@@ -174,9 +174,17 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         ), []
 
     findings = _extract_findings(events)
+    print(f"[AI_MATCH] {task_run.condition.value} findings_extracted={len(findings)}", flush=True)
+    for i, f in enumerate(findings[:5]):
+        print(f"[AI_MATCH]   finding[{i}] id={f.get('display_id') or f.get('finding_id','')[:12]} "
+              f"title={str(f.get('title',''))[:60]} vuln_type={str(f.get('vuln_type',''))[:30]} "
+              f"validation={f.get('validation_result')}", flush=True)
+    if len(findings) > 5:
+        print(f"[AI_MATCH]   ...还有 {len(findings)-5} 条 finding", flush=True)
 
     # Agent 没提交任何发现 → 基线有漏洞 → 全部漏报
     if not findings:
+        print(f"[AI_MATCH] {task_run.condition.value} NO_FINDING → outcome=FAIL/FN", flush=True)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
@@ -245,14 +253,27 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     try:
         result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
         matches = result if isinstance(result, list) else result.get("matches", [])
-    except Exception:
-        # LLM 失败 → 规则判断
+    except Exception as e:
+        print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败: {e}", flush=True)
         matches = []
+
+    print(f"[AI_MATCH] {task_run.condition.value} LLM 返回 {len(matches)} 条匹配结果", flush=True)
+    for m in matches:
+        print(f"[AI_MATCH]   finding={m.get('finding_id')} matched_case={m.get('matched_case_id')} "
+              f"same={m.get('is_same_vulnerability')} reason={str(m.get('reason',''))[:60]}", flush=True)
 
     # 构建 per-case 混淆矩阵
     case_results = []
     matched_case_ids = set(m.get("matched_case_id") for m in matches if m.get("is_same_vulnerability") and m.get("matched_case_id"))
+    print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} cases, matched={len(matched_case_ids)}", flush=True)
     for b in benchmarks:
+        cid = b.benchmark_item_id or ""
+        is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
+        is_matched = cid in matched_case_ids
+        if not is_matched:
+            md_desc = str((b.metadata or {}).get("vulnerability_type", ""))[:40]
+            print(f"[AI_MATCH]   UNMATCHED case={cid[:20]} label={b.expected_label.value if b.expected_label else 'NA'} "
+                  f"vuln_type={md_desc}", flush=True)
         cid = b.benchmark_item_id or ""
         is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
         is_matched = cid in matched_case_ids

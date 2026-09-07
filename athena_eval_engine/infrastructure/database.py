@@ -58,6 +58,12 @@ def ensure_schema():
     try:
         cur = conn.cursor()
         for s in stmts:
-            cur.execute(s)
+            try:
+                cur.execute(s)
+            except Exception as e:
+                # CREATE TABLE IF NOT EXISTS 幂等，ALTER 可能已应用
+                if not s.upper().startswith("ALTER"):
+                    raise
+                print(f"[SCHEMA] migration skipped (may already applied): {str(e)[:120]}")
     finally:
         conn.close()

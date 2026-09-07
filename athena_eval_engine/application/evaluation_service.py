@@ -78,7 +78,35 @@ def _set_status_short(evaluation_id, status):
     """短连接设状态，用于 run() 各阶段更新进度。"""
     conn = connect(autocommit=True)
     try:
-        conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+        try:
+            conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+        except Exception as e:
+            # CHECK 约束可能不含新状态（如 AI_MATCHING）→ 自动修复约束后重试
+            if "Check constraint" in str(e) or "3819" in str(e):
+                print(f"[DB] CHECK 约束阻止设状态 {status}，自动修复...", flush=True)
+                cur = conn.cursor()
+                # 1) DROP 所有可能的旧约束（忽略所有错误）
+                for stmt in (
+                    "ALTER TABLE evaluation DROP CHECK evaluation_chk_1",
+                    "ALTER TABLE evaluation DROP CONSTRAINT evaluation_chk_1",
+                    "ALTER TABLE evaluation DROP CHECK evaluation_status_chk",
+                    "ALTER TABLE evaluation DROP CONSTRAINT evaluation_status_chk",
+                ):
+                    try: cur.execute(stmt)
+                    except Exception: pass
+                # 2) ADD 新约束（可能已存在，忽略错误）
+                try:
+                    cur.execute(
+                        "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_status IN "
+                        "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING','PARSING','AI_MATCHING','RESOLVING','PAIRING',"
+                        "'CALCULATING','STATISTICAL_ANALYSIS','DIAGNOSING','REPORTING','FINALIZING',"
+                        "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED','CANCEL_REQUESTED','CANCELLING','CANCELLED'))"
+                    )
+                except Exception: pass
+                print(f"[DB] CHECK 约束已修复，重试设状态 {status}", flush=True)
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+            else:
+                raise
     finally:
         conn.close()
 
@@ -208,6 +236,10 @@ def _db_query(fn, _retries=5):
 def run(evaluation_id: str) -> dict:
     """跑完整管线。使用短连接：慢操作（trace 解析、LLM）期间不持有 MySQL 连接。"""
 
+    # 设置本评测的 LLM 并发上限（信号量，所有 LLM 调用共用）
+    from ..infrastructure.llm import set_max_concurrency
+    set_max_concurrency(6)
+
     # ===== Phase 1: 读配置（短连接）=====
     def _load_config(cur):
         cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
@@ -320,16 +352,25 @@ def run(evaluation_id: str) -> dict:
         def _load_facts_from_db(cur):
             for tr_id in [t.task_run_id for t in task_runs]:
                 facts[tr_id] = {}
-            # outcomes
-            cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
+            # outcomes（含 confusion_label + case_results from evidence_json）
+            cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result, "
+                        "confusion_label, benchmark_item_id, target_finding_id, gt_label, evidence_json "
+                        "FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
-                from ..domain.enums import Outcome, Prediction
-                facts[r[0]] = {"outcome": type('OC', (), {
+                from ..domain.enums import Outcome, Prediction, Confusion
+                _ev = json.loads(r[9]) if r[9] and isinstance(r[9], str) else (r[9] or {})
+                _cr = _ev.get("case_results", []) if isinstance(_ev, dict) else []
+                _oc = type('OC', (), {
                     'task_run_id': r[0], 'outcome_fact_id': f"ocf-{r[0]}",
                     'outcome': Outcome(r[1]) if r[1] else Outcome.UNDETERMINED,
                     'prediction': Prediction(r[2]) if r[2] else Prediction.UNDETERMINED,
                     'resolver_status': r[3], 'validation_result': r[4],
-                })()}
+                    'confusion_label': Confusion(r[5]) if r[5] else None,
+                    'benchmark_item_id': r[6], 'target_finding_id': r[7],
+                    'gt_label': ExpectedLabel(r[8]) if r[8] else None,
+                    'case_results': _cr,
+                })()
+                facts[r[0]] = {"outcome": _oc, "case_results": _cr}
             # tool action facts
             cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
@@ -349,14 +390,18 @@ def run(evaluation_id: str) -> dict:
                         'duration': r[3], 'duration_ms': r[3], 'time_valid': bool(r[4]),
                     })()
             # knowledge facts
-            cur.execute("SELECT task_run_id, access, delivery, mount_status, evidence_json FROM knowledge_interaction_fact WHERE evaluation_id=%s", (evaluation_id,))
+            cur.execute("SELECT task_run_id, access, delivery, mount_status, access_event_count, "
+                        "read_event_count, successful_read_count, evidence_json "
+                        "FROM knowledge_interaction_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
                 if r[0] in facts:
-                    # 从 evidence_json 恢复 interactions（retry/重载路径必须取回，否则 AI 分析无输入）
-                    ev = json.loads(r[4]) if r[4] and isinstance(r[4], str) else (r[4] or {})
+                    ev = json.loads(r[7]) if r[7] and isinstance(r[7], str) else (r[7] or {})
                     _interactions = ev.get("interactions", []) if isinstance(ev, dict) else []
                     facts[r[0]]["knowledge"] = type('KN', (), {
                         'access': bool(r[1]), 'delivery': bool(r[2]), 'mount_status': r[3],
+                        'access_event_count': r[4] or 0,
+                        'read_event_count': r[5] or 0,
+                        'successful_read_count': r[6] or 0,
                         'interactions': _interactions,
                     })()
         _db_query(_load_facts_from_db)
@@ -364,9 +409,8 @@ def run(evaluation_id: str) -> dict:
         _set_status_short(evaluation_id, "PARSING")
         from concurrent.futures import ThreadPoolExecutor
 
-        def _parse_one(e):
-            """解析单个 trace + resolve，返回 (tr, facts_dict, bench)。"""
-            from concurrent.futures import ThreadPoolExecutor
+        def _parse_trace(e):
+            """Phase 1: 解析 trace → events + session（无 LLM，快）。"""
             cond = Condition.KG if e["condition"] == "KG" else Condition.NOGK
             biid = e.get("benchmark_item_id") or None
             tr = TaskRun(
@@ -378,7 +422,6 @@ def run(evaluation_id: str) -> dict:
             )
             src = e["source_uri"]
             local_path = _local_paths.get(src) or _resolve_trace_path(src, e.get("project_id", ""), e["task_id"])
-            # 诊断日志：trace 路径 + 是否存在 + 类型
             import os as _os
             exists = _os.path.exists(local_path)
             is_dir = _os.path.isdir(local_path) if exists else False
@@ -389,7 +432,12 @@ def run(evaluation_id: str) -> dict:
             elif exists and is_dir:
                 try:
                     files_in_dir = [f for f in _os.listdir(local_path) if f.endswith((".jsonl", ".db"))]
-                    size = sum(_os.path.getsize(_os.path.join(local_path, f)) for f in files_in_dir)
+                    if not files_in_dir:
+                        for sub in _os.listdir(local_path):
+                            sub_path = _os.path.join(local_path, sub)
+                            if _os.path.isdir(sub_path):
+                                files_in_dir += [f"{sub}/{f}" for f in _os.listdir(sub_path) if f.endswith((".jsonl", ".db"))]
+                    size = sum(_os.path.getsize(_os.path.join(local_path, f)) for f in files_in_dir) if files_in_dir else 0
                 except: files_in_dir = []
             print(f"[PARSE] {cond.value} task={e['task_id']} kind={e.get('trace_kind')} "
                   f"path={local_path} exists={exists} is_dir={is_dir} size={size}B", flush=True)
@@ -401,16 +449,22 @@ def run(evaluation_id: str) -> dict:
                                          "turing_session_id": "sess"}))
             print(f"[PARSE] {cond.value} events={len(events)}", flush=True)
             if not events:
-                print(f"[PARSE] ⚠ {cond.value} 解析出 0 个事件！path={local_path} files={files_in_dir if exists and is_dir else 'N/A'}", flush=True)
-            # 跨 JSONL 文件时按时间戳排序，确保事件顺序正确
+                print(f"[PARSE] ⚠ {cond.value} 解析出 0 个事件！path={local_path}", flush=True)
             events.sort(key=lambda e: (e.timestamp_ms or 0, e.event_id))
             session = parser.load_session({"trace_id": tr.trace_id, "source_uri": local_path})
             session["_events_ts"] = [ev.timestamp_ms for ev in events]
             bench = bench_by_task.get(e["task_id"]) or []
             if not bench:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
-            print(f"[PARSE] {cond.value} bench_items={len(bench)} starting resolve...", flush=True)
-            # ai_match_outcome（LLM）和 3 个 resolver 互相独立，并行执行
+            return {"tr": tr, "events": events, "session": session, "bench": bench, "src": src,
+                    "cond": cond}
+
+        def _resolve_trace(parsed):
+            """Phase 2: 漏洞匹配 + resolve（含 LLM，慢）。"""
+            from concurrent.futures import ThreadPoolExecutor
+            tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
+            bench = parsed["bench"]; cond = parsed["cond"]
+            print(f"[MATCH] {cond.value} bench_items={len(bench)} starting ai_match + resolve...", flush=True)
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
                 fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events)
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
@@ -420,36 +474,30 @@ def run(evaluation_id: str) -> dict:
                 kn = fut_kn.result()
                 ta = fut_ta.result()
                 rs = fut_rs.result()
-            print(f"[PARSE] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
+            print(f"[MATCH] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
             oc.case_results = case_results
-            # 构建 session 关系图（跨 session 关联漏洞挖掘链）
             import re as _re
             from collections import defaultdict as _dd
-            # 排除公共文件（所有 session 都可能读的）
             _EXCLUDE_FILES = {'athena.py', 'davinci_intf_init.c', 'urd_acc_ctrl.c', 'urd_feature.c',
                               'urd_init.c', 'pbl_urd_common.h', 'pbl_task_ctx.h', 'svm_addr_desc.h'}
             session_graph = {
-                'sessions': {},      # session_id → {files, facts, athena_qs}
-                'file_to_sessions': _dd(set),  # file → session_ids
-                'fact_to_sessions': _dd(set),  # fact_id → session_ids
-                'edges': _dd(set),  # session_id → related session_ids
+                'sessions': {}, 'file_to_sessions': _dd(set),
+                'fact_to_sessions': _dd(set), 'edges': _dd(set),
             }
             for ev in events:
                 sid = ev.session_id
                 if sid not in session_graph['sessions']:
                     session_graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
                 sg = session_graph['sessions'][sid]
-                # 1. SYSTEM_EVENT（queue-operation enqueue）里的 fact 引用
                 if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
                     refs = _re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json))
                     for fid in refs:
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             session_graph['fact_to_sessions'][fid].add(sid)
-                # 2. argo.memory get fXXX 命令
                 if ev.is_tool_call() and ev.tool_name == "bash":
                     cmd = str((ev.input_json or {}).get("command", ""))
                     if "argo.memory" in cmd and " get" in cmd:
@@ -460,9 +508,7 @@ def run(evaluation_id: str) -> dict:
                                 session_graph['fact_to_sessions'][fid].add(sid)
                     if 'athena' in cmd.lower() and 'ask' in cmd:
                         m = _re.search(r'ask\s+"([^"]{0,50})', cmd)
-                        if m:
-                            sg['athena_qs'].append(m.group(1))
-                    # 收集源文件
+                        if m: sg['athena_qs'].append(m.group(1))
                     for fm in _re.findall(r'(\w+\.(?:c|h|py|java))', cmd):
                         if fm not in _EXCLUDE_FILES:
                             sg['files'].add(fm)
@@ -473,19 +519,16 @@ def run(evaluation_id: str) -> dict:
                         if fm not in _EXCLUDE_FILES:
                             sg['files'].add(fm)
                             session_graph['file_to_sessions'][fm].add(sid)
-            # 3. 构建边：共享文件或 fact ID 的 session 互相关联
             for fid, sids in session_graph['fact_to_sessions'].items():
                 for s1 in sids:
                     for s2 in sids:
-                        if s1 != s2:
-                            session_graph['edges'][s1].add(s2)
+                        if s1 != s2: session_graph['edges'][s1].add(s2)
             for fm, sids in session_graph['file_to_sessions'].items():
                 if len(sids) > 1:
                     for s1 in sids:
                         for s2 in sids:
-                            if s1 != s2:
-                                session_graph['edges'][s1].add(s2)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}, e["source_uri"]
+                            if s1 != s2: session_graph['edges'][s1].add(s2)
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
         _local_paths = {}
@@ -493,9 +536,16 @@ def run(evaluation_id: str) -> dict:
             key = e["source_uri"]
             if key not in _local_paths:
                 _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
-        # 并行解析所有 trace（KG + No-KG 独立，无共享状态）
+        # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
-            results = list(pool.map(_parse_one, entries))
+            parsed = list(pool.map(_parse_trace, entries))
+        # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
+        # 所有 trace 同时启动；LLM 并发由 llm.py 信号量控制（每评测最多 6 个）
+        # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
+        _set_status_short(evaluation_id, "AI_MATCHING")
+        print(f"[EVAL] 漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）", flush=True)
+        with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
+            results = list(pool.map(_resolve_trace, parsed))
         for tr, f, src in results:
             task_runs.append(tr)
             facts[tr.task_run_id] = f
@@ -657,10 +707,8 @@ def run(evaluation_id: str) -> dict:
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
-    print(f"[EVAL] 调用 ai_narrative (LLM)...", flush=True)
-    report.narrative = ai_narrative(out["metric_results"], out["statistical_results"], hits)
-    print(f"[EVAL] ai_narrative 完成", flush=True)
-    # 取 KG 任务的 outcome（用于 AI 分析）
+
+    # 准备 ai_per_case_kg_analysis 和 ai_vuln_analysis 的输入（不依赖 LLM，先算好）
     kg_outcome_for_analysis = None
     for tr in task_runs:
         if tr.condition == Condition.KG:
@@ -672,16 +720,12 @@ def run(evaluation_id: str) -> dict:
             break
     kg_interactions = []
     for tr in task_runs:
-        # 只统计 KG 任务的介入，不统计 No-KG
         if tr.condition != Condition.KG:
             continue
         kf = facts.get(tr.task_run_id, {})
         kn = kf.get("knowledge")
         if kn and kn.interactions:
             kg_interactions.extend(kn.interactions)
-    baseline_cnt = sum(len(v) for v in bench_by_task.values())
-    # ai_knowledge_analysis 已删除（与 narrative/vuln_analysis 重复），省一次 LLM 调用
-    # AI 逐漏洞知识介入分析
     kg_case_results = []
     kg_session_graph = None
     for tr in task_runs:
@@ -690,9 +734,18 @@ def run(evaluation_id: str) -> dict:
             kg_case_results = kf.get("case_results", [])
             kg_session_graph = kf.get("session_graph")
             break
-    report.per_case_kg_analysis = ai_per_case_kg_analysis(kg_case_results, kg_interactions, bench_by_task, session_graph=kg_session_graph)
-    # AI 漏洞对比分析：Agent 提交的漏洞 vs 基线 case
-    report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
+
+    # 3 个 LLM 调用并行（ai_narrative / ai_per_case_kg_analysis / ai_vuln_analysis）
+    from concurrent.futures import ThreadPoolExecutor as _TP
+    print(f"[EVAL] 并行调用 3 个 LLM 分析 (ai_narrative + ai_per_case_kg + ai_vuln)...", flush=True)
+    with _TP(max_workers=3) as llm_pool:
+        fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
+        fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph)
+        fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
+        report.narrative = fut_narr.result()
+        report.per_case_kg_analysis = fut_pcka.result()
+        report.vuln_analysis = fut_vuln.result()
+    print(f"[EVAL] 3 个 LLM 分析完成", flush=True)
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
