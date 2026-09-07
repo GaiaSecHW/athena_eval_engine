@@ -65,6 +65,8 @@ class CreateRequest:
     evaluation_name: str | None = None
     benchmark_set_id: str = "BS001"
     vbench_project_name: str | None = None
+    benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
+    vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id（项目用 benchmark_set_id）
     entries: list = field(default_factory=list)  # [{task_id, condition, source_uri, benchmark_item_id}]
 
 
@@ -83,23 +85,48 @@ def _set_status_short(evaluation_id, status):
 
 def create(req: CreateRequest):
     """Stage 0：建 evaluation + snapshot（冻结）。每步用独立连接避免远程防火墙重置。"""
-    # 获取 V-Bench 基线 case 详情（含漏洞描述）
+    # 获取基线 case 详情（含漏洞描述）。数据源二选一：
+    #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
+    #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认漏洞（含漏洞与非漏洞两类）
     case_details = {}
     try:
-        from ..infrastructure.vbench_client import get_benchmark
-        bm = get_benchmark(req.benchmark_set_id)
-        for c in (bm.get("cases") or []):
-            cid = c.get("case_id") or c.get("id") or ""
-            if cid:
-                findings = c.get("findings") or []
-                desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
-                case_details[cid] = {
-                    "description": desc,
-                    "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
-                    "target_finding_id": c.get("target_finding_id") or "",
-                }
-    except Exception:
-        pass
+        if req.benchmark_source == "vuln_center":
+            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
+            print(f"[CREATE] 漏洞中心取基线: project={req.benchmark_set_id} task={req.vc_source_task_id}", flush=True)
+            bm = get_vuln_center_benchmark(req.benchmark_set_id, req.vc_source_task_id)
+            n_cases = len(bm.get("cases") or [])
+            print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    case_details[cid] = {
+                        "description": c.get("description") or "",
+                        "vulnerability_type": c.get("vulnerability_type") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                        "expected_label": c.get("expected_label") or "VULNERABLE",
+                    }
+        else:
+            from ..infrastructure.vbench_client import get_benchmark
+            print(f"[CREATE] V-Bench 取基线: set_id={req.benchmark_set_id}", flush=True)
+            bm = get_benchmark(req.benchmark_set_id)
+            n_cases = len(bm.get("cases") or [])
+            print(f"[CREATE] V-Bench 返回 {n_cases} 条 case", flush=True)
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    findings = c.get("findings") or []
+                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
+                    case_details[cid] = {
+                        "description": desc,
+                        "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                    }
+        print(f"[CREATE] case_details 构建完成: {len(case_details)} 条", flush=True)
+    except Exception as e:
+        import traceback as _tb
+        print(f"[CREATE] ⚠ 取基线数据失败: {e}", flush=True)
+        _tb.print_exc()
+        print(f"[CREATE] case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE", flush=True)
 
     # Step 1: benchmark_set
     conn = connect(autocommit=True)
@@ -109,15 +136,19 @@ def create(req: CreateRequest):
         conn.close()
 
     # Step 2: benchmark_items（含 case 描述存入 metadata_json）
+    # expected_label 优先取 case_details 里的（漏洞中心逐 case 标注），否则取 entry 级
     for e in req.entries:
         item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
         for bid in item_ids:
+            cd = case_details.get(bid) or {}
+            if not cd:
+                print(f"[CREATE] ⚠ benchmark_item {bid[:25]} 在 case_details 中未找到 → metadata 将为空", flush=True)
             conn = connect(autocommit=True)
             try:
                 fact_repo.insert_benchmark_item(conn.cursor(), bid, req.benchmark_set_id,
-                                                e["task_id"], e.get("expected_label", "VULNERABLE"),
-                                                e.get("target_finding_id"),
-                                                case_details.get(bid))
+                                                e["task_id"], cd.get("expected_label") or e.get("expected_label", "VULNERABLE"),
+                                                cd.get("target_finding_id") or e.get("target_finding_id"),
+                                                cd)
             finally:
                 conn.close()
 
@@ -134,7 +165,8 @@ def create(req: CreateRequest):
 
     # Step 4: evaluation_snapshot（独立连接）
     manifest = {"entries": req.entries, "manifest_hash": "mh",
-                "vbench_project_name": req.vbench_project_name}
+                "vbench_project_name": req.vbench_project_name,
+                "benchmark_source": req.benchmark_source}
     conn = connect(autocommit=True)
     try:
         conn.cursor().execute(
@@ -344,10 +376,32 @@ def run(evaluation_id: str) -> dict:
                 condition=cond, condition_source=ConditionSource.MANIFEST,
                 trace_valid=True, runtime_valid=True, benchmark_item_id=biid,
             )
-            local_path = _local_paths.get(e["source_uri"]) or _resolve_trace_path(e["source_uri"], e.get("project_id", ""), e["task_id"])
+            src = e["source_uri"]
+            local_path = _local_paths.get(src) or _resolve_trace_path(src, e.get("project_id", ""), e["task_id"])
+            # 诊断日志：trace 路径 + 是否存在 + 类型
+            import os as _os
+            exists = _os.path.exists(local_path)
+            is_dir = _os.path.isdir(local_path) if exists else False
+            size = 0
+            if exists and not is_dir:
+                try: size = _os.path.getsize(local_path)
+                except: pass
+            elif exists and is_dir:
+                try:
+                    files_in_dir = [f for f in _os.listdir(local_path) if f.endswith((".jsonl", ".db"))]
+                    size = sum(_os.path.getsize(_os.path.join(local_path, f)) for f in files_in_dir)
+                except: files_in_dir = []
+            print(f"[PARSE] {cond.value} task={e['task_id']} kind={e.get('trace_kind')} "
+                  f"path={local_path} exists={exists} is_dir={is_dir} size={size}B", flush=True)
+            if not exists:
+                print(f"[PARSE] ⚠ trace 文件不存在: {local_path} (source_uri={src})", flush=True)
             parser = _get_parser(local_path, e.get("trace_kind"))
+            print(f"[PARSE] {cond.value} parser={parser.__class__.__name__}", flush=True)
             events = list(parser.parse({"trace_id": tr.trace_id, "source_uri": local_path,
                                          "turing_session_id": "sess"}))
+            print(f"[PARSE] {cond.value} events={len(events)}", flush=True)
+            if not events:
+                print(f"[PARSE] ⚠ {cond.value} 解析出 0 个事件！path={local_path} files={files_in_dir if exists and is_dir else 'N/A'}", flush=True)
             # 跨 JSONL 文件时按时间戳排序，确保事件顺序正确
             events.sort(key=lambda e: (e.timestamp_ms or 0, e.event_id))
             session = parser.load_session({"trace_id": tr.trace_id, "source_uri": local_path})
@@ -355,6 +409,7 @@ def run(evaluation_id: str) -> dict:
             bench = bench_by_task.get(e["task_id"]) or []
             if not bench:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
+            print(f"[PARSE] {cond.value} bench_items={len(bench)} starting resolve...", flush=True)
             # ai_match_outcome（LLM）和 3 个 resolver 互相独立，并行执行
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
                 fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events)
@@ -365,6 +420,10 @@ def run(evaluation_id: str) -> dict:
                 kn = fut_kn.result()
                 ta = fut_ta.result()
                 rs = fut_rs.result()
+            print(f"[PARSE] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
+                  f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
+                  f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
+                  f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
             oc.case_results = case_results
             # 构建 session 关系图（跨 session 关联漏洞挖掘链）
             import re as _re
@@ -460,6 +519,7 @@ def run(evaluation_id: str) -> dict:
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
     _set_status_short(evaluation_id, "PAIRING")
     pairs = TaskPairMatcherImpl().match(task_runs)
+    print(f"[EVAL] 配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})", flush=True)
     pair_views: list[PairView] = []
     kg_access = kg_valid = kg_delivery = access = 0
     kg_access_events = kg_successful_reads = 0  # 交互级计数（M6 KDR 用）
@@ -510,11 +570,13 @@ def run(evaluation_id: str) -> dict:
     _db_query(_insert_pairs)
 
     _set_status_short(evaluation_id, "CALCULATING")
+    print(f"[EVAL] 开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}", flush=True)
     out = run_all_metrics(pair_views, kg_access=access, kg_valid=kg_valid,
                           kg_delivery=kg_delivery, access=access,
                           kg_access_events=kg_access_events, kg_successful_reads=kg_successful_reads,
                           kg_tool_calls=kg_tool_calls, total_tool_calls=total_tool_calls,
                           seed=42)
+    print(f"[EVAL] 主指标计算完成: {len(out.get('metric_results',[]))} 条", flush=True)
 
     # ===== Phase 4b: 分组计算指标（挖掘/验证各自独立）=====
     # 按 task_id 分组 pair_views，每组独立算指标
@@ -589,11 +651,15 @@ def run(evaluation_id: str) -> dict:
 
     # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
     _set_status_short(evaluation_id, "REPORTING")
+    print(f"[EVAL] 开始生成报告 + AI 分析...", flush=True)
     hits = diagnose(out["metric_results"], out["statistical_results"])
+    print(f"[EVAL] 诊断完成: {len(hits)} 条告警", flush=True)
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
+    print(f"[EVAL] 调用 ai_narrative (LLM)...", flush=True)
     report.narrative = ai_narrative(out["metric_results"], out["statistical_results"], hits)
+    print(f"[EVAL] ai_narrative 完成", flush=True)
     # 取 KG 任务的 outcome（用于 AI 分析）
     kg_outcome_for_analysis = None
     for tr in task_runs:
@@ -641,15 +707,30 @@ def run(evaluation_id: str) -> dict:
     # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）
     rj = render_json(report)
 
+    # 判断是否需要标记 COMPLETED_WITH_WARNINGS
+    _warnings = []
+    # LLM 不可用
+    if "LLM 不可用" in (report.narrative.get("conclusion") or "") or "LLM unavailable" in (report.narrative.get("summary") or ""):
+        _warnings.append("LLM_UNAVAILABLE")
+    # 指标 NA
+    na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"]
+    if na_metrics:
+        _warnings.append(f"NA_METRICS:{','.join(na_metrics)}")
+    final_status = "COMPLETED_WITH_WARNINGS" if _warnings else "COMPLETED"
+    if _warnings:
+        print(f"[EVAL] 评测完成（带警告）: {', '.join(_warnings)}", flush=True)
+    else:
+        print(f"[EVAL] 评测完成", flush=True)
+
     # ===== Phase 7: 写入报告 + 标记完成（短连接）=====
     def _finalize(cur):
         cur.execute("INSERT IGNORE INTO evaluation_report (report_id, evaluation_id, calculation_run_id, snapshot_id, "
                     "report_version, report_config_json, status) VALUES (%s,%s,%s,%s,'1.0',%s,'READY')",
                     (f"rp-{evaluation_id}", evaluation_id, cr_id, f"snap-{evaluation_id}", rj))
-        _set_status(cur, evaluation_id, "COMPLETED")
+        _set_status(cur, evaluation_id, final_status)
     _db_query(_finalize)
 
-    return {"status": "COMPLETED", "metrics": len(out["metric_results"]),
+    return {"status": final_status, "metrics": len(out["metric_results"]),
             "statistical_results": len(out["statistical_results"]),
             "report_uri": f"report/{evaluation_id}", "pair_count": len(pair_views)}
 

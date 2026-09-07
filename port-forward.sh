@@ -42,6 +42,10 @@ start_forward svc/vbench-api 18083:80 &
 PIDS+=($!)
 echo "  svc/vbench-api -> localhost:18083"
 
+start_forward svc/secflow-platform-vuln 18084:80 &
+PIDS+=($!)
+echo "  svc/secflow-platform-vuln -> localhost:18084"
+
 echo ""
 echo "=== 端口映射已启动（自动重连），Ctrl+C 停止 ==="
 echo "hint: kubectl -n secflow-ns get svc"

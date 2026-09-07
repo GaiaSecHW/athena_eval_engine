@@ -24,6 +24,8 @@ class CreateRequest(BaseModel):
     evaluation_name: str | None = None
     benchmark_set_id: str = "BS001"
     vbench_project_name: str | None = None
+    benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
+    vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id
     entries: list[dict]
 
 
@@ -46,6 +48,8 @@ def create_evaluation(req: CreateRequest):
                                    evaluation_name=req.evaluation_name,
                                    benchmark_set_id=req.benchmark_set_id,
                                    vbench_project_name=req.vbench_project_name,
+                                   benchmark_source=req.benchmark_source,
+                                   vc_source_task_id=req.vc_source_task_id,
                                    entries=req.entries))
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
@@ -263,6 +267,7 @@ def get_report(evaluation_id: str):
             manifest = cfg.get("manifest", {})
             entries = manifest.get("entries", [])
             r["vbench_project_name"] = manifest.get("vbench_project_name", "")
+            r["benchmark_source"] = manifest.get("benchmark_source", "vbench_zip")
             r["entries_info"] = [{"condition": e.get("condition"), "project_name": e.get("project_name", ""),
                                   "task_name": e.get("task_name", ""),
                                   "task_id": e.get("task_id", ""),
@@ -295,8 +300,30 @@ def get_report(evaluation_id: str):
                     "WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)", (evaluation_id,))
         import json as _j
         case_results = []
-        for bid, label, meta in cur.fetchall():
+        raw_rows = cur.fetchall()
+        # 如果 metadata_json 全是 NULL（旧评测/取基线失败），从漏洞中心补取
+        _vc_fallback = {}
+        has_null_meta = any(r[2] is None for r in raw_rows)
+        bsrc = manifest.get("benchmark_source", "vbench_zip") if srow else "vbench_zip"
+        if has_null_meta and bsrc == "vuln_center":
+            try:
+                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+                vc_proj = erow[1] if erow else None  # benchmark_set_id = project_id
+                vc_task = manifest.get("vc_source_task_id")
+                print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={vc_task}", flush=True)
+                vc_bm = get_vuln_center_benchmark(vc_proj, vc_task)
+                for c in (vc_bm.get("cases") or []):
+                    _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
+            except Exception as e:
+                print(f"[REPORT] 漏洞中心补取失败: {e}", flush=True)
+        for bid, label, meta in raw_rows:
             md = _j.loads(meta) if isinstance(meta, str) else (meta or {})
+            if not md and bid in _vc_fallback:
+                vc_c = _vc_fallback[bid]
+                md = {"description": vc_c.get("description", ""),
+                      "vulnerability_type": vc_c.get("vulnerability_type", "")}
+                if not label or label == "VULNERABLE":
+                    label = vc_c.get("expected_label", label)
             case_results.append({"case_id": bid, "expected_label": label or "NA",
                                 "description": md.get("description", ""),
                                 "vulnerability_type": md.get("vulnerability_type", "")})

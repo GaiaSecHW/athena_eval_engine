@@ -24,6 +24,9 @@ DB_PORT = int(os.environ.get("EVAL_MYSQL_PORT", DB.get("port", 3306)))
 DB_USER = os.environ.get("EVAL_MYSQL_USER", DB.get("user", "root"))
 DB_PASSWORD = os.environ.get("EVAL_MYSQL_PASSWORD", DB.get("password", ""))
 DB_DATABASE = os.environ.get("EVAL_MYSQL_DATABASE", DB.get("database", "athena_eval"))
+# SSL 开关: MySQL 9.x 默认 caching_sha2_password，无 SSL 时 pymysql 需 RSA 加密密码 → 依赖 cryptography。
+# 默认 False(开 SSL)，使密码在 TLS 隧道内传输，绕过 RSA。dev port-forward 遇防火墙 SSL reset 时设 true。
+DB_SSL_DISABLED = os.environ.get("EVAL_MYSQL_SSL_DISABLED", str(DB.get("ssl_disabled", False))).lower() == "true"
 SCHEMA_SQL = os.environ.get("EVAL_SCHEMA_SQL", DB.get("schema_sql", "schema.sql"))
 
 # LLM
@@ -35,6 +38,10 @@ LLM_API_KEY = os.environ.get("EVAL_LLM_API_KEY", LLM.get("api_key", ""))
 # V-Bench
 VBENCH = _cfg.get("vbench", {})
 VBENCH_API_URL = os.environ.get("VBENCH_API_URL", VBENCH.get("api_url", "https://secflow.ai.icsl.huawei.com/vbench/api/v1"))
+
+# 漏洞中心（Chimera，secflow-platform-vuln）— V-Bench 测评集的原始数据源
+VULN_CENTER = _cfg.get("vuln_center", {})
+VULN_CENTER_API_URL = os.environ.get("EVAL_VULN_CENTER_API_URL", VULN_CENTER.get("api_url", "http://secflow-platform-vuln:80/api/vuln/cases"))
 
 # 平台 API
 PLATFORM = _cfg.get("platform", {})

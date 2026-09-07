@@ -3,7 +3,7 @@ from __future__ import annotations
 import os
 import time
 import pymysql
-from ..config_loader import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE
+from ..config_loader import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE, DB_SSL_DISABLED
 
 
 DEFAULTS = {
@@ -31,7 +31,7 @@ def connect(autocommit: bool = False):
         "connect_timeout": 30,
         "read_timeout": 600,
         "write_timeout": 600,
-        "ssl_disabled": True,  # prevent firewall SSL reset
+        "ssl_disabled": DB_SSL_DISABLED,  # 可配: dev port-forward 防 SSL reset 时设 true; k8s 默认 false 走 TLS 隧道
     }
     last_err = None
     for attempt in range(1, MAX_RETRIES + 1):

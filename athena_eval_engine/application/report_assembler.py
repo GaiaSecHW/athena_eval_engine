@@ -183,12 +183,15 @@ def ai_narrative(metrics: list, stats: list, hits: list) -> dict:
                     refs.append({"source": "metric_result", "metric_id": mid, "field": "estimate", "value": m.estimate})
             result["evidence_refs"] = refs
         return result
-    except Exception:
+    except Exception as e:
+        import traceback as _tb
+        print(f"[REPORT] ai_narrative LLM 失败，降级规则生成: {e}", flush=True)
+        _tb.print_exc()
         m1 = m_by.get("M1")
         summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
         return {
             "summary": summary + "(LLM unavailable, rule-based)",
-            "conclusion": "LLM 不可用，无法生成分析结论。请检查 LLM 配置。",
+            "conclusion": f"LLM 不可用，无法生成分析结论。错误：{e}",
             "limitations": ["SINGLE_PAIRED_RUN", "LLM unavailable"],
             "evidence_refs": [{"source": "metric_result", "metric_id": "M1", "field": "estimate", "value": m1.estimate if m1 else None}],
         }
@@ -247,7 +250,10 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
     try:
         result = llm_mod.chat(prompt, temperature=0, timeout=120)
         return result.strip()
-    except Exception:
+    except Exception as e:
+        import traceback as _tb
+        print(f"[REPORT] ai_summary LLM 失败，降级规则生成: {e}", flush=True)
+        _tb.print_exc()
         parts = []
         parts.append("基准漏洞 " + str(baseline_count) + " 个")
         if kg_oc.get("outcome"):
@@ -352,7 +358,10 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
             "suggestion": result.get("suggestion", ""),
             "interactions_analysis": result.get("interactions_analysis", []),
         }
-    except Exception:
+    except Exception as e:
+        import traceback as _tb
+        print(f"[REPORT] ai_per_case_kg_analysis LLM 失败，降级规则生成: {e}", flush=True)
+        _tb.print_exc()
         oc = outcome.get("outcome") if outcome else "UNKNOWN"
         analysis = "知识查询 " + str(total_calls) + " 次，结果为 " + oc + "（LLM 不可用，规则生成）"
         return {"analysis": analysis, "suggestion": "检查知识内容是否与漏洞检测目标相关。",

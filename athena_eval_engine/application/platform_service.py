@@ -382,21 +382,42 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
     pod = _get_sched_pod()
     is_file = any(remote_path.endswith(ext) for ext in (".db", ".jsonl", ".sqlite", ".sqlite3"))
     if not is_file:
-        # session 目录：kubectl tar 整个目录
+        # session 目录：kubectl tar 整个目录 → 流式写临时文件 → extractall
         name = os.path.basename(remote_path.rstrip("/"))
         local = os.path.join(local_dir, f"{h}_{name}")
         if os.path.exists(local) and os.path.isdir(local):
             return local
         parent = os.path.dirname(remote_path.rstrip("/"))
         base = os.path.basename(remote_path.rstrip("/"))
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--", "tar", "cf", "-", "-C", parent, base]
-        r = subprocess.run(cmd, capture_output=True, timeout=180, env=env)
-        if not r.stdout:
-            raise FileNotFoundError(f"kubectl tar 失败：{remote_path}")
-        import tarfile, io
-        with tarfile.open(fileobj=io.BytesIO(r.stdout)) as tf:
-            # filter='data' 跳过符号链接等危险文件（session 目录含 .claude/skills 符号链接）
-            tf.extractall(local_dir, filter="data")
+        import tarfile, tempfile
+        # --ignore-failed-read：跳过权限/符号链接等读不了的文件，避免 tar 流中断
+        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+               "tar", "cf", "-", "--ignore-failed-read", "-C", parent, base]
+        env = dict(os.environ, MSYS_NO_PATHCONV="1")
+        for attempt in range(2):
+            tmp_tar = os.path.join(local_dir, f"{h}_tmp.tar")
+            try:
+                # stdout 直接写文件（不进内存），避免大目录 OOM / 截断
+                with open(tmp_tar, "wb") as tmp:
+                    r = subprocess.run(cmd, stdout=tmp, stderr=subprocess.PIPE,
+                                       timeout=300, env=env)
+                if not os.path.getsize(tmp_tar):
+                    raise FileNotFoundError(f"kubectl tar 失败（空输出）：{remote_path}; stderr={r.stderr.decode('utf-8','replace')[:300]}")
+                with tarfile.open(tmp_tar) as tf:
+                    # filter='data' 跳过符号链接等危险文件（session 目录含 .claude/skills 符号链接）
+                    tf.extractall(local_dir, filter="data")
+                break  # 成功
+            except tarfile.ReadError as e:
+                # tar 流截断 → 重试一次
+                if attempt == 0:
+                    print(f"[TRACE FETCH] tar 截断，重试：{remote_path}: {e}")
+                    try: os.remove(tmp_tar)
+                    except OSError: pass
+                    continue
+                raise FileNotFoundError(f"kubectl tar 截断（重试仍失败）：{remote_path}: {e}")
+            finally:
+                try: os.remove(tmp_tar)
+                except OSError: pass
         # tar 解压后文件在 local_dir/base/，重命名为 local
         extracted = os.path.join(local_dir, base)
         if os.path.exists(extracted) and extracted != local:

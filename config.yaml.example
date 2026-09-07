@@ -22,6 +22,11 @@ llm:
 vbench:
   api_url: "http://127.0.0.1:18083/api/v1"  # dev: port-forward; k8s: http://vbench-api.secflow-ns.svc.cluster.local/api/v1
 
+# 漏洞中心（Chimera）— V-Bench 测评集的原始数据源，可作为基线数据源二选一
+vuln_center:
+  api_url: "http://secflow.ai.icsl.huawei.com/api/vuln/cases"  # dev: 外部 ingress; k8s: http://secflow-platform-vuln:80/api/vuln/cases
+  # token 复用上方 platform_token（同一平台鉴权）
+
 # 平台 API（项目/任务/trace 发现）
 platform:
   project_api: "http://127.0.0.1:18081"

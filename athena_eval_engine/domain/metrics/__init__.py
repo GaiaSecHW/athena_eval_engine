@@ -279,8 +279,10 @@ def _calc_delta_metric(mid, field, pairs, *, seed=42, unit="tokens"):
     n = len(deltas)
     med, q1, q3, iqr = _median_iqr(deltas)
     if n == 0:
+        # field="delta_token"/"delta_steps"/"delta_time" → TOKEN/STEP/TIME_INVALID
+        _suffix = field.split('_')[1].upper().replace("STEPS", "STEP")
         return (MetricResult(mid, None, unit, 0, "delta_valid", calculation_status=NA,
-                             reason_code=f"{mid.split('_')[1]}_INVALID".replace("TOKEN","TOKEN").replace("STEPS","STEP").replace("TIME","TIME"), method={}),
+                             reason_code=f"{_suffix}_INVALID", method={}),
                 [StatisticalResult(mid, "wilcoxon_signed_rank", testing_tier="SECONDARY",
                                    status=NA, reason_code="INSUFFICIENT_PAIRS")])
     br = paired_bootstrap(pairs, lambda ps: _median_iqr([getattr(p, field) for p in ps if getattr(p, field) is not None])[0],
