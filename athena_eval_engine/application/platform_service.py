@@ -407,14 +407,26 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
     local = os.path.join(local_dir, f"{h}_{name}")
     if os.path.exists(local):
         # 校验完整性：用 sqlite3 打开测试
+        import sqlite3 as _sql
+        _conn = None
         try:
-            import sqlite3 as _sql
             _conn = _sql.connect(local)
             _conn.execute("SELECT COUNT(*) FROM sqlite_master")
             _conn.close()
             return local
-        except:
-            os.remove(local)  # 截断的缓存，删掉重新拉
+        except Exception:
+            # 确保关闭 SQLite 连接，否则文件被锁 os.remove 会失败
+            if _conn:
+                try:
+                    _conn.close()
+                except Exception:
+                    pass
+            try:
+                os.remove(local)  # 截断的缓存，删掉重新拉
+            except OSError:
+                # 文件仍被锁（前次进程残留），改用新文件名避免冲突
+                import time as _time
+                local = os.path.join(local_dir, f"{h}_{int(_time.time())}_{name}")
     cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--", "cat", remote_path]
     r = subprocess.run(cmd, capture_output=True, timeout=300, env=env)
     if not r.stdout:
