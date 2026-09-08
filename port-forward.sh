@@ -3,6 +3,7 @@
 # 用法：bash port-forward.sh    Ctrl+C 停止
 
 NS="secflow-ns"
+export PATH="$HOME/.local/bin:$PATH"
 
 echo "=== 启动端口映射（自动重连） ==="
 
