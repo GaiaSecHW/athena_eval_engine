@@ -22,7 +22,7 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # 秒，重试间隔
 
 # SSE 流式超时（秒）
-FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟
+FIRST_TOKEN_TIMEOUT = 120   # 首 token 超时：2 分钟
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 
 # 每个评测任务内 LLM 并发上限（信号量）
@@ -75,7 +75,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
     conn = None
     try:
         # ── Phase 1: 发请求，429 限流持续重试，拿到 200 响应头 ──
-        while True:
+        # ── Phase 1: 发请求，429 限流重试（最多 500 次），首 token 超时也重试 ──
+        for _attempt in range(500):
             conn = http.client.HTTPConnection(host, port, timeout=FIRST_TOKEN_TIMEOUT)
             try:
                 conn.request("POST", path, body=body, headers=headers)
@@ -83,8 +84,11 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
             except (socket.timeout, TimeoutError) as e:
                 conn.close()
                 conn = None
-                print(f"[LLM] 首 token 超时（连接/请求/响应头阶段, {FIRST_TOKEN_TIMEOUT}s）: {e}", flush=True)
-                raise RuntimeError(f"LLM 首 token 超时（{FIRST_TOKEN_TIMEOUT}s）: 服务器未在 5 分钟内响应")
+                print(f"[LLM] 首 token 超时（{FIRST_TOKEN_TIMEOUT}s, attempt {_attempt+1}/500）: {e}", flush=True)
+                if _attempt < 499:
+                    time.sleep(RETRY_DELAY)
+                    continue
+                raise RuntimeError(f"LLM 首 token 超时（{FIRST_TOKEN_TIMEOUT}s × 500 次）")
             status = resp.status
             if status == 429:
                 retry_after = resp.getheader("Retry-After")

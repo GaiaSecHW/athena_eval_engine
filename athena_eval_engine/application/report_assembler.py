@@ -510,6 +510,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         if related_sessions and sampled_interactions:
             case_interactions = [iv for iv in sampled_interactions
                                  if iv.get("session_id", "") in related_sessions]
+        elif not matched_fid:
+            # case 未匹配（FN/FP）→ 没有关联的 finding → 无法确定哪些交互属于此 case
+            case_interactions = []
         else:
             case_interactions = sampled_interactions
 

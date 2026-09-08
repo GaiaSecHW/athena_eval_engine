@@ -201,7 +201,9 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
     # 1 对 1 对比：每个 (finding, baseline) 对独立判断 true/false
     # 先按文件名预筛，只发文件/函数有交集的对（避免 token 超限）
+    # 如果基线没有 source_file/function（V-Bench 模式），跳过预筛全发
     import os as _os
+    has_source_info = any((b.metadata or {}).get("source_file") or (b.metadata or {}).get("source_function") for b in benchmarks)
     pairs = []
     for fi, f in enumerate(findings):
         f_text = " ".join(str(f.get(k, "")) for k in ("title", "source", "sink", "vuln_type"))
@@ -210,13 +212,24 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             b_file = md.get("source_file") or ""
             b_func = md.get("source_function") or ""
             b_file_name = _os.path.basename(b_file) if b_file else ""
-            # 文件名或函数名在 finding 文本中出现 → 有交集，加入对比
-            if (b_file_name and b_file_name in f_text) or (b_func and b_func in f_text):
+            if has_source_info:
+                # 有 source 信息：按文件名/函数名预筛
+                if (b_file_name and b_file_name in f_text) or (b_func and b_func in f_text):
+                    pairs.append({"finding_idx": fi, "baseline_idx": bi,
+                        "baseline": {"case_id": b.benchmark_item_id or "",
+                                    "vulnerability_type": md.get("vulnerability_type", ""),
+                                    "description": md.get("description", "")[:300],
+                                    "source_file": b_file, "source_function": b_func},
+                        "finding": {"title": f["title"][:200], "vuln_type": f["vuln_type"],
+                                    "description": (f.get("description") or "")[:300],
+                                    "source": f.get("source", ""), "sink": f.get("sink", "")}})
+            else:
+                # 无 source 信息（V-Bench 模式）：全发，不做预筛
                 pairs.append({"finding_idx": fi, "baseline_idx": bi,
                     "baseline": {"case_id": b.benchmark_item_id or "",
                                 "vulnerability_type": md.get("vulnerability_type", ""),
                                 "description": md.get("description", "")[:300],
-                                "source_file": b_file, "source_function": b_func},
+                                "source_file": "", "source_function": ""},
                     "finding": {"title": f["title"][:200], "vuln_type": f["vuln_type"],
                                 "description": (f.get("description") or "")[:300],
                                 "source": f.get("source", ""), "sink": f.get("sink", "")}})
@@ -232,11 +245,12 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 "# 角色\n"
                 "你是漏洞匹配判定器。判断每对 finding 和 baseline 是否是同一个漏洞。\n\n"
                 "# 判断规则\n"
-                "1. source 和 sink 必须完全匹配：finding 的 source 和 sink 都必须与 baseline 的 source_file 和 source_function 对应（文件名相同 + 函数名相同）\n"
-                "2. 配置类漏洞无 source 时，sink 必须与 baseline 的 source_file 和 source_function 完全匹配\n"
-                "3. 漏洞行为一致：描述的漏洞行为和利用方式吻合\n"
-                "4. 仅漏洞类型相同但文件/函数不同的，不是同一个漏洞\n"
-                "5. 每个 baseline 只能匹配一个 finding\n\n"
+                "1. 如果基线有 source_file 和 source_function：source 和 sink 必须完全匹配（文件名相同 + 函数名相同）\n"
+                "2. 如果基线没有 source_file（配置类或无文件信息）：按漏洞类型和描述判断是否同一个漏洞\n"
+                "3. 配置类漏洞无 source 时，按 sink 所在文件和函数判断\n"
+                "4. 漏洞行为一致：描述的漏洞行为和利用方式吻合\n"
+                "5. 仅漏洞类型相同但功能/文件不同的，不是同一个漏洞\n"
+                "6. 每个 baseline 只能匹配一个 finding\n\n"
                 "# 输出格式\n"
                 "只返回 JSON 布尔数组，不要任何额外文字。每个对返回 true 或 false：\n"
                 "[true, false, true] 表示第 0 对是同一个漏洞，第 1 对不是，第 2 对是\n"

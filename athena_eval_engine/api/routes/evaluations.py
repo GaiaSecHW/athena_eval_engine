@@ -155,15 +155,33 @@ def delete_evaluation(evaluation_id: str):
     try:
         cur = conn.cursor()
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        tables = [
-            "statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+        # 用 evaluation_id 的表
+        eid_tables = [
+            "statistical_result", "metric_result",
+            "pair_derived_fact", "task_pair",
             "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
             "tool_action_fact", "resource_fact", "task_run", "trace_source",
-            "evaluation_report", "evaluation_population_snapshot", "evaluation_calculation_run",
-            "evaluation_snapshot", "evaluation",
+            "evaluation_report",
         ]
-        for t in tables:
-            cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
+        for t in eid_tables:
+            try:
+                cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
+            except Exception as e:
+                # statistical_result / metric_result 用 calculation_run_id
+                if "Unknown column" in str(e):
+                    cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}%",))
+                else:
+                    raise
+        # 用 calculation_run_id 的表
+        cr_tables = ["evaluation_population_snapshot", "evaluation_calculation_run"]
+        for t in cr_tables:
+            try:
+                cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}%",))
+            except Exception:
+                pass
+        # 最后删 snapshot + evaluation
+        cur.execute("DELETE FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
+        cur.execute("DELETE FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
         print(f"[DELETE] 评测 {evaluation_id} 已删除", flush=True)
     finally:

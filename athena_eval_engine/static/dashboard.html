@@ -539,7 +539,7 @@ function renderReport(d){
           kgHtml+="<div style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px'>原始知识交互（"+ivs.length+" 条）</div>";
           ivs.forEach(function(iv,i){
             kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>["+(i+1)+"] "+(iv.tool||"")+"</div>";
+            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>问题"+(i+1)+"："+(iv.tool||"")+"</div>";
             // 优先显示解析后的可读文本（argo: command_parsed/output_parsed, turing: question/answer），原始 JSON 折叠
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
@@ -878,7 +878,7 @@ async function renderRunConf(){
   <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':((kgM||kgV)&&(nogkM||nogkV)&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（挖掘/验证需对应），请选同类型</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
   <div class="st" id="run-st"></div>
   <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完两侧 trace"}</button>`;
-  if(sel.bsrc==='vuln_center'&&!sel.vcProj){filterVcList();}
+  if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
   else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
 }
 function switchBsrc(s){sel.bsrc=s;renderRunConf();}
