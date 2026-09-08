@@ -459,6 +459,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "command_parsed": _parse_kg_command(iv.get("tool", ""), full_cmd),
                 "answer": result_output,
                 "output_parsed": _parse_kg_output(result_output),
+                "session_id": iv.get("session_id", ""),
             }
             item_size = len(item["tool"]) + len(item["command"]) + len(item["answer"])
             if total_size + item_size > MAX_PROMPT_SIZE:
@@ -480,6 +481,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 continue
             question = f"查询知识(athena)"
             answer = output[:200]
+            item = {
+                "tool": tool,
+                "command": "",
+                "command_parsed": question,
+                "answer": answer,
+                "output_parsed": _parse_kg_output(answer),
+                "session_id": iv.get("session_id", ""),
+            }
             item_size = len(item["tool"]) + len(question) + len(answer)
             if total_size + item_size > MAX_PROMPT_SIZE:
                 break
