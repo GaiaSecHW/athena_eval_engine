@@ -17,6 +17,37 @@ from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
 # 最多 3 个评测同时运行，其余排队等待
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="eval")
+_TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED"}
+
+
+def _record_background_failure(evaluation_id: str, error: Exception, source: str) -> None:
+    """Mark an in-progress evaluation failed without clobbering a final report.
+
+    A late exception can occur after ``run()`` has persisted its report and
+    transitioned the evaluation to a terminal state.  In that case the report
+    is usable; overwriting the state with FAILED makes reopening it impossible.
+    """
+    from ...infrastructure.database import connect
+    err_msg = str(error)[:500]
+    conn = None
+    try:
+        conn = connect(autocommit=True)
+        cur = conn.cursor()
+        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        phase = row[0] if row else "UNKNOWN"
+        if phase in _TERMINAL_EVALUATION_STATUSES:
+            print(f"[{source}] 忽略终态后的异常: {evaluation_id} status={phase}: {err_msg}", flush=True)
+            return
+        print(f"[{source}] {evaluation_id} at {phase}: {err_msg}", flush=True)
+        cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
+                    "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) "
+                    "WHERE evaluation_id=%s", (phase, err_msg, evaluation_id))
+    except Exception as db_error:
+        print(f"[{source}] 记录失败状态失败: {db_error}", flush=True)
+    finally:
+        if conn:
+            conn.close()
 
 
 class CreateRequest(BaseModel):
@@ -70,26 +101,12 @@ def resume_stuck_evaluations():
 
 def _run_bg_resume(evaluation_id: str):
     """续跑单个评测（与 _run_bg 相同，但不设 RUNNING——保留原状态给 run() 覆盖）。"""
-    from ...infrastructure.database import connect
     try:
         es.run(evaluation_id)
     except Exception as e:
         import traceback
         traceback.print_exc()
-        err_msg = str(e)[:500]
-        print(f"[EVAL RESUME FAILED] {evaluation_id}: {err_msg}", flush=True)
-        try:
-            conn = connect(autocommit=True)
-            cur = conn.cursor()
-            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-            row = cur.fetchone()
-            phase = row[0] if row else "UNKNOWN"
-            cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
-                        "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) "
-                        "WHERE evaluation_id=%s", (phase, err_msg, evaluation_id))
-            conn.close()
-        except Exception:
-            pass
+        _record_background_failure(evaluation_id, e, "EVAL RESUME FAILED")
 
 
 @app.get("/health")
@@ -121,26 +138,9 @@ def create_evaluation(req: CreateRequest):
             try:
                 es.run(req.evaluation_id)
             except Exception as e:
-                # 后台失败 → 记录当前阶段 + 错误 + 标记 FAILED
                 import traceback
-                err_msg = str(e)
                 traceback.print_exc()
-                # 查当前在哪个阶段
-                conn = connect(autocommit=True)
-                phase = "UNKNOWN"
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (req.evaluation_id,))
-                    row = cur.fetchone()
-                    if row: phase = row[0]
-                except: pass
-                print(f"[EVAL FAILED] {req.evaluation_id} at {phase}: {err_msg}")
-                try:
-                    cur = conn.cursor()
-                    cur.execute("UPDATE evaluation SET evaluation_status='FAILED', evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) WHERE evaluation_id=%s",
-                                (phase, err_msg[:500], req.evaluation_id))
-                finally:
-                    conn.close()
+                _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
         _executor.submit(_run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -294,23 +294,8 @@ def retry_evaluation(evaluation_id: str):
                 es.run(evaluation_id)
             except Exception as e:
                 import traceback
-                err_msg = str(e)
                 traceback.print_exc()
-                conn = _connect(autocommit=True)
-                phase = "UNKNOWN"
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-                    row = cur.fetchone()
-                    if row: phase = row[0]
-                except: pass
-                print(f"[EVAL RETRY FAILED] {evaluation_id} at {phase}: {err_msg}")
-                try:
-                    cur = conn.cursor()
-                    cur.execute("UPDATE evaluation SET evaluation_status='FAILED', evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) WHERE evaluation_id=%s",
-                                (phase, err_msg[:500], evaluation_id))
-                finally:
-                    conn.close()
+                _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
         _executor.submit(_run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
