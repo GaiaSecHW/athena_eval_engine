@@ -458,6 +458,7 @@ function renderReport(d){
   // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
   const callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
   const resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
+  const noResponse=Math.max(0,callCount-resultCount);
   const kgActive=(kgAccess!==null&&kgAccess>0)||callCount>0;
   let kgHtml="";
   // 概要
@@ -693,7 +694,11 @@ function renderReport(d){
       ${_diagnostics(g.diagnostic_hits||h)}
       <div class="card" style="margin-bottom:16px">
         <h3>🧠 ${g.label} — 知识图谱介入情况</h3>
-        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)?buildKnowledgeHtml(g):'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱分析；请重跑评测以生成此数据。</div>'}
+        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
+          ?buildKnowledgeHtml(g)
+          :mg.length===1
+            ?buildKnowledgeHtml(null)
+            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱分析；请重跑评测以生成此数据。</div>'}
       </div>
     </div>`).join("");
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
