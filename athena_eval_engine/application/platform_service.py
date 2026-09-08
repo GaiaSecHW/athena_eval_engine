@@ -6,11 +6,16 @@ trace 文件：k8s 部署时 DATA_ROOT 直接挂载可读；dev 时 kubectl exec
 from __future__ import annotations
 import glob
 import json
+import logging
 import os
+import re
 import shutil
 import subprocess
+import threading
+import time
 import urllib.request
-from ..config_loader import PROJECT_API, SCHEDULE_API, PLATFORM_TOKEN, DATA_ROOT
+from urllib.parse import urlencode
+from ..config_loader import PROJECT_API, SCHEDULE_API, VULN_API_URL, PLATFORM_TOKEN, DATA_ROOT
 
 # k8s 部署时 /data 直接挂载；dev 时 DATA_ROOT 不存在 → 走 kubectl exec
 _K8S_MODE = os.path.isdir(DATA_ROOT)
@@ -42,6 +47,13 @@ def _find_kubectl() -> str:
 _SCHED_LABEL = "app=chirmera-platform-schedule"  # schedule pod 标签选择器
 _sched_pod_cache: str | None = None
 _kubectl_cache: str | None = None
+_vuln_case_cache: dict[str, tuple[float, dict]] = {}
+_vuln_case_cache_lock = threading.Lock()
+_VULN_CASE_CACHE_SECONDS = 60
+_VULN_CASE_MAX_PAGES = 100
+_CVULN_CASE_ID_RE = re.compile(r"漏洞\s*ID\s*[:：]\s*([^\s]+)")
+_TASK_PATH_RE = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
+_logger = logging.getLogger(__name__)
 
 
 def _get_sched_pod() -> str:
@@ -100,6 +112,135 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
                      "task_type": t.get("task_type"),  # 工具（内置枚举或工具注册中心 id）
                      "test_target": test_target})  # 测试对象（inputs 汇总）
     return out
+
+
+def _get_vuln_case_index(project_id: str) -> dict | None:
+    """返回 case_id → case 元数据索引，供 CVuln trace 关联平台任务。
+
+    漏洞平台是任务归属的正式来源；接口短暂不可用时返回 None，调用方再
+    从 trace prompt 中的历史记忆路径回退推断任务 ID。
+    """
+    # 两侧的 KG/No-KG 选择会并发加载；在首个请求完成前持锁，避免重复拉取
+    # 整个项目的 case 列表。
+    with _vuln_case_cache_lock:
+        cached = _vuln_case_cache.get(project_id)
+        if cached and time.monotonic() - cached[0] < _VULN_CASE_CACHE_SECONDS:
+            return cached[1]
+
+        index = {}
+        page = 1
+        try:
+            while page <= _VULN_CASE_MAX_PAGES:
+                query = urlencode({"project_id": project_id, "page": page, "page_size": 200,
+                                   "sort_field": "created_at", "sort_direction": "desc"})
+                data = _get(f"{VULN_API_URL.rstrip('/')}/api/vuln/cases?{query}")
+                batch = data.get("items", []) if isinstance(data, dict) else []
+                total = data.get("total", len(index)) if isinstance(data, dict) else len(index)
+                new_cases = 0
+                for case in batch:
+                    if not isinstance(case, dict) or not case.get("id") or case["id"] in index:
+                        continue
+                    source_task = case.get("source_task") or {}
+                    metadata_source = (case.get("metadata") or {}).get("source") or {}
+                    index[case["id"]] = {
+                        "task_id": source_task.get("task_id") or metadata_source.get("task_id"),
+                        "title": case.get("title") or (case.get("display_summary") or {}).get("title"),
+                    }
+                    new_cases += 1
+                if not batch or len(index) >= total:
+                    break
+                if not new_cases:
+                    _logger.warning("漏洞 case 接口分页无新增记录，停止读取：project_id=%s page=%s",
+                                    project_id, page)
+                    break
+                page += 1
+            else:
+                _logger.warning("漏洞 case 接口超过最大分页数，停止读取：project_id=%s max_pages=%s",
+                                project_id, _VULN_CASE_MAX_PAGES)
+        except Exception:
+            _logger.warning("读取漏洞 case 索引失败，将使用 trace prompt 回退关联：project_id=%s",
+                            project_id, exc_info=True)
+            return None
+
+        _vuln_case_cache[project_id] = (time.monotonic(), index)
+        return index
+
+
+def _cvuln_trace_metadata(path: str) -> dict | None:
+    """从 CVuln 单文件 trace 读取 case ID 和 prompt 中的兜底任务 ID。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                try:
+                    event = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") != "message":
+                    continue
+                message = event.get("message") or {}
+                if message.get("role") != "user":
+                    continue
+                content = message.get("content") or []
+                text = "\n".join(str(c.get("text", "")) for c in content if isinstance(c, dict))
+                case_match = _CVULN_CASE_ID_RE.search(text)
+                task_ids = _TASK_PATH_RE.findall(text)
+                return {"case_id": case_match.group(1) if case_match else None,
+                        "fallback_task_id": task_ids[-1] if task_ids else None}
+    except (OSError, UnicodeDecodeError):
+        return None
+    return None
+
+
+def _cvuln_trace_item(path: str, mtime: float | None, metadata: dict,
+                      case_index: dict | None, task_id: str) -> dict | None:
+    """按当前平台任务过滤一份 CVuln case 文件。"""
+    case_id = metadata.get("case_id")
+    case = case_index.get(case_id, {}) if case_index is not None and case_id else {}
+    source_task_id = case.get("task_id") or metadata.get("fallback_task_id")
+    if source_task_id != task_id:
+        return None
+    return {
+        "path": path, "tool_task_id": "", "kind": "cvuln_verify_session",
+        "trace_kind": "cvuln_verify", "file": case_id or os.path.basename(path),
+        "case_id": case_id, "case_title": case.get("title"),
+        "source_task_id": source_task_id, "mtime": mtime,
+    }
+
+
+def _cvuln_trace_group(root: str, task_id: str, files: list[dict]) -> dict | None:
+    """把同一平台任务的多个 CVuln case 文件作为一条集合 trace 返回。"""
+    if not files:
+        return None
+    mtimes = [item["mtime"] for item in files if item.get("mtime") is not None]
+    return {
+        "path": root, "tool_task_id": "", "kind": "cvuln_verify_session",
+        "trace_kind": "cvuln_verify", "file": "CVulnVerify 验证集合",
+        "file_count": len(files), "source_task_id": task_id,
+        "mtime": max(mtimes) if mtimes else None,
+    }
+
+
+def _scan_cvuln_dir(project_id: str, task_id: str, out: list) -> None:
+    """挂载模式：按任务聚合项目共享目录中的 CVuln case 文件。"""
+    root = os.path.join(DATA_ROOT, project_id, "tasks", "c_vuln_verify")
+    if not os.path.isdir(root):
+        return
+    case_index = _get_vuln_case_index(project_id)
+    matched = []
+    for path in glob.glob(os.path.join(root, "*.jsonl")):
+        metadata = _cvuln_trace_metadata(path)
+        if not metadata:
+            continue
+        try:
+            mtime = os.path.getmtime(path)
+        except OSError:
+            mtime = None
+        item = _cvuln_trace_item(path, mtime, metadata, case_index, task_id)
+        if item:
+            matched.append(item)
+    group = _cvuln_trace_group(root, task_id, matched)
+    if group:
+        out.append(group)
 
 
 def _classify_trace(p: str, mtime: float | None = None) -> dict:
@@ -345,6 +486,52 @@ def _kubectl_find(base: str) -> list[dict]:
     return out
 
 
+def _kubectl_scan_cvuln_dir(project_id: str, task_id: str) -> list[dict]:
+    """开发模式：按任务聚合项目共享目录中的 CVuln case 文件。"""
+    root = f"{DATA_ROOT}/{project_id}/tasks/c_vuln_verify"
+    script = r'''
+import glob, json, os, re, sys
+case_re = re.compile(r"漏洞\s*ID\s*[:：]\s*([^\s]+)")
+task_re = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
+for path in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
+    try:
+        with open(path, encoding="utf-8") as f:
+            for line in f:
+                try: event = json.loads(line)
+                except json.JSONDecodeError: continue
+                message = event.get("message") or {}
+                if event.get("type") != "message" or message.get("role") != "user": continue
+                text = "\n".join(str(c.get("text", "")) for c in (message.get("content") or []) if isinstance(c, dict))
+                cm = case_re.search(text); task_ids = task_re.findall(text)
+                print(json.dumps({"path": path, "mtime": os.path.getmtime(path),
+                                  "case_id": cm.group(1) if cm else None,
+                                  "fallback_task_id": task_ids[-1] if task_ids else None}))
+                break
+    except (OSError, UnicodeDecodeError): pass
+'''
+    env = dict(os.environ, MSYS_NO_PATHCONV="1")
+    try:
+        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", _get_sched_pod(), "--",
+               "python3", "-c", script, root]
+        result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                                timeout=90, env=env)
+    except Exception:
+        return []
+    case_index = _get_vuln_case_index(project_id)
+    matched = []
+    for line in (result.stdout or "").splitlines():
+        try:
+            record = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        item = _cvuln_trace_item(record.get("path", ""), record.get("mtime"), record,
+                                 case_index, task_id)
+        if item:
+            matched.append(item)
+    group = _cvuln_trace_group(root, task_id, matched)
+    return [group] if group else []
+
+
 
 def find_traces(project_id: str, task_id: str) -> list[dict]:
     """查找 trace 文件。
@@ -352,16 +539,18 @@ def find_traces(project_id: str, task_id: str) -> list[dict]:
     k8s 部署：DATA_ROOT 直接挂载，os.path/glob 直读。
     dev 模式：kubectl exec 到 schedule pod 查找。
 
-    只找 session 目录（tasks/{task_id}/session/ 或 tasks/{task_id}/tools/{tool_id}/session/）
-    和 .db 文件（opencode.db / findings.db）。
+    除任务自身的 session/.db 外，还会从项目共享的
+    tasks/c_vuln_verify/*.jsonl 中按漏洞 case 的 source_task.task_id 筛选。
     """
     task_base = os.path.join(DATA_ROOT, project_id, "tasks", task_id)
     out: list[dict] = []
     if _K8S_MODE:
         _scan_dir(task_base, out)
+        _scan_cvuln_dir(project_id, task_id, out)
     else:
         remote_base = f"{DATA_ROOT}/{project_id}/tasks/{task_id}"
         out.extend(_kubectl_find(remote_base))
+        out.extend(_kubectl_scan_cvuln_dir(project_id, task_id))
     return out
 
 

@@ -7,7 +7,7 @@
   - RESULT: message role=toolResult, content[].text
   - tool names: read / bash / write（全小写）
 
-解析时读整个目录下所有 .jsonl 文件（一个漏洞一个 jsonl）。
+解析目录时可按 source_task_id 过滤 .jsonl 文件（一个漏洞一个 jsonl）。
 """
 from __future__ import annotations
 import json
@@ -28,16 +28,48 @@ class CVulnVerifyTraceParser:
         self._last_tool_name = None
         self._tool_kg = {}
 
+    _TASK_PATH_RE = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
+
+    def _files(self, trace_source) -> list[str]:
+        """取得本次评测应读取的 case 文件。
+
+        c_vuln_verify 目录由多个原始平台任务共享。发现阶段以 case API 做正式
+        归属，解析阶段用 trace 内的任务上下文将已下载目录收窄到同一任务。
+        """
+        uri = trace_source["source_uri"]
+        files = sorted(glob.glob(os.path.join(uri, "*.jsonl"))) if os.path.isdir(uri) else [uri]
+        source_task_id = trace_source.get("source_task_id")
+        if not source_task_id:
+            return files
+        return [path for path in files if self._source_task_id(path) == source_task_id]
+
+    def _source_task_id(self, path: str) -> str | None:
+        """从首条用户任务上下文中的历史记忆路径提取原始平台任务 ID。"""
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    try:
+                        event = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    message = event.get("message") or {}
+                    if event.get("type") != "message" or message.get("role") != "user":
+                        continue
+                    text = "\n".join(str(c.get("text", "")) for c in (message.get("content") or [])
+                                     if isinstance(c, dict))
+                    task_ids = self._TASK_PATH_RE.findall(text)
+                    return task_ids[-1] if task_ids else None
+        except (OSError, UnicodeDecodeError):
+            return None
+        return None
+
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""
         uri = trace_source["source_uri"]
         trace_id = trace_source.get("trace_id", uri)
         session_id = trace_source.get("turing_session_id", "")
 
-        if os.path.isdir(uri):
-            files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
-        else:
-            files = [uri]
+        files = self._files(trace_source)
 
         # 预收集所有 toolCall 的 is_kg 标记（按 id）
         self._tool_kg = {}
@@ -168,11 +200,7 @@ class CVulnVerifyTraceParser:
 
     def load_session(self, trace_source) -> dict:
         """从 JSONL 累计 token + step 数。"""
-        uri = trace_source["source_uri"]
-        if os.path.isdir(uri):
-            files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
-        else:
-            files = [uri]
+        files = self._files(trace_source)
 
         ti = to = tr = tcr = 0
         n_step_start = n_step_finish = 0

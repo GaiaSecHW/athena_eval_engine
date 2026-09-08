@@ -346,11 +346,16 @@ def run(evaluation_id: str) -> dict:
             )
             local_path = _local_paths.get(e["source_uri"]) or _resolve_trace_path(e["source_uri"], e.get("project_id", ""), e["task_id"])
             parser = _get_parser(local_path, e.get("trace_kind"))
-            events = list(parser.parse({"trace_id": tr.trace_id, "source_uri": local_path,
-                                         "turing_session_id": "sess"}))
+            trace_source = {"trace_id": tr.trace_id, "source_uri": local_path,
+                            "turing_session_id": "sess"}
+            # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
+            # 的原始平台任务所关联的 case 文件。
+            if e.get("trace_kind") == "cvuln_verify":
+                trace_source["source_task_id"] = e.get("task_id_actual", "")
+            events = list(parser.parse(trace_source))
             # 跨 JSONL 文件时按时间戳排序，确保事件顺序正确
             events.sort(key=lambda e: (e.timestamp_ms or 0, e.event_id))
-            session = parser.load_session({"trace_id": tr.trace_id, "source_uri": local_path})
+            session = parser.load_session(trace_source)
             session["_events_ts"] = [ev.timestamp_ms for ev in events]
             bench = bench_by_task.get(e["task_id"]) or []
             if not bench:

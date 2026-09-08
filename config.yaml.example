@@ -26,6 +26,7 @@ vbench:
 platform:
   project_api: "http://127.0.0.1:18081"
   schedule_api: "http://127.0.0.1:18082"
+  vuln_api_url: "http://secflow.ai.icsl.huawei.com"
   sched_pod: ""                 # 留空时由 _get_sched_pod() 动态发现
   data_root: "/data/files"     # k8s 部署时 /data 直接挂载；dev 改为本地路径
 
