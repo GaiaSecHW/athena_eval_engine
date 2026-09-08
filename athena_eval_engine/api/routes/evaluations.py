@@ -147,6 +147,30 @@ def create_evaluation(req: CreateRequest):
         raise HTTPException(status_code=400, detail=str(e))
 
 
+@app.delete("/api/v1/evaluations/{evaluation_id}")
+def delete_evaluation(evaluation_id: str):
+    """删除评测：清除该评测的全部数据（不可恢复）。"""
+    from ...infrastructure.database import connect
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SET FOREIGN_KEY_CHECKS=0")
+        tables = [
+            "statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+            "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
+            "tool_action_fact", "resource_fact", "task_run", "trace_source",
+            "evaluation_report", "evaluation_population_snapshot", "evaluation_calculation_run",
+            "evaluation_snapshot", "evaluation",
+        ]
+        for t in tables:
+            cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
+        cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        print(f"[DELETE] 评测 {evaluation_id} 已删除", flush=True)
+    finally:
+        conn.close()
+    return {"status": "ok", "evaluation_id": evaluation_id}
+
+
 @app.post("/api/v1/evaluations/{evaluation_id}/retry")
 def retry_evaluation(evaluation_id: str):
     """重试失败的评测：删除全部数据，重新解析+计算+报告。"""
@@ -360,8 +384,7 @@ def get_report(evaluation_id: str):
         # 如果 metadata_json 全是 NULL（旧评测/取基线失败），从漏洞中心补取
         _vc_fallback = {}
         has_null_meta = any(r[2] is None for r in raw_rows)
-        bsrc = manifest.get("benchmark_source", "vbench_zip") if srow else "vbench_zip"
-        if has_null_meta and bsrc == "vuln_center":
+        if has_null_meta:
             try:
                 from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
                 vc_proj = erow[1] if erow else None  # benchmark_set_id = project_id
@@ -377,12 +400,16 @@ def get_report(evaluation_id: str):
             if not md and bid in _vc_fallback:
                 vc_c = _vc_fallback[bid]
                 md = {"description": vc_c.get("description", ""),
-                      "vulnerability_type": vc_c.get("vulnerability_type", "")}
+                      "vulnerability_type": vc_c.get("vulnerability_type", ""),
+                      "source_file": vc_c.get("source_file", ""),
+                      "source_function": vc_c.get("source_function", "")}
                 if not label or label == "VULNERABLE":
                     label = vc_c.get("expected_label", label)
             case_results.append({"case_id": bid, "expected_label": label or "NA",
                                 "description": md.get("description", ""),
-                                "vulnerability_type": md.get("vulnerability_type", "")})
+                                "vulnerability_type": md.get("vulnerability_type", ""),
+                                "source_file": md.get("source_file", ""),
+                                "source_function": md.get("source_function", "")})
         # 关联 outcome 的 case_results（从 evidence_json 里取，KG 和 No-KG 分别取）
         def _load_case_results_from_outcome(suffix):
             """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'"""

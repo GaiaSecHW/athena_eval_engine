@@ -70,6 +70,19 @@ svg{display:block;margin:0 auto;max-width:100%}
 .sel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px;max-height:300px;overflow-y:auto}
 .opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;font-size:17px}
 .opt:hover{background:var(--p2)}
+/* 自定义弹窗 */
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;animation:fade .15s}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{background:var(--panel);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.25);max-width:440px;width:90%;overflow:hidden;animation:pop .15s}
+@keyframes pop{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
+.modal .modal-head{padding:20px 24px 12px;display:flex;align-items:center;gap:12px}
+.modal .modal-head .modal-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.modal .modal-head h3{font-size:18px;font-weight:600}
+.modal .modal-body{padding:4px 24px 16px;font-size:15px;color:var(--sub);line-height:1.7}
+.modal .modal-body ul{list-style:none;padding:0;margin:8px 0}
+.modal .modal-body li{padding:3px 0;padding-left:18px;position:relative}
+.modal .modal-body li:before{content:"•";position:absolute;left:0;color:var(--amber)}
+.modal .modal-foot{padding:14px 24px;display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--bd)}
 .opt.sel{background:rgba(91,156,246,.12);border-left:3px solid var(--acc)}
 .opt .l{font-size:17px}.opt .r{font-size:14px;color:var(--sub)}
 .btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
@@ -190,10 +203,19 @@ function renderEvList(){
   const pageItems=filtered.slice(start,start+EV_PAGE_SIZE);
   const el=$("ev-list-body");
   if(!el)return;
-  let html=pageItems.length?pageItems.map(e=>`<div class="it ${e.evaluation_id===activeId?'act':''}" onclick="selEv('${e.evaluation_id}')">
-    <div class="n">${e.name||e.evaluation_id}</div>
-    <div class="m"><span class="bdg b-${(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED')}">${e.status||'-'}</span><span>${fmtDate(e.created_at)}</span></div>
-  </div>`).join(""):'<div style="padding:24px;text-align:center;color:var(--sub);font-size:16px">无匹配评测</div>';
+  let html=pageItems.length?pageItems.map(function(e){
+    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED');
+    var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
+    var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
+    var btns=isTerminal?'<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
+      '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
+      '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>'+
+      '</span>':'';
+    return '<div class="it '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
+      '<div class="n">'+(e.name||e.evaluation_id)+'</div>'+
+      '<div class="m"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '</div>';
+  }).join(""):'<div style="padding:24px;text-align:center;color:var(--sub);font-size:16px">无匹配评测</div>';
   // 分页控件
   if(pages>1){
     let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--bd)">';
@@ -268,31 +290,59 @@ async function selEv(id){
   catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
 function retryEval(eid){
-  // 立即显示加载态，避免用户以为没反应
-  var rep=$("rep");if(rep)rep.innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
-  // 清理旧数据
-  jget('/api/v1/evaluations/'+eid+'/report').then(r=>{}).catch(e=>{});
-  // 重置状态为 RUNNING
-  F('/api/v1/evaluations/'+eid+'/retry',{method:'POST'}).then(r=>r.json()).then(d=>{
-    if(d.status==='QUEUED'||d.status==='RUNNING'){
-      // 轮询等待状态从 FAILED 切换到 RUNNING
-      var pollCnt=0;
-      var retryPoll=function(){
-        pollCnt++;if(pollCnt>30)return; // 最多等 ~30s
-        jget('/api/v1/evaluations/'+eid).then(s=>{
-          if(s.status==='FAILED'){
-            // 后台还没来得及改状态，继续等
-            setTimeout(retryPoll,1000);
-          }else{
-            selEv(eid);
-          }
-        }).catch(()=>setTimeout(retryPoll,1000));
-      };
-      setTimeout(retryPoll,500);
-    }else{
-      alert('重试失败: '+JSON.stringify(d));
+  showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
+    desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
+    risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
+    confirmText:'重跑',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      var rep=$("rep");if(rep)rep.innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      jget('/api/v1/evaluations/'+eid+'/report').then(function(){}).catch(function(){});
+      F('/api/v1/evaluations/'+eid+'/retry',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='QUEUED'||d.status==='RUNNING'){
+          var pollCnt=0;
+          var retryPoll=function(){
+            pollCnt++;if(pollCnt>30)return;
+            jget('/api/v1/evaluations/'+eid).then(function(s){
+              if(s.status==='FAILED'){setTimeout(retryPoll,1000);}
+              else{selEv(eid);}
+            }).catch(function(){setTimeout(retryPoll,1000);});
+          };
+          setTimeout(retryPoll,500);
+        }else{
+          alert('重试失败: '+JSON.stringify(d));
+        }
+      }).catch(function(e){alert('重试失败: '+e);});
     }
-  }).catch(e=>alert('重试失败: '+e));
+  });
+}
+function deleteEval(eid,name){
+  showConfirm({icon:'🗑️',iconBg:'rgba(248,113,113,.15)',iconColor:'var(--red)',title:'删除评测',
+    desc:'删除将永久清除该评测的全部数据，不可恢复。',
+    risks:['trace 解析结果（facts、events）','指标计算结果（M1-M10、统计检验）','AI 分析报告（叙述、漏洞对比）','基线匹配数据'],
+    confirmText:'永久删除',confirmColor:'var(--red)',
+    onConfirm:function(){
+  F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
+    if(d.status==='ok'){
+      renderEvals();
+      $("rep").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p></div>';
+    }else{
+      alert('删除失败: '+JSON.stringify(d));
+    }
+  }).catch(e=>alert('删除失败: '+e));
+    }
+  });
+}
+function showConfirm(opts){
+  var ov=document.createElement('div');ov.className='modal-overlay';
+  var risksHtml=(opts.risks||[]).map(function(r){return '<li>'+r+'</li>'}).join('');
+  ov.innerHTML='<div class="modal">'+
+    '<div class="modal-head"><div class="modal-icon" style="background:'+opts.iconBg+';color:'+opts.iconColor+'">'+opts.icon+'</div><h3>'+opts.title+'</h3></div>'+
+    '<div class="modal-body"><p>'+opts.desc+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'+
+    '<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'+
+    '<button class="btn" style="font-size:15px;padding:8px 20px;background:'+opts.confirmColor+'" id="modal-confirm">'+opts.confirmText+'</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click',function(e){if(e.target===ov)ov.remove()});
+  document.getElementById('modal-confirm').onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm()};
 }
 
 function fmtDur(ms){
@@ -461,12 +511,17 @@ function renderReport(d){
       kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
       kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
       kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>#"+(idx+1)+"</span>";
-      kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||"漏洞")+"</span>";
+      kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
       kgHtml+="</div>";
       kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      if(c.source_file){
+        kgHtml+="<div style='font-size:12px;color:var(--acc);margin-top:2px;font-family:monospace'>"+c.source_file.split('/').pop()+"</div>";
+      }
       if(c.description){
-        var desc=String(c.description).replace(/</g,"&lt;").slice(0,300);
-        kgHtml+="<div style='font-size:13px;color:var(--sub);margin-top:4px;line-height:1.5'>"+desc+"</div>";
+        var desc=String(c.description).replace(/</g,"&lt;");
+        // 只显示前 2 段（## 标题行），避免过长
+        var firstSec=desc.indexOf("## ",3); if(firstSec>0)desc=desc.slice(0,firstSec);
+        kgHtml+="<div style='font-size:13px;color:var(--sub);margin-top:4px;line-height:1.5'>"+desc.slice(0,300)+"</div>";
       }
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
       var pcKa=(r.per_case_kg_analysis||[]).find(function(p){return p.case_id===c.case_id;});

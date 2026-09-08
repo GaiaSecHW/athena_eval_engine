@@ -132,6 +132,8 @@ def create(req: CreateRequest):
                         "vulnerability_type": c.get("vulnerability_type") or "",
                         "target_finding_id": c.get("target_finding_id") or "",
                         "expected_label": c.get("expected_label") or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
                     }
         else:
             from ..infrastructure.vbench_client import get_benchmark

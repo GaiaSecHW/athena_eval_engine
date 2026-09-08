@@ -133,14 +133,38 @@ def _normalize_case_description(case: dict) -> str:
     )
 
 
+def _extract_function_name(locator: str, subject_name: str) -> str:
+    """从文件路径或 subject.name 中提取函数名/方法名。"""
+    # 1) 文件名去扩展名就是函数名（如 devdrv_manager_ioctl.c → devdrv_manager_ioctl）
+    import os as _os
+    if locator:
+        basename = _os.path.basename(locator)
+        name = _os.path.splitext(basename)[0]
+        if name and name not in ("main", "index", "init", "config"):
+            return name
+    # 2) 从 subject.name 开头提取函数名（到第一个空格/中文/标点）
+    if subject_name:
+        import re as _re
+        m = _re.match(r'([a-zA-Z_][a-zA-Z0-9_]*)', subject_name)
+        if m:
+            return m.group(1)
+    return ""
+
+
 def _case_to_benchmark(c: dict, expected_label: str) -> dict:
     """单条 case 归一成基线结构。"""
+    subject = c.get("subject") or {}
+    locator = subject.get("locator") or ""
+    subj_name = subject.get("name") or ""
+    func_name = _extract_function_name(locator, subj_name)
     return {
         "case_id": c.get("id") or "",
-        "vulnerability_type": c.get("title") or (c.get("subject") or {}).get("type") or "",
+        "vulnerability_type": c.get("title") or subject.get("type") or "",
         "description": _normalize_case_description(c),
         "target_finding_id": (c.get("source_task") or {}).get("finding_id"),
         "expected_label": expected_label,
+        "source_file": locator,            # 基线漏洞所在文件路径
+        "source_function": func_name,      # 基线漏洞所在函数名/方法名
     }
 
 
