@@ -458,6 +458,7 @@ function renderReport(d){
   // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
   const callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
   const resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
+  const noResponse=callCount-resultCount;
   const kgActive=(kgAccess!==null&&kgAccess>0)||callCount>0;
   let kgHtml="";
   // 概要
