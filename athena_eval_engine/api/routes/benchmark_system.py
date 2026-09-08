@@ -53,3 +53,10 @@ def vbench_benchmark(project_id: str):
     """V-Bench 项目 benchmark 包：benchmark.json + ground truth 详情。"""
     from ...infrastructure.vbench_client import get_benchmark
     return get_benchmark(project_id)
+
+
+@vb.get("/vuln-center/{project_id}/{task_id}")
+def vuln_center_benchmark(project_id: str, task_id: str):
+    """漏洞中心基线：按项目+任务拉取人工确认的漏洞（含漏洞与非漏洞两类）。"""
+    from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+    return get_vuln_center_benchmark(project_id, task_id)

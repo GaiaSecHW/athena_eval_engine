@@ -24,6 +24,8 @@ class CreateRequest(BaseModel):
     evaluation_name: str | None = None
     benchmark_set_id: str = "BS001"
     vbench_project_name: str | None = None
+    benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
+    vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id
     entries: list[dict]
 
 
@@ -32,6 +34,62 @@ app.include_router(web_router)
 app.include_router(platform_router)
 app.include_router(vbench_router)
 app.include_router(sys_router)
+
+
+@app.on_event("startup")
+def resume_stuck_evaluations():
+    """Pod 重启后自动续跑卡住的评测。
+
+    状态在 RUNNING_STATES 里的评测 = 后台线程已死（pod 重启），但 DB 里还显示运行中。
+    重新提交到线程池，run() 会检查 facts 是否已存在自动跳过已完成的阶段。
+    """
+    try:
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                            'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                            'DIAGNOSING', 'REPORTING', 'FINALIZING')
+            placeholders = ','.join(['%s'] * len(stuck_states))
+            cur.execute(f"SELECT evaluation_id, evaluation_status FROM evaluation "
+                        f"WHERE evaluation_status IN ({placeholders})", stuck_states)
+            stuck = cur.fetchall()
+            if stuck:
+                print(f"[STARTUP] 发现 {len(stuck)} 个卡住的评测，准备续跑:", flush=True)
+                for eid, status in stuck:
+                    print(f"[STARTUP]   {eid} (was {status}) → 续跑", flush=True)
+                    _executor.submit(_run_bg_resume, eid)
+            else:
+                print(f"[STARTUP] 无卡住的评测", flush=True)
+        finally:
+            conn.close()
+    except Exception as e:
+        print(f"[STARTUP] 扫描卡住评测失败（DB 可能未就绪）: {e}", flush=True)
+
+
+def _run_bg_resume(evaluation_id: str):
+    """续跑单个评测（与 _run_bg 相同，但不设 RUNNING——保留原状态给 run() 覆盖）。"""
+    from ...infrastructure.database import connect
+    try:
+        es.run(evaluation_id)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        err_msg = str(e)[:500]
+        print(f"[EVAL RESUME FAILED] {evaluation_id}: {err_msg}", flush=True)
+        try:
+            conn = connect(autocommit=True)
+            cur = conn.cursor()
+            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+            row = cur.fetchone()
+            phase = row[0] if row else "UNKNOWN"
+            cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
+                        "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) "
+                        "WHERE evaluation_id=%s", (phase, err_msg, evaluation_id))
+            conn.close()
+        except Exception:
+            pass
 
 
 @app.get("/health")
@@ -46,6 +104,8 @@ def create_evaluation(req: CreateRequest):
                                    evaluation_name=req.evaluation_name,
                                    benchmark_set_id=req.benchmark_set_id,
                                    vbench_project_name=req.vbench_project_name,
+                                   benchmark_source=req.benchmark_source,
+                                   vc_source_task_id=req.vc_source_task_id,
                                    entries=req.entries))
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
@@ -85,6 +145,30 @@ def create_evaluation(req: CreateRequest):
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.delete("/api/v1/evaluations/{evaluation_id}")
+def delete_evaluation(evaluation_id: str):
+    """删除评测：清除该评测的全部数据（不可恢复）。"""
+    from ...infrastructure.database import connect
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SET FOREIGN_KEY_CHECKS=0")
+        tables = [
+            "statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+            "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
+            "tool_action_fact", "resource_fact", "task_run", "trace_source",
+            "evaluation_report", "evaluation_population_snapshot", "evaluation_calculation_run",
+            "evaluation_snapshot", "evaluation",
+        ]
+        for t in tables:
+            cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
+        cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        print(f"[DELETE] 评测 {evaluation_id} 已删除", flush=True)
+    finally:
+        conn.close()
+    return {"status": "ok", "evaluation_id": evaluation_id}
 
 
 @app.post("/api/v1/evaluations/{evaluation_id}/retry")
@@ -263,6 +347,7 @@ def get_report(evaluation_id: str):
             manifest = cfg.get("manifest", {})
             entries = manifest.get("entries", [])
             r["vbench_project_name"] = manifest.get("vbench_project_name", "")
+            r["benchmark_source"] = manifest.get("benchmark_source", "vbench_zip")
             r["entries_info"] = [{"condition": e.get("condition"), "project_name": e.get("project_name", ""),
                                   "task_name": e.get("task_name", ""),
                                   "task_id": e.get("task_id", ""),
@@ -295,11 +380,36 @@ def get_report(evaluation_id: str):
                     "WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)", (evaluation_id,))
         import json as _j
         case_results = []
-        for bid, label, meta in cur.fetchall():
+        raw_rows = cur.fetchall()
+        # 如果 metadata_json 全是 NULL（旧评测/取基线失败），从漏洞中心补取
+        _vc_fallback = {}
+        has_null_meta = any(r[2] is None for r in raw_rows)
+        if has_null_meta:
+            try:
+                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+                vc_proj = erow[1] if erow else None  # benchmark_set_id = project_id
+                vc_task = manifest.get("vc_source_task_id")
+                print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={vc_task}", flush=True)
+                vc_bm = get_vuln_center_benchmark(vc_proj, vc_task)
+                for c in (vc_bm.get("cases") or []):
+                    _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
+            except Exception as e:
+                print(f"[REPORT] 漏洞中心补取失败: {e}", flush=True)
+        for bid, label, meta in raw_rows:
             md = _j.loads(meta) if isinstance(meta, str) else (meta or {})
+            if not md and bid in _vc_fallback:
+                vc_c = _vc_fallback[bid]
+                md = {"description": vc_c.get("description", ""),
+                      "vulnerability_type": vc_c.get("vulnerability_type", ""),
+                      "source_file": vc_c.get("source_file", ""),
+                      "source_function": vc_c.get("source_function", "")}
+                if not label or label == "VULNERABLE":
+                    label = vc_c.get("expected_label", label)
             case_results.append({"case_id": bid, "expected_label": label or "NA",
                                 "description": md.get("description", ""),
-                                "vulnerability_type": md.get("vulnerability_type", "")})
+                                "vulnerability_type": md.get("vulnerability_type", ""),
+                                "source_file": md.get("source_file", ""),
+                                "source_function": md.get("source_function", "")})
         # 关联 outcome 的 case_results（从 evidence_json 里取，KG 和 No-KG 分别取）
         def _load_case_results_from_outcome(suffix):
             """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'"""

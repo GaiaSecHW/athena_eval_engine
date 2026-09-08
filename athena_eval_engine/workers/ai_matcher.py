@@ -174,9 +174,17 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         ), []
 
     findings = _extract_findings(events)
+    print(f"[AI_MATCH] {task_run.condition.value} findings_extracted={len(findings)}", flush=True)
+    for i, f in enumerate(findings[:5]):
+        print(f"[AI_MATCH]   finding[{i}] id={f.get('display_id') or f.get('finding_id','')[:12]} "
+              f"title={str(f.get('title',''))[:60]} vuln_type={str(f.get('vuln_type',''))[:30]} "
+              f"validation={f.get('validation_result')}", flush=True)
+    if len(findings) > 5:
+        print(f"[AI_MATCH]   ...还有 {len(findings)-5} 条 finding", flush=True)
 
     # Agent 没提交任何发现 → 基线有漏洞 → 全部漏报
     if not findings:
+        print(f"[AI_MATCH] {task_run.condition.value} NO_FINDING → outcome=FAIL/FN", flush=True)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
@@ -188,71 +196,83 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             validation_result=None, resolver_status="NO_FINDING",
         ), []
 
-    # 预过滤：按关键词相似度取最可能匹配基线的前 10 个 finding
-    findings = _pre_filter_findings(findings, benchmarks, top_n=10)
+    # 预过滤：取前 20 个 finding（避免过多）
+    findings = _pre_filter_findings(findings, benchmarks, top_n=20)
 
-    # 构建 LLM 输入：基线漏洞列表（含描述）+ Agent finding 列表（含完整详情）
-    baseline_json = [{
-        "case_id": b.benchmark_item_id or "",
-        "expected_label": b.expected_label.value,
-        "description": (b.metadata or {}).get("description", ""),
-        "vulnerability_type": (b.metadata or {}).get("vulnerability_type", ""),
-    } for b in benchmarks]
+    # 1 对 1 对比：每个 (finding, baseline) 对独立判断 true/false
+    # 先按文件名预筛，只发文件/函数有交集的对（避免 token 超限）
+    import os as _os
+    pairs = []
+    for fi, f in enumerate(findings):
+        f_text = " ".join(str(f.get(k, "")) for k in ("title", "source", "sink", "vuln_type"))
+        for bi, b in enumerate(benchmarks):
+            md = b.metadata or {}
+            b_file = md.get("source_file") or ""
+            b_func = md.get("source_function") or ""
+            b_file_name = _os.path.basename(b_file) if b_file else ""
+            # 文件名或函数名在 finding 文本中出现 → 有交集，加入对比
+            if (b_file_name and b_file_name in f_text) or (b_func and b_func in f_text):
+                pairs.append({"finding_idx": fi, "baseline_idx": bi,
+                    "baseline": {"case_id": b.benchmark_item_id or "",
+                                "vulnerability_type": md.get("vulnerability_type", ""),
+                                "description": md.get("description", "")[:300],
+                                "source_file": b_file, "source_function": b_func},
+                    "finding": {"title": f["title"][:200], "vuln_type": f["vuln_type"],
+                                "description": (f.get("description") or "")[:300],
+                                "source": f.get("source", ""), "sink": f.get("sink", "")}})
+    print(f"[AI_MATCH] {task_run.condition.value} 预筛后 {len(pairs)} 对（findings={len(findings)} baselines={len(benchmarks)}）", flush=True)
 
-    findings_json = [{
-        "id": f["display_id"] or f["finding_id"][:8],
-        "title": f["title"][:200],
-        "vuln_type": f["vuln_type"],
-        "severity": f["severity"],
-        "validation": f["validation_result"] or "UNVALIDATED",
-        "description": (f.get("description") or "")[:500],
-        "source": f.get("source", ""),
-        "sink": f.get("sink", ""),
-        "failure_scenario": f.get("failure_scenario", ""),
-    } for f in findings[:10]]
-
-    prompt = [
-        {"role": "system", "content": (
-            "# 角色\n"
-            "你是漏洞匹配判定器。\n\n"
-            "# 背景\n"
-            "V-Bench 基线定义了项目的真实漏洞列表（含漏洞描述和漏洞类型）。"
-            "安全 Agent 挖掘后提交了若干 finding（含标题、描述、漏洞类型、source/sink）。\n"
-            "注意：基线和 finding 的信息以文字描述为主，可能没有精确的源文件路径和行号。\n\n"
-            "# 任务\n"
-            "判断 Agent 提交的每个 finding 与哪个基线漏洞描述的是同一个漏洞。\n\n"
-            "# 判断标准（按优先级）\n"
-            "1. 漏洞涉及的功能/接口是否相同：是否针对同一个功能模块、同一个 API 接口或同一个代码区域\n"
-            "2. 漏洞描述是否一致：描述的漏洞行为、利用方式是否吻合\n"
-            "3. 漏洞类型是否匹配：SQL注入、XSS、DoS、权限绕过等类型是否一致\n"
-            "4. source/sink 是否吻合（如果有的话）：Agent 填的入口/汇点与基线描述的触发位置是否对应\n\n"
-            "# 注意\n"
-            "- 同一个漏洞的不同描述也算匹配（如基线说「SQL注入」，Agent 说「数据库查询拼接」）\n"
-            "- 仅漏洞类型相同但涉及完全不同功能/接口的，不是同一个漏洞\n"
-            "- 如果 finding 的 description 明确指向基线描述的漏洞位置和行为，即使措辞不同也算匹配\n\n"
-            "只返回 JSON，不要任何额外文字。"
-        )},
-        {"role": "user", "content": json.dumps({
-            "baseline_vulnerabilities": baseline_json,
-            "agent_findings": findings_json,
-        }, ensure_ascii=False, indent=2) + (
-            "\n\n对 Agent 提交的每个 finding，判断它是否与某个基线漏洞是同一个漏洞。\n"
-            "返回 JSON 数组：\n"
-            "[{\"finding_id\": \"Agent finding id\", \"matched_case_id\": \"匹配的基线漏洞id，无匹配则null\", \"is_same_vulnerability\": true/false, \"reason\": \"中文说明为什么是/不是同一个漏洞\"}]"
-        )},
-    ]
-
-    try:
-        result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
-        matches = result if isinstance(result, list) else result.get("matches", [])
-    except Exception:
-        # LLM 失败 → 规则判断
+    # 无候选对 → 全部未匹配
+    if not pairs:
         matches = []
+        matched_case_ids = set()
+    else:
+        prompt = [
+            {"role": "system", "content": (
+                "# 角色\n"
+                "你是漏洞匹配判定器。判断每对 finding 和 baseline 是否是同一个漏洞。\n\n"
+                "# 判断规则\n"
+                "1. source 和 sink 必须完全匹配：finding 的 source 和 sink 都必须与 baseline 的 source_file 和 source_function 对应（文件名相同 + 函数名相同）\n"
+                "2. 配置类漏洞无 source 时，sink 必须与 baseline 的 source_file 和 source_function 完全匹配\n"
+                "3. 漏洞行为一致：描述的漏洞行为和利用方式吻合\n"
+                "4. 仅漏洞类型相同但文件/函数不同的，不是同一个漏洞\n"
+                "5. 每个 baseline 只能匹配一个 finding\n\n"
+                "# 输出格式\n"
+                "只返回 JSON 布尔数组，不要任何额外文字。每个对返回 true 或 false：\n"
+                "[true, false, true] 表示第 0 对是同一个漏洞，第 1 对不是，第 2 对是\n"
+                "数组长度必须等于输入的对数。"
+            )},
+            {"role": "user", "content": json.dumps({"pairs": pairs}, ensure_ascii=False, indent=2)},
+        ]
 
-    # 构建 per-case 混淆矩阵
+        try:
+            result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
+            bools = result if isinstance(result, list) else []
+        except Exception as e:
+            print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败: {e}", flush=True)
+            bools = []
+
+        # 布尔数组 → 匹配的 (finding_idx, baseline_idx)
+        matches = []
+        matched_case_ids = set()
+        for i, is_same in enumerate(bools):
+            if is_same and i < len(pairs):
+                p = pairs[i]
+                cid = benchmarks[p["baseline_idx"]].benchmark_item_id or ""
+                if cid and cid not in matched_case_ids:  # 先到先得
+                    matched_case_ids.add(cid)
+                    matches.append((p["finding_idx"], p["baseline_idx"]))
+        print(f"[AI_MATCH] {task_run.condition.value} LLM 返回 {len(bools)} 个判断, matched={len(matched_case_ids)}", flush=True)
+    print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} cases, matched={len(matched_case_ids)}", flush=True)
     case_results = []
-    matched_case_ids = set(m.get("matched_case_id") for m in matches if m.get("is_same_vulnerability") and m.get("matched_case_id"))
     for b in benchmarks:
+        cid = b.benchmark_item_id or ""
+        is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
+        is_matched = cid in matched_case_ids
+        if not is_matched:
+            md_desc = str((b.metadata or {}).get("vulnerability_type", ""))[:40]
+            print(f"[AI_MATCH]   UNMATCHED case={cid[:20]} label={b.expected_label.value if b.expected_label else 'NA'} "
+                  f"vuln_type={md_desc}", flush=True)
         cid = b.benchmark_item_id or ""
         is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
         is_matched = cid in matched_case_ids
@@ -260,9 +280,27 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             confusion = "TP" if is_matched else "FN"
         else:
             confusion = "FP" if is_matched else "TN"
-        matched_fid = next((m.get("finding_id") for m in matches if m.get("is_same_vulnerability") and m.get("matched_case_id") == cid), None)
-        # 找到该 finding 的 session_id
-        finding_session = next((f.get("session_id", "") for f in findings if f.get("finding_id") == matched_fid or f.get("display_id") == matched_fid), "")
+        # 从索引对或旧格式中找到匹配的 finding
+        matched_fid = None
+        finding_session = ""
+        if isinstance(matches, list):
+            for m in matches:
+                if isinstance(m, (list, tuple)) and len(m) == 2:
+                    # 索引对：(finding_idx, baseline_idx)
+                    fi, ci = m[0], m[1]
+                    if ci < len(benchmarks) and (benchmarks[ci].benchmark_item_id or "") == cid:
+                        if fi < len(findings):
+                            matched_fid = findings[fi].get("display_id") or findings[fi].get("finding_id", "")[:8]
+                            finding_session = findings[fi].get("session_id", "")
+                        break
+                elif isinstance(m, dict):
+                    # 兼容旧格式
+                    _key = "is_same" if "is_same" in m else "is_same_vulnerability"
+                    if m.get(_key) and m.get("matched_case_id") == cid:
+                        matched_fid = m.get("finding_id")
+                        break
+            if not finding_session and matched_fid:
+                finding_session = next((f.get("session_id", "") for f in findings if f.get("finding_id") == matched_fid or f.get("display_id") == matched_fid), "")
         case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                             "matched": is_matched, "matched_finding_id": matched_fid, "confusion": confusion,
                             "session_id": finding_session})
@@ -270,8 +308,17 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     # 聚合 outcome
     vuln_cases = [c for c in case_results if c["confusion"] in ("TP", "FN")]
     all_vuln_matched = all(c["confusion"] == "TP" for c in vuln_cases) if vuln_cases else False
-    # 用 LLM 返回的 finding_id 关联回原始 finding，取 validation_result
-    matched_fids = set(m.get("finding_id") for m in matches if m.get("is_same_vulnerability"))
+    # 从索引对提取匹配的 finding IDs
+    matched_fids = set()
+    if isinstance(matches, list):
+        for m in matches:
+            if isinstance(m, list) and len(m) == 2:
+                if m[0] < len(findings):
+                    matched_fids.add(findings[m[0]].get("display_id") or findings[m[0]].get("finding_id", "")[:8])
+            elif isinstance(m, dict):
+                _key = "is_same" if "is_same" in m else "is_same_vulnerability"
+                if m.get(_key):
+                    matched_fids.add(m.get("finding_id", ""))
     matched_findings = [f for f in findings if (f["display_id"] or f["finding_id"][:8]) in matched_fids]
     vr = matched_findings[0]["validation_result"] if matched_findings else None
 
