@@ -766,12 +766,14 @@ function renderSide(side){
   $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
   if(!s.proj){renderSideList(side);}
   else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideData[side].tasks=d.tasks||[];renderSideList(side);});}
-  else{if(_sideData[side].traces){renderSideList(side);}else{renderSideList(side);jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideData[side].traces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session");renderSideList(side);});}}
+  else{if(_sideData[side].traces){renderSideList(side);}else{renderSideList(side);jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideData[side].traces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session"||t.kind==="dataflow_session"||t.kind==="secmate_session");renderSideList(side);});}}
 }
 function renderSideList(side){filterSideList(side);}
 function _traceLabel(t){
   var path=t.path||"";var label=t.kind;
   if(path.indexOf("/subagents")>=0){label="子 Agent Session";}
+  else if(t.kind==="secmate_session"){label="SecMate Session";}
+  else if(t.kind==="dataflow_session"){label="DataflowVulnScan Session";}
   else if(path.indexOf("/hook-watch")>=0){label="Hook Watch";}
   else if(path.indexOf("/run/logs")>=0){label="运行日志";}
   else if(path.indexOf("/run/projects")>=0){label="项目数据";}
@@ -787,7 +789,7 @@ function _traceLabel(t){
   return label;
 }
 function _traceBadge(label){
-  const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`,"CVulnVerify Session":`<span class="knd k-argo">CVulnVerify</span>`};
+  const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`,"CVulnVerify Session":`<span class="knd k-argo">CVulnVerify</span>`,"DataflowVulnScan Session":`<span class="knd k-argo">Dataflow</span>`,"SecMate Session":`<span class="knd k-argo">SecMate</span>`};
   return badges[label]||`<span class="knd">${label}</span>`;
 }
 function _isVerifyKind(kind){return kind==="webverify_session"||kind==="cvuln_verify_session";}

@@ -23,7 +23,7 @@ from ..infrastructure import llm as llm_mod
 def _extract_findings(events: list[RawEvent]) -> list[dict]:
     """从 events 提取 finding 列表，关联 insert→update 的 validation_result。
 
-    支持两种平台格式：
+    支持多种平台格式：
     - Turing（opencode.db）：vuln-hunt_insert_finding + vuln-hunt_update_finding（validation_result）
     - Argo（Claude Code JSONL）：ReportFindings（findings[].outcome）
     """
@@ -98,6 +98,34 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 "validation_result": vr,
                 "platform": "webvulnverify",
                 "confidence": inp.get("confidence"),
+                "session_id": e.session_id,
+            }
+
+        # --- SecMate: findings-store MCP ---
+        elif tool == "mcp__findings-store__store_finding":
+            # 返回值是 JSON 字符串，其中 result 字段又是一个 JSON 字符串。
+            finding_id = ""
+            try:
+                result = json.loads(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = json.loads(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            finding_id = finding_id or str(inp.get("finding_id", "")) or f"secmate-{e.event_id}"
+            findings[finding_id] = {
+                "finding_id": finding_id,
+                "display_id": finding_id,
+                "title": inp.get("title", "") or inp.get("vuln_type", ""),
+                "description": inp.get("description", ""),
+                "vuln_type": inp.get("vuln_type", "") or inp.get("category", ""),
+                "severity": inp.get("severity", "") or inp.get("score", ""),
+                "source": str(inp.get("source", "") or inp.get("source_refs", "") or inp.get("file_path", "")),
+                "sink": str(inp.get("sink", "") or inp.get("function_name", "")),
+                "validation_result": None,
+                "platform": "secmate",
                 "session_id": e.session_id,
             }
 
@@ -206,7 +234,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     has_source_info = any((b.metadata or {}).get("source_file") or (b.metadata or {}).get("source_function") for b in benchmarks)
     pairs = []
     for fi, f in enumerate(findings):
-        f_text = " ".join(str(f.get(k, "")) for k in ("title", "source", "sink", "vuln_type"))
+        f_text = " ".join(str(f.get(k, "")) for k in ("title", "description", "source", "sink", "vuln_type"))
         for bi, b in enumerate(benchmarks):
             md = b.metadata or {}
             b_file = md.get("source_file") or ""

@@ -301,11 +301,17 @@ def run(evaluation_id: str) -> dict:
         if trace_kind == "dataflow":
             from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
             return DataflowVulnScanTraceParser()
+        if trace_kind == "secmate":
+            from ..workers.secmate_trace_parser import SecMateTraceParser
+            return SecMateTraceParser()
         # 兼容：无 trace_kind 时按路径推断
         p = _os.path.normpath(uri)
         cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
         argo_suffix = _os.path.join("session", "argo")
         dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
+        if "/tools/secmate-" in p.replace("\\", "/") and "/.worker-config/projects" in p.replace("\\", "/"):
+            from ..workers.secmate_trace_parser import SecMateTraceParser
+            return SecMateTraceParser()
         if _os.path.isdir(p) and p.endswith(cvuln_suffix):
             from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
             return CVulnVerifyTraceParser()
@@ -323,6 +329,10 @@ def run(evaluation_id: str) -> dict:
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
         if _os.path.isdir(p) or p.endswith(".jsonl"):
+            from ..workers.secmate_trace_parser import is_secmate_trace
+            if is_secmate_trace(p):
+                from ..workers.secmate_trace_parser import SecMateTraceParser
+                return SecMateTraceParser()
             # Check WebVulnVerify format (has session_meta line type)
             _check_path = p
             if _os.path.isdir(p):

@@ -282,7 +282,12 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
         norm_path = "/" + norm_path
     tool_task_id = ""
     trace_kind = "other"
-    if "/tools/" in norm_path:
+    if "/tools/secmate-" in norm_path and "/.worker-config/projects" in norm_path:
+        kind = "secmate_session"
+        trace_kind = "secmate"
+        seg = norm_path.split("/tools/", 1)[1]
+        tool_task_id = seg.split("/", 1)[0]
+    elif "/tools/" in norm_path:
         kind = "argo_session"
         trace_kind = "argo"
         seg = norm_path.split("/tools/")[1]
@@ -368,6 +373,22 @@ def _scan_dir(base: str, out: list) -> None:
             except OSError:
                 pass
         t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
+        t["file_count"] = len(jsonl_files)
+        out.append(t)
+    # 2c. 找 SecMate Claude SDK transcript 目录；排除同一 run 下的 hook-watch 旁路日志。
+    for d in glob.glob(f"{base}/**/tools/secmate-*/run/.worker-config/projects", recursive=True):
+        if not os.path.isdir(d):
+            continue
+        jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+        if not jsonl_files:
+            continue
+        latest_mt = 0.0
+        for f in jsonl_files:
+            try:
+                latest_mt = max(latest_mt, os.path.getmtime(f))
+            except OSError:
+                pass
+        t = _make_session_dir_trace(d, latest_mt or None)
         t["file_count"] = len(jsonl_files)
         out.append(t)
     # 3. 找 .db 文件（opencode.db / findings.db）
@@ -465,6 +486,40 @@ def _kubectl_find(base: str) -> list[dict]:
                         pass
             t = _make_session_dir_trace(p, latest_mt if latest_mt > 0 else None)
             t["file_count"] = len(jsonl_lines)
+            out.append(t)
+    except Exception:
+        pass
+    # 2c. SecMate transcripts: one trace per tool run's projects directory.
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+           "find", base, "-type", "d", "-path", "*/tools/secmate-*/run/.worker-config/projects",
+           "-printf", "%T@ %p\n"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+        for line in (r.stdout or "").splitlines():
+            parts = line.strip().split(" ", 1)
+            if len(parts) != 2:
+                continue
+            try:
+                mt = float(parts[0])
+            except ValueError:
+                mt = None
+            p = parts[1]
+            cmd2 = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+                    "find", p, "-name", "*.jsonl", "-printf", "%T@ %p\n"]
+            r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30, env=env)
+            lines = [value for value in (r2.stdout or "").splitlines() if value.strip()]
+            if not lines:
+                continue
+            latest_mt = mt or 0.0
+            for value in lines:
+                parts = value.split(" ", 1)
+                if len(parts) == 2:
+                    try:
+                        latest_mt = max(latest_mt, float(parts[0]))
+                    except ValueError:
+                        pass
+            t = _make_session_dir_trace(p, latest_mt or None)
+            t["file_count"] = len(lines)
             out.append(t)
     except Exception:
         pass
@@ -574,7 +629,9 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
     pod = _get_sched_pod()
     is_file = any(remote_path.endswith(ext) for ext in (".db", ".jsonl", ".sqlite", ".sqlite3"))
     if not is_file:
-        # session 目录：kubectl tar 整个目录 → 流式写临时文件 → extractall
+        # session 目录：kubectl gzip tar 整个目录 → 流式写临时文件 → extractall。
+        # SecMate transcript 目录可能有数十 MiB；未压缩 tar 容易被 kubectl/proxy
+        # 的长响应链路截断，而 JSONL 通常能被 gzip 大幅压缩。
         name = os.path.basename(remote_path.rstrip("/"))
         local = os.path.join(local_dir, f"{h}_{name}")
         if os.path.exists(local) and os.path.isdir(local):
@@ -584,7 +641,7 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
         import tarfile, tempfile
         # --ignore-failed-read：跳过权限/符号链接等读不了的文件，避免 tar 流中断
         cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "tar", "cf", "-", "--ignore-failed-read", "-C", parent, base]
+               "tar", "czf", "-", "--ignore-failed-read", "-C", parent, base]
         env = dict(os.environ, MSYS_NO_PATHCONV="1")
         for attempt in range(2):
             tmp_tar = os.path.join(local_dir, f"{h}_tmp.tar")
@@ -593,6 +650,10 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
                 with open(tmp_tar, "wb") as tmp:
                     r = subprocess.run(cmd, stdout=tmp, stderr=subprocess.PIPE,
                                        timeout=300, env=env)
+                if r.returncode:
+                    raise FileNotFoundError(
+                        f"kubectl tar 失败（exit={r.returncode}）：{remote_path}; "
+                        f"stderr={r.stderr.decode('utf-8', 'replace')[:300]}")
                 if not os.path.getsize(tmp_tar):
                     raise FileNotFoundError(f"kubectl tar 失败（空输出）：{remote_path}; stderr={r.stderr.decode('utf-8','replace')[:300]}")
                 with tarfile.open(tmp_tar) as tf:
