@@ -1,8 +1,8 @@
 """LLM 客户端（OpenAI 兼容，SSE 流式）— 用于 AI FindingBenchmarkMatch + 叙述性结论。
 
 配置来自 config_loader。失败自动重试（最多 3 次）。
-SSE 流式读取：首 token 超时 5 分钟，后续 token 断流超时 10 分钟。
-429 限流：持续重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
+SSE 流式读取：首 token 超时 2 分钟，后续 token 断流超时 10 分钟。
+429 限流：有限重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
 每个评测任务内 LLM 并发上限由信号量控制（默认 6）。
 """
 from __future__ import annotations
@@ -22,8 +22,9 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # 秒，重试间隔
 
 # SSE 流式超时（秒）
-FIRST_TOKEN_TIMEOUT = 360   # 首 token 超时：6 分钟
+FIRST_TOKEN_TIMEOUT = 120   # 首 token 超时：2 分钟
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
+MAX_RATE_LIMIT_RETRIES = 20
 
 # 每个评测任务内 LLM 并发上限（信号量）
 # 由 evaluation_service.run() 在每个评测启动时 set_max_concurrency 设置
@@ -43,11 +44,11 @@ def set_max_concurrency(n: int):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
-            api_base=None, api_key=None, **_unused) -> str:
+            api_base=None, api_key=None, timeout=None, **_unused) -> str:
     """单次 LLM 调用（SSE 流式），不重试。
 
-    首 token 超时 5 分钟，后续 token 断流超时 10 分钟。
-    429 限流持续重试（3 秒间隔，不占用 MAX_RETRIES 额度）。
+    ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
+    429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
     LLM 并发受信号量控制（每评测最多 6 个）。
     """
     base = api_base or DEFAULT_API_BASE
@@ -56,8 +57,9 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
     port = parsed.port or (443 if parsed.scheme == "https" else 80)
     path = parsed.path.rstrip("/") + "/chat/completions"
     _model = model or DEFAULT_MODEL
+    first_token_timeout = timeout if timeout is not None else FIRST_TOKEN_TIMEOUT
     print(f"[LLM] POST {base}{path} model={_model} msgs={len(messages)} "
-          f"stream=True first_token={FIRST_TOKEN_TIMEOUT}s stream_gap={STREAM_TIMEOUT}s", flush=True)
+          f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s", flush=True)
 
     body = json.dumps({
         "model": _model,
@@ -78,22 +80,19 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
     if _llm_semaphore is not None:
         _llm_semaphore.acquire()
     conn = None
+    first_token = True
     try:
-        # ── Phase 1: 发请求，429 限流持续重试，拿到 200 响应头 ──
-        # ── Phase 1: 发请求，429 限流重试（最多 500 次），首 token 超时也重试 ──
-        for _attempt in range(500):
-            conn = http.client.HTTPConnection(host, port, timeout=FIRST_TOKEN_TIMEOUT)
+        # ── Phase 1: 发请求，429 限流有限重试，拿到 200 响应头 ──
+        for _attempt in range(MAX_RATE_LIMIT_RETRIES):
+            conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
             try:
                 conn.request("POST", path, body=body, headers=headers)
                 resp = conn.getresponse()
             except (socket.timeout, TimeoutError) as e:
                 conn.close()
                 conn = None
-                print(f"[LLM] 首 token 超时（{FIRST_TOKEN_TIMEOUT}s, attempt {_attempt+1}/500）: {e}", flush=True)
-                if _attempt < 499:
-                    time.sleep(RETRY_DELAY)
-                    continue
-                raise RuntimeError(f"LLM 首 token 超时（{FIRST_TOKEN_TIMEOUT}s × 500 次）")
+                print(f"[LLM] 首 token 超时（{first_token_timeout}s）: {e}", flush=True)
+                raise RuntimeError(f"LLM 首 token 超时（{first_token_timeout}s）") from e
             status = resp.status
             if status == 429:
                 retry_after = resp.getheader("Retry-After")
@@ -114,12 +113,12 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
                 conn = None
                 raise RuntimeError(f"LLM HTTP {status}: {err_preview}")
             break  # 200，进入 SSE 读取
+        else:
+            raise RuntimeError(f"LLM 429 限流重试耗尽（{MAX_RATE_LIMIT_RETRIES} 次）")
 
         # ── Phase 2: 逐行读 SSE 流 ──
         content_parts = []
         reasoning_parts = []
-        first_token = True
-
         while True:
             line = resp.readline()
             if not line:
@@ -162,7 +161,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
     except (socket.timeout, TimeoutError) as e:
         phase = "首 token" if first_token else "后续 token 断流"
         print(f"[LLM] {phase}超时: {e}", flush=True)
-        raise RuntimeError(f"LLM {phase}超时（{FIRST_TOKEN_TIMEOUT if first_token else STREAM_TIMEOUT}s）")
+        raise RuntimeError(f"LLM {phase}超时（{first_token_timeout if first_token else STREAM_TIMEOUT}s）") from e
     finally:
         if conn:
             conn.close()
