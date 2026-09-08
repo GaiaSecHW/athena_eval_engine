@@ -19,7 +19,8 @@ from ..workers.ai_matcher import ai_match_outcome
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
 from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
-from .report_assembler import assemble, render_json, ai_narrative, ai_vuln_analysis, ai_per_case_kg_analysis
+from .report_assembler import (assemble, render_json, ai_narrative, ai_vuln_analysis,
+                               ai_per_case_kg_analysis, rule_based_per_case_kg_analysis)
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel
 from ..orchestration.state_machine import PIPELINE, assert_transition
@@ -446,12 +447,31 @@ def run(evaluation_id: str) -> dict:
             if not exists:
                 print(f"[PARSE] ⚠ trace 文件不存在: {local_path} (source_uri={src})", flush=True)
             parser = _get_parser(local_path, e.get("trace_kind"))
+            bench = list(bench_by_task.get(e["task_id"], []))
             trace_source = {"trace_id": tr.trace_id, "source_uri": local_path,
                             "turing_session_id": "sess"}
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
-            # 的原始平台任务所关联的 case 文件。
+            # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
                 trace_source["source_task_id"] = e.get("task_id_actual", "")
+                trace_case_ids = {str(case_id) for case_id in e.get("trace_case_ids", []) if case_id}
+                if trace_case_ids:
+                    effective_bench = [b for b in bench if b.benchmark_item_id in trace_case_ids]
+                    if not effective_bench:
+                        raise ValueError(
+                            "CVuln trace 与所选 benchmark 没有重叠 case："
+                            f"task={e.get('task_id_actual', '')} "
+                            f"benchmark_cases={len(bench)} trace_cases={len(trace_case_ids)}"
+                        )
+                    print(f"[CVULN] 有效 benchmark case: task={e.get('task_id_actual', '')} "
+                          f"{len(bench)} -> {len(effective_bench)}", flush=True)
+                    bench = effective_bench
+                else:
+                    # 兼容旧前端/API 客户端；新前端会提交 trace_case_ids。
+                    print("[CVULN] 未提供 trace_case_ids，使用完整 benchmark（兼容模式）", flush=True)
+                trace_source["source_case_ids"] = [
+                    benchmark.benchmark_item_id for benchmark in bench if benchmark.benchmark_item_id
+                ]
             print(f"[PARSE] {cond.value} parser={parser.__class__.__name__}", flush=True)
             events = list(parser.parse(trace_source))
             print(f"[PARSE] {cond.value} events={len(events)}", flush=True)
@@ -461,7 +481,6 @@ def run(evaluation_id: str) -> dict:
             events.sort(key=lambda e: (e.timestamp_ms or 0, e.event_id))
             session = parser.load_session(trace_source)
             session["_events_ts"] = [ev.timestamp_ms for ev in events]
-            bench = bench_by_task.get(e["task_id"]) or []
             if not bench:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
             return {"tr": tr, "events": events, "session": session, "bench": bench, "src": src,
@@ -743,17 +762,23 @@ def run(evaluation_id: str) -> dict:
             kg_session_graph = kf.get("session_graph")
             break
 
-    # 3 个 LLM 调用并行（ai_narrative / ai_per_case_kg_analysis / ai_vuln_analysis）
-    from concurrent.futures import ThreadPoolExecutor as _TP
-    print(f"[EVAL] 并行调用 3 个 LLM 分析 (ai_narrative + ai_per_case_kg + ai_vuln)...", flush=True)
-    with _TP(max_workers=3) as llm_pool:
-        fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
-        fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph)
-        fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
-        report.narrative = fut_narr.result()
-        report.per_case_kg_analysis = fut_pcka.result()
-        report.vuln_analysis = fut_vuln.result()
-    print(f"[EVAL] 3 个 LLM 分析完成", flush=True)
+    from ..infrastructure.llm import is_enabled as _llm_enabled
+    if _llm_enabled():
+        # 两个 LLM 调用与一个纯代码统计并行。
+        from concurrent.futures import ThreadPoolExecutor as _TP
+        print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + ai_per_case_kg)...", flush=True)
+        with _TP(max_workers=3) as llm_pool:
+            fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
+            fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph)
+            fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
+            report.narrative = fut_narr.result()
+            report.per_case_kg_analysis = fut_pcka.result()
+            report.vuln_analysis = fut_vuln.result()
+        print(f"[EVAL] LLM 分析完成", flush=True)
+    else:
+        print("[EVAL] LLM 未启用，跳过 AI 请求并使用规则化报告", flush=True)
+        report.per_case_kg_analysis = rule_based_per_case_kg_analysis(kg_case_results)
+        report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,

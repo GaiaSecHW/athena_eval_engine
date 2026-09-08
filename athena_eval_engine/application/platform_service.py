@@ -212,10 +212,13 @@ def _cvuln_trace_group(root: str, task_id: str, files: list[dict]) -> dict | Non
     if not files:
         return None
     mtimes = [item["mtime"] for item in files if item.get("mtime") is not None]
+    case_ids = sorted({item["case_id"] for item in files if item.get("case_id")})
     return {
         "path": root, "tool_task_id": "", "kind": "cvuln_verify_session",
         "trace_kind": "cvuln_verify", "file": "CVulnVerify 验证集合",
         "file_count": len(files), "source_task_id": task_id,
+        # 供创建评测时与 benchmark 求交集，确保解析、匹配、报告使用同一批 case。
+        "case_ids": case_ids,
         "mtime": max(mtimes) if mtimes else None,
     }
 

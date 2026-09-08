@@ -12,7 +12,7 @@ import socket
 import threading
 import http.client
 from urllib.parse import urlparse
-from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY
+from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY, LLM_ENABLED
 
 DEFAULT_API_BASE = LLM_BASE_URL
 DEFAULT_MODEL = LLM_MODEL
@@ -29,6 +29,11 @@ STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 # 由 evaluation_service.run() 在每个评测启动时 set_max_concurrency 设置
 _MAX_CONCURRENCY = 6
 _llm_semaphore: threading.Semaphore | None = None
+
+
+def is_enabled() -> bool:
+    """是否允许发起 LLM 请求（开发环境可显式关闭）。"""
+    return LLM_ENABLED
 
 
 def set_max_concurrency(n: int):
@@ -163,6 +168,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
 
 def chat(messages, **kwargs) -> str:
     """OpenAI-compatible chat completion（SSE 流式）。返回 assistant 消息文本。"""
+    if not is_enabled():
+        raise RuntimeError("LLM 未启用（设置 EVAL_LLM_ENABLED=true 后才会发起请求）")
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
     for attempt in range(retries):
@@ -179,6 +186,8 @@ def chat(messages, **kwargs) -> str:
 
 def chat_json(messages, **kwargs) -> dict:
     """chat 但要求 JSON 输出，自动解析。"""
+    if not is_enabled():
+        raise RuntimeError("LLM 未启用（设置 EVAL_LLM_ENABLED=true 后才会发起请求）")
     msgs = list(messages)
     if not any("json" in str(m.get("content", "")).lower() for m in msgs):
         msgs.append({"role": "user", "content": "只返回 JSON，不要任何额外文字。"})

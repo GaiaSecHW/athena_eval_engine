@@ -14,6 +14,8 @@ database:
 
 # LLM（OpenAI 兼容端点）
 llm:
+  # 开发环境默认关闭；配置可用端点后设为 true。
+  enabled: false
   base_url: "http://127.0.0.1:3030/v1"
   model: "glm-5.2"
   api_key: "REPLACE_WITH_LLM_API_KEY"

@@ -300,6 +300,25 @@ def ai_vuln_analysis(facts: dict, bench_by_task: dict) -> dict:
     }
 
 
+def rule_based_per_case_kg_analysis(case_results: list[dict]) -> list[dict]:
+    """LLM 未启用时生成逐 case 的确定性降级结论，不发起重试。"""
+    result = []
+    for case in case_results:
+        confusion = case.get("confusion", "NA")
+        judgment = {"TP": "VULNERABILITY", "FP": "NON_VULNERABILITY"}.get(confusion, "NOT_FOUND")
+        impact = "POSITIVE" if confusion == "TP" else "NEGATIVE" if confusion == "FP" else "NEUTRAL"
+        result.append({
+            "case_id": case.get("case_id", ""),
+            "kg_judgment": judgment,
+            "query_summary": "LLM 未启用，未生成知识查询归因。",
+            "knowledge_summary": "",
+            "impact": impact,
+            "reason": f"KG 判定: {confusion}（规则降级，LLM 未启用）",
+            "interactions": [],
+        })
+    return result
+
+
 def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     """AI analyzes knowledge interventions' impact on vulnerability detection.
 
