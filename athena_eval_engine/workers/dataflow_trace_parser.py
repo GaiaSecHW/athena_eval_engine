@@ -281,3 +281,8 @@ class DataflowVulnScanTraceParser:
             "model": "auto", "agent": "dataflow-vuln-scan",
         }
         return sess
+
+    def build_session_graph(self, events):
+        """DataflowVulnScan 使用基类通用实现。"""
+        from ..domain.resolvers import TraceParser
+        return TraceParser.build_session_graph(self, events)

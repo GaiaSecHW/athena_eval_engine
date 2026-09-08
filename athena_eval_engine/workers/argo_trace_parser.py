@@ -279,3 +279,107 @@ class ArgoTraceParser:
             "model": "claude", "agent": "argo",
         }
         return sess
+
+    def build_session_graph(self, events):
+        """构建 session 关系图（Argo 特有逻辑）。
+
+        Argo (Claude Code) 的 session 结构：
+        - 主 session：session/argo/*.jsonl
+        - 子 agent session：session/argo/subagents/*.jsonl
+        - 通过共享文件、fact ID、argo.memory 关联
+
+        相比通用逻辑的改进：
+        - 匹配任意文件扩展名（不限 .c/.py）
+        - 从 ReportFindings 提取 finding ID
+        - 从 argo.memory get 提取 fact 关联
+        - 不硬编码排除文件列表
+        """
+        from collections import defaultdict as _dd
+        graph = {
+            'sessions': {},
+            'file_to_sessions': _dd(set),
+            'fact_to_sessions': _dd(set),
+            'edges': _dd(set),
+        }
+        for ev in events:
+            sid = ev.session_id
+            if not sid:
+                continue
+            if sid not in graph['sessions']:
+                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+            sg = graph['sessions'][sid]
+
+            if not ev.is_tool_call():
+                # System events 可能有 fact 引用
+                if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
+                    for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
+                        if fid != 'f001':
+                            sg['facts'].add(fid)
+                            graph['fact_to_sessions'][fid].add(sid)
+                continue
+
+            tool = ev.tool_name or ""
+            inp = ev.input_json or {}
+
+            if tool == "bash":
+                cmd = str(inp.get("command", ""))
+                # argo.memory get fXXX → fact 关联
+                if "argo.memory" in cmd and " get" in cmd:
+                    for fid in re.findall(r'f\d{3,5}', cmd):
+                        if fid != 'f001':
+                            sg['facts'].add(fid)
+                            graph['fact_to_sessions'][fid].add(sid)
+                # athena 查询
+                if 'athena' in cmd.lower() and 'ask' in cmd:
+                    m = re.search(r'ask\s+"([^"]{0,50})', cmd)
+                    if m:
+                        sg['athena_qs'].append(m.group(1))
+                # 文件引用（匹配任意扩展名）
+                for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
+                    basename = os.path.basename(fm)
+                    if basename and len(basename) < 80 and not basename.startswith('.'):
+                        sg['files'].add(basename)
+                        graph['file_to_sessions'][basename].add(sid)
+
+            elif tool == "read":
+                fp = str(inp.get("file_path", ""))
+                if fp:
+                    basename = os.path.basename(fp)
+                    if basename and len(basename) < 80:
+                        sg['files'].add(basename)
+                        graph['file_to_sessions'][basename].add(sid)
+
+            elif tool in ("ReportFindings", "reportfindings"):
+                # Argo 提交 finding → fact ID
+                for f in (inp.get("findings") or []):
+                    fid = f.get("id") or f.get("finding_id", "")
+                    if fid:
+                        sg['facts'].add(fid)
+                        graph['fact_to_sessions'][fid].add(sid)
+
+            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding"):
+                fid = str(inp.get("detection_id", ""))
+                if fid:
+                    sg['facts'].add(fid)
+                    graph['fact_to_sessions'][fid].add(sid)
+
+            elif tool in ("vulnerability_analyze", "vulnerability_verify"):
+                vid = str(inp.get("vulnerability_id", ""))
+                if vid:
+                    sg['facts'].add(vid)
+                    graph['fact_to_sessions'][vid].add(sid)
+
+        # 构建边：共享 fact 或文件的 session 互相关联
+        for fid, sids in graph['fact_to_sessions'].items():
+            for s1 in sids:
+                for s2 in sids:
+                    if s1 != s2:
+                        graph['edges'][s1].add(s2)
+        for fm, sids in graph['file_to_sessions'].items():
+            if len(sids) > 1:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            graph['edges'][s1].add(s2)
+
+        return graph

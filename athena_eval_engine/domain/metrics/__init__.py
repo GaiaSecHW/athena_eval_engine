@@ -315,7 +315,8 @@ def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delive
     from concurrent.futures import ThreadPoolExecutor
     mrs = []; srs = []
     # M5/M6 无 bootstrap，瞬时完成，直接算
-    m5, s5 = calc_m5(kg_tool_calls, total_tool_calls)
+    # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
+    m5, s5 = calc_m5(kg_access_events, total_tool_calls)
     m6, s6 = calc_m6(kg_successful_reads, kg_access_events)
     # M1/M2M3/M4/M7/M8/M9/M10 有 bootstrap，并行
     with ThreadPoolExecutor(max_workers=4) as pool:

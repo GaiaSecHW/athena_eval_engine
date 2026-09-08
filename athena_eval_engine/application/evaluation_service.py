@@ -484,13 +484,13 @@ def run(evaluation_id: str) -> dict:
             if not bench:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
             return {"tr": tr, "events": events, "session": session, "bench": bench, "src": src,
-                    "cond": cond}
+                    "cond": cond, "parser": parser}
 
         def _resolve_trace(parsed):
             """Phase 2: 漏洞匹配 + resolve（含 LLM，慢）。"""
             from concurrent.futures import ThreadPoolExecutor
             tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
-            bench = parsed["bench"]; cond = parsed["cond"]
+            bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
             print(f"[MATCH] {cond.value} bench_items={len(bench)} starting ai_match + resolve...", flush=True)
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
                 fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events)
@@ -506,56 +506,9 @@ def run(evaluation_id: str) -> dict:
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
             oc.case_results = case_results
-            import re as _re
-            from collections import defaultdict as _dd
-            _EXCLUDE_FILES = {'athena.py', 'davinci_intf_init.c', 'urd_acc_ctrl.c', 'urd_feature.c',
-                              'urd_init.c', 'pbl_urd_common.h', 'pbl_task_ctx.h', 'svm_addr_desc.h'}
-            session_graph = {
-                'sessions': {}, 'file_to_sessions': _dd(set),
-                'fact_to_sessions': _dd(set), 'edges': _dd(set),
-            }
-            for ev in events:
-                sid = ev.session_id
-                if sid not in session_graph['sessions']:
-                    session_graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
-                sg = session_graph['sessions'][sid]
-                if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
-                    refs = _re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json))
-                    for fid in refs:
-                        if fid != 'f001':
-                            sg['facts'].add(fid)
-                            session_graph['fact_to_sessions'][fid].add(sid)
-                if ev.is_tool_call() and ev.tool_name == "bash":
-                    cmd = str((ev.input_json or {}).get("command", ""))
-                    if "argo.memory" in cmd and " get" in cmd:
-                        fids = _re.findall(r'f\d{3,5}', cmd)
-                        for fid in fids:
-                            if fid != 'f001':
-                                sg['facts'].add(fid)
-                                session_graph['fact_to_sessions'][fid].add(sid)
-                    if 'athena' in cmd.lower() and 'ask' in cmd:
-                        m = _re.search(r'ask\s+"([^"]{0,50})', cmd)
-                        if m: sg['athena_qs'].append(m.group(1))
-                    for fm in _re.findall(r'(\w+\.(?:c|h|py|java))', cmd):
-                        if fm not in _EXCLUDE_FILES:
-                            sg['files'].add(fm)
-                            session_graph['file_to_sessions'][fm].add(sid)
-                if ev.is_tool_call() and ev.tool_name == "read":
-                    fp = str((ev.input_json or {}).get("file_path", ""))
-                    for fm in _re.findall(r'(\w+\.(?:c|h|py|java))', fp):
-                        if fm not in _EXCLUDE_FILES:
-                            sg['files'].add(fm)
-                            session_graph['file_to_sessions'][fm].add(sid)
-            for fid, sids in session_graph['fact_to_sessions'].items():
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2: session_graph['edges'][s1].add(s2)
-            for fm, sids in session_graph['file_to_sessions'].items():
-                if len(sids) > 1:
-                    for s1 in sids:
-                        for s2 in sids:
-                            if s1 != s2: session_graph['edges'][s1].add(s2)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph}, parsed["src"]
+            # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
+            session_graph = parser.build_session_graph(events)
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "events": events}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
         _local_paths = {}
@@ -755,12 +708,17 @@ def run(evaluation_id: str) -> dict:
             kg_interactions.extend(kn.interactions)
     kg_case_results = []
     kg_session_graph = None
+    kg_events = []
+    nogk_case_results = []
     for tr in task_runs:
         if tr.condition == Condition.KG:
             kf = facts.get(tr.task_run_id, {})
             kg_case_results = kf.get("case_results", [])
             kg_session_graph = kf.get("session_graph")
-            break
+            kg_events = kf.get("events", [])
+        elif tr.condition == Condition.NOGK:
+            kf = facts.get(tr.task_run_id, {})
+            nogk_case_results = kf.get("case_results", [])
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
@@ -769,7 +727,7 @@ def run(evaluation_id: str) -> dict:
         print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + ai_per_case_kg)...", flush=True)
         with _TP(max_workers=3) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
-            fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph)
+            fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph, nogk_case_results, kg_events)
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
             report.narrative = fut_narr.result()
             report.per_case_kg_analysis = fut_pcka.result()

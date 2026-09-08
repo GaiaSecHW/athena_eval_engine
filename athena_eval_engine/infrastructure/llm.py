@@ -22,7 +22,7 @@ MAX_RETRIES = 3
 RETRY_DELAY = 5  # 秒，重试间隔
 
 # SSE 流式超时（秒）
-FIRST_TOKEN_TIMEOUT = 120   # 首 token 超时：2 分钟
+FIRST_TOKEN_TIMEOUT = 360   # 首 token 超时：6 分钟
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 
 # 每个评测任务内 LLM 并发上限（信号量）

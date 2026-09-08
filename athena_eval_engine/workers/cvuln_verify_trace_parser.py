@@ -279,3 +279,8 @@ class CVulnVerifyTraceParser:
             "model": "auto", "agent": "cvuln-verify",
         }
         return sess
+
+    def build_session_graph(self, events):
+        """CVulnVerify 通常单 session，使用基类通用实现。"""
+        from ..domain.resolvers import TraceParser
+        return TraceParser.build_session_graph(self, events)

@@ -454,6 +454,7 @@ function renderReport(d){
   // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
   var callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
   var resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
+  var noResponse=callCount-resultCount;
   let kgHtml="";
   // 概要
   kgHtml+="<div style='display:flex;gap:12px;align-items:center;margin-bottom:12px'>";
@@ -461,7 +462,7 @@ function renderReport(d){
   kgHtml+="<div><span style='font-weight:600;font-size:16px'>"+(kgActive?"知识图谱已介入":"知识图谱未介入")+"</span>";
   kgHtml+="<div style='font-size:14px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+resultCount+"</b> 次</div></div></div>";
 
-  // 知识质量统计：基于 RESULT 分类
+  // 知识质量统计：基于 RESULT 分类 + 无响应算返回失败
   var kgFail=0,kgBlind=0,kgSuccess=0;
   allInteractions.forEach(function(iv){
     if(iv.type!=="RESULT"||!iv.output)return;
@@ -474,8 +475,9 @@ function renderReport(d){
       kgSuccess++;
     }
   });
-  if(resultCount>0){
-    kgHtml+="<div style='display:flex;gap:12px;margin-bottom:12px'>";
+  kgFail+=noResponse; // 无响应也算返回失败
+  if(callCount>0){
+    kgHtml+="<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px'>";
     kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>有效返回 "+kgSuccess+"</span>";
     kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>返回失败 "+kgFail+"</span>";
     kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>知识盲区 "+kgBlind+"</span>";
@@ -510,7 +512,7 @@ function renderReport(d){
       }
       kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
       kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
-      kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>#"+(idx+1)+"</span>";
+      kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
       kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
       kgHtml+="</div>";
       kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";

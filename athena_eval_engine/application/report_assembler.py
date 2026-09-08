@@ -387,7 +387,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None):
     """AI 逐漏洞分析知识图谱介入效果。
 
     对每个基线漏洞，分析：
@@ -530,10 +530,37 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             case_interactions = [iv for iv in sampled_interactions
                                  if iv.get("session_id", "") in related_sessions]
         elif not matched_fid:
-            # case 未匹配（FN/FP）→ 没有关联的 finding → 无法确定哪些交互属于此 case
             case_interactions = []
         else:
             case_interactions = sampled_interactions
+
+        # 4. 从 events 提取挖掘过程摘要（按 related_sessions 过滤）
+        mining_actions = []
+        if events and related_sessions:
+            for ev in events:
+                if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
+                    continue
+                if ev.session_id not in related_sessions:
+                    continue
+                inp = ev.input_json or {}
+                tool = ev.tool_name or ""
+                if tool == "bash":
+                    cmd = str(inp.get("command", ""))[:120]
+                    if cmd and not cmd.startswith(("head", "cat ", "ls ", "grep ")):
+                        mining_actions.append({"tool": "bash", "action": cmd})
+                elif tool == "read":
+                    fp = str(inp.get("file_path", ""))[:120]
+                    if fp:
+                        mining_actions.append({"tool": "read", "action": fp})
+                elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
+                    title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
+                    mining_actions.append({"tool": "finding", "action": title})
+                elif tool == "write":
+                    fp = str(inp.get("file_path", ""))[:80]
+                    if fp:
+                        mining_actions.append({"tool": "write", "action": fp})
+                if len(mining_actions) >= 30:
+                    break
 
         # 映射 confusion → kg_judgment
         kg_judgment = "NOT_FOUND"
@@ -541,6 +568,29 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             kg_judgment = "VULNERABILITY"
         elif confusion == "FP":
             kg_judgment = "NON_VULNERABILITY"
+
+        # 找 No-KG 的 confusion（不再用于 impact，但保留用于对比记录）
+        nogk_confusion = "NA"
+        if nogk_case_results:
+            for nc in nogk_case_results:
+                if nc.get("case_id") == case_id:
+                    nogk_confusion = nc.get("confusion", "NA")
+                    break
+
+        # 无知识交互 → 直接判定，不调 LLM
+        if not case_interactions:
+            impact = "NEUTRAL"
+            reason = "无知识图谱介入，无法评估知识对漏洞排查的影响"
+            results.append({
+                "case_id": case_id,
+                "kg_judgment": kg_judgment,
+                "query_summary": "无知识查询",
+                "knowledge_summary": "无知识返回",
+                "impact": impact,
+                "reason": reason,
+                "interactions": [],
+            })
+            continue
 
         data = {
             "baseline_vulnerability": {
@@ -553,12 +603,25 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "kg_judgment": kg_judgment,
                 "matched_finding_id": matched_fid or None,
             },
-            "knowledge_interactions": [{"tool": iv.get("tool",""), "question": iv.get("question",""), "answer": iv.get("answer","")} for iv in case_interactions],
+            "knowledge_interactions": [{"tool": iv.get("tool",""),
+                                        "question": iv.get("command_parsed") or iv.get("command",""),
+                                        "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
+            "mining_actions": mining_actions,
         }
 
         prompt = [
-            {"role": "system", "content": "你是知识图谱介入效果分析员。针对每个基线漏洞，分析知识图谱的介入情况。输出中文。只返回 JSON。"},
-            {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + '\n\n分析：\n1. KG 是否识别此漏洞？是漏洞(TP)、非漏洞(FP)还是未找到(FN)？\n2. Agent 向知识图谱问了什么？（从 command 分析，如无相关交互则说明"无知识查询"）\n3. 知识图谱返回了什么知识？（从 output 分析）\n4. 这些知识对排查此漏洞是正向（帮助发现）还是负向（未帮助/误导）？\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=100字中文"}'},
+            {"role": "system", "content": (
+                "你是知识图谱介入效果分析员。针对每个基线漏洞，分析知识图谱的介入情况。\n\n"
+                "# impact 判定规则（基于 KG 结果与基线的对比 + 知识交互内容）\n"
+                "- POSITIVE（正向）：知识图谱提供的知识帮助 Agent 找到了与基线一致的漏洞\n"
+                "- NEGATIVE（负向）：知识图谱提供的知识误导了 Agent，导致与基线不符\n"
+                "- NEUTRAL（中性）：知识交互与漏洞排查无关，或知识未产生影响\n\n"
+                "只返回 JSON。"
+            )},
+            {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
+                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱问了什么？\n3. 知识图谱返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？\n\n'
+                '返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=100字中文"}'
+            )},
         ]
 
         try:
