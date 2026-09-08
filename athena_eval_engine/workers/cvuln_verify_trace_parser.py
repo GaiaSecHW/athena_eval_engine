@@ -27,8 +27,10 @@ class CVulnVerifyTraceParser:
         self._last_tool_id = None
         self._last_tool_name = None
         self._tool_kg = {}
+        self._trace_metadata_cache: dict[str, tuple[str | None, str | None]] = {}
 
     _TASK_PATH_RE = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
+    _CASE_ID_RE = re.compile(r"漏洞\s*ID\s*[:：]\s*([^\s]+)")
 
     def _files(self, trace_source) -> list[str]:
         """取得本次评测应读取的 case 文件。
@@ -41,10 +43,40 @@ class CVulnVerifyTraceParser:
         source_task_id = trace_source.get("source_task_id")
         if not source_task_id:
             return files
-        return [path for path in files if self._source_task_id(path) == source_task_id]
+        task_files: list[tuple[str, str | None]] = []
+        for path in files:
+            task_id, case_id = self._trace_metadata(path)
+            if task_id == source_task_id:
+                task_files.append((path, case_id))
+
+        source_case_ids = {str(case_id) for case_id in trace_source.get("source_case_ids", [])
+                           if case_id}
+        if not source_case_ids:
+            return [path for path, _ in task_files]
+
+        filtered = [path for path, case_id in task_files if case_id in source_case_ids]
+        if filtered:
+            print(f"[CVULN] benchmark case 过滤: task={source_task_id} "
+                  f"files={len(task_files)} -> {len(filtered)}", flush=True)
+            return filtered
+
+        # 不同 benchmark 来源的 case ID 可能不在同一命名空间。完全不命中时
+        # 保留任务级过滤，避免把有效 trace 错误地解析为空。
+        print(f"[CVULN] benchmark case 未命中 trace，回退任务级过滤: "
+              f"task={source_task_id} benchmark_cases={len(source_case_ids)} "
+              f"task_files={len(task_files)}", flush=True)
+        return [path for path, _ in task_files]
 
     def _source_task_id(self, path: str) -> str | None:
         """从首条用户任务上下文中的历史记忆路径提取原始平台任务 ID。"""
+        return self._trace_metadata(path)[0]
+
+    def _trace_metadata(self, path: str) -> tuple[str | None, str | None]:
+        """从首条用户消息提取平台任务和漏洞 case ID。"""
+        cached = self._trace_metadata_cache.get(path)
+        if cached is not None:
+            return cached
+        result: tuple[str | None, str | None] = (None, None)
         try:
             with open(path, "r", encoding="utf-8") as f:
                 for line in f:
@@ -58,10 +90,14 @@ class CVulnVerifyTraceParser:
                     text = "\n".join(str(c.get("text", "")) for c in (message.get("content") or [])
                                      if isinstance(c, dict))
                     task_ids = self._TASK_PATH_RE.findall(text)
-                    return task_ids[-1] if task_ids else None
+                    case_match = self._CASE_ID_RE.search(text)
+                    result = (task_ids[-1] if task_ids else None,
+                              case_match.group(1) if case_match else None)
+                    break
         except (OSError, UnicodeDecodeError):
-            return None
-        return None
+            pass
+        self._trace_metadata_cache[path] = result
+        return result
 
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""

@@ -31,9 +31,13 @@ SCHEMA_SQL = os.environ.get("EVAL_SCHEMA_SQL", DB.get("schema_sql", "schema.sql"
 
 # LLM
 LLM = _cfg.get("llm", {})
-LLM_BASE_URL = os.environ.get("EVAL_LLM_BASE_URL", LLM.get("base_url", "http://127.0.0.1:3030/v1"))
+_DEFAULT_LLM_BASE_URL = "http://127.0.0.1:3030/v1"
+LLM_BASE_URL = os.environ.get("EVAL_LLM_BASE_URL", LLM.get("base_url", _DEFAULT_LLM_BASE_URL))
 LLM_MODEL = os.environ.get("EVAL_LLM_MODEL", LLM.get("model", "glm-5.2"))
 LLM_API_KEY = os.environ.get("EVAL_LLM_API_KEY", LLM.get("api_key", ""))
+# 本地默认端点且无凭据时不访问 LLM；远程无鉴权网关保持兼容。无鉴权本地模型可显式开启。
+_DEFAULT_LLM_ENABLED = bool(LLM_API_KEY) or LLM_BASE_URL != _DEFAULT_LLM_BASE_URL
+LLM_ENABLED = os.environ.get("EVAL_LLM_ENABLED", str(LLM.get("enabled", _DEFAULT_LLM_ENABLED))).lower() == "true"
 
 # V-Bench
 VBENCH = _cfg.get("vbench", {})
