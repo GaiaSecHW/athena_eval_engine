@@ -105,7 +105,7 @@ class OutcomeResolverImpl:
         return candidates[-1][1]
 
     def _has_insert(self, events) -> bool:
-        return any(e.tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "vulnerability_analyze", "vulnerability_verify") for e in events)
+        return any(e.tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding") for e in events)
 
     @staticmethod
     def _classify(gt: str, pred: str) -> tuple[Confusion, Outcome]:
@@ -271,7 +271,7 @@ class ToolActionResolverImpl:
             if re.search(c, path):
                 return "KG"
         # FINDING：只有实际提交漏洞发现的工具才算（insert_finding / ReportFindings）
-        if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
+        if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings", "mcp__findings-store__store_finding"):
             return "FINDING"
         if tool in ("read", "grep", "glob") and "wiki" not in path:
             return "CODE"

@@ -301,11 +301,17 @@ def run(evaluation_id: str) -> dict:
         if trace_kind == "dataflow":
             from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
             return DataflowVulnScanTraceParser()
+        if trace_kind == "secmate":
+            from ..workers.secmate_trace_parser import SecMateTraceParser
+            return SecMateTraceParser()
         # 兼容：无 trace_kind 时按路径推断
         p = _os.path.normpath(uri)
         cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
         argo_suffix = _os.path.join("session", "argo")
         dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
+        if "/tools/secmate-" in p.replace("\\", "/") and "/.worker-config/projects" in p.replace("\\", "/"):
+            from ..workers.secmate_trace_parser import SecMateTraceParser
+            return SecMateTraceParser()
         if _os.path.isdir(p) and p.endswith(cvuln_suffix):
             from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
             return CVulnVerifyTraceParser()
@@ -323,6 +329,10 @@ def run(evaluation_id: str) -> dict:
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
         if _os.path.isdir(p) or p.endswith(".jsonl"):
+            from ..workers.secmate_trace_parser import is_secmate_trace
+            if is_secmate_trace(p):
+                from ..workers.secmate_trace_parser import SecMateTraceParser
+                return SecMateTraceParser()
             # Check WebVulnVerify format (has session_meta line type)
             _check_path = p
             if _os.path.isdir(p):
@@ -621,6 +631,7 @@ def run(evaluation_id: str) -> dict:
         _groups_pv[tid].append(pv)
     # 为每组计算指标
     _metric_groups: list[dict] = []
+    _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object]] = {}
     for tid, gvs in _groups_pv.items():
         if not gvs:
             continue
@@ -657,11 +668,44 @@ def run(evaluation_id: str) -> dict:
             if e.get("task_id") == tid:
                 _g_category = e.get("category", "")
                 break
+        _g_kg_run = next((tr for tr in task_runs
+                          if tr.task_id == tid and tr.condition == Condition.KG), None)
+        _g_nogk_run = next((tr for tr in task_runs
+                            if tr.task_id == tid and tr.condition == Condition.NOGK), None)
+        _g_kg_facts = facts.get(_g_kg_run.task_run_id, {}) if _g_kg_run else {}
+        _g_nogk_facts = facts.get(_g_nogk_run.task_run_id, {}) if _g_nogk_run else {}
+        _g_kg_cases = _g_kg_facts.get("case_results", [])
+        _g_nogk_by_case = {c.get("case_id"): c for c in _g_nogk_facts.get("case_results", [])}
+        _g_bench_by_case = {b.benchmark_item_id: b for b in bench_by_task.get(tid, [])}
+        _g_case_results = []
+        for _g_case in _g_kg_cases:
+            _g_case_id = _g_case.get("case_id")
+            _g_bench = _g_bench_by_case.get(_g_case_id)
+            _g_meta = (_g_bench.metadata or {}) if _g_bench else {}
+            _g_nogk_case = _g_nogk_by_case.get(_g_case_id, {})
+            _g_case_results.append({
+                **_g_case,
+                "expected_label": _g_case.get("expected_label") or (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA"),
+                "description": _g_meta.get("description", ""),
+                "vulnerability_type": _g_meta.get("vulnerability_type", ""),
+                "source_file": _g_meta.get("source_file", ""),
+                "source_function": _g_meta.get("source_function", ""),
+                "nogk_matched": _g_nogk_case.get("matched", False),
+                "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
+            })
+        _g_knowledge = _g_kg_facts.get("knowledge")
+        _group_kg_inputs[tid] = (
+            _g_case_results,
+            list(_g_knowledge.interactions) if _g_knowledge and _g_knowledge.interactions else [],
+            _g_kg_facts.get("session_graph"),
+        )
         _metric_groups.append({
             "task_id": tid,
             "category": _g_category,
             "label": "漏洞验证" if _g_category == "verify" else "漏洞挖掘",
             "p0": g_report.p0, "p1": g_report.p1, "p2": g_report.p2,
+            "diagnostic_hits": g_report.diagnostic_hits,
+            "case_results": _g_case_results,
             "pair_count": len(gvs),
         })
 
@@ -688,55 +732,39 @@ def run(evaluation_id: str) -> dict:
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
 
-    # 准备 ai_per_case_kg_analysis 和 ai_vuln_analysis 的输入（不依赖 LLM，先算好）
-    kg_outcome_for_analysis = None
-    for tr in task_runs:
-        if tr.condition == Condition.KG:
-            oc = facts.get(tr.task_run_id, {}).get("outcome")
-            if oc:
-                kg_outcome_for_analysis = {"outcome": oc.outcome.value, "prediction": oc.prediction.value if oc.prediction else None,
-                                         "resolver_status": oc.resolver_status, "validation": oc.validation_result,
-                                         "case_results": facts.get(tr.task_run_id, {}).get("case_results", [])}
-            break
-    kg_interactions = []
-    for tr in task_runs:
-        if tr.condition != Condition.KG:
-            continue
-        kf = facts.get(tr.task_run_id, {})
-        kn = kf.get("knowledge")
-        if kn and kn.interactions:
-            kg_interactions.extend(kn.interactions)
-    kg_case_results = []
-    kg_session_graph = None
-    kg_events = []
-    nogk_case_results = []
-    for tr in task_runs:
-        if tr.condition == Condition.KG:
-            kf = facts.get(tr.task_run_id, {})
-            kg_case_results = kf.get("case_results", [])
-            kg_session_graph = kf.get("session_graph")
-            kg_events = kf.get("events", [])
-        elif tr.condition == Condition.NOGK:
-            kf = facts.get(tr.task_run_id, {})
-            nogk_case_results = kf.get("case_results", [])
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
-        # 两个 LLM 调用与一个纯代码统计并行。
+        # 每个类别独立做逐漏洞 KG 归因，避免将挖掘与验证 trace 混入同一结论。
         from concurrent.futures import ThreadPoolExecutor as _TP
-        print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + ai_per_case_kg)...", flush=True)
+        print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...", flush=True)
         with _TP(max_workers=3) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
-            fut_pcka = llm_pool.submit(ai_per_case_kg_analysis, kg_case_results, kg_interactions, bench_by_task, kg_session_graph, nogk_case_results, kg_events)
+
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
+            fut_group_pcka = {}
+            for group in _metric_groups:
+                _g_cases, _g_interactions, _g_session_graph = _group_kg_inputs[group["task_id"]]
+                fut_group_pcka[group["task_id"]] = llm_pool.submit(
+                    ai_per_case_kg_analysis, _g_cases, _g_interactions,
+                    bench_by_task, _g_session_graph)
             report.narrative = fut_narr.result()
-            report.per_case_kg_analysis = fut_pcka.result()
             report.vuln_analysis = fut_vuln.result()
+            for group in _metric_groups:
+                group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
         print(f"[EVAL] LLM 分析完成", flush=True)
     else:
         print("[EVAL] LLM 未启用，跳过 AI 请求并使用规则化报告", flush=True)
-        report.per_case_kg_analysis = rule_based_per_case_kg_analysis(kg_case_results)
+        for group in _metric_groups:
+            group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(group["case_results"])
         report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
+    # 保留全局字段以兼容既有消费者，同时标明来源类别，避免相同 case_id 混淆。
+    for group in _metric_groups:
+        for item in group["per_case_kg_analysis"]:
+            item.setdefault("task_id", group["task_id"])
+            item.setdefault("category", group["category"])
+    report.per_case_kg_analysis = [item for group in _metric_groups
+                                   for item in group["per_case_kg_analysis"]]
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
