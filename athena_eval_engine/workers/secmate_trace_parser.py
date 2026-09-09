@@ -57,7 +57,11 @@ class SecMateTraceParser(TraceParser):
     def _files(uri: str) -> list[str]:
         if not os.path.isdir(uri):
             return [uri]
-        return sorted(glob.glob(os.path.join(uri, "**", "*.jsonl"), recursive=True))
+        # hook-watch/sessions 记录的是 harness 活动而非 Agent 执行 trace，需排除
+        return sorted(
+            f for f in glob.glob(os.path.join(uri, "**", "*.jsonl"), recursive=True)
+            if "hook-watch" not in f.replace("\\", "/")
+        )
 
     @staticmethod
     def _is_kg_call(tool_name: str, tool_input: object) -> bool:
