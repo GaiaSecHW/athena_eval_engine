@@ -476,13 +476,18 @@ def _build_report(evaluation_id: str):
                 _vc_proj = erow[1] if erow else None
                 print(f"[REPORT] 漏洞中心校验基线: project={_vc_proj} task={_vc_task}", flush=True)
                 _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_task)
-                _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in (_vc_bm.get("cases") or [])}
-                for c in (_vc_bm.get("cases") or []):
-                    cid = c.get("case_id") or c.get("id") or ""
-                    if cid:
-                        _vc_fallback[cid] = c
-                print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case（当前任务），"
-                      f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
+                _vc_cases = _vc_bm.get("cases") or []
+                if _vc_cases:
+                    _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
+                    for c in _vc_cases:
+                        cid = c.get("case_id") or c.get("id") or ""
+                        if cid:
+                            _vc_fallback[cid] = c
+                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case（当前任务），"
+                          f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
+                else:
+                    print(f"[REPORT] 漏洞中心返回 0 条 case（task={_vc_task} 可能不是漏洞中心 source_task），"
+                          f"跳过过滤", flush=True)
             except Exception as e:
                 print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
 

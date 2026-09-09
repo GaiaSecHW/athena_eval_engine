@@ -613,7 +613,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         source_file_basename = ""
         if case.get("source_file"):
             import os as _os2
-            source_file_basename = _os2.basename(case.get("source_file", ""))
+            source_file_basename = _os2.path.basename(case.get("source_file", ""))
         source_function = case.get("source_function", "")
 
         def _extract_action(ev):
