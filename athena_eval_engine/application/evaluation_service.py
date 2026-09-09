@@ -121,11 +121,21 @@ def create(req: CreateRequest):
     #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
     #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认漏洞（含漏洞与非漏洞两类）
     case_details = {}
+    # 漏洞中心模式下，如果未指定 vc_source_task_id，用 entries 的 task_id_actual 补取
+    effective_vc_task = req.vc_source_task_id
+    if req.benchmark_source == "vuln_center" and not effective_vc_task:
+        for e in req.entries:
+            tid_actual = e.get("task_id_actual") or e.get("task_id")
+            if tid_actual:
+                effective_vc_task = tid_actual
+                break
+        if effective_vc_task:
+            print(f"[CREATE] vc_source_task_id 未指定，使用 entries 的 task_id_actual={effective_vc_task} 过滤", flush=True)
     try:
         if req.benchmark_source == "vuln_center":
             from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-            print(f"[CREATE] 漏洞中心取基线: project={req.benchmark_set_id} task={req.vc_source_task_id}", flush=True)
-            bm = get_vuln_center_benchmark(req.benchmark_set_id, req.vc_source_task_id)
+            print(f"[CREATE] 漏洞中心取基线: project={req.benchmark_set_id} task={effective_vc_task}", flush=True)
+            bm = get_vuln_center_benchmark(req.benchmark_set_id, effective_vc_task)
             n_cases = len(bm.get("cases") or [])
             print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
             for c in (bm.get("cases") or []):
@@ -171,8 +181,16 @@ def create(req: CreateRequest):
 
     # Step 2: benchmark_items（含 case 描述存入 metadata_json）
     # expected_label 优先取 case_details 里的（漏洞中心逐 case 标注），否则取 entry 级
+    # 漏洞中心模式下，只插入 case_details 里有的 case（过滤掉不属于当前任务的 case）
+    _filter_by_case_details = req.benchmark_source == "vuln_center" and case_details
     for e in req.entries:
         item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
+        if _filter_by_case_details:
+            _before = len(item_ids)
+            item_ids = [bid for bid in item_ids if bid in case_details]
+            if _before != len(item_ids):
+                print(f"[CREATE] task={e.get('task_id','')} 过滤掉 {_before - len(item_ids)} 条不属于当前任务的 case，"
+                      f"剩余 {len(item_ids)} 条", flush=True)
         for bid in item_ids:
             cd = case_details.get(bid) or {}
             if not cd:
@@ -266,13 +284,44 @@ def run(evaluation_id: str) -> dict:
         # entry 的 INSERT IGNORE 被跳过 → 只有首个 task_id 拿到基线。把完整基线
         # 分配给所有 entry 的 task_id，避免 bench_by_task.get(tid) 为空。
         if bench_by_task and entries:
-            _all_items = [items[0] for items in bench_by_task.values()]
+            # 收集所有 task_id 桶的全部基线（去重），而非每个桶只取第一条
+            _seen_ids = set()
+            _all_items = []
+            for items in bench_by_task.values():
+                for item in items:
+                    if item.benchmark_item_id not in _seen_ids:
+                        _seen_ids.add(item.benchmark_item_id)
+                        _all_items.append(item)
             for e in entries:
                 _tid = e.get("task_id", "")
                 if _tid and _tid not in bench_by_task:
                     bench_by_task[_tid] = [BenchmarkItem(b.benchmark_item_id, "BS001", _tid,
                                                          b.expected_label, b.target_finding_id, b.metadata)
                                            for b in _all_items]
+        # 漏洞中心模式：如果 vc_source_task_id 为空，benchmark_item 表可能混入了
+        # 整个项目的 case。重新按 task_id_actual 拉取正确 case 集合过滤。
+        _bm_src = cfg.get("manifest", {}).get("benchmark_source", "")
+        _vc_tid = cfg.get("manifest", {}).get("vc_source_task_id")
+        if _bm_src == "vuln_center" and not _vc_tid:
+            for e in entries:
+                _vc_tid = e.get("task_id_actual") or e.get("task_id")
+                if _vc_tid:
+                    break
+        if _bm_src == "vuln_center" and _vc_tid:
+            try:
+                from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
+                _vc_proj = cfg.get("manifest", {}).get("benchmark_set_id", "")
+                _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_tid)
+                _vc_ids = {c.get("case_id") or c.get("id") or "" for c in (_vc_bm.get("cases") or [])}
+                if _vc_ids:
+                    _before = sum(len(v) for v in bench_by_task.values())
+                    for tid in list(bench_by_task.keys()):
+                        bench_by_task[tid] = [b for b in bench_by_task[tid] if b.benchmark_item_id in _vc_ids]
+                    _after = sum(len(v) for v in bench_by_task.values())
+                    if _before != _after:
+                        print(f"[LOAD] 漏洞中心过滤 benchmark: {_before} → {_after} 条（task={_vc_tid}）", flush=True)
+            except Exception as e:
+                print(f"[LOAD] 漏洞中心校验失败（不影响评测）: {e}", flush=True)
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
 

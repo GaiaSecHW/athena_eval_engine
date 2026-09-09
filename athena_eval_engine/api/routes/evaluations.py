@@ -396,37 +396,7 @@ def _build_report(evaluation_id: str):
         cur.execute("SELECT benchmark_item_id, expected_label, metadata_json FROM benchmark_item "
                     "WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)", (evaluation_id,))
         import json as _j
-        case_results = []
         raw_rows = cur.fetchall()
-        # 如果 metadata_json 全是 NULL（旧评测/取基线失败），从漏洞中心补取
-        _vc_fallback = {}
-        has_null_meta = any(r[2] is None for r in raw_rows)
-        if has_null_meta:
-            try:
-                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
-                vc_proj = erow[1] if erow else None  # benchmark_set_id = project_id
-                vc_task = manifest.get("vc_source_task_id")
-                print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={vc_task}", flush=True)
-                vc_bm = get_vuln_center_benchmark(vc_proj, vc_task)
-                for c in (vc_bm.get("cases") or []):
-                    _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
-            except Exception as e:
-                print(f"[REPORT] 漏洞中心补取失败: {e}", flush=True)
-        for bid, label, meta in raw_rows:
-            md = _j.loads(meta) if isinstance(meta, str) else (meta or {})
-            if not md and bid in _vc_fallback:
-                vc_c = _vc_fallback[bid]
-                md = {"description": vc_c.get("description", ""),
-                      "vulnerability_type": vc_c.get("vulnerability_type", ""),
-                      "source_file": vc_c.get("source_file", ""),
-                      "source_function": vc_c.get("source_function", "")}
-                if not label or label == "VULNERABLE":
-                    label = vc_c.get("expected_label", label)
-            case_results.append({"case_id": bid, "expected_label": label or "NA",
-                                "description": md.get("description", ""),
-                                "vulnerability_type": md.get("vulnerability_type", ""),
-                                "source_file": md.get("source_file", ""),
-                                "source_function": md.get("source_function", "")})
         # 关联 outcome 的 case_results（从 evidence_json 里取，KG 和 No-KG 分别取）
         def _load_case_results_from_outcome(suffix):
             """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'"""
@@ -442,6 +412,70 @@ def _build_report(evaluation_id: str):
 
         kg_oc_cases = _load_case_results_from_outcome("-KG")
         nogk_oc_cases = _load_case_results_from_outcome("-NOGK")
+
+        # 漏洞中心模式：如果 vc_source_task_id 为空，benchmark_item 表可能混入了
+        # 整个项目的 case（而非当前任务的）。重新按 task_id_actual 拉取正确 case 集合过滤。
+        _vc_fallback = {}
+        _vc_valid_case_ids = None  # 漏洞中心返回的当前任务的 case ID 集合
+        _bm_source = manifest.get("benchmark_source", "vbench_zip")
+        _vc_task = manifest.get("vc_source_task_id")
+        if _bm_source == "vuln_center" and not _vc_task:
+            for e in manifest.get("entries", []):
+                _vc_task = e.get("task_id_actual") or e.get("task_id")
+                if _vc_task:
+                    break
+        if _bm_source == "vuln_center" and _vc_task:
+            try:
+                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+                _vc_proj = erow[1] if erow else None
+                print(f"[REPORT] 漏洞中心校验基线: project={_vc_proj} task={_vc_task}", flush=True)
+                _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_task)
+                _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in (_vc_bm.get("cases") or [])}
+                for c in (_vc_bm.get("cases") or []):
+                    cid = c.get("case_id") or c.get("id") or ""
+                    if cid:
+                        _vc_fallback[cid] = c
+                print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case（当前任务），"
+                      f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
+            except Exception as e:
+                print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
+
+        # 用漏洞中心返回的 case 集合过滤 benchmark_item（修掉 create 时多插入的 case）
+        if _vc_valid_case_ids is not None and len(_vc_valid_case_ids) < len(raw_rows):
+            _before = len(raw_rows)
+            raw_rows = [r for r in raw_rows if r[0] in _vc_valid_case_ids]
+            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条（只保留当前任务的 case）", flush=True)
+
+        has_null_meta = any(r[2] is None for r in raw_rows)
+        if has_null_meta and not _vc_fallback:
+            try:
+                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+                vc_proj = erow[1] if erow else None
+                if not _vc_task:
+                    _vc_task = manifest.get("vc_source_task_id")
+                print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={_vc_task}", flush=True)
+                vc_bm = get_vuln_center_benchmark(vc_proj, _vc_task)
+                for c in (vc_bm.get("cases") or []):
+                    _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
+            except Exception as e:
+                print(f"[REPORT] 漏洞中心补取失败: {e}", flush=True)
+
+        case_results = []
+        for bid, label, meta in raw_rows:
+            md = _j.loads(meta) if isinstance(meta, str) else (meta or {})
+            if not md and bid in _vc_fallback:
+                vc_c = _vc_fallback[bid]
+                md = {"description": vc_c.get("description", ""),
+                      "vulnerability_type": vc_c.get("vulnerability_type", ""),
+                      "source_file": vc_c.get("source_file", ""),
+                      "source_function": vc_c.get("source_function", "")}
+                if not label or label == "VULNERABLE":
+                    label = vc_c.get("expected_label", label)
+            case_results.append({"case_id": bid, "expected_label": label or "NA",
+                                "description": md.get("description", ""),
+                                "vulnerability_type": md.get("vulnerability_type", ""),
+                                "source_file": md.get("source_file", ""),
+                                "source_function": md.get("source_function", "")})
 
         # 用 outcome 的 per-case 结果覆盖（含 matched/confusion）
         for c in case_results:
@@ -466,6 +500,19 @@ def _build_report(evaluation_id: str):
                 c["nogk_confusion"] = "NA"
         r["case_results"] = case_results
         r["baseline_count"] = len(case_results)
+        # 同步过滤 metric_groups 中的 case_results（修掉 create 时多插入的 case）
+        if _vc_valid_case_ids is not None:
+            _rep = r.get("report") or {}
+            for _grp in (_rep.get("metric_groups") or []):
+                _gc = _grp.get("case_results") or []
+                if len(_gc) > len(_vc_valid_case_ids):
+                    _grp["case_results"] = [c for c in _gc if c.get("case_id") in _vc_valid_case_ids]
+                    print(f"[REPORT] metric_groups[{_grp.get('task_id','')}] case_results: "
+                          f"{len(_gc)} → {len(_grp['case_results'])} 条", flush=True)
+                # 同步过滤 per_case_kg_analysis
+                _pcka = _grp.get("per_case_kg_analysis") or []
+                if len(_pcka) > len(_vc_valid_case_ids):
+                    _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _vc_valid_case_ids]
     finally:
         conn.close()
     return r
