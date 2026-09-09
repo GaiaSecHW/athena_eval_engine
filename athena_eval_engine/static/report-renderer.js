@@ -127,7 +127,7 @@ function renderReport(d){
   // 概要
   kgHtml+="<div style='display:flex;gap:12px;align-items:center;margin-bottom:12px'>";
   kgHtml+=kgActive?"<span style='font-size:28px'>✅</span>":"<span style='font-size:28px'>❌</span>";
-  kgHtml+="<div><span style='font-weight:600;font-size:16px'>"+(kgActive?"知识图谱已介入":"知识图谱未介入")+"</span>";
+  kgHtml+="<div><span style='font-weight:600;font-size:16px'>"+(kgActive?"知识图谱与记忆已介入":"知识图谱与记忆未介入")+"</span>";
   kgHtml+="<div style='font-size:14px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+resultCount+"</b> 次</div></div></div>";
 
   // 知识质量统计：基于 RESULT 分类 + 无响应算返回失败
@@ -252,8 +252,8 @@ function renderReport(d){
   const m9v=p2.M9&&p2.M9.calculation_status==="CALCULATED"?p2.M9.estimate:null;
   const hasAnyKgInteraction=(d.knowledge_interactions||[]).some(k=>(k.interactions||[]).some(iv=>iv.type==="CALL"));
   const overallKgAccess=p1.M5&&p1.M5.calculation_status==="CALCULATED"?p1.M5.estimate:null;
-  if((overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction)summaryParts.push("知识图谱已介入");
-  else summaryParts.push("知识图谱未介入");
+  if((overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction)summaryParts.push("知识图谱与记忆已介入");
+  else summaryParts.push("知识图谱与记忆未介入");
   if(m8v!==null)summaryParts.push(m8v<0?"KG 模式更省 token":"KG 模式更耗 token");
   if(m9v!==null)summaryParts.push(m9v<0?"KG 步数更少":"KG 步数更多");
   if(m7v!==null)summaryParts.push(m7v<0.1?"行为几乎无变化":"行为有明显变化");
@@ -319,7 +319,7 @@ function renderReport(d){
       return `<div class="card" style="margin-bottom:16px">
         <h3>📊 ${label} — 漏洞检测统计</h3>
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div>
-        <table><tr><th>统计项</th><th>KG（开知识图谱）</th><th>No-KG（对照）</th></tr>
+        <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
         <tr><td>Agent 提交发现数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
         <tr><td>Athena 查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
         <tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr>
@@ -332,7 +332,7 @@ function renderReport(d){
     }
     function _metricCards(gp0,gp1,gp2,glabel){
       return `${[
-        ["① 价值结果","衡量知识图谱对漏洞判定准确性的净贡献",
+        ["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
           [["M1",gp0.M1],["M2",gp0.M2],["M3",gp0.M3],["M4",gp0.M4]]],
         ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆/行为漂移）",
           [["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
@@ -358,12 +358,12 @@ function renderReport(d){
       <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label)}</div>
       ${_diagnostics(g.diagnostic_hits||h)}
       <div class="card" style="margin-bottom:16px">
-        <h3>🧠 ${g.label} — 知识图谱介入情况</h3>
+        <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
         ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
           ?buildKnowledgeHtml(g)
           :mg.length===1
             ?buildKnowledgeHtml(null)
-            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱分析；请重跑评测以生成此数据。</div>'}
+            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
       </div>
     </div>`).join("");
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;

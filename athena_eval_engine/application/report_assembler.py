@@ -141,10 +141,17 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
-            "你是知识图谱2.0安全评测的分析报告撰写员。\n\n"
+            "你是知识图谱与记忆2.0安全评测的分析报告撰写员。\n\n"
             "# 背景\n"
-            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱(KG)、对照组不开启(No-KG)，"
-            "通过12项指标(M1-M12)量化知识图谱对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
+            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
+            "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
+            "# 知识图谱与记忆的使用方法\n"
+            "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+            "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
+            "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
+            "用于跨会话积累和复用漏洞挖掘知识。\n"
+            "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n"
+            "知识图谱与记忆对漏洞挖掘的影响可分为：正向（帮助发现漏洞）、负向（误导方向）、中性（无显著影响）。\n\n"
             "# 任务\n"
             "基于输入的指标数据、McNemar 检验结果、诊断规则，生成结构化结论 JSON。\n\n"
             "# 约束\n"
@@ -180,7 +187,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             + json.dumps([{"rule_id": h.rule_id, "observed": h.observed, "interpretation": h.interpretation} for h in hits], ensure_ascii=False, indent=2) + "\n\n"
             "# 输出 JSON Schema\n"
             "{\n"
-            '  "summary": "总结论(≤300字)。回答：知识图谱是否有帮助？引用关键数值，用中文名称。",\n'
+            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
             '  "conclusion": "分析结论(400-600字)。分三段写：'
             "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
             "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
@@ -248,18 +255,18 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
-            "你是知识图谱2.0安全评测的摘要撰写员。\n\n"
+            "你是知识图谱与记忆2.0安全评测的摘要撰写员。\n\n"
             "# 背景\n"
-            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱(KG)、对照组不开启(No-KG)，对比差异。\n"
+            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，对比差异。\n"
             "下方数据中 outcome=SUCCESS/FAIL 表示该组 Agent 是否成功找到漏洞，prediction=POSITIVE/NEGATIVE 表示 Agent 判定有无漏洞。\n\n"
             "# 任务\n"
             "基于输入数据，写一段 200-300 字的中文评测摘要。纯文本输出，不要 JSON。\n\n"
             "# 内容要求\n"
             "1. 评测范围：基线漏洞数、评测名称\n"
             "2. 漏洞发现：KG 与 No-KG 各提交多少 finding、outcome 是成功还是失败\n"
-            "3. 知识图谱介入：介入次数(interventions)、知识访问率(kar)、行为偏移(jsd)\n"
+            "3. 知识图谱与记忆介入：介入次数(interventions)、知识访问率(kar)、行为偏移(jsd)\n"
             "4. 成本对比：token 差值(delta_token)、步数差值(delta_steps)、时长差值(delta_time_ms)，正值=KG 更耗\n"
-            "5. 结论：知识图谱是否有帮助？"
+            "5. 结论：知识图谱与记忆是否有帮助？"
         )},
         {"role": "user", "content": (
             "评测数据：\n" + json.dumps(data, ensure_ascii=False, indent=2)
@@ -280,7 +287,7 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
         if nogk_oc.get("outcome"):
             parts.append("No-KG 结果: " + nogk_oc["outcome"])
         if kg_interactions_count:
-            parts.append("知识图谱介入 " + str(kg_interactions_count) + " 次")
+            parts.append("知识图谱与记忆介入 " + str(kg_interactions_count) + " 次")
         if m8.get("estimate") is not None:
             parts.append("KG " + ("少用" if m8["estimate"] < 0 else "多用") + " " + str(abs(m8["estimate"])) + " token")
         if m7.get("estimate") is not None:
@@ -346,12 +353,12 @@ def rule_based_per_case_kg_analysis(case_results: list[dict]) -> list[dict]:
 def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     """AI analyzes knowledge interventions' impact on vulnerability detection.
 
-    分析知识图谱介入是否帮助 Agent 找到了正确的漏洞（TRUSTED）还是被忽略（IGNORED）。
+    分析知识图谱与记忆介入是否帮助 Agent 找到了正确的漏洞（TRUSTED）还是被忽略（IGNORED）。
     不依赖 follow_up 窗口，直接取所有 CALL 交互的完整 command+output 给 LLM 批量分析。
     """
     if not interactions:
-        return {"analysis": "未检测到知识图谱介入行为。",
-                "suggestion": "建议确认 KG trace 是否开启了知识图谱 2.0 配置。",
+        return {"analysis": "未检测到知识图谱与记忆介入行为。",
+                "suggestion": "建议确认 KG trace 是否开启了知识图谱与记忆 2.0 配置。",
                 "interactions_analysis": []}
 
     # 取所有 CALL 交互（知识查询），按 command 非空过滤
@@ -390,7 +397,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     }
 
     prompt = [
-        {"role": "system", "content": "你是知识图谱介入效果分析员。分析 Agent 从知识图谱获取了什么知识，以及这些知识是否帮助发现了正确的漏洞。\n\n判断标准：\n- TRUSTED：Agent 信任并利用知识图谱的信息，直接帮助发现了漏洞\n- QUESTIONED：Agent 查询了知识但对结果有疑问，未直接利用\n- IGNORED：Agent 查询了知识但完全忽略了返回的内容\n\n只返回 JSON，不要任何额外文字。"},
+        {"role": "system", "content": "你是知识图谱与记忆介入效果分析员。分析 Agent 从知识图谱获取了什么知识，以及这些知识是否帮助发现了正确的漏洞。\n\n判断标准：\n- TRUSTED：Agent 信任并利用知识图谱的信息，直接帮助发现了漏洞\n- QUESTIONED：Agent 查询了知识但对结果有疑问，未直接利用\n- IGNORED：Agent 查询了知识但完全忽略了返回的内容\n\n只返回 JSON，不要任何额外文字。"},
         {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + '\n\n对每个知识交互分析：\n1. Agent 请求了什么知识？（从 command 分析）\n2. 知识图谱返回了什么？（从 output 分析）\n3. 这次知识介入对漏洞发现的影响是什么？\n\n返回 JSON:\n{"interactions_analysis": [{"index": 0, "tool": "...", "command_summary": "<=50字中文", "output_summary": "<=50字中文", "impact": "TRUSTED|QUESTIONED|IGNORED", "reason": "<=100字中文"}], "overall_analysis": "<=200字中文总体分析", "suggestion": "<=100字中文建议"}'},
     ]
 
@@ -412,12 +419,12 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
 
 
 def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None):
-    """AI 逐漏洞分析知识图谱介入效果。
+    """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
     1. KG 是否识别此漏洞（TP=漏洞, FP=非漏洞, FN=未找到）
-    2. Agent 向知识图谱问了什么
-    3. 知识图谱返回了什么
+    2. Agent 向知识图谱与记忆问了什么
+    3. 知识图谱与记忆返回了什么
     4. 对排查此漏洞是正向还是负向
     """
     import re
@@ -603,31 +610,72 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         # 4. 从 events 提取挖掘过程摘要（按 related_sessions 过滤）
         mining_actions = []
+        source_file_basename = ""
+        if case.get("source_file"):
+            import os as _os2
+            source_file_basename = _os2.basename(case.get("source_file", ""))
+        source_function = case.get("source_function", "")
+
+        def _extract_action(ev):
+            """从单个 event 提取挖掘行为摘要。"""
+            inp = ev.input_json or {}
+            tool = ev.tool_name or ""
+            if tool == "bash":
+                cmd = str(inp.get("command", ""))[:150]
+                if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
+                    return {"tool": "bash", "action": cmd, "session_id": ev.session_id}
+            elif tool == "read":
+                fp = str(inp.get("file_path", ""))[:150]
+                if fp:
+                    return {"tool": "read", "action": fp, "session_id": ev.session_id}
+            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
+                title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
+                return {"tool": "finding", "action": title, "session_id": ev.session_id}
+            elif tool == "write":
+                fp = str(inp.get("file_path", ""))[:100]
+                if fp:
+                    return {"tool": "write", "action": fp, "session_id": ev.session_id}
+            return None
+
         if events and related_sessions:
             for ev in events:
                 if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
                     continue
                 if ev.session_id not in related_sessions:
                     continue
-                inp = ev.input_json or {}
-                tool = ev.tool_name or ""
-                if tool == "bash":
-                    cmd = str(inp.get("command", ""))[:120]
-                    if cmd and not cmd.startswith(("head", "cat ", "ls ", "grep ")):
-                        mining_actions.append({"tool": "bash", "action": cmd})
-                elif tool == "read":
-                    fp = str(inp.get("file_path", ""))[:120]
-                    if fp:
-                        mining_actions.append({"tool": "read", "action": fp})
-                elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
-                    title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
-                    mining_actions.append({"tool": "finding", "action": title})
-                elif tool == "write":
-                    fp = str(inp.get("file_path", ""))[:80]
-                    if fp:
-                        mining_actions.append({"tool": "write", "action": fp})
+                a = _extract_action(ev)
+                if a:
+                    mining_actions.append(a)
                 if len(mining_actions) >= 30:
                     break
+
+        # FN 案例且 mining_actions 为空：fallback 扫描全量 events
+        # 优先提取与漏洞文件/函数相关的行为，再补充其他行为
+        if not mining_actions and events and confusion == "FN":
+            related_hits = []
+            other_actions = []
+            for ev in events:
+                if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
+                    continue
+                a = _extract_action(ev)
+                if not a:
+                    continue
+                action_text = (a.get("action", "") + " " + a.get("session_id", "")).lower()
+                is_related = False
+                if source_file_basename and source_file_basename.lower() in action_text:
+                    is_related = True
+                if source_function and source_function.lower() in action_text:
+                    is_related = True
+                if is_related:
+                    related_hits.append(a)
+                else:
+                    other_actions.append(a)
+            # 优先放相关行为，再补充其他行为（read 优先于 bash）
+            mining_actions = related_hits[:20]
+            other_sorted = sorted(other_actions, key=lambda x: (0 if x["tool"] == "read" else 1 if x["tool"] == "finding" else 2))
+            mining_actions.extend(other_sorted[:30])
+            if len(mining_actions) > 50:
+                mining_actions = mining_actions[:50]
 
         # 映射 confusion → kg_judgment
         kg_judgment = "NOT_FOUND"
@@ -653,7 +701,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 fn_data = {
                     "baseline_vulnerability": {
                         "case_id": case_id,
-                        "description": description[:200],
+                        "description": description[:800],
                         "vulnerability_type": vuln_type,
                         "source_file": source_file,
                         "source_function": source_function,
@@ -665,20 +713,32 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 fn_prompt = [
                     {"role": "system", "content": (
                         "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请分析原因。\n\n"
-                        "# 分析维度\n"
-                        "1. Agent 是否检查了漏洞所在文件/函数？（对照 mining_actions 和 source_file/source_function）\n"
-                        "2. Agent 的挖掘行为是否覆盖了该漏洞类型？\n"
-                        "3. Agent 是否缺少相关知识（未查询知识图谱）？\n"
-                        "4. 与 No-KG 对比：No-KG 是否找到了此漏洞？（nogk_confusion）\n\n"
+                        "# 知识图谱与记忆的使用方法\n"
+                        "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+                        "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
+                        "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
+                        "用于跨会话积累和复用漏洞挖掘知识。\n"
+                        "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
+                        "# 分析方法\n"
+                        "将 baseline_vulnerability（基线漏洞详情）与 mining_actions（Agent 实际挖掘行为）逐项对比：\n"
+                        "1. Agent 是否读取过 source_file？在 mining_actions 中搜索匹配的 read/bash 路径\n"
+                        "2. Agent 是否分析了 source_function？在 mining_actions 中搜索函数名\n"
+                        "3. Agent 提交的 finding 与 vulnerability_type 是否相关？\n"
+                        "4. Agent 的挖掘范围覆盖了哪些文件/目录？是否偏离了漏洞所在区域？\n"
+                        "5. Agent 是否查询了知识图谱与记忆？未查询是否是漏报原因之一？\n"
+                        "6. No-KG 也漏报了吗（nogk_confusion）？双方都漏报说明漏洞本身难发现\n"
+                        "7. 知识图谱与记忆对漏洞挖掘的影响：正向（引导到正确区域）、负向（误导方向）、中性（无影响）\n\n"
                         "只返回 JSON。"
                     )},
                     {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
-                        '\n\n分析为什么 Agent 没有发现这个漏洞：\n'
-                        '1. Agent 是否检查了漏洞所在的文件/函数？\n'
-                        '2. Agent 的挖掘行为（mining_actions）是否覆盖了该漏洞类型？\n'
-                        '3. 如果 Agent 查询了知识图谱，知识是否包含此漏洞信息？\n'
-                        '4. 给出主要原因\n\n'
-                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "<=150字中文，分析为什么没有发现漏洞"}'
+                        '\n\n请对比基线漏洞信息与 Agent 挖掘过程，分析为什么 Agent 没有发现这个漏洞：\n'
+                        '1. 基线漏洞在 ' + (source_file or '未知') + ' 的 ' + (source_function or '未知') + ' 中，'
+                        '类型为 ' + (vuln_type or '未知') + '。Agent 在 mining_actions 中是否接触过这个文件/函数？\n'
+                        '2. 如果 Agent 没接触过，Agent 主要在分析什么？（列出 mining_actions 中的主要文件/命令）\n'
+                        '3. Agent 提交了哪些 finding？与基线漏洞类型是否相关？\n'
+                        '4. No-KG 结果为 ' + nogk_confusion + '，说明什么？\n'
+                        '5. 给出具体原因（如：未接触漏洞文件、挖掘方向偏离、漏洞类型不匹配、缺少知识引导等）\n\n'
+                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "<=150字中文，必须给出具体原因"}'
                     )},
                 ]
                 try:
@@ -693,13 +753,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "query_summary": "无知识查询",
                         "knowledge_summary": "无知识返回",
                         "impact": "NEUTRAL",
-                        "reason": "Agent 未发现此漏洞，且无知识图谱介入。LLM 分析不可用。",
+                        "reason": "Agent 未发现此漏洞，且无知识图谱与记忆介入。LLM 分析不可用。",
                         "interactions": [],
                     })
                 continue
             # 非 FN 且无知识交互：直接判定，不调 LLM
             impact = "NEUTRAL"
-            reason = "无知识图谱介入，无法评估知识对漏洞排查的影响"
+            reason = "无知识图谱与记忆介入，无法评估知识对漏洞排查的影响"
             results.append({
                 "case_id": case_id,
                 "kg_judgment": kg_judgment,
@@ -714,7 +774,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         data = {
             "baseline_vulnerability": {
                 "case_id": case_id,
-                "description": description[:200],
+                "description": description[:800],
                 "vulnerability_type": vuln_type,
                 "source_file": case.get("source_file", ""),
                 "source_function": case.get("source_function", ""),
@@ -735,20 +795,33 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         fn_extra = ""
         if kg_judgment == "NOT_FOUND":
             fn_extra = (
-                "\n5. 为什么 Agent 没有发现这个漏洞？分析 Agent 的挖掘行为（mining_actions）是否覆盖了漏洞所在的文件/函数和漏洞类型。"
-                "\n6. 知识图谱是否包含此漏洞的相关信息？如果有，Agent 为什么没有利用？"
+                "\n5. 为什么 Agent 没有发现这个漏洞？在 mining_actions 中，Agent 是否读取过 source_file（"
+                + (case.get("source_file", "") or "未知") + "）？Agent 主要在分析哪些文件？"
+                "\n6. Agent 提交的 finding 与基线漏洞的 vulnerability_type 是否相关？"
+                "\n7. 知识图谱与记忆是否包含此漏洞的相关信息？如果有，Agent 为什么没有利用？"
+                "\n8. No-KG 也漏报了吗（nogk_confusion）？如果都漏报说明漏洞本身难发现。"
+                "\n9. 必须给出具体原因（如：未接触漏洞文件/函数、挖掘方向偏离、漏洞类型不匹配等），不要泛泛而谈。"
             )
         prompt = [
             {"role": "system", "content": (
-                "你是知识图谱介入效果分析员。针对每个基线漏洞，分析知识图谱的介入情况。\n\n"
+                "你是知识图谱与记忆介入效果分析员。针对每个基线漏洞，分析知识图谱与记忆的介入情况。\n\n"
+                "# 知识图谱与记忆的使用方法\n"
+                "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+                "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
+                "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
+                "用于跨会话积累和复用漏洞挖掘知识。\n"
+                "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
                 "# impact 判定规则（基于 KG 结果与基线的对比 + 知识交互内容）\n"
-                "- POSITIVE（正向）：知识图谱提供的知识帮助 Agent 找到了与基线一致的漏洞\n"
-                "- NEGATIVE（负向）：知识图谱提供的知识误导了 Agent，导致与基线不符\n"
-                "- NEUTRAL（中性）：知识交互与漏洞排查无关，或知识未产生影响\n\n"
+                "- POSITIVE（正向）：知识图谱与记忆提供的知识帮助 Agent 找到了与基线一致的漏洞，"
+                "或引导 Agent 聚焦到正确的漏洞区域\n"
+                "- NEGATIVE（负向）：知识图谱与记忆提供的信息误导了 Agent，导致与基线不符，"
+                "或 Agent 过度依赖知识而忽略了实际代码中的漏洞\n"
+                "- NEUTRAL（中性）：知识交互与漏洞排查无关，或知识未产生影响，"
+                "Agent 的挖掘行为在有/无知识时无显著差异\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
-                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱问了什么？\n3. 知识图谱返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？'
+                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱与记忆问了什么？\n3. 知识图谱与记忆返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？'
                 + fn_extra +
                 '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=150字中文"}'
             )},
