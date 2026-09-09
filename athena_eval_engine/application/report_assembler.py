@@ -559,6 +559,127 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             sampled_mem_interactions.append(item)
             mem_total_size += item_size
 
+    # ===== 从 JSONL trace 提取 finding 提交点（结论点），用于倒推挖掘链 =====
+    # Turing: vuln_hunt_insert_finding (提交) → vuln_hunt_update_finding (AI判定 CONFIRMED/FALSE_POSITIVE)
+    # Argo: ReportFindings (findings[].outcome: confirmed/no_change_needed)
+    # SecMate: mcp__findings-store__store_finding
+    finding_events = {}  # finding_id/display_id → info dict
+    agent_findings_list = []  # Agent 提交的所有 finding 摘要（用于 FN 展示）
+    _seen_fids = set()
+    if events:
+        import re as _re_finding
+        for ev in events:
+            if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
+                continue
+            tool = ev.tool_name or ""
+            inp = ev.input_json or {}
+            out_str = str(ev.output_json or "")
+            # Turing: vuln_hunt_insert_finding
+            if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding"):
+                m = _re_finding.search(r"id=([a-f0-9-]+)", out_str)
+                fid = m.group(1) if m else str(inp.get("detection_id", "?"))
+                display = _re_finding.search(r"Finding\s+(\S+)", out_str)
+                display_id = display.group(1) if display else ""
+                info = {
+                    "finding_id": fid, "display_id": display_id,
+                    "title": str(inp.get("title", ""))[:120],
+                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
+                    "source": str(inp.get("source", ""))[:100],
+                    "sink": str(inp.get("sink", ""))[:100],
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": None,
+                }
+                finding_events[fid] = info
+                if display_id:
+                    finding_events[display_id] = info
+                if fid not in _seen_fids:
+                    _seen_fids.add(fid)
+                    agent_findings_list.append(info)
+            # Argo: ReportFindings
+            elif tool in ("ReportFindings", "reportfindings"):
+                for f in (inp.get("findings") or []):
+                    fid = f.get("id", f.get("finding_id", "")) or f"{f.get('file','')}:{f.get('line','')}"
+                    outcome = f.get("outcome", "")
+                    vr = "CONFIRMED" if outcome == "confirmed" else ("FALSE_POSITIVE" if outcome == "no_change_needed" else None)
+                    info = {
+                        "finding_id": fid, "display_id": fid,
+                        "title": str(f.get("short_summary", ""))[:120],
+                        "vuln_type": str(f.get("category", ""))[:60],
+                        "source": str(f.get("file", ""))[:100],
+                        "sink": "", "session_id": ev.session_id,
+                        "timestamp": ev.timestamp_ms,
+                        "validation_result": vr,
+                    }
+                    finding_events[fid] = info
+                    if fid not in _seen_fids:
+                        _seen_fids.add(fid)
+                        agent_findings_list.append(info)
+            # SecMate: mcp__findings-store__store_finding
+            elif tool == "mcp__findings-store__store_finding":
+                finding_id = ""
+                try:
+                    result = json.loads(out_str)
+                    nested = result.get("result", result) if isinstance(result, dict) else result
+                    if isinstance(nested, str):
+                        nested = json.loads(nested)
+                    if isinstance(nested, dict):
+                        finding_id = str(nested.get("finding_id", ""))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                finding_id = finding_id or str(inp.get("finding_id", "")) or f"secmate-{ev.event_id}"
+                info = {
+                    "finding_id": finding_id, "display_id": finding_id,
+                    "title": str(inp.get("title", "") or inp.get("vuln_type", ""))[:120],
+                    "vuln_type": str(inp.get("vuln_type", "") or inp.get("category", ""))[:60],
+                    "source": str(inp.get("source", "") or inp.get("file_path", ""))[:100],
+                    "sink": str(inp.get("sink", "") or inp.get("function_name", ""))[:100],
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": None,
+                }
+                finding_events[finding_id] = info
+                if finding_id not in _seen_fids:
+                    _seen_fids.add(finding_id)
+                    agent_findings_list.append(info)
+        # 关联 Turing: vuln_hunt_update_finding 的 validation_result（AI 判定结论点）
+        for ev in events:
+            if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
+                continue
+            tool = ev.tool_name or ""
+            if tool in ("vuln-hunt_update_finding", "vuln_hunt_update_finding"):
+                inp = ev.input_json or {}
+                fid = str(inp.get("finding_id", ""))
+                vr = inp.get("validation_result", "")
+                if fid in finding_events and vr in ("CONFIRMED", "FALSE_POSITIVE"):
+                    finding_events[fid]["validation_result"] = vr
+                    # 同步到 agent_findings_list
+                    for af in agent_findings_list:
+                        if af.get("finding_id") == fid:
+                            af["validation_result"] = vr
+                            break
+
+    def _extract_action(ev):
+        """从单个 event 提取挖掘行为摘要。"""
+        inp = ev.input_json or {}
+        tool = ev.tool_name or ""
+        if tool == "bash":
+            cmd = str(inp.get("command", ""))[:150]
+            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
+                return {"tool": "bash", "action": cmd, "session_id": ev.session_id}
+        elif tool == "read":
+            fp = str(inp.get("file_path", ""))[:150]
+            if fp:
+                return {"tool": "read", "action": fp, "session_id": ev.session_id}
+        elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
+            title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
+            return {"tool": "finding", "action": title, "session_id": ev.session_id}
+        elif tool == "write":
+            fp = str(inp.get("file_path", ""))[:100]
+            if fp:
+                return {"tool": "write", "action": fp, "session_id": ev.session_id}
+        return None
+
     results = []
     for case in case_results:
         case_id = case.get("case_id", "")
@@ -566,159 +687,45 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         vuln_type = case.get("vulnerability_type", "")
         confusion = case.get("confusion", "NA")
         matched_fid = case.get("matched_finding_id", "")
-        case_session = case.get("session_id", "")
 
-        # 用 session_graph 逆向遍历，找到该漏洞的完整调查链
-        # 1. 从 case 的 session 出发 BFS
-        related_sessions = set()
-        if session_graph and case_session:
-            related_sessions.add(case_session)
-            queue = [case_session]
-            visited = {case_session}
-            while queue:
-                cur = queue.pop(0)
-                neighbors = session_graph.get('edges', {}).get(cur, set())
-                for n in neighbors:
-                    if n not in visited:
-                        visited.add(n)
-                        related_sessions.add(n)
-                        queue.append(n)
+        # 从 finding 提交点（结论点）倒推挖掘链
+        finding_info = None
+        if matched_fid:
+            finding_info = finding_events.get(matched_fid) or finding_events.get(matched_fid[:8])
 
-        # 2. 通过基线漏洞的 source_file / source_function 找关联 session
-        if session_graph:
-            import re as _re2
-            import os as _os
-            file_names = set()
-            # 优先从 case 的 source_file 提取 basename（evaluation_service 已从 metadata 填充）
-            source_file = case.get("source_file", "")
-            if source_file:
-                file_names.add(_os.path.basename(source_file))
-            # 从 description 提取文件名（扩展正则覆盖 .java/.go/.js/.ts/.py/.c/.h 等）
-            file_names.update(_re2.findall(r'[\w\-]+\.\w{1,6}', description + " " + vuln_type))
-            # 从 bench_by_task 的 metadata 提取 source_file（修复：metadata 非 metadata_json）
-            if isinstance(bench_by_task, dict):
-                for items in bench_by_task.values():
-                    for ft in (items if isinstance(items, list) else [items]):
-                        meta = getattr(ft, 'metadata', None)
-                        if isinstance(meta, dict):
-                            sf = meta.get("source_file", "")
-                            if sf:
-                                file_names.add(_os.path.basename(sf))
-                        file_names.update(_re2.findall(r'[\w\-]+\.\w{1,6}', str(meta or '')))
-            for fn in file_names:
-                related_sessions.update(session_graph.get('file_to_sessions', {}).get(fn, set()))
-            # 也通过 source_function 匹配：扫描 events 中提到该函数名的 session
-            source_function = case.get("source_function", "")
-            if source_function and events:
+        if finding_info:
+            # TP/FP: 从 insert_finding 提交点倒推，挖掘链 = 同 session 中提交之前的动作
+            finding_session = finding_info["session_id"]
+            finding_ts = finding_info["timestamp"]
+            mining_actions = []
+            if events:
                 for ev in events:
                     if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
                         continue
-                    inp = ev.input_json or {}
-                    ev_text = str(inp.get("command", "")) + str(inp.get("file_path", ""))
-                    if source_function in ev_text:
-                        related_sessions.add(ev.session_id)
-            # 从文件/函数匹配到的 session 出发 BFS，扩展完整调查链
-            if related_sessions and session_graph and session_graph.get('edges'):
-                queue = list(related_sessions)
-                visited = set(related_sessions)
-                while queue:
-                    cur = queue.pop(0)
-                    neighbors = session_graph.get('edges', {}).get(cur, set())
-                    for n in neighbors:
-                        if n not in visited:
-                            visited.add(n)
-                            related_sessions.add(n)
-                            queue.append(n)
-
-        # 3. 过滤 sampled_interactions：只保留 session_id 在 related_sessions 里的
-        if related_sessions and sampled_interactions:
+                    if ev.session_id != finding_session:
+                        continue
+                    if finding_ts and (ev.timestamp_ms or 0) > finding_ts:
+                        continue  # 跳过 finding 提交之后的事件
+                    a = _extract_action(ev)
+                    if a:
+                        mining_actions.append(a)
+                    if len(mining_actions) >= 30:
+                        break
+            # 知识/记忆交互过滤到同 session
             case_interactions = [iv for iv in sampled_interactions
-                                 if iv.get("session_id", "") in related_sessions]
-        elif not matched_fid:
+                                 if iv.get("session_id") == finding_session]
+            case_mem_interactions = [iv for iv in sampled_mem_interactions
+                                      if iv.get("session_id") == finding_session]
+        elif confusion == "FN" and not matched_fid:
+            # FN: Agent 没有提交匹配的 finding，没有挖掘链
+            mining_actions = []
             case_interactions = []
-        else:
-            case_interactions = sampled_interactions
-
-        # 3b. 过滤记忆交互
-        if sampled_mem_interactions:
-            if related_sessions:
-                case_mem_interactions = [iv for iv in sampled_mem_interactions
-                                         if iv.get("session_id", "") in related_sessions]
-            elif matched_fid:
-                case_mem_interactions = sampled_mem_interactions
-            else:
-                case_mem_interactions = []
-        else:
             case_mem_interactions = []
-
-        # 4. 从 events 提取挖掘过程摘要（按 related_sessions 过滤）
-        mining_actions = []
-        source_file_basename = ""
-        if case.get("source_file"):
-            import os as _os2
-            source_file_basename = _os2.path.basename(case.get("source_file", ""))
-        source_function = case.get("source_function", "")
-
-        def _extract_action(ev):
-            """从单个 event 提取挖掘行为摘要。"""
-            inp = ev.input_json or {}
-            tool = ev.tool_name or ""
-            if tool == "bash":
-                cmd = str(inp.get("command", ""))[:150]
-                if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
-                    return {"tool": "bash", "action": cmd, "session_id": ev.session_id}
-            elif tool == "read":
-                fp = str(inp.get("file_path", ""))[:150]
-                if fp:
-                    return {"tool": "read", "action": fp, "session_id": ev.session_id}
-            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
-                title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
-                return {"tool": "finding", "action": title, "session_id": ev.session_id}
-            elif tool == "write":
-                fp = str(inp.get("file_path", ""))[:100]
-                if fp:
-                    return {"tool": "write", "action": fp, "session_id": ev.session_id}
-            return None
-
-        if events and related_sessions:
-            for ev in events:
-                if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
-                    continue
-                if ev.session_id not in related_sessions:
-                    continue
-                a = _extract_action(ev)
-                if a:
-                    mining_actions.append(a)
-                if len(mining_actions) >= 30:
-                    break
-
-        # FN 案例且 mining_actions 为空：fallback 扫描全量 events
-        # 优先提取与漏洞文件/函数相关的行为，再补充其他行为
-        if not mining_actions and events and confusion == "FN":
-            related_hits = []
-            other_actions = []
-            for ev in events:
-                if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
-                    continue
-                a = _extract_action(ev)
-                if not a:
-                    continue
-                action_text = (a.get("action", "") + " " + a.get("session_id", "")).lower()
-                is_related = False
-                if source_file_basename and source_file_basename.lower() in action_text:
-                    is_related = True
-                if source_function and source_function.lower() in action_text:
-                    is_related = True
-                if is_related:
-                    related_hits.append(a)
-                else:
-                    other_actions.append(a)
-            # 优先放相关行为，再补充其他行为（read 优先于 bash）
-            mining_actions = related_hits[:20]
-            other_sorted = sorted(other_actions, key=lambda x: (0 if x["tool"] == "read" else 1 if x["tool"] == "finding" else 2))
-            mining_actions.extend(other_sorted[:30])
-            if len(mining_actions) > 50:
-                mining_actions = mining_actions[:50]
+        else:
+            # 回退：无 finding 信息时不过滤
+            mining_actions = []
+            case_interactions = sampled_interactions if matched_fid else []
+            case_mem_interactions = sampled_mem_interactions if matched_fid else []
 
         # 映射 confusion → kg_judgment
         kg_judgment = "NOT_FOUND"
@@ -764,7 +771,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "source_function": source_function,
                     },
                     "kg_status": {"confusion": confusion, "kg_judgment": kg_judgment},
-                    "mining_actions": mining_actions,
+                    "agent_findings_list": [{"title": f["title"], "vuln_type": f["vuln_type"],
+                                             "source": f["source"], "sink": f["sink"],
+                                             "validation_result": f.get("validation_result")}
+                                            for f in agent_findings_list[:20]],
                     "nogk_confusion": nogk_confusion,
                 }
                 fn_prompt = [
@@ -777,32 +787,32 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "用于跨会话积累和复用漏洞挖掘知识。\n"
                         "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
                         "# 分析方法\n"
-                        "将 baseline_vulnerability（基线漏洞详情）与 mining_actions（Agent 实际挖掘行为）逐项对比：\n"
-                        "1. Agent 是否读取过 source_file？在 mining_actions 中搜索匹配的 read/bash 路径\n"
-                        "2. Agent 是否分析了 source_function？在 mining_actions 中搜索函数名\n"
-                        "3. Agent 提交了哪些 finding？与基线漏洞的 vulnerability_type 是否相关？\n"
+                        "Agent 未提交与基线漏洞匹配的 finding（FN）。请分析 agent_findings_list（Agent 实际提交的所有 finding）"
+                        "与 baseline_vulnerability 的差异：\n"
+                        "1. Agent 提交了哪些 finding？逐个对比 title/vuln_type/source/sink 与基线漏洞\n"
+                        "2. Agent 的 finding 涉及哪些文件/函数？与基线漏洞的 source_file/source_function 是否有交集？\n"
+                        "3. Agent 的 finding 的 vulnerability_type 与基线漏洞是否相关？\n"
                         "4. Agent 的挖掘范围覆盖了哪些文件/目录？是否偏离了漏洞所在区域？\n"
-                        "5. Agent 是否查询了知识图谱与记忆？查询了什么内容？返回了什么？\n"
-                        "6. No-KG 也漏报了吗（nogk_confusion）？双方都漏报说明漏洞本身难发现\n"
-                        "7. 知识图谱与记忆对漏洞挖掘的影响：正向（引导到正确区域）、负向（误导方向）、中性（无影响）\n\n"
+                        "5. No-KG 也漏报了吗（nogk_confusion）？双方都漏报说明漏洞本身难发现\n"
+                        "6. 知识图谱与记忆对漏洞挖掘的影响：正向（引导到正确区域）、负向（误导方向）、中性（无影响）\n\n"
                         "# reason 写作要求\n"
                         "reason 必须包含以下内容（1000字以内）：\n"
-                        "1. 挖掘过程概述：Agent 主要做了什么（读了哪些文件、执行了什么命令、挖掘方向是什么）\n"
-                        "2. 漏报原因：为什么没有发现这个漏洞（是否接触过漏洞文件/函数？挖掘方向是否偏离？）\n"
+                        "1. Agent 提交的 finding 概述：Agent 提交了哪些漏洞（列出 title/vuln_type/source/sink）\n"
+                        "2. 漏报原因：为什么这些 finding 都没有匹配到基线漏洞（是否接触过漏洞文件/函数？挖掘方向是否偏离？）\n"
                         "3. KG 影响：知识图谱与记忆是否对挖掘有帮助或误导？如果没有知识交互，说明 Agent 没有使用知识\n"
                         "4. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
-                        "必须引用 mining_actions 中的具体文件名/命令作为证据，不要泛泛而谈。\n\n"
+                        "必须引用 agent_findings_list 中的具体 title/source/sink 作为证据，不要泛泛而谈。\n\n"
                         "只返回 JSON。"
                     )},
                     {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
-                        '\n\n请对比基线漏洞信息与 Agent 挖掘过程，分析为什么 Agent 没有发现这个漏洞：\n'
+                        '\n\n请对比基线漏洞信息与 Agent 实际提交的 finding，分析为什么 Agent 没有发现这个漏洞：\n'
                         '1. 基线漏洞在 ' + (source_file or '未知') + ' 的 ' + (source_function or '未知') + ' 中，'
-                        '类型为 ' + (vuln_type or '未知') + '。Agent 在 mining_actions 中是否接触过这个文件/函数？\n'
-                        '2. 如果 Agent 没接触过，Agent 主要在分析什么？（列出 mining_actions 中的主要文件/命令）\n'
-                        '3. Agent 提交了哪些 finding？与基线漏洞类型是否相关？\n'
+                        '类型为 ' + (vuln_type or '未知') + '。\n'
+                        '2. 在 agent_findings_list 中，Agent 提交了哪些 finding？逐个对比 title/vuln_type/source/sink 与基线漏洞。\n'
+                        '3. Agent 的 finding 涉及的文件/函数与基线漏洞的 source_file 是否有交集？\n'
                         '4. No-KG 结果为 ' + nogk_confusion + '，说明什么？\n'
-                        '5. 给出具体原因（如：未接触漏洞文件、挖掘方向偏离、漏洞类型不匹配、缺少知识引导等）\n\n'
-                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、漏报原因、KG影响、对比结论"}'
+                        '5. 给出具体原因（如：Agent 提交的 finding 全部不涉及漏洞文件、挖掘方向偏离、漏洞类型不匹配、缺少知识引导等）\n\n'
+                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "1000字以内中文，必须包含Agent提交的finding概述、漏报原因、KG影响、对比结论"}'
                     )},
                 ]
                 try:
@@ -851,6 +861,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "kg_judgment": kg_judgment,
                 "matched_finding_id": matched_fid or None,
             },
+            "matched_finding": ({
+                "title": finding_info["title"],
+                "vuln_type": finding_info["vuln_type"],
+                "source": finding_info["source"],
+                "sink": finding_info["sink"],
+                "validation_result": finding_info.get("validation_result"),
+            } if finding_info else None),
+            "agent_findings_list": [{"title": f["title"], "vuln_type": f["vuln_type"],
+                                     "source": f["source"], "sink": f["sink"],
+                                     "validation_result": f.get("validation_result")}
+                                    for f in agent_findings_list[:20]],
             "knowledge_interactions": [{"tool": iv.get("tool",""),
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
@@ -862,12 +883,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         fn_extra = ""
         if kg_judgment == "NOT_FOUND":
             fn_extra = (
-                "\n5. 为什么 Agent 没有发现这个漏洞？在 mining_actions 中，Agent 是否读取过 source_file（"
-                + (case.get("source_file", "") or "未知") + "）？Agent 主要在分析哪些文件？"
-                "\n6. Agent 提交的 finding 与基线漏洞的 vulnerability_type 是否相关？"
+                "\n5. 为什么 Agent 没有发现这个漏洞？在 agent_findings_list 中，Agent 提交了哪些 finding？"
+                "逐个对比 title/vuln_type/source/sink 与基线漏洞（source_file="
+                + (case.get("source_file", "") or "未知") + "）。"
+                "\n6. Agent 的 finding 涉及的文件/函数与基线漏洞的 source_file 是否有交集？"
                 "\n7. 知识图谱与记忆是否包含此漏洞的相关信息？如果有，Agent 为什么没有利用？"
                 "\n8. No-KG 也漏报了吗（nogk_confusion）？如果都漏报说明漏洞本身难发现。"
-                "\n9. 必须给出具体原因（如：未接触漏洞文件/函数、挖掘方向偏离、漏洞类型不匹配等），不要泛泛而谈。"
+                "\n9. 必须给出具体原因（如：Agent 提交的 finding 全部不涉及漏洞文件、挖掘方向偏离、漏洞类型不匹配等），不要泛泛而谈。"
             )
         prompt = [
             {"role": "system", "content": (
@@ -878,6 +900,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
                 "用于跨会话积累和复用漏洞挖掘知识。\n"
                 "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
+                "# 数据说明\n"
+                "- matched_finding：Agent 提交的、与基线漏洞匹配的 finding 详情。validation_result 是 AI 判定结论：\n"
+                "  CONFIRMED = AI 确认是漏洞，FALSE_POSITIVE = AI 判定非漏洞\n"
+                "- mining_actions：从 finding 提交点倒推的挖掘链（提交之前的 bash/read/write 等动作）\n"
+                "- agent_findings_list：Agent 提交的所有 finding 摘要\n"
+                "- knowledge_interactions：Agent 与知识图谱/记忆的交互记录\n\n"
                 "# impact 判定规则（基于 KG 结果与基线的对比 + 知识交互内容）\n"
                 "- POSITIVE（正向）：知识图谱与记忆提供的知识帮助 Agent 找到了与基线一致的漏洞，"
                 "或引导 Agent 聚焦到正确的漏洞区域\n"
@@ -887,18 +915,22 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "Agent 的挖掘行为在有/无知识时无显著差异\n\n"
                 "# reason 写作要求\n"
                 "reason 必须包含以下内容（1000字以内）：\n"
-                "1. 挖掘过程概述：Agent 主要做了什么（读了哪些文件、执行了什么命令、挖掘方向是什么）\n"
-                "2. 知识交互详情：Agent 向知识图谱与记忆查询了什么内容？返回了什么结果？\n"
-                "3. 知识影响分析：知识图谱与记忆返回的信息是否帮助或误导了 Agent 的挖掘？具体说明\n"
-                "4. 漏报/发现原因：如果 FN，Agent 为什么没发现漏洞？如果 TP，知识是否起了关键作用？\n"
+                "1. 挖掘过程概述：Agent 在提交 finding 之前做了什么（mining_actions 中的 bash/read/write 动作）\n"
+                "2. finding 判定：matched_finding 的 validation_result 是什么（CONFIRMED/FALSE_POSITIVE）？与基线漏洞是否一致？\n"
+                "3. 知识交互详情：Agent 向知识图谱与记忆查询了什么内容？返回了什么结果？\n"
+                "4. 知识影响分析：知识图谱与记忆返回的信息是否帮助或误导了 Agent 的挖掘？具体说明\n"
                 "5. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
-                "必须引用 knowledge_interactions 和 mining_actions 中的具体内容作为证据，不要泛泛而谈。\n\n"
+                "必须引用 matched_finding、mining_actions、knowledge_interactions 中的具体内容作为证据，不要泛泛而谈。\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
-                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱与记忆问了什么？列出 knowledge_interactions 中的具体查询内容\n3. 知识图谱与记忆返回了什么？返回内容是否与漏洞相关？\n4. 知识对排查此漏洞是正向、负向还是中性？'
+                '\n\n分析：\n1. KG 是否识别此漏洞？matched_finding 的 validation_result 是什么？\n'
+                '2. Agent 向知识图谱与记忆问了什么？列出 knowledge_interactions 中的具体查询内容\n'
+                '3. 知识图谱与记忆返回了什么？返回内容是否与漏洞相关？\n'
+                '4. Agent 的挖掘链（mining_actions）是否接触过漏洞文件？\n'
+                '5. 知识对排查此漏洞是正向、负向还是中性？'
                 + fn_extra +
-                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=200字中文，概括Agent查询了什么", "knowledge_summary": "<=200字中文，概括知识返回了什么", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、知识交互详情、知识影响分析、漏报/发现原因、对比结论"}'
+                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=200字中文，概括Agent查询了什么", "knowledge_summary": "<=200字中文，概括知识返回了什么", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、finding判定、知识交互详情、知识影响分析、对比结论"}'
             )},
         ]
 
