@@ -43,7 +43,7 @@ def set_max_concurrency(n: int):
     _llm_semaphore = threading.Semaphore(n)
 
 
-def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
+def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             api_base=None, api_key=None, timeout=None, **_unused) -> str:
     """单次 LLM 调用（SSE 流式），不重试。
 
@@ -147,11 +147,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=8000,
             delta = choices[0].get("delta") or {}
             if delta.get("content"):
                 content_parts.append(delta["content"])
-            if delta.get("reasoning_content"):
-                reasoning_parts.append(delta["reasoning_content"])
+            # 兼容不同 reasoning 字段名：reasoning_content / reasoning / thinking
+            rc = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
+            if rc:
+                reasoning_parts.append(rc)
 
         content = "".join(content_parts)
         if not content and reasoning_parts:
+            # reasoning 占满 max_tokens 时，用 reasoning 文本作为回退
             content = "".join(reasoning_parts)
 
         if content:
