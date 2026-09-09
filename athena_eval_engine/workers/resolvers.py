@@ -95,9 +95,9 @@ class OutcomeResolverImpl:
                 if target_finding_id and fid and fid != target_finding_id:
                     continue
                 status = d.get("status")
-                if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE"):
+                if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE"):
                     candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
-                elif status == "NOT_VULNERABLE":
+                elif status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE"):
                     candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
         if not candidates:
             return None

@@ -85,7 +85,7 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
         elif tool in ("vulnerability_analyze", "vulnerability_verify"):
             vid = str(inp.get("vulnerability_id", "?"))
             status = inp.get("status", "")
-            vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE") else ("FALSE_POSITIVE" if status == "NOT_VULNERABLE" else None)
+            vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE") else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
             findings[vid] = {
                 "finding_id": vid,
                 "display_id": vid,

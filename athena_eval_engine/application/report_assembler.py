@@ -642,6 +642,26 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 if finding_id not in _seen_fids:
                     _seen_fids.add(finding_id)
                     agent_findings_list.append(info)
+            # WebVulnVerify: vulnerability_analyze / vulnerability_verify
+            # 提交和判定在同一个 tool call，status 字段即 validation_result
+            elif tool in ("vulnerability_analyze", "vulnerability_verify"):
+                status = str(inp.get("status", ""))
+                vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE") \
+                    else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
+                vid = str(inp.get("vulnerability_id", "")) or f"wvv-{ev.event_id}"
+                info = {
+                    "finding_id": vid, "display_id": vid,
+                    "title": str(inp.get("category", ""))[:120],
+                    "vuln_type": str(inp.get("category", ""))[:60],
+                    "source": "", "sink": "",
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": vr,
+                }
+                finding_events[vid] = info
+                if vid not in _seen_fids:
+                    _seen_fids.add(vid)
+                    agent_findings_list.append(info)
         # 关联 Turing: vuln_hunt_update_finding 的 validation_result（AI 判定结论点）
         for ev in events:
             if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
@@ -671,7 +691,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             fp = str(inp.get("file_path", ""))[:150]
             if fp:
                 return {"tool": "read", "action": fp, "session_id": ev.session_id}
-        elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings"):
+        elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
+                      "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding"):
             title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
             return {"tool": "finding", "action": title, "session_id": ev.session_id}
         elif tool == "write":
