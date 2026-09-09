@@ -135,7 +135,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
   <main><div id="view"></div></main>
 </div>
 <script>
-const F=(u,...a)=>fetch(location.pathname.indexOf("/eval")===0&&u.indexOf("/api/")===0?"/eval"+u:u,...a);let view="evaluations";let activeId=null;
+const U=(u)=>location.pathname.indexOf("/eval")===0&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?"/eval"+u:u;const F=(u,...a)=>fetch(U(u),...a);let view="evaluations";let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#9aa3b2","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#6b7280","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
@@ -283,7 +283,7 @@ async function selEv(id){
             try{
               const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
               if(probe.ok){
-                $("rep").innerHTML=`<iframe src="/reports/${id}.html" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+                $("rep").innerHTML=`<iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
                 return;
               }
             }catch(e){}
@@ -301,7 +301,7 @@ async function selEv(id){
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
     if(probe.ok){
-      $("rep").innerHTML=`<iframe src="/reports/${id}.html" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+      $("rep").innerHTML=`<iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
       // iframe 内的重跑/删除按钮通过 postMessage 回传
       return;
     }

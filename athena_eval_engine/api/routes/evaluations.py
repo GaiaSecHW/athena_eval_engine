@@ -470,15 +470,31 @@ def _build_report(evaluation_id: str):
     return r
 
 
-REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "reports")
-os.makedirs(REPORTS_DIR, exist_ok=True)
+REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+    "reports",
+)
+try:
+    os.makedirs(REPORTS_DIR, exist_ok=True)
+except OSError:
+    pass  # 只读文件系统下跳过，首次写入时再创建
 
 
 def render_static_report(evaluation_id: str) -> str:
-    """固化报告为静态 HTML 文件。FINALIZE 阶段调用；返回文件路径。"""
+    """固化报告为静态 HTML 文件。FINALIZE 阶段调用；返回文件路径。
+
+    报告完全自包含：CSS + 渲染器 JS + 数据全部内联，无外部依赖，
+    避免 Vite 产物文件名变化导致报告打不开的问题。
+    """
     import json as _json
     r = _build_report(evaluation_id)
-    # 套壳：嵌入报告 JSON + dashboard 的 renderReport 渲染逻辑
+    # 读取渲染器 JS（内联到 HTML，使报告自包含）
+    renderer_path = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
+        "static", "report-renderer.js",
+    )
+    with open(renderer_path, "r", encoding="utf-8") as _f:
+        renderer_js = _f.read()
     html = """<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -486,12 +502,72 @@ def render_static_report(evaluation_id: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__EVAL_ID__ 报告</title>
 <style>
-body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1a1d23;font-size:16px}
-.action-bar{display:flex;gap:10px;align-items:center;padding:14px 24px;background:#fff;border-bottom:1px solid #e1e4e8;position:sticky;top:0;z-index:99}
-.action-bar .eid{font-family:monospace;font-size:14px;color:#6b7280;margin-right:auto}
+:root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--p3:#e8eaed;--bd:#e1e4e8;--border:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);font-size:18px;line-height:1.6}
+.bdg{font-size:14px;padding:2px 8px;border-radius:12px;font-weight:600}
+.b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
+.b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
+.b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
+.b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.rep{flex:1;overflow-y:auto}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1100px}
+.card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
+.card.f{grid-column:1/-1}
+.card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
+.tier{font-size:14px;padding:3px 8px;border-radius:12px;font-weight:600}
+.t-p0{background:rgba(91,156,246,.18);color:var(--acc)}
+.t-p1{background:rgba(251,191,36,.18);color:var(--amber)}
+.t-p2{background:rgba(107,114,128,.18);color:var(--gray)}
+table{width:100%;border-collapse:collapse;font-size:17px}
+th{color:var(--sub);font-weight:500;text-align:left;padding:10px 8px;border-bottom:1px solid var(--bd);font-size:14px;text-transform:uppercase;letter-spacing:.4px}
+td{padding:12px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
+td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
+.ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
+.na{color:var(--red);font-style:italic;font-size:16px}
+.dp{color:var(--green)}.dn{color:var(--red)}
+.diag{background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:12px 14px;margin:8px 0}
+.diag .rid{color:var(--amber);font-weight:600;font-size:14px;font-family:monospace}
+.diag .ob{font-weight:500;font-size:17px}.diag .ip{color:var(--sub);font-size:15px;margin-top:4px}
+.narr{font-size:17px;line-height:1.8}.narr b{color:var(--sub);font-weight:500}
+.note{font-size:14px;color:var(--sub);margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
+svg{display:block;margin:0 auto;max-width:100%}
+.lg{display:flex;gap:18px;justify-content:center;margin-top:10px}.lg span{font-size:14px;color:var(--sub);display:flex;align-items:center;gap:6px}.lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
+.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px 16px;text-align:center;transition:transform .15s}
+.mcard:hover{transform:translateY(-2px);border-color:var(--acc)}
+.mc-icon{font-size:24px;margin-bottom:6px}
+.mc-label{font-size:14px;color:var(--sub);margin-bottom:6px}
+.mc-val{font-size:24px;font-weight:700;font-family:"SF Mono",Consolas,monospace}
+.mc-ci{font-size:14px;color:var(--sub);margin-top:6px;font-family:"SF Mono",Consolas,monospace}
+.mc-n{font-size:14px;color:var(--gray)}
+.barr{display:flex;align-items:center;gap:10px;margin:10px 0}
+.bar-l{font-size:16px;width:140px;flex-shrink:0}
+.bar-track{flex:1;height:28px;background:var(--p2);border-radius:14px;overflow:hidden;border:1px solid var(--bd)}
+.bar-fill{height:100%;border-radius:14px;transition:width .5s}
+.bar-v{font-size:18px;font-weight:600;width:60px;text-align:right;font-family:"SF Mono",Consolas,monospace}
+.ps{display:flex;gap:14px;padding:0;position:relative}
+.ps:not(:last-child)::after{content:"";position:absolute;left:15px;top:36px;bottom:0;width:2px;background:var(--bd)}
+.ps-n{width:32px;height:32px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex-shrink:0;z-index:1}
+.ps-body{flex:1;padding-bottom:20px;font-size:16px;line-height:1.8}
+.ps-det{font-size:14px;color:var(--sub);font-family:"SF Mono",Consolas,monospace}
+.ps-body b{font-size:17px}
+.ef-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:14px;flex:1}
+.ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.ef-btn:hover{border-color:var(--acc)}
+.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+.knd.k-opencode{background:rgba(74,222,128,.18);color:var(--green)}
+.knd.k-argo{background:rgba(96,165,250,.18);color:var(--acc)}
+.knd.k-turing{background:rgba(217,119,6,.18);color:var(--amber)}
+.btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
+.action-bar{display:flex;gap:10px;align-items:center;padding:14px 24px;background:#fff;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:99}
+.action-bar .eid{font-family:monospace;font-size:14px;color:var(--sub);margin-right:auto}
 .action-bar button{border:none;padding:8px 18px;border-radius:9px;cursor:pointer;font-size:14px;font-weight:500}
-.btn-primary{background:#2563eb;color:#fff}
-.btn-danger{background:#dc2626;color:#fff}
+.btn-primary{background:var(--acc);color:#fff}
+.btn-danger{background:var(--red);color:#fff}
+#rep{padding:28px;max-width:1200px;margin:0 auto}
 </style>
 </head>
 <body>
@@ -500,16 +576,27 @@ body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;
   <button class="btn-primary" onclick="parent.postMessage({action:'retry',evaluation_id:'__EVAL_ID__'},'*')">重跑</button>
   <button class="btn-danger" onclick="parent.postMessage({action:'delete',evaluation_id:'__EVAL_ID__'},'*')">删除</button>
 </div>
-<div id="report-root">加载中…</div>
+<div id="rep"></div>
+<div id="diag-body"></div>
+<script>
+__RENDERER_JS__
+</script>
 <script>
 window.__REPORT_DATA__ = __REPORT_JSON__;
+renderReport(window.__REPORT_DATA__);
 </script>
 </body>
 </html>"""
     # 转义 </script> 防止 JSON 里含脚本闭合标签
     data_str = _json.dumps(r, ensure_ascii=False).replace("</", "<\\/")
-    html = html.replace("__EVAL_ID__", evaluation_id).replace("__REPORT_JSON__", data_str)
+    html = (
+        html
+        .replace("__EVAL_ID__", evaluation_id)
+        .replace("__RENDERER_JS__", renderer_js)
+        .replace("__REPORT_JSON__", data_str)
+    )
     out_path = os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
+    os.makedirs(REPORTS_DIR, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
     print(f"[REPORT] 固化报告 HTML: {out_path} ({len(html)} chars)", flush=True)
