@@ -115,6 +115,40 @@ def _set_status_short(evaluation_id, status):
         conn.close()
 
 
+def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> tuple[str, str]:
+    """用 LLM 从漏洞描述中提取 source_file 和 source_function。
+
+    当结构化数据（V-Bench traces 或漏洞中心 subject.locator）无法提取时作为 fallback。
+    """
+    from ..infrastructure import llm as llm_mod
+    if not description or not llm_mod.is_enabled():
+        return "", ""
+    prompt = [
+        {"role": "system", "content": (
+            "从漏洞描述中提取漏洞所在的源文件路径和函数/方法名。\n"
+            "只返回 JSON: {\"source_file\": \"文件路径\", \"source_function\": \"函数名\"}\n"
+            "如果无法确定，对应字段返回空字符串。不要输出其他内容。"
+        )},
+        {"role": "user", "content": f"漏洞类型: {vulnerability_type}\n漏洞描述: {description[:2000]}"},
+    ]
+    try:
+        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        return result.get("source_file", ""), result.get("source_function", "")
+    except Exception as e:
+        print(f"[CREATE] AI 提取 source_file/source_function 失败: {e}", flush=True)
+        return "", ""
+
+
+def _fill_missing_source(case: dict) -> None:
+    """如果 case 的 source_file 或 source_function 为空，用 AI 从 description 补提取。"""
+    if not case.get("source_file") or not case.get("source_function"):
+        sf, sfn = _ai_extract_source_info(case.get("description", ""), case.get("vulnerability_type", ""))
+        if not case.get("source_file"):
+            case["source_file"] = sf
+        if not case.get("source_function"):
+            case["source_function"] = sfn
+
+
 def create(req: CreateRequest):
     """Stage 0：建 evaluation + snapshot（冻结）。每步用独立连接避免远程防火墙重置。"""
     # 获取基线 case 详情（含漏洞描述）。数据源二选一：
@@ -149,6 +183,7 @@ def create(req: CreateRequest):
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
                     }
+                    _fill_missing_source(case_details[cid])
         else:
             from ..infrastructure.vbench_client import get_benchmark
             print(f"[CREATE] V-Bench 取基线: set_id={req.benchmark_set_id}", flush=True)
@@ -167,6 +202,7 @@ def create(req: CreateRequest):
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
                     }
+                    _fill_missing_source(case_details[cid])
         print(f"[CREATE] case_details 构建完成: {len(case_details)} 条", flush=True)
     except Exception as e:
         import traceback as _tb

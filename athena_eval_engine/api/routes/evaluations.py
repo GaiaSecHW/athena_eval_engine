@@ -252,6 +252,7 @@ def retry_evaluation(evaluation_id: str):
                                 "source_file": c.get("source_file") or "",
                                 "source_function": c.get("source_function") or "",
                             }
+                            es._fill_missing_source(case_details[cid])
                 else:
                     from ...infrastructure.vbench_client import get_benchmark
                     bm = get_benchmark(bsid)
@@ -265,6 +266,7 @@ def retry_evaluation(evaluation_id: str):
                                                 "target_finding_id": c.get("target_finding_id") or "",
                                                 "source_file": c.get("source_file") or "",
                                                 "source_function": c.get("source_function") or ""}
+                            es._fill_missing_source(case_details[cid])
             except Exception:
                 pass
 
