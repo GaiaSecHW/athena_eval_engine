@@ -68,7 +68,7 @@ td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
 svg{display:block;margin:0 auto;max-width:100%}
 .lg{display:flex;gap:18px;justify-content:center;margin-top:10px}.lg span{font-size:14px;color:var(--sub);display:flex;align-items:center;gap:6px}.lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
 .sel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px;max-height:300px;overflow-y:auto}
-.opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:flex;justify-content:space-between;align-items:center;font-size:17px}
+.opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:grid;grid-template-columns:minmax(0,.85fr) 96px minmax(0,1.15fr);align-items:center;column-gap:12px;font-size:17px}
 .opt:hover{background:var(--p2)}
 /* 自定义弹窗 */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;animation:fade .15s}
@@ -84,7 +84,8 @@ svg{display:block;margin:0 auto;max-width:100%}
 .modal .modal-body li:before{content:"•";position:absolute;left:0;color:var(--amber)}
 .modal .modal-foot{padding:14px 24px;display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--bd)}
 .opt.sel{background:rgba(91,156,246,.12);border-left:3px solid var(--acc)}
-.opt .l{font-size:17px}.opt .r{font-size:14px;color:var(--sub)}
+.opt .l{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.opt .r{font-size:14px;color:var(--sub)}
+.opt .opt-main{display:flex;align-items:center;gap:8px;min-width:0}.opt .opt-mid,.opt .opt-right{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.opt .opt-right{text-align:right}
 .btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
@@ -458,7 +459,7 @@ function renderReport(d){
   // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
   const callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
   const resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
-  const noResponse=callCount-resultCount;
+  const noResponse=Math.max(0,callCount-resultCount);
   const kgActive=(kgAccess!==null&&kgAccess>0)||callCount>0;
   let kgHtml="";
   // 概要
@@ -694,7 +695,11 @@ function renderReport(d){
       ${_diagnostics(g.diagnostic_hits||h)}
       <div class="card" style="margin-bottom:16px">
         <h3>🧠 ${g.label} — 知识图谱介入情况</h3>
-        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)?buildKnowledgeHtml(g):'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱分析；请重跑评测以生成此数据。</div>'}
+        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
+          ?buildKnowledgeHtml(g)
+          :mg.length===1
+            ?buildKnowledgeHtml(null)
+            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱分析；请重跑评测以生成此数据。</div>'}
       </div>
     </div>`).join("");
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
@@ -794,22 +799,22 @@ function _traceBadge(label){
 function _isVerifyKind(kind){return kind==="webverify_session"||kind==="cvuln_verify_session";}
 function _renderTraceItem(side,t){
   const label=_traceLabel(t);const badge=_traceBadge(label);
-  const cnt=t.file_count?` <span style="font-size:12px;color:var(--sub)">${t.file_count} 文件</span>`:"";
+  const cnt=Number.isFinite(t.file_count)?`<span style="font-size:12px;color:var(--sub)">${t.file_count} 个文件</span>`:"";
   var display=t.tool_task_id||t.file||"";
   const isSel=t.path===sel[side].miningTrace||t.path===sel[side].verifyTrace;
   const selStyle=isSel?'background:rgba(0,0,0,0.06);font-weight:600;border-left:3px solid var(--green)':'';
-  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')">${badge} <span class="num" style="font-size:13px">${display}</span>${cnt} <span style="color:var(--amber);font-size:12px">${fmtMtime(t.mtime)}</span></div>`;
+  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')"><span class="opt-main">${badge}<span class="num l" style="font-size:13px">${display}</span></span><span class="opt-mid">${cnt}</span><span class="opt-right" style="color:var(--amber)">${fmtMtime(t.mtime)}</span></div>`;
 }
 function filterSideList(side){
   const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
   if(!s.proj){
     if(!_allProjs)return;
     const f=_allProjs.filter(p=>(p.name+" "+p.id+" "+(p.department_name||"")+" "+(p.product_path||"")).toLowerCase().includes(q));
-    $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span>${p.department_name?`<span style="font-size:12px;color:var(--sub)">${p.department_name}</span>`:""}${p.product_path?`<span style="font-size:12px;color:var(--acc)">${p.product_path}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="opt-mid" style="color:var(--sub)">${p.department_name||""}</span><span class="opt-right" style="color:var(--acc)">${p.product_path||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else if(!s.task){
     if(!_sideData[side].tasks)return;
     const f=_sideData[side].tasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
-    $(side+"-list").innerHTML=f.map(t=>`<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.test_target}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    $(side+"-list").innerHTML=f.map(t=>`<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span><span class="opt-mid" style="color:var(--acc)">${t.task_type||""}</span><span class="opt-right" style="color:var(--sub)">${t.test_target||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else{
     const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
     if(!_sideData[side].traces){
@@ -894,11 +899,11 @@ function filterVcList(){
   if(!sel.vcProj){
     if(!_allProjs)return;
     const f=_allProjs.filter(p=>(p.name+" "+p.id+" "+(p.department_name||"")+" "+(p.product_path||"")).toLowerCase().includes(q));
-    list.innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pickVc('proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span>${p.department_name?`<span style="font-size:12px;color:var(--sub)">${p.department_name}</span>`:""}${p.product_path?`<span style="font-size:12px;color:var(--acc)">${p.product_path}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    list.innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pickVc('proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="opt-mid" style="color:var(--sub)">${p.department_name||""}</span><span class="opt-right" style="color:var(--acc)">${p.product_path||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else if(!sel.vcTask){
     if(!_vcTasks)return;
     const f=_vcTasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
-    list.innerHTML=f.map(t=>`<div class="opt" onclick="pickVc('task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.test_target}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    list.innerHTML=f.map(t=>`<div class="opt" onclick="pickVc('task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span><span class="opt-mid" style="color:var(--acc)">${t.task_type||""}</span><span class="opt-right" style="color:var(--sub)">${t.test_target||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }
 }
 function pickVc(field,id,name){
@@ -913,7 +918,7 @@ function filterVbList(){
   const list=$("vb-list");if(!list)return;
   const q=($("vb-search")?($("vb-search").value||"").toLowerCase():"");
   const f=_allVbProjs.filter(p=>(p.name+" "+(p.tags||[]).join(" ")).toLowerCase().includes(q));
-  list.innerHTML=f.slice(0,30).map(p=>`<div class="opt" onclick="pickVbProj('${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="bdg b-${p.status==='EXPORTED'?'COMPLETED':'RUNNING'}">${p.status}</span>${p.tags&&p.tags.length?`<span style="font-size:12px;color:var(--sub)">${p.tags.join(" · ")}</span>`:""}</div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+  list.innerHTML=f.slice(0,30).map(p=>`<div class="opt" onclick="pickVbProj('${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="opt-mid"><span class="bdg b-${p.status==='EXPORTED'?'COMPLETED':'RUNNING'}">${p.status}</span></span><span class="opt-right" style="color:var(--sub)">${p.tags&&p.tags.length?p.tags.join(" · "):""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
 }
 function pickVbProj(id,name){
   if(sel.vbProj) return;          // 已在加载中，防重复点击

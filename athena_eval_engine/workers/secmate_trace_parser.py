@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Iterator
 
 from ..domain.raw_event import RawEvent
+from ..domain.resolvers import TraceParser
 
 
 _TOOL_MAP = {
@@ -46,7 +47,7 @@ def is_secmate_trace(path: str) -> bool:
     return False
 
 
-class SecMateTraceParser:
+class SecMateTraceParser(TraceParser):
     """Parse SecMate Claude SDK transcripts, including nested subagents."""
 
     def __init__(self, parser_version: str = "secmate-1.0"):

@@ -271,7 +271,8 @@ def _classify_trace(p: str, mtime: float | None = None) -> dict:
         else:
             kind = "turing_session"
             trace_kind = "argo"
-    return {"path": p, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind, "file": os.path.basename(p), "mtime": mtime}
+    return {"path": p, "tool_task_id": tool_task_id, "kind": kind, "trace_kind": trace_kind,
+            "file": os.path.basename(p), "file_count": 1, "mtime": mtime}
 
 
 def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
