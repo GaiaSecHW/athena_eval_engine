@@ -202,11 +202,12 @@ def retry_evaluation(evaluation_id: str):
     """重试失败的评测：删除全部数据，重新解析+计算+报告。"""
     try:
         from ...infrastructure.database import connect
-        from ...infrastructure.vbench_client import get_benchmark
 
         # Step 1: 获取 benchmark_set_id + config_json（一个连接）
         bsid = None
         entries = []
+        bm_source = "vbench_zip"
+        vc_source_task_id = None
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
@@ -220,22 +221,48 @@ def retry_evaluation(evaluation_id: str):
                     import json as _j
                     cfg = _j.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
                     entries = cfg.get("manifest", {}).get("entries", [])
+                    bm_source = cfg.get("manifest", {}).get("benchmark_source", "vbench_zip")
+                    vc_source_task_id = cfg.get("manifest", {}).get("vc_source_task_id")
         finally:
             conn.close()
 
-        # Step 2: 从 V-Bench API 获取 case 描述（HTTP，不用 MySQL）
+        # Step 2: 获取 case 描述（按数据源分别处理）
         case_details = {}
+        # 漏洞中心模式下，如果未指定 vc_source_task_id，用 entries 的 task_id_actual 补取
+        effective_vc_task = vc_source_task_id
+        if bm_source == "vuln_center" and not effective_vc_task:
+            for e in entries:
+                effective_vc_task = e.get("task_id_actual") or e.get("task_id")
+                if effective_vc_task:
+                    break
         if bsid:
             try:
-                bm = get_benchmark(bsid)
-                for c in (bm.get("cases") or []):
-                    cid = c.get("case_id") or c.get("id") or ""
-                    if cid:
-                        fnd = c.get("findings") or []
-                        desc = " ".join(f.get("explanation", "") for f in fnd if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
-                        case_details[cid] = {"description": desc,
-                                            "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
-                                            "target_finding_id": c.get("target_finding_id") or ""}
+                if bm_source == "vuln_center":
+                    from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
+                    print(f"[RETRY] 漏洞中心取基线: project={bsid} task={effective_vc_task}", flush=True)
+                    bm = get_vuln_center_benchmark(bsid, effective_vc_task)
+                    for c in (bm.get("cases") or []):
+                        cid = c.get("case_id") or c.get("id") or ""
+                        if cid:
+                            case_details[cid] = {
+                                "description": c.get("description") or "",
+                                "vulnerability_type": c.get("vulnerability_type") or "",
+                                "target_finding_id": c.get("target_finding_id") or "",
+                                "expected_label": c.get("expected_label") or "VULNERABLE",
+                                "source_file": c.get("source_file") or "",
+                                "source_function": c.get("source_function") or "",
+                            }
+                else:
+                    from ...infrastructure.vbench_client import get_benchmark
+                    bm = get_benchmark(bsid)
+                    for c in (bm.get("cases") or []):
+                        cid = c.get("case_id") or c.get("id") or ""
+                        if cid:
+                            fnd = c.get("findings") or []
+                            desc = " ".join(f.get("explanation", "") for f in fnd if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
+                            case_details[cid] = {"description": desc,
+                                                "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
+                                                "target_finding_id": c.get("target_finding_id") or ""}
             except Exception:
                 pass
 
@@ -260,6 +287,15 @@ def retry_evaluation(evaluation_id: str):
         finally:
             conn.close()
 
+        # Step 3b: 删除固化 HTML 报告文件
+        try:
+            p = _static_report_path(evaluation_id)
+            if os.path.isfile(p):
+                os.remove(p)
+                print(f"[RETRY] 删除旧报告: {p}", flush=True)
+        except Exception:
+            pass
+
         # Step 4: 重置状态
         conn = connect(autocommit=True)
         try:
@@ -269,16 +305,22 @@ def retry_evaluation(evaluation_id: str):
             conn.close()
 
         # Step 5: 重新插入 benchmark items（含 case 描述）— 单连接批量插入
+        # 漏洞中心模式下，只插入 case_details 里有的 case（过滤掉不属于当前任务的 case）
+        _filter_by_case_details = bm_source == "vuln_center" and case_details
         if bsid and entries:
             conn = connect(autocommit=True)
             try:
                 cur = conn.cursor()
                 for e in entries:
                     item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
+                    if _filter_by_case_details:
+                        item_ids = [bid for bid in item_ids if bid in case_details]
                     for bid in item_ids:
+                        cd = case_details.get(bid) or {}
                         fact_repo.insert_benchmark_item(cur, bid, bsid,
-                                                       e["task_id"], e.get("expected_label", "VULNERABLE"),
-                                                       e.get("target_finding_id"), case_details.get(bid))
+                                                       e["task_id"], cd.get("expected_label") or e.get("expected_label", "VULNERABLE"),
+                                                       cd.get("target_finding_id") or e.get("target_finding_id"),
+                                                       cd if cd else None)
             finally:
                 conn.close()
 
