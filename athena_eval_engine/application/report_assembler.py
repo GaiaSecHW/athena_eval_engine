@@ -692,6 +692,19 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     nogk_confusion = nc.get("confusion", "NA")
                     break
 
+        # KG 与 No-KG 都确认是漏洞（都 TP）→ 不需要 AI 介入分析
+        if confusion == "TP" and nogk_confusion == "TP":
+            results.append({
+                "case_id": case_id,
+                "kg_judgment": kg_judgment,
+                "query_summary": "无知识查询" if not case_interactions else "有知识查询（双方均发现漏洞）",
+                "knowledge_summary": "",
+                "impact": "NEUTRAL",
+                "reason": "KG 与 No-KG 均确认此漏洞，知识图谱与记忆未产生差异化影响",
+                "interactions": case_interactions,
+            })
+            continue
+
         # 无知识交互时的处理
         if not case_interactions:
             # FN 案例且无知识交互：调 LLM 分析为什么没有发现漏洞
