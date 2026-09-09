@@ -36,3 +36,6 @@ devlog.md
 *.local
 AGENTS.md
 reports/
+
+# codegraph index cache
+.codegraph/
