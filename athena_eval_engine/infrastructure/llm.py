@@ -67,7 +67,13 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
+        # 关闭推理模式（兼容各厂商参数，换模型无需改代码）
         "thinking": {"type": "disabled"},
+        "chat_template_kwargs": {"enable_thinking": False},
+        "thinking_budget": 0,
+        "enable_thinking": False,
+        "reasoning_effort": "none",
+        "reasoning_split": False,
     }).encode("utf-8")
 
     headers = {
