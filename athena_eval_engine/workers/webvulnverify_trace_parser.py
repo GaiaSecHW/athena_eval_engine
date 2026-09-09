@@ -116,8 +116,11 @@ class WebVulnVerifyTraceParser(TraceParser):
                         call_id = pt.get("id", "")
                         tool_name = _TOOL_MAP.get(pt.get("name", ""), pt.get("name", "").lower())
                         is_kg = self._is_kg_interaction(tool_name, pt.get("input"))
+                        from ..domain.raw_event import detect_memory_flags
+                        is_mem, is_mem_w = detect_memory_flags(tool_name, pt.get("input"))
                         if call_id:
-                            tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg}
+                            tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg,
+                                                        "is_mem": is_mem, "is_mem_w": is_mem_w}
 
         # 第二遍：逐行解析为 RawEvent
         for fpath in files:
@@ -240,6 +243,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                     info = (tool_call_info or {}).get(call_id, {})
                     tool_name = info.get("tool_name", "")
                     is_kg = info.get("is_kg", False)
+                    is_mem = info.get("is_mem", False)
+                    is_mem_w = info.get("is_mem_w", False)
                     content = pt.get("content")
                     is_error = pt.get("is_error", False)
                     evs.append(RawEvent(
@@ -252,6 +257,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
                         is_kg_interaction=is_kg,
+                        is_memory_interaction=is_mem,
+                        is_memory_write=is_mem_w,
                     ))
 
         return evs

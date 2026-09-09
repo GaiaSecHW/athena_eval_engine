@@ -378,7 +378,8 @@ def _build_report(evaluation_id: str):
             ev = _json.loads(row[5]) if row[5] and isinstance(row[5], str) else (row[5] or {})
             kgs.append({"task_run_id": row[0], "access": bool(row[1]), "delivery": bool(row[2]),
                         "access_count": row[3], "read_count": row[4],
-                        "interactions": ev.get("interactions", []) if isinstance(ev, dict) else []})
+                        "interactions": ev.get("interactions", []) if isinstance(ev, dict) else [],
+                        "memory": ev.get("memory", {}) if isinstance(ev, dict) else {}})
         r["knowledge_interactions"] = kgs
         # 诊断信息：outcome resolver_status + tool finding counts
         cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result "

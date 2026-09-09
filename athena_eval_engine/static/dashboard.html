@@ -580,7 +580,9 @@ function renderReport(d){
           kgHtml+="<div style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px'>原始知识交互（"+ivs.length+" 条）</div>";
           ivs.forEach(function(iv,i){
             kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>问题"+(i+1)+"："+(iv.tool||"")+"</div>";
+            var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
+            if(iv.timestamp){var ts=new Date(iv.timestamp);src+=" · "+ts.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
+            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>问题"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             // 优先显示解析后的可读文本（argo: command_parsed/output_parsed, turing: question/answer），原始 JSON 折叠
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
@@ -703,8 +705,8 @@ function renderReport(d){
       return `${[
         ["① 价值结果","衡量知识图谱对漏洞判定准确性的净贡献",
           [["M1",gp0.M1],["M2",gp0.M2],["M3",gp0.M3],["M4",gp0.M4]]],
-        ["② 作用机制","揭示行为变化的来源（知识访问/交付/行为漂移）",
-          [["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7]]],
+        ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆/行为漂移）",
+          [["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
         ["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
           [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]
       ].map(g=>`<div style="margin-bottom:14px">

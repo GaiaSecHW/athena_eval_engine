@@ -182,7 +182,8 @@ class KnowledgeResolverImpl:
                 if e.part_id:
                     mem_call_part_ids.add(e.part_id)
             # 记忆 RESULT：与 CALL 配对（同 part_id 或同工具名紧随）
-            if is_mem and e.is_tool_result():
+            # Turing trace 的 TOOL_CALL 含 output（call+result 合一），也要检查
+            if is_mem and (e.is_tool_result() or (e.is_tool_call() and e.output_json is not None)):
                 out = e.output_json
                 out_str = out if isinstance(out, str) else (json.dumps(out, ensure_ascii=False) if out is not None else "")
                 memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": (out_str or "")[:500], "timestamp": e.timestamp_ms, "session_id": e.session_id})
@@ -206,7 +207,9 @@ class KnowledgeResolverImpl:
                     mount_status = "FAILED"
                 # 只对知识图谱交互计 delivery，reject 匹配到的不算成功交付
                 if is_kg and out_str and not any(r.search(out_str.strip()) for r in self._reject_re):
-                    if has_success or out_str.strip() not in ("", "[]", "{}"):
+                    # has_success=明确成功标记；非空输出也算（但排除错误前缀，防止 API 失败被计为交付）
+                    _err_like = out_str.strip().lower().startswith(("error", "execution error", "failed", "exception"))
+                    if has_success or (out_str.strip() not in ("", "[]", "{}") and not _err_like):
                         read_evs.append(_ev(e, "$.output"))
                         delivery_ok = True
                 # 捕获知识图谱 RESULT
@@ -284,7 +287,10 @@ class ToolActionResolverImpl:
         tool = e.tool_name or ""
         path = _path_of(e)
         skill_name = str((e.input_json or {}).get("name") or "")
-        # KG：只有 athena CLI 命令算知识图谱调用（vuln_hunt_* 是内部黑板，不算 KG）
+        # KG：parser 已标记的知识图谱交互（athena CLI / athena_ask API）
+        if e.is_kg_interaction:
+            return "KG"
+        # KG：config 配置的 skill / path / command 模式（向后兼容）
         if skill_name in set(self.access_rules.get("skill_names", [])):
             return "KG"
         for p in self.access_rules.get("path_patterns", []):

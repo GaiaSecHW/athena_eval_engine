@@ -53,7 +53,7 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
         "p_value": joint[0].p_value if joint else None,
         "status": joint[0].status if joint else None,
     } if joint else None
-    p1 = {mid: _entry(mid) for mid in ("M5", "M6", "M7")}
+    p1 = {mid: _entry(mid) for mid in ("M5", "M6", "M7", "M11", "M12")}
     p2 = {mid: _entry(mid) for mid in ("M8", "M9", "M10")}
 
     raw = {"delta_fpr": None, "delta_tool_calls": None, "kg_query_count": None}
@@ -101,14 +101,14 @@ def render_json(model: ReportModel) -> str:
     return json.dumps(model.__dict__, default=lambda o: o.__dict__, ensure_ascii=False, indent=2)
 
 
-def ai_narrative(metrics: list, stats: list, hits: list) -> dict:
+def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None) -> dict:
     """Stage 3 AI narrative (LLM glm-5.2)."""
     m_by = {m.metric_id: m for m in metrics}
     s_by = {s.metric_id: s for s in stats if s.metric_id}
     joint = [s for s in stats if s.scope_type == "JOINT"]
 
     metric_data = []
-    for mid in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10"):
+    for mid in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12"):
         m = m_by.get(mid)
         s = s_by.get(mid)
         if m:
@@ -123,13 +123,28 @@ def ai_narrative(metrics: list, stats: list, hits: list) -> dict:
         mc = joint[0]
         mc_data = {"statistic": mc.statistic, "p_value": mc.p_value, "status": mc.status}
 
+    # 构建分组指标数据（成本类 M8/M9/M10 按分组引用）
+    group_cost_data = []
+    if metric_groups:
+        for g in metric_groups:
+            tid = g.get("task_id", "")
+            label = g.get("label", "")
+            p2 = g.get("p2", {})
+            entry = {"task_id": tid, "label": label}
+            for mid in ("M8", "M9", "M10"):
+                m = p2.get(mid)
+                if m:
+                    entry[mid] = {"estimate": m.get("estimate"), "unit": m.get("unit"),
+                                  "calculation_status": m.get("calculation_status")}
+            group_cost_data.append(entry)
+
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
             "你是知识图谱2.0安全评测的分析报告撰写员。\n\n"
             "# 背景\n"
             "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱(KG)、对照组不开启(No-KG)，"
-            "通过10项指标(M1-M10)量化知识图谱对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
+            "通过12项指标(M1-M12)量化知识图谱对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
             "# 任务\n"
             "基于输入的指标数据、McNemar 检验结果、诊断规则，生成结构化结论 JSON。\n\n"
             "# 约束\n"
@@ -151,10 +166,14 @@ def ai_narrative(metrics: list, stats: list, hits: list) -> dict:
             "| M7 | JSD 行为偏移 | KG与No-KG工具分布差异 | 0=相同 1=不同 | ratio |\n"
             "| M8 | ΔToken | KG-No-KG token消耗 | 负=KG更省 | tokens |\n"
             "| M9 | ΔSteps | KG-No-KG 推理步数 | 负=KG更少 | steps |\n"
-            "| M10 | ΔTime | KG-No-KG 运行时长 | 负=KG更快 | ms |\n\n"
+            "| M10 | ΔTime | KG-No-KG 运行时长 | 负=KG更快 | ms |\n"
+            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
+            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
             "# 输入数据\n"
-            "## 指标结果\n"
+            "## 全局指标结果（所有分组的汇总中位数）\n"
             + json.dumps(metric_data, ensure_ascii=False, indent=2) + "\n\n"
+            "## 分组成本指标（M8/M9/M10 按分组拆分，引用成本数据时须按分组分别引用）\n"
+            + json.dumps(group_cost_data, ensure_ascii=False, indent=2) + "\n\n"
             "## McNemar 联合检验（统计显著性）\n"
             + json.dumps(mc_data, ensure_ascii=False, indent=2) + "\n\n"
             "## 诊断命中规则（自动异常检测）\n"
@@ -164,8 +183,8 @@ def ai_narrative(metrics: list, stats: list, hits: list) -> dict:
             '  "summary": "总结论(≤300字)。回答：知识图谱是否有帮助？引用关键数值，用中文名称。",\n'
             '  "conclusion": "分析结论(400-600字)。分三段写：'
             "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
-            "第二段【行为与知识】：基于知识访问率、知识交付率、行为偏移，分析Agent行为模式变化与知识依赖。"
-            "第三段【成本】：基于token消耗、推理步数、运行时长的差值，分析KG的资源代价。"
+            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
+            "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
             '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
             '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
             '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
@@ -307,13 +326,18 @@ def rule_based_per_case_kg_analysis(case_results: list[dict]) -> list[dict]:
         confusion = case.get("confusion", "NA")
         judgment = {"TP": "VULNERABILITY", "FP": "NON_VULNERABILITY"}.get(confusion, "NOT_FOUND")
         impact = "POSITIVE" if confusion == "TP" else "NEGATIVE" if confusion == "FP" else "NEUTRAL"
+        if confusion == "FN":
+            reason = (f"Agent 未发现此漏洞（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
+                      f"源文件: {case.get('source_file', '未知')}。LLM 未启用，无法深入分析原因。")
+        else:
+            reason = f"KG 判定: {confusion}（规则降级，LLM 未启用）"
         result.append({
             "case_id": case.get("case_id", ""),
             "kg_judgment": judgment,
             "query_summary": "LLM 未启用，未生成知识查询归因。",
             "knowledge_summary": "",
             "impact": impact,
-            "reason": f"KG 判定: {confusion}（规则降级，LLM 未启用）",
+            "reason": reason,
             "interactions": [],
         })
     return result
@@ -460,6 +484,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "answer": result_output,
                 "output_parsed": _parse_kg_output(result_output),
                 "session_id": iv.get("session_id", ""),
+                "timestamp": iv.get("timestamp"),
             }
             item_size = len(item["tool"]) + len(item["command"]) + len(item["answer"])
             if total_size + item_size > MAX_PROMPT_SIZE:
@@ -488,6 +513,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "answer": answer,
                 "output_parsed": _parse_kg_output(answer),
                 "session_id": iv.get("session_id", ""),
+                "timestamp": iv.get("timestamp"),
             }
             item_size = len(item["tool"]) + len(question) + len(answer)
             if total_size + item_size > MAX_PROMPT_SIZE:
@@ -520,19 +546,51 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         related_sessions.add(n)
                         queue.append(n)
 
-        # 2. 也通过 finding 的文件路径找读同文件的 session
+        # 2. 通过基线漏洞的 source_file / source_function 找关联 session
         if session_graph:
             import re as _re2
-            # 从 description 或 bench_by_task 提取文件名
-            file_names = set(_re2.findall(r'(\w+\.(?:c|h|py|java))', description + " " + vuln_type))
-            # 也从 case 的 finding 信息提取（如果有）
+            import os as _os
+            file_names = set()
+            # 优先从 case 的 source_file 提取 basename（evaluation_service 已从 metadata 填充）
+            source_file = case.get("source_file", "")
+            if source_file:
+                file_names.add(_os.path.basename(source_file))
+            # 从 description 提取文件名（扩展正则覆盖 .java/.go/.js/.ts/.py/.c/.h 等）
+            file_names.update(_re2.findall(r'[\w\-]+\.\w{1,6}', description + " " + vuln_type))
+            # 从 bench_by_task 的 metadata 提取 source_file（修复：metadata 非 metadata_json）
             if isinstance(bench_by_task, dict):
                 for items in bench_by_task.values():
                     for ft in (items if isinstance(items, list) else [items]):
-                        meta = getattr(ft, 'metadata_json', None) or ''
-                        file_names.update(_re2.findall(r'(\w+\.(?:c|h|py|java))', str(meta)))
+                        meta = getattr(ft, 'metadata', None)
+                        if isinstance(meta, dict):
+                            sf = meta.get("source_file", "")
+                            if sf:
+                                file_names.add(_os.path.basename(sf))
+                        file_names.update(_re2.findall(r'[\w\-]+\.\w{1,6}', str(meta or '')))
             for fn in file_names:
                 related_sessions.update(session_graph.get('file_to_sessions', {}).get(fn, set()))
+            # 也通过 source_function 匹配：扫描 events 中提到该函数名的 session
+            source_function = case.get("source_function", "")
+            if source_function and events:
+                for ev in events:
+                    if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
+                        continue
+                    inp = ev.input_json or {}
+                    ev_text = str(inp.get("command", "")) + str(inp.get("file_path", ""))
+                    if source_function in ev_text:
+                        related_sessions.add(ev.session_id)
+            # 从文件/函数匹配到的 session 出发 BFS，扩展完整调查链
+            if related_sessions and session_graph and session_graph.get('edges'):
+                queue = list(related_sessions)
+                visited = set(related_sessions)
+                while queue:
+                    cur = queue.pop(0)
+                    neighbors = session_graph.get('edges', {}).get(cur, set())
+                    for n in neighbors:
+                        if n not in visited:
+                            visited.add(n)
+                            related_sessions.add(n)
+                            queue.append(n)
 
         # 3. 过滤 sampled_interactions：只保留 session_id 在 related_sessions 里的
         if related_sessions and sampled_interactions:
@@ -586,8 +644,60 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     nogk_confusion = nc.get("confusion", "NA")
                     break
 
-        # 无知识交互 → 直接判定，不调 LLM
+        # 无知识交互时的处理
         if not case_interactions:
+            # FN 案例且无知识交互：调 LLM 分析为什么没有发现漏洞
+            if kg_judgment == "NOT_FOUND":
+                source_file = case.get("source_file", "")
+                source_function = case.get("source_function", "")
+                fn_data = {
+                    "baseline_vulnerability": {
+                        "case_id": case_id,
+                        "description": description[:200],
+                        "vulnerability_type": vuln_type,
+                        "source_file": source_file,
+                        "source_function": source_function,
+                    },
+                    "kg_status": {"confusion": confusion, "kg_judgment": kg_judgment},
+                    "mining_actions": mining_actions,
+                    "nogk_confusion": nogk_confusion,
+                }
+                fn_prompt = [
+                    {"role": "system", "content": (
+                        "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请分析原因。\n\n"
+                        "# 分析维度\n"
+                        "1. Agent 是否检查了漏洞所在文件/函数？（对照 mining_actions 和 source_file/source_function）\n"
+                        "2. Agent 的挖掘行为是否覆盖了该漏洞类型？\n"
+                        "3. Agent 是否缺少相关知识（未查询知识图谱）？\n"
+                        "4. 与 No-KG 对比：No-KG 是否找到了此漏洞？（nogk_confusion）\n\n"
+                        "只返回 JSON。"
+                    )},
+                    {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
+                        '\n\n分析为什么 Agent 没有发现这个漏洞：\n'
+                        '1. Agent 是否检查了漏洞所在的文件/函数？\n'
+                        '2. Agent 的挖掘行为（mining_actions）是否覆盖了该漏洞类型？\n'
+                        '3. 如果 Agent 查询了知识图谱，知识是否包含此漏洞信息？\n'
+                        '4. 给出主要原因\n\n'
+                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "<=150字中文，分析为什么没有发现漏洞"}'
+                    )},
+                ]
+                try:
+                    result = llm_mod.chat_json(fn_prompt, temperature=0, timeout=120)
+                    result["case_id"] = case_id
+                    result["interactions"] = []
+                    results.append(result)
+                except Exception:
+                    results.append({
+                        "case_id": case_id,
+                        "kg_judgment": kg_judgment,
+                        "query_summary": "无知识查询",
+                        "knowledge_summary": "无知识返回",
+                        "impact": "NEUTRAL",
+                        "reason": "Agent 未发现此漏洞，且无知识图谱介入。LLM 分析不可用。",
+                        "interactions": [],
+                    })
+                continue
+            # 非 FN 且无知识交互：直接判定，不调 LLM
             impact = "NEUTRAL"
             reason = "无知识图谱介入，无法评估知识对漏洞排查的影响"
             results.append({
@@ -606,6 +716,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "case_id": case_id,
                 "description": description[:200],
                 "vulnerability_type": vuln_type,
+                "source_file": case.get("source_file", ""),
+                "source_function": case.get("source_function", ""),
             },
             "kg_status": {
                 "confusion": confusion,
@@ -616,8 +728,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
             "mining_actions": mining_actions,
+            "nogk_confusion": nogk_confusion,
         }
 
+        # FN 案例追加"为什么没有发现"的分析指令
+        fn_extra = ""
+        if kg_judgment == "NOT_FOUND":
+            fn_extra = (
+                "\n5. 为什么 Agent 没有发现这个漏洞？分析 Agent 的挖掘行为（mining_actions）是否覆盖了漏洞所在的文件/函数和漏洞类型。"
+                "\n6. 知识图谱是否包含此漏洞的相关信息？如果有，Agent 为什么没有利用？"
+            )
         prompt = [
             {"role": "system", "content": (
                 "你是知识图谱介入效果分析员。针对每个基线漏洞，分析知识图谱的介入情况。\n\n"
@@ -628,8 +748,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
-                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱问了什么？\n3. 知识图谱返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？\n\n'
-                '返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=100字中文"}'
+                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱问了什么？\n3. 知识图谱返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？'
+                + fn_extra +
+                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=150字中文"}'
             )},
         ]
 

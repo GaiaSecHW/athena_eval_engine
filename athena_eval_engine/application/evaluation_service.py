@@ -53,7 +53,10 @@ EVAL_CONFIG = {
                            "知识库暂无此类知识",
                            "Terminated", "timeout", "超时",
                            "command not found", "not found",
-                           "unavailable"],
+                           "unavailable",
+                           # API 调用失败模式（athena_ask HTTP API 不可达 / 超时）
+                           r"Execution error", r"Failed to poll", r"error sending request",
+                           r"Failed to.*Athena"],
         "kg_success_patterns": ["knowledge persisted", "Success: knowledge", "知识已", r'"result":"Success"'],
     },
     "token_schema": {"reasoning_in_output": True, "cache_excluded": True},
@@ -469,8 +472,7 @@ def run(evaluation_id: str) -> dict:
                 print(f"[PARSE] ⚠ trace 文件不存在: {local_path} (source_uri={src})", flush=True)
             parser = _get_parser(local_path, e.get("trace_kind"))
             bench = list(bench_by_task.get(e["task_id"], []))
-            trace_source = {"trace_id": tr.trace_id, "source_uri": local_path,
-                            "turing_session_id": "sess"}
+            trace_source = {"trace_id": tr.trace_id, "source_uri": local_path}
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
@@ -795,7 +797,8 @@ def run(evaluation_id: str) -> dict:
         from concurrent.futures import ThreadPoolExecutor as _TP
         print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...", flush=True)
         with _TP(max_workers=3) as llm_pool:
-            fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits)
+            fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
+                                        metric_groups=_metric_groups)
 
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
             fut_group_pcka = {}

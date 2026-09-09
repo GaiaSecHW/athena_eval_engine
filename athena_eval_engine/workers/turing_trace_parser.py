@@ -31,14 +31,16 @@ class TuringTraceParser(TraceParser):
         """trace_source: dict {trace_id, source_uri(.db path), session_id?}"""
         uri = trace_source["source_uri"]
         trace_id = trace_source["trace_id"]
-        session_id = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
+        fallback_sid = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
 
         conn = self._connect(uri)
         conn.row_factory = sqlite3.Row
         try:
             self._check_schema(conn)
             for row in conn.execute("SELECT * FROM part ORDER BY id"):
-                yield self._part_to_event(row, trace_id, session_id)
+                # 优先使用 part 表的真实 session_id（opencode.db 有数千个子会话）
+                row_sid = str(row["session_id"]) if "session_id" in row.keys() and row["session_id"] else fallback_sid
+                yield self._part_to_event(row, trace_id, row_sid)
         finally:
             conn.close()
 
