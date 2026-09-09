@@ -173,12 +173,12 @@ def create(req: CreateRequest):
             n_cases = len(bm.get("cases") or [])
             print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
             # task_id_actual 不是有效的 source_task_id 时会返回 0 条。
-            # 不带 task 过滤重试，至少拿到每条 case 的正确 expected_label 和描述。
+            # 不带 task 过滤重试，拿到整个项目的人工确认漏洞（VULNERABLE）。
             if n_cases == 0 and effective_vc_task:
                 print(f"[CREATE] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
                 bm = get_vuln_center_benchmark(req.benchmark_set_id, None)
                 n_cases = len(bm.get("cases") or [])
-                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 case（整个项目）", flush=True)
+                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 VULNERABLE case", flush=True)
             for c in (bm.get("cases") or []):
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
@@ -343,8 +343,8 @@ def run(evaluation_id: str) -> dict:
                     bench_by_task[_tid] = [BenchmarkItem(b.benchmark_item_id, "BS001", _tid,
                                                          b.expected_label, b.target_finding_id, b.metadata)
                                            for b in _all_items]
-        # 漏洞中心模式：如果 vc_source_task_id 为空，benchmark_item 表可能混入了
-        # 整个项目的 case。重新按 task_id_actual 拉取正确 case 集合过滤。
+        # 漏洞中心模式：只保留人工确认漏洞（VULNERABLE）的 case 作为基线。
+        # task_id_actual 不是有效的 source_task_id 时会返回 0 条，不带 task 过滤重试。
         _bm_src = cfg.get("manifest", {}).get("benchmark_source", "")
         _vc_tid = cfg.get("manifest", {}).get("vc_source_task_id")
         if _bm_src == "vuln_center" and not _vc_tid:
@@ -357,25 +357,45 @@ def run(evaluation_id: str) -> dict:
                 from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
                 _vc_proj = cfg.get("manifest", {}).get("benchmark_set_id", "")
                 _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_tid)
-                _vc_ids = {c.get("case_id") or c.get("id") or "" for c in (_vc_bm.get("cases") or [])}
+                _vc_cases = _vc_bm.get("cases") or []
+                _vc_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
+                if not _vc_ids:
+                    # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
+                    print(f"[LOAD] 漏洞中心 task={_vc_tid} 返回 0 条，不带 task 过滤重试", flush=True)
+                    _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
+                    _vc_cases = _vc_bm.get("cases") or []
+                    _vc_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
+                    print(f"[LOAD] 不带 task 过滤返回 {len(_vc_ids)} 条 VULNERABLE case", flush=True)
                 if _vc_ids:
                     _before = sum(len(v) for v in bench_by_task.values())
                     for tid in list(bench_by_task.keys()):
                         bench_by_task[tid] = [b for b in bench_by_task[tid] if b.benchmark_item_id in _vc_ids]
                     _after = sum(len(v) for v in bench_by_task.values())
                     if _before != _after:
-                        print(f"[LOAD] 漏洞中心过滤 benchmark: {_before} → {_after} 条（task={_vc_tid}）", flush=True)
+                        print(f"[LOAD] 漏洞中心过滤 benchmark: {_before} → {_after} 条（只保留 VULNERABLE）", flush=True)
             except Exception as e:
                 print(f"[LOAD] 漏洞中心校验失败（不影响评测）: {e}", flush=True)
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
-    # 检查 facts 是否已存在（重试时跳过慢操作）
-    def _facts_exist(cur):
-        cur.execute("SELECT COUNT(*) FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
-        return cur.fetchone()[0] > 0
-    facts_already_exist = _db_query(_facts_exist)
+    # 重跑时清理旧 facts，确保用最新 benchmark_item 标签重新计算
+    def _clear_old_facts(cur):
+        cur.execute("SET FOREIGN_KEY_CHECKS=0")
+        for tbl in ("statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+                     "outcome_fact", "tool_action_fact", "resource_fact",
+                     "knowledge_interaction_fact", "task_run", "trace_source",
+                     "evaluation_report"):
+            cur.execute(f"DELETE FROM {tbl} WHERE evaluation_id=%s", (evaluation_id,))
+        # population_snapshot / calculation_run 用 calculation_run_id 关联
+        cur.execute("DELETE FROM evaluation_population_snapshot WHERE calculation_run_id LIKE %s",
+                    (f"CR-{evaluation_id}%",))
+        cur.execute("DELETE FROM evaluation_calculation_run WHERE calculation_run_id LIKE %s",
+                    (f"CR-{evaluation_id}%",))
+        cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        print(f"[RUN] 清理旧 facts（重跑）: evaluation_id={evaluation_id}", flush=True)
+    _db_query(_clear_old_facts)
+    facts_already_exist = False
 
     def _is_webvulnverify_trace(path):
         """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。"""
@@ -582,7 +602,11 @@ def run(evaluation_id: str) -> dict:
                         effective_bench = []
                         try:
                             from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-                            vc_bm = get_vuln_center_benchmark(e.get("project_id", ""), e.get("task_id_actual"))
+                            _vc_proj2 = e.get("project_id", "")
+                            _vc_task2 = e.get("task_id_actual")
+                            vc_bm = get_vuln_center_benchmark(_vc_proj2, _vc_task2)
+                            if not (vc_bm.get("cases") or []):
+                                vc_bm = get_vuln_center_benchmark(_vc_proj2, None)
                             vc_by_id = {c.get("case_id", ""): c for c in (vc_bm.get("cases") or [])}
                             for cid in trace_case_ids:
                                 c = vc_by_id.get(cid)

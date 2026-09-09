@@ -107,8 +107,15 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
     s_by = {s.metric_id: s for s in stats if s.metric_id}
     joint = [s for s in stats if s.scope_type == "JOINT"]
 
+    # 漏洞验证报告不包含成本效率(M8/M9/M10)和行为偏移(M7)
+    all_verify = metric_groups and all(g.get("category") == "verify" for g in metric_groups)
+    if all_verify:
+        _metric_ids = ("M1", "M2", "M3", "M4", "M5", "M6", "M11", "M12")
+    else:
+        _metric_ids = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12")
+
     metric_data = []
-    for mid in ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12"):
+    for mid in _metric_ids:
         m = m_by.get(mid)
         s = s_by.get(mid)
         if m:
@@ -123,10 +130,12 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
         mc = joint[0]
         mc_data = {"statistic": mc.statistic, "p_value": mc.p_value, "status": mc.status}
 
-    # 构建分组指标数据（成本类 M8/M9/M10 按分组引用）
+    # 构建分组指标数据（成本类 M8/M9/M10 按分组引用，漏洞验证分组跳过）
     group_cost_data = []
-    if metric_groups:
+    if metric_groups and not all_verify:
         for g in metric_groups:
+            if g.get("category") == "verify":
+                continue
             tid = g.get("task_id", "")
             label = g.get("label", "")
             p2 = g.get("p2", {})
@@ -138,13 +147,80 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
                                   "calculation_status": m.get("calculation_status")}
             group_cost_data.append(entry)
 
+    # 根据报告类型构建 prompt
+    if all_verify:
+        _metric_def = (
+            "# 指标定义\n"
+            "| ID | 名称 | 含义 | 方向 | 单位 |\n"
+            "|----|------|------|------|------|\n"
+            "| M1 | ΔBA 准确率变化 | KG与No-KG平衡准确率差值 | 正=KG更准 | ratio |\n"
+            "| M2 | IR 救回率 | No-KG失败任务中KG成功的比例 | 越高越好 | ratio |\n"
+            "| M3 | RR 回归率 | No-KG成功任务中KG失败的比例 | 越低越好 | ratio |\n"
+            "| M4 | ΔFNR 漏报率变化 | KG与No-KG漏报率差值 | 负=KG漏报更少 | ratio |\n"
+            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | 衡量知识依赖 | ratio |\n"
+            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | 衡量知识质量 | ratio |\n"
+            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
+            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
+        )
+        _conclusion_schema = (
+            "# 输出 JSON Schema\n"
+            "{\n"
+            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
+            '  "conclusion": "分析结论(300-500字)。分两段写：'
+            "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
+            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent行为模式变化与知识/记忆依赖。"
+            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
+            '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
+            '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
+            "}"
+        )
+        _cost_section = ""
+    else:
+        _metric_def = (
+            "# 指标定义\n"
+            "| ID | 名称 | 含义 | 方向 | 单位 |\n"
+            "|----|------|------|------|------|\n"
+            "| M1 | ΔBA 准确率变化 | KG与No-KG平衡准确率差值 | 正=KG更准 | ratio |\n"
+            "| M2 | IR 救回率 | No-KG失败任务中KG成功的比例 | 越高越好 | ratio |\n"
+            "| M3 | RR 回归率 | No-KG成功任务中KG失败的比例 | 越低越好 | ratio |\n"
+            "| M4 | ΔFNR 漏报率变化 | KG与No-KG漏报率差值 | 负=KG漏报更少 | ratio |\n"
+            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | 衡量知识依赖 | ratio |\n"
+            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | 衡量知识质量 | ratio |\n"
+            "| M7 | JSD 行为偏移 | KG与No-KG工具分布差异 | 0=相同 1=不同 | ratio |\n"
+            "| M8 | ΔToken | KG-No-KG token消耗 | 负=KG更省 | tokens |\n"
+            "| M9 | ΔSteps | KG-No-KG 推理步数 | 负=KG更少 | steps |\n"
+            "| M10 | ΔTime | KG-No-KG 运行时长 | 负=KG更快 | ms |\n"
+            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
+            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
+        )
+        _conclusion_schema = (
+            "# 输出 JSON Schema\n"
+            "{\n"
+            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
+            '  "conclusion": "分析结论(400-600字)。分三段写：'
+            "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
+            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
+            "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
+            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
+            '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
+            '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
+            "}"
+        )
+        _cost_section = (
+            "## 分组成本指标（M8/M9/M10 按分组拆分，引用成本数据时须按分组分别引用）\n"
+            + json.dumps(group_cost_data, ensure_ascii=False, indent=2) + "\n\n"
+        )
+
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
             "你是知识图谱与记忆安全评测的分析报告撰写员。\n\n"
             "# 背景\n"
             "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
-            "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
+            + (f"通过8项指标(M1-M6,M11,M12)量化知识图谱与记忆对 Agent 漏洞判定准确性和知识/记忆依赖的影响。\n\n"
+               if all_verify else
+               "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n")
+            +
             "# 知识图谱与记忆的使用方法\n"
             "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
             "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
@@ -161,41 +237,16 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "4. 仅返回 JSON，无任何额外文字"
         )},
         {"role": "user", "content": (
-            "# 指标定义\n"
-            "| ID | 名称 | 含义 | 方向 | 单位 |\n"
-            "|----|------|------|------|------|\n"
-            "| M1 | ΔBA 准确率变化 | KG与No-KG平衡准确率差值 | 正=KG更准 | ratio |\n"
-            "| M2 | IR 救回率 | No-KG失败任务中KG成功的比例 | 越高越好 | ratio |\n"
-            "| M3 | RR 回归率 | No-KG成功任务中KG失败的比例 | 越低越好 | ratio |\n"
-            "| M4 | ΔFNR 漏报率变化 | KG与No-KG漏报率差值 | 负=KG漏报更少 | ratio |\n"
-            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | 衡量知识依赖 | ratio |\n"
-            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | 衡量知识质量 | ratio |\n"
-            "| M7 | JSD 行为偏移 | KG与No-KG工具分布差异 | 0=相同 1=不同 | ratio |\n"
-            "| M8 | ΔToken | KG-No-KG token消耗 | 负=KG更省 | tokens |\n"
-            "| M9 | ΔSteps | KG-No-KG 推理步数 | 负=KG更少 | steps |\n"
-            "| M10 | ΔTime | KG-No-KG 运行时长 | 负=KG更快 | ms |\n"
-            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
-            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
-            "# 输入数据\n"
+            _metric_def
+            + "# 输入数据\n"
             "## 全局指标结果（所有分组的汇总中位数）\n"
             + json.dumps(metric_data, ensure_ascii=False, indent=2) + "\n\n"
-            "## 分组成本指标（M8/M9/M10 按分组拆分，引用成本数据时须按分组分别引用）\n"
-            + json.dumps(group_cost_data, ensure_ascii=False, indent=2) + "\n\n"
-            "## McNemar 联合检验（统计显著性）\n"
+            + _cost_section
+            + "## McNemar 联合检验（统计显著性）\n"
             + json.dumps(mc_data, ensure_ascii=False, indent=2) + "\n\n"
             "## 诊断命中规则（自动异常检测）\n"
             + json.dumps([{"rule_id": h.rule_id, "observed": h.observed, "interpretation": h.interpretation} for h in hits], ensure_ascii=False, indent=2) + "\n\n"
-            "# 输出 JSON Schema\n"
-            "{\n"
-            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
-            '  "conclusion": "分析结论(400-600字)。分三段写：'
-            "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
-            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
-            "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
-            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
-            '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
-            '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
-            "}"
+            + _conclusion_schema
         )},
     ]
 

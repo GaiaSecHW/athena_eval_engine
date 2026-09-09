@@ -1,9 +1,8 @@
 """漏洞中心（Chimera，secflow-platform-vuln）数据读取 — V-Bench 测评集的原始数据源。
 
 漏洞中心暴露 ``GET /api/vuln/cases``（bearer token 鉴权），返回 case 列表。
-基线只取**人工确认**的 case：分两次查询——``confirmation_status=vulnerable`` 取确认漏洞，
-``confirmation_status=not_vulnerable`` 取确认非漏洞。未判定的 case（inconclusive）
-不作为基线（无明确 GT，不能算 TP/FP/FN/TN）。
+基线只取**人工确认漏洞**的 case：``confirmation_status=vulnerable``。
+确认非漏洞的 case 不作为基线（不拉取），评测只看 agent 能否发现确认漏洞。
 
 本 client 在评测基线「漏洞中心数据」模式下替代 ``vbench_client.get_benchmark``，
 归一成同构的 ``{cases: [{case_id, vulnerability_type, description, target_finding_id, expected_label}]}``。
@@ -34,7 +33,7 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
     """分页拉取漏洞中心 case。
 
     ``scope=vuln_center`` + ``project_id`` + 可选 ``source_task_ids`` 做项目/任务级过滤。
-    ``confirmation_status`` 取 'vulnerable' 或 'not_vulnerable'，分别拉人工确认的漏洞/非漏洞。
+    ``confirmation_status`` 取 'vulnerable' 拉人工确认漏洞。基线只包含确认漏洞。
     默认 page_size=1000 一次取完，超 1000 自动翻页兜底。
     """
     accumulated: list[dict] = []
@@ -171,12 +170,10 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
 def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None) -> dict:
     """返回与 ``vbench_client.get_benchmark`` 同构的基线结构。
 
-    分两次查询：``confirmation_status=vulnerable`` 取确认漏洞（VULNERABLE），
-    ``confirmation_status=not_vulnerable`` 取确认非漏洞（NOT_VULNERABLE）。
-    未判定的 inconclusive case 不作为基线。expected_label 由查询过滤直接确定。
+    只拉取 ``confirmation_status=vulnerable`` 的人工确认漏洞（VULNERABLE）。
+    不拉取 not_vulnerable case —— 基线只包含确认漏洞，评测只看 agent 能否发现它们。
+    expected_label 固定为 VULNERABLE。
     """
     vuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="vulnerable")
-    not_vuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="not_vulnerable")
     cases = [_case_to_benchmark(c, "VULNERABLE") for c in vuln_cases]
-    cases += [_case_to_benchmark(c, "NOT_VULNERABLE") for c in not_vuln_cases]
     return {"benchmark_id": project_id, "name": None, "cases": cases}

@@ -47,8 +47,10 @@ def insert_evaluation(cur, evaluation_id: str, benchmark_set_id: str, agent_name
 
 def insert_benchmark_item(cur, bi_id: str, set_id: str, task_id: str, label: str, target_finding_id=None, metadata_json=None):
     import json as _json
-    sql = ("INSERT IGNORE INTO benchmark_item (benchmark_item_id, benchmark_set_id, task_id, expected_label, "
-           "target_finding_id, metadata_json) VALUES (%s,%s,%s,%s,%s,%s)")
+    sql = ("INSERT INTO benchmark_item (benchmark_item_id, benchmark_set_id, task_id, expected_label, "
+           "target_finding_id, metadata_json) VALUES (%s,%s,%s,%s,%s,%s) "
+           "ON DUPLICATE KEY UPDATE expected_label=VALUES(expected_label), "
+           "target_finding_id=VALUES(target_finding_id), metadata_json=VALUES(metadata_json)")
     cur.execute(sql, (bi_id, set_id, task_id, label, target_finding_id,
                      _json.dumps(metadata_json, ensure_ascii=False) if metadata_json else None))
 

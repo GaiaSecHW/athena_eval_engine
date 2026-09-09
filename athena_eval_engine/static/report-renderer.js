@@ -391,15 +391,17 @@ function renderReport(d){
         <tr><td>验证结果</td><td class="num">${kgOc.validation||"N/A"}</td><td class="num">${nogkOc.validation||"N/A"}</td></tr>
         </table></div>`;
     }
-    function _metricCards(gp0,gp1,gp2,glabel){
-      return `${[
+    function _metricCards(gp0,gp1,gp2,glabel,cat){
+      const isVerify=cat==="verify";
+      const groups=[
         ["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
           [["M1",gp0.M1],["M2",gp0.M2],["M3",gp0.M3],["M4",gp0.M4]]],
-        ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆/行为漂移）",
-          [["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
-        ["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
-          [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]
-      ].map(g=>`<div style="margin-bottom:14px">
+        ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
+          isVerify?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
+        ...(!isVerify?[["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
+          [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]]:[])
+      ];
+      return `${groups.map(g=>`<div style="margin-bottom:14px">
         <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
           <span style="font-weight:700;font-size:15px">${g[0]}</span>
           <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
@@ -416,7 +418,7 @@ function renderReport(d){
     const panes=mg.map((g,i)=>`<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
       ${_statsTable(g.task_id,g.label)}
-      <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label)}</div>
+      <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
       ${_diagnostics(g.diagnostic_hits||h)}
       <div class="card" style="margin-bottom:16px">
         <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>

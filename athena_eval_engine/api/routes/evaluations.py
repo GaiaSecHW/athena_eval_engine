@@ -241,6 +241,11 @@ def retry_evaluation(evaluation_id: str):
                     from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
                     print(f"[RETRY] 漏洞中心取基线: project={bsid} task={effective_vc_task}", flush=True)
                     bm = get_vuln_center_benchmark(bsid, effective_vc_task)
+                    _n = len(bm.get("cases") or [])
+                    if _n == 0 and effective_vc_task:
+                        print(f"[RETRY] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
+                        bm = get_vuln_center_benchmark(bsid, None)
+                        print(f"[RETRY] 不带 task 过滤返回 {len(bm.get('cases') or [])} 条 VULNERABLE case", flush=True)
                     for c in (bm.get("cases") or []):
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
@@ -459,10 +464,10 @@ def _build_report(evaluation_id: str):
         kg_oc_cases = _load_case_results_from_outcome("-KG")
         nogk_oc_cases = _load_case_results_from_outcome("-NOGK")
 
-        # 漏洞中心模式：如果 vc_source_task_id 为空，benchmark_item 表可能混入了
-        # 整个项目的 case（而非当前任务的）。重新按 task_id_actual 拉取正确 case 集合过滤。
+        # 漏洞中心模式：只保留人工确认漏洞（VULNERABLE）的 case 作为基线。
+        # task_id_actual 不是有效的 source_task_id 时会返回 0 条，不带 task 过滤重试。
         _vc_fallback = {}
-        _vc_valid_case_ids = None  # 漏洞中心返回的当前任务的 case ID 集合
+        _vc_valid_case_ids = None
         _bm_source = manifest.get("benchmark_source", "vbench_zip")
         _vc_task = manifest.get("vc_source_task_id")
         if _bm_source == "vuln_center" and not _vc_task:
@@ -477,37 +482,28 @@ def _build_report(evaluation_id: str):
                 print(f"[REPORT] 漏洞中心校验基线: project={_vc_proj} task={_vc_task}", flush=True)
                 _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_task)
                 _vc_cases = _vc_bm.get("cases") or []
+                if not _vc_cases:
+                    # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
+                    print(f"[REPORT] 漏洞中心 task={_vc_task} 返回 0 条，不带 task 过滤重试", flush=True)
+                    _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
+                    _vc_cases = _vc_bm.get("cases") or []
+                    print(f"[REPORT] 不带 task 过滤返回 {len(_vc_cases)} 条 VULNERABLE case", flush=True)
                 if _vc_cases:
                     _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
                     for c in _vc_cases:
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
                             _vc_fallback[cid] = c
-                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case（当前任务），"
+                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 VULNERABLE case，"
                           f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
-                else:
-                    # 漏洞中心返回 0 条（task_id_actual 不是有效的 source_task_id）。
-                    # 用 outcome_fact 的 case_results 回退过滤：只保留实际评测过的 case，
-                    # 避免整个项目的 case 全部混入报告。
-                    _oc_ids = set()
-                    for oc_c in kg_oc_cases + nogk_oc_cases:
-                        cid = oc_c.get("case_id")
-                        if cid:
-                            _oc_ids.add(cid)
-                    if _oc_ids and len(_oc_ids) < len(raw_rows):
-                        _vc_valid_case_ids = _oc_ids
-                        print(f"[REPORT] 漏洞中心返回 0 条，用 outcome case_results 回退过滤: "
-                              f"{len(raw_rows)} → {len(_oc_ids)} 条", flush=True)
-                    else:
-                        print(f"[REPORT] 漏洞中心返回 0 条且 outcome 无 case_results，跳过过滤", flush=True)
             except Exception as e:
                 print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
 
-        # 用漏洞中心返回的 case 集合过滤 benchmark_item（修掉 create 时多插入的 case）
-        if _vc_valid_case_ids is not None and len(_vc_valid_case_ids) < len(raw_rows):
+        # 用漏洞中心返回的 VULNERABLE case 集合过滤 benchmark_item
+        if _vc_valid_case_ids is not None:
             _before = len(raw_rows)
             raw_rows = [r for r in raw_rows if r[0] in _vc_valid_case_ids]
-            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条（只保留当前任务的 case）", flush=True)
+            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条（只保留 VULNERABLE）", flush=True)
 
         has_null_meta = any(r[2] is None for r in raw_rows)
         if has_null_meta and not _vc_fallback:
@@ -568,19 +564,17 @@ def _build_report(evaluation_id: str):
                 c["nogk_confusion"] = "NA"
         r["case_results"] = case_results
         r["baseline_count"] = len(case_results)
-        # 同步过滤 metric_groups 中的 case_results（修掉 create 时多插入的 case）
+        # 同步过滤 metric_groups 中的 case_results 和 per_case_kg_analysis
         if _vc_valid_case_ids is not None:
             _rep = r.get("report") or {}
             for _grp in (_rep.get("metric_groups") or []):
                 _gc = _grp.get("case_results") or []
-                if len(_gc) > len(_vc_valid_case_ids):
-                    _grp["case_results"] = [c for c in _gc if c.get("case_id") in _vc_valid_case_ids]
+                _grp["case_results"] = [c for c in _gc if c.get("case_id") in _vc_valid_case_ids]
+                if len(_gc) != len(_grp["case_results"]):
                     print(f"[REPORT] metric_groups[{_grp.get('task_id','')}] case_results: "
                           f"{len(_gc)} → {len(_grp['case_results'])} 条", flush=True)
-                # 同步过滤 per_case_kg_analysis
                 _pcka = _grp.get("per_case_kg_analysis") or []
-                if len(_pcka) > len(_vc_valid_case_ids):
-                    _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _vc_valid_case_ids]
+                _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _vc_valid_case_ids]
     finally:
         conn.close()
     return r
