@@ -739,8 +739,7 @@ function renderReport(d){
   })()}
 
   `;
-  const diagEl=$("diag-body");if(diagEl)diagEl.innerHTML=diagHtml+`<button class="btn g" style="margin-top:8px" id="diag-retry-btn">重新评测</button>`;
-  var drb=$("diag-retry-btn");if(drb)drb.onclick=function(){retryEval(d.evaluation_id);};
+
 }
 
 function loadPipeline(eid){
