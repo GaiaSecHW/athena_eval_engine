@@ -63,7 +63,15 @@ const MI={
   M10:{n:"时长变化(ΔTime)",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
      range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${(-v/1000).toFixed(1)}s`:v>0?`KG 慢 ${(v/1000).toFixed(1)}s`:"时长无差异",
-     formula:"median(KG_duration_ms - NoKG_duration_ms)"}
+     formula:"median(KG_duration_ms - NoKG_duration_ms)"},
+  M11:{n:"记忆访问率(MAR)",short:"记忆访问",d:"Agent 工具调用中记忆读取所占比例（交互级）。衡量 Agent 对记忆的依赖程度。",u:"ratio",
+     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(1)}%, 少量`:`记忆访问率 ${(v*100).toFixed(1)}%, 极低`,
+     formula:"memory_read_count / total_tool_calls (记忆读取次数 / 总工具调用次数)"},
+  M12:{n:"记忆交付率(MDR)",short:"记忆交付",d:"记忆查询中成功读取的比例（交互级）。衡量记忆质量。",u:"ratio",
+     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到记忆交付":v>=0.8?`记忆交付率 ${v*100}%, 充分`:v>=0.5?`记忆交付率 ${v*100}%, 部分`:`记忆交付率 ${v*100}%, 不足`,
+     formula:"successful_memory_read_count / memory_access_event_count (成功记忆读取 / 记忆读取次数)"}
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
 function dc(v,u){if(v===null||v===undefined)return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
@@ -108,49 +116,72 @@ function renderReport(d){
     return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
   }
 
-  // 知识图谱介入情况：按标签页传入对应类别的数据；无分组的旧报告则使用全局数据。
+  // 知识图谱与记忆介入情况：两种方案分别统计
   function buildKnowledgeHtml(group){
   const groupP1=group?(group.p1||{}):p1;
   const kar=groupP1.M5,kdr=groupP1.M6;
+  const mar=groupP1.M11,mdr=groupP1.M12;
   const kgAccess=kar&&kar.calculation_status==="CALCULATED"?kar.estimate:null;
   const kgDelivery=kdr&&kdr.calculation_status==="CALCULATED"?kdr.estimate:null;
+  const memAccess=mar&&mar.calculation_status==="CALCULATED"?mar.estimate:null;
+  const memDelivery=mdr&&mdr.calculation_status==="CALCULATED"?mdr.estimate:null;
   const taskId=group&&group.task_id;
-  const kgInteractions=taskId?(d.knowledge_interactions||[]).filter(k=>k.task_run_id.includes("-"+taskId+"-KG")):(d.knowledge_interactions||[]);
-  const allInteractions=[];
-  kgInteractions.forEach(k=>{(k.interactions||[]).forEach(i=>allInteractions.push(i))});
-  // 介入次数 = CALL 次数（主动查询），RESULT 是返回不算介入
-  const callCount=allInteractions.filter(function(iv){return iv.type==="CALL";}).length;
-  const resultCount=allInteractions.filter(function(iv){return iv.type==="RESULT";}).length;
-  const noResponse=Math.max(0,callCount-resultCount);
-  const kgActive=(kgAccess!==null&&kgAccess>0)||callCount>0;
-  let kgHtml="";
-  // 概要
-  kgHtml+="<div style='display:flex;gap:12px;align-items:center;margin-bottom:12px'>";
-  kgHtml+=kgActive?"<span style='font-size:28px'>✅</span>":"<span style='font-size:28px'>❌</span>";
-  kgHtml+="<div><span style='font-weight:600;font-size:16px'>"+(kgActive?"知识图谱与记忆已介入":"知识图谱与记忆未介入")+"</span>";
-  kgHtml+="<div style='font-size:14px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+resultCount+"</b> 次</div></div></div>";
+  const kgData=taskId?(d.knowledge_interactions||[]).filter(k=>k.task_run_id.includes("-"+taskId+"-KG")):(d.knowledge_interactions||[]);
 
-  // 知识质量统计：基于 RESULT 分类 + 无响应算返回失败
-  var kgFail=0,kgBlind=0,kgSuccess=0;
-  allInteractions.forEach(function(iv){
-    if(iv.type!=="RESULT"||!iv.output)return;
-    var out=(iv.output||"").toLowerCase();
-    if(out.indexOf("terminated")>=0||out.indexOf("timeout")>=0||out.indexOf("error")>=0||out.indexOf("404")>=0||out.indexOf("failed")>=0||out.indexOf("exception")>=0||out.indexOf("unreachable")>=0||out.indexOf("connection refused")>=0){
-      kgFail++;
-    }else if(out.indexOf("知识库暂无此类知识")>=0){
-      kgBlind++;
-    }else{
-      kgSuccess++;
-    }
+  // 分别提取知识图谱交互和记忆交互
+  const kgAll=[],memAll=[];
+  kgData.forEach(k=>{
+    (k.interactions||[]).forEach(i=>kgAll.push(i));
+    const mem=k.memory||{};
+    (mem.interactions||[]).forEach(i=>memAll.push(i));
   });
-  kgFail+=noResponse; // 无响应也算返回失败
-  if(callCount>0){
-    kgHtml+="<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px'>";
-    kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>有效返回 "+kgSuccess+"</span>";
-    kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>返回失败 "+kgFail+"</span>";
-    kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>知识盲区 "+kgBlind+"</span>";
-    kgHtml+="</div>";
+
+  // 统计辅助函数：计算主动查询、返回结果、有效返回、返回失败、知识盲区
+  function _stats(arr){
+    const callCount=arr.filter(function(iv){return iv.type==="CALL";}).length;
+    const resultCount=arr.filter(function(iv){return iv.type==="RESULT";}).length;
+    const noResponse=Math.max(0,callCount-resultCount);
+    var fail=0,blind=0,success=0;
+    arr.forEach(function(iv){
+      if(iv.type!=="RESULT"||!iv.output)return;
+      var out=(iv.output||"").toLowerCase();
+      if(out.indexOf("terminated")>=0||out.indexOf("timeout")>=0||out.indexOf("error")>=0||out.indexOf("404")>=0||out.indexOf("failed")>=0||out.indexOf("exception")>=0||out.indexOf("unreachable")>=0||out.indexOf("connection refused")>=0){
+        fail++;
+      }else if(out.indexOf("知识库暂无此类知识")>=0||out.indexOf("no memory")>=0||out.indexOf("not found")>=0||out.indexOf("empty")>=0){
+        blind++;
+      }else{
+        success++;
+      }
+    });
+    fail+=noResponse;
+    return {callCount:callCount,resultCount:resultCount,noResponse:noResponse,fail:fail,blind:blind,success:success};
   }
+
+  // 单个方案统计区块
+  function _sectionHtml(title,icon,stats,accessRate,deliveryRate){
+    const active=(accessRate!==null&&accessRate>0)||stats.callCount>0;
+    var html="<div style='display:flex;gap:12px;align-items:center;margin-bottom:8px'>";
+    html+=active?"<span style='font-size:24px'>"+icon+"</span>":"<span style='font-size:24px'>❌</span>";
+    html+="<div><span style='font-weight:600;font-size:15px'>"+title+(active?"已介入":"未介入")+"</span>";
+    html+="<div style='font-size:13px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+stats.callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+stats.resultCount+"</b> 次</div></div></div>";
+    if(stats.callCount>0){
+      html+="<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;padding-left:36px'>";
+      html+="<span class='bdg b-COMPLETED' style='font-size:13px'>有效返回 "+stats.success+"</span>";
+      html+="<span class='bdg b-FAILED' style='font-size:13px'>返回失败 "+stats.fail+"</span>";
+      html+="<span class='bdg b-CREATED' style='font-size:13px'>知识盲区 "+stats.blind+"</span>";
+      if(accessRate!==null)html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(1)+"%</span>";
+      if(deliveryRate!==null)html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(1)+"%</span>";
+      html+="</div>";
+    }
+    return html;
+  }
+
+  const kgStats=_stats(kgAll);
+  const memStats=_stats(memAll);
+  const kgActive=(kgAccess!==null&&kgAccess>0)||kgStats.callCount>0;
+  let kgHtml="";
+  kgHtml+=_sectionHtml("知识图谱","🔍",kgStats,kgAccess,kgDelivery);
+  kgHtml+=_sectionHtml("记忆","🧠",memStats,memAccess,memDelivery);
 
   // 知识对漏洞判定的影响（正向/负向/中性），来源 per_case_kg_analysis.impact
   var pcAnalysis=group?(group.per_case_kg_analysis||[]):(r.per_case_kg_analysis||[]);
@@ -251,9 +282,15 @@ function renderReport(d){
   const m8v=p2.M8&&p2.M8.calculation_status==="CALCULATED"?p2.M8.estimate:null;
   const m9v=p2.M9&&p2.M9.calculation_status==="CALCULATED"?p2.M9.estimate:null;
   const hasAnyKgInteraction=(d.knowledge_interactions||[]).some(k=>(k.interactions||[]).some(iv=>iv.type==="CALL"));
+  const hasAnyMemInteraction=(d.knowledge_interactions||[]).some(k=>((k.memory||{}).interactions||[]).some(iv=>iv.type==="CALL"));
   const overallKgAccess=p1.M5&&p1.M5.calculation_status==="CALCULATED"?p1.M5.estimate:null;
-  if((overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction)summaryParts.push("知识图谱与记忆已介入");
-  else summaryParts.push("知识图谱与记忆未介入");
+  const overallMemAccess=p1.M11&&p1.M11.calculation_status==="CALCULATED"?p1.M11.estimate:null;
+  const kgActiveSummary=(overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction;
+  const memActiveSummary=(overallMemAccess!==null&&overallMemAccess>0)||hasAnyMemInteraction;
+  if(kgActiveSummary&&memActiveSummary)summaryParts.push("知识图谱与记忆均已介入");
+  else if(kgActiveSummary)summaryParts.push("知识图谱已介入，记忆未介入");
+  else if(memActiveSummary)summaryParts.push("记忆已介入，知识图谱未介入");
+  else summaryParts.push("知识图谱与记忆均未介入");
   if(m8v!==null)summaryParts.push(m8v<0?"KG 模式更省 token":"KG 模式更耗 token");
   if(m9v!==null)summaryParts.push(m9v<0?"KG 步数更少":"KG 步数更多");
   if(m7v!==null)summaryParts.push(m7v<0.1?"行为几乎无变化":"行为有明显变化");
