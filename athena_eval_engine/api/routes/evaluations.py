@@ -661,17 +661,11 @@ svg{display:block;margin:0 auto;max-width:100%}
 .btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
-.action-bar{display:flex;gap:10px;align-items:center;padding:14px 24px;background:#fff;border-bottom:1px solid var(--bd);position:sticky;top:0;z-index:99}
-.action-bar .eid{font-family:monospace;font-size:14px;color:var(--sub);margin-right:auto}
-.action-bar button{border:none;padding:8px 18px;border-radius:9px;cursor:pointer;font-size:14px;font-weight:500}
-.btn-primary{background:var(--acc);color:#fff}
-.btn-danger{background:var(--red);color:#fff}
 #rep{padding:28px;max-width:1200px;margin:0 auto}
 </style>
 </head>
 <body>
 <div id="rep"></div>
-<div id="diag-body"></div>
 <script>
 __RENDERER_JS__
 </script>

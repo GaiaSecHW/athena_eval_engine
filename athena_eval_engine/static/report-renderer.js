@@ -406,6 +406,4 @@ function renderReport(d){
   })()}
 
   `;
-  var diagHtml="";
-  const diagEl=$("diag-body");if(diagEl)diagEl.innerHTML=diagHtml;
 }
