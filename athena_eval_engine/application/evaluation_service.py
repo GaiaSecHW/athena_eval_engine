@@ -172,6 +172,13 @@ def create(req: CreateRequest):
             bm = get_vuln_center_benchmark(req.benchmark_set_id, effective_vc_task)
             n_cases = len(bm.get("cases") or [])
             print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
+            # task_id_actual 不是有效的 source_task_id 时会返回 0 条。
+            # 不带 task 过滤重试，至少拿到每条 case 的正确 expected_label 和描述。
+            if n_cases == 0 and effective_vc_task:
+                print(f"[CREATE] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
+                bm = get_vuln_center_benchmark(req.benchmark_set_id, None)
+                n_cases = len(bm.get("cases") or [])
+                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 case（整个项目）", flush=True)
             for c in (bm.get("cases") or []):
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:

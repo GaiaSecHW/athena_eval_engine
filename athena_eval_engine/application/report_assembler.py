@@ -725,7 +725,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 }
                 fn_prompt = [
                     {"role": "system", "content": (
-                        "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请分析原因。\n\n"
+                        "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请深入分析原因。\n\n"
                         "# 知识图谱与记忆的使用方法\n"
                         "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
                         "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
@@ -736,11 +736,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "将 baseline_vulnerability（基线漏洞详情）与 mining_actions（Agent 实际挖掘行为）逐项对比：\n"
                         "1. Agent 是否读取过 source_file？在 mining_actions 中搜索匹配的 read/bash 路径\n"
                         "2. Agent 是否分析了 source_function？在 mining_actions 中搜索函数名\n"
-                        "3. Agent 提交的 finding 与 vulnerability_type 是否相关？\n"
+                        "3. Agent 提交了哪些 finding？与基线漏洞的 vulnerability_type 是否相关？\n"
                         "4. Agent 的挖掘范围覆盖了哪些文件/目录？是否偏离了漏洞所在区域？\n"
-                        "5. Agent 是否查询了知识图谱与记忆？未查询是否是漏报原因之一？\n"
+                        "5. Agent 是否查询了知识图谱与记忆？查询了什么内容？返回了什么？\n"
                         "6. No-KG 也漏报了吗（nogk_confusion）？双方都漏报说明漏洞本身难发现\n"
                         "7. 知识图谱与记忆对漏洞挖掘的影响：正向（引导到正确区域）、负向（误导方向）、中性（无影响）\n\n"
+                        "# reason 写作要求\n"
+                        "reason 必须包含以下内容（1000字以内）：\n"
+                        "1. 挖掘过程概述：Agent 主要做了什么（读了哪些文件、执行了什么命令、挖掘方向是什么）\n"
+                        "2. 漏报原因：为什么没有发现这个漏洞（是否接触过漏洞文件/函数？挖掘方向是否偏离？）\n"
+                        "3. KG 影响：知识图谱与记忆是否对挖掘有帮助或误导？如果没有知识交互，说明 Agent 没有使用知识\n"
+                        "4. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
+                        "必须引用 mining_actions 中的具体文件名/命令作为证据，不要泛泛而谈。\n\n"
                         "只返回 JSON。"
                     )},
                     {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
@@ -751,7 +758,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         '3. Agent 提交了哪些 finding？与基线漏洞类型是否相关？\n'
                         '4. No-KG 结果为 ' + nogk_confusion + '，说明什么？\n'
                         '5. 给出具体原因（如：未接触漏洞文件、挖掘方向偏离、漏洞类型不匹配、缺少知识引导等）\n\n'
-                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "<=150字中文，必须给出具体原因"}'
+                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、漏报原因、KG影响、对比结论"}'
                     )},
                 ]
                 try:
@@ -831,12 +838,20 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "或 Agent 过度依赖知识而忽略了实际代码中的漏洞\n"
                 "- NEUTRAL（中性）：知识交互与漏洞排查无关，或知识未产生影响，"
                 "Agent 的挖掘行为在有/无知识时无显著差异\n\n"
+                "# reason 写作要求\n"
+                "reason 必须包含以下内容（1000字以内）：\n"
+                "1. 挖掘过程概述：Agent 主要做了什么（读了哪些文件、执行了什么命令、挖掘方向是什么）\n"
+                "2. 知识交互详情：Agent 向知识图谱与记忆查询了什么内容？返回了什么结果？\n"
+                "3. 知识影响分析：知识图谱与记忆返回的信息是否帮助或误导了 Agent 的挖掘？具体说明\n"
+                "4. 漏报/发现原因：如果 FN，Agent 为什么没发现漏洞？如果 TP，知识是否起了关键作用？\n"
+                "5. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
+                "必须引用 knowledge_interactions 和 mining_actions 中的具体内容作为证据，不要泛泛而谈。\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
-                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱与记忆问了什么？\n3. 知识图谱与记忆返回了什么？\n4. 知识对排查此漏洞是正向、负向还是中性？'
+                '\n\n分析：\n1. KG 是否识别此漏洞？\n2. Agent 向知识图谱与记忆问了什么？列出 knowledge_interactions 中的具体查询内容\n3. 知识图谱与记忆返回了什么？返回内容是否与漏洞相关？\n4. 知识对排查此漏洞是正向、负向还是中性？'
                 + fn_extra +
-                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=50字中文", "knowledge_summary": "<=50字中文", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "<=150字中文"}'
+                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=200字中文，概括Agent查询了什么", "knowledge_summary": "<=200字中文，概括知识返回了什么", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、知识交互详情、知识影响分析、漏报/发现原因、对比结论"}'
             )},
         ]
 

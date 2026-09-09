@@ -486,8 +486,20 @@ def _build_report(evaluation_id: str):
                     print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case（当前任务），"
                           f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
                 else:
-                    print(f"[REPORT] 漏洞中心返回 0 条 case（task={_vc_task} 可能不是漏洞中心 source_task），"
-                          f"跳过过滤", flush=True)
+                    # 漏洞中心返回 0 条（task_id_actual 不是有效的 source_task_id）。
+                    # 用 outcome_fact 的 case_results 回退过滤：只保留实际评测过的 case，
+                    # 避免整个项目的 case 全部混入报告。
+                    _oc_ids = set()
+                    for oc_c in kg_oc_cases + nogk_oc_cases:
+                        cid = oc_c.get("case_id")
+                        if cid:
+                            _oc_ids.add(cid)
+                    if _oc_ids and len(_oc_ids) < len(raw_rows):
+                        _vc_valid_case_ids = _oc_ids
+                        print(f"[REPORT] 漏洞中心返回 0 条，用 outcome case_results 回退过滤: "
+                              f"{len(raw_rows)} → {len(_oc_ids)} 条", flush=True)
+                    else:
+                        print(f"[REPORT] 漏洞中心返回 0 条且 outcome 无 case_results，跳过过滤", flush=True)
             except Exception as e:
                 print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
 
@@ -506,6 +518,11 @@ def _build_report(evaluation_id: str):
                     _vc_task = manifest.get("vc_source_task_id")
                 print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={_vc_task}", flush=True)
                 vc_bm = get_vuln_center_benchmark(vc_proj, _vc_task)
+                _vc_fb_count = len(vc_bm.get("cases") or [])
+                if _vc_fb_count == 0 and _vc_task:
+                    # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
+                    print(f"[REPORT] 漏洞中心返回 0 条，不带 task 过滤重试", flush=True)
+                    vc_bm = get_vuln_center_benchmark(vc_proj, None)
                 for c in (vc_bm.get("cases") or []):
                     _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
             except Exception as e:
