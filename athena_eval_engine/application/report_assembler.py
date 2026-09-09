@@ -141,12 +141,12 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
-            "你是知识图谱与记忆2.0安全评测的分析报告撰写员。\n\n"
+            "你是知识图谱与记忆安全评测的分析报告撰写员。\n\n"
             "# 背景\n"
             "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
             "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"
             "# 知识图谱与记忆的使用方法\n"
-            "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+            "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
             "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
             "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
             "用于跨会话积累和复用漏洞挖掘知识。\n"
@@ -255,7 +255,7 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
     prompt = [
         {"role": "system", "content": (
             "# 角色\n"
-            "你是知识图谱与记忆2.0安全评测的摘要撰写员。\n\n"
+            "你是知识图谱与记忆安全评测的摘要撰写员。\n\n"
             "# 背景\n"
             "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，对比差异。\n"
             "下方数据中 outcome=SUCCESS/FAIL 表示该组 Agent 是否成功找到漏洞，prediction=POSITIVE/NEGATIVE 表示 Agent 判定有无漏洞。\n\n"
@@ -358,7 +358,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     """
     if not interactions:
         return {"analysis": "未检测到知识图谱与记忆介入行为。",
-                "suggestion": "建议确认 KG trace 是否开启了知识图谱与记忆 2.0 配置。",
+                "suggestion": "建议确认 KG 组运行记录是否开启了知识图谱与记忆配置。",
                 "interactions_analysis": []}
 
     # 取所有 CALL 交互（知识查询），按 command 非空过滤
@@ -448,7 +448,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             m = _re.search(r'ask\s+"([^"]*)"', cmd_str) or _re.search(r"ask\s+'([^']*)'", cmd_str)
             if m:
                 return f"查询知识: {m.group(1)[:150]}"
-            return f"查询知识(athena): {cmd_str[:150]}"
+            return f"查询知识: {cmd_str[:150]}"
         # JSON 格式
         try:
             d = json.loads(cmd_str) if isinstance(cmd_str, str) else cmd_str
@@ -511,7 +511,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             is_kg = "athena" in (tool + " " + output).lower()
             if not is_kg:
                 continue
-            question = f"查询知识(athena)"
+            question = f"查询知识"
             answer = output[:200]
             item = {
                 "tool": tool,
@@ -727,7 +727,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     {"role": "system", "content": (
                         "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请分析原因。\n\n"
                         "# 知识图谱与记忆的使用方法\n"
-                        "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+                        "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
                         "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
                         "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
                         "用于跨会话积累和复用漏洞挖掘知识。\n"
@@ -819,7 +819,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             {"role": "system", "content": (
                 "你是知识图谱与记忆介入效果分析员。针对每个基线漏洞，分析知识图谱与记忆的介入情况。\n\n"
                 "# 知识图谱与记忆的使用方法\n"
-                "知识图谱（KG）：Agent 通过 athena CLI 查询知识图谱，获取项目代码结构、组件依赖、"
+                "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
                 "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
                 "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
                 "用于跨会话积累和复用漏洞挖掘知识。\n"
