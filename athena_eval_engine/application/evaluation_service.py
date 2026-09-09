@@ -410,7 +410,7 @@ def run(evaluation_id: str) -> dict:
         cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
         argo_suffix = _os.path.join("session", "argo")
         dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
-        if "/tools/secmate-" in p.replace("\\", "/") and "/.worker-config/projects" in p.replace("\\", "/"):
+        if p.replace("\\", "/").endswith("/session/secmate"):
             from ..workers.secmate_trace_parser import SecMateTraceParser
             return SecMateTraceParser()
         if _os.path.isdir(p) and p.endswith(cvuln_suffix):

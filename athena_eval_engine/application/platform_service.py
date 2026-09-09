@@ -283,11 +283,10 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
         norm_path = "/" + norm_path
     tool_task_id = ""
     trace_kind = "other"
-    if "/tools/secmate-" in norm_path and "/.worker-config/projects" in norm_path:
+    if norm_path.endswith("/session/secmate"):
         kind = "secmate_session"
         trace_kind = "secmate"
-        seg = norm_path.split("/tools/", 1)[1]
-        tool_task_id = seg.split("/", 1)[0]
+        tool_task_id = ""
     elif "/tools/" in norm_path:
         kind = "argo_session"
         trace_kind = "argo"
@@ -376,11 +375,11 @@ def _scan_dir(base: str, out: list) -> None:
         t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
         t["file_count"] = len(jsonl_files)
         out.append(t)
-    # 2c. 找 SecMate Claude SDK transcript 目录；排除同一 run 下的 hook-watch 旁路日志。
-    for d in glob.glob(f"{base}/**/tools/secmate-*/run/.worker-config/projects", recursive=True):
+    # 2c. 找 SecMate transcript 目录：{base}/**/session/secmate
+    for d in glob.glob(f"{base}/**/session/secmate", recursive=True):
         if not os.path.isdir(d):
             continue
-        jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
+        jsonl_files = glob.glob(os.path.join(d, "*.jsonl"))  # 不读子目录
         if not jsonl_files:
             continue
         latest_mt = 0.0
@@ -490,9 +489,9 @@ def _kubectl_find(base: str) -> list[dict]:
             out.append(t)
     except Exception:
         pass
-    # 2c. SecMate transcripts: one trace per tool run's projects directory.
+    # 2c. SecMate transcripts: {base}/**/session/secmate 目录，不读子目录
     cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-           "find", base, "-type", "d", "-path", "*/tools/secmate-*/run/.worker-config/projects",
+           "find", base, "-type", "d", "-path", "*/session/secmate",
            "-printf", "%T@ %p\n"]
     try:
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
@@ -505,8 +504,9 @@ def _kubectl_find(base: str) -> list[dict]:
             except ValueError:
                 mt = None
             p = parts[1]
+            # 只读 session/secmate/ 下的 .jsonl，不递归子目录
             cmd2 = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-                    "find", p, "-name", "*.jsonl", "-printf", "%T@ %p\n"]
+                    "find", p, "-maxdepth", "1", "-name", "*.jsonl", "-printf", "%T@ %p\n"]
             r2 = subprocess.run(cmd2, capture_output=True, text=True, timeout=30, env=env)
             lines = [value for value in (r2.stdout or "").splitlines() if value.strip()]
             if not lines:

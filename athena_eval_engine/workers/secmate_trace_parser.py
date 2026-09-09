@@ -28,7 +28,7 @@ def is_secmate_trace(path: str) -> bool:
     """Identify a SecMate SDK transcript without relying solely on its path."""
     paths = [path]
     if os.path.isdir(path):
-        paths = sorted(glob.glob(os.path.join(path, "**", "*.jsonl"), recursive=True))
+        paths = sorted(glob.glob(os.path.join(path, "*.jsonl")))  # 不读子目录
     for candidate in paths:
         try:
             with open(candidate, "r", encoding="utf-8") as f:
@@ -40,7 +40,7 @@ def is_secmate_trace(path: str) -> bool:
                     except json.JSONDecodeError:
                         continue
                     if (record.get("entrypoint") == "sdk-cli"
-                            and "/tools/secmate-" in str(record.get("cwd", ""))):
+                            and "/session/secmate" in str(record.get("cwd", ""))):
                         return True
         except OSError:
             continue
@@ -57,9 +57,9 @@ class SecMateTraceParser(TraceParser):
     def _files(uri: str) -> list[str]:
         if not os.path.isdir(uri):
             return [uri]
-        # hook-watch/sessions 记录的是 harness 活动而非 Agent 执行 trace，需排除
+        # 只读 session/secmate/ 下的 .jsonl，不递归子目录
         return sorted(
-            f for f in glob.glob(os.path.join(uri, "**", "*.jsonl"), recursive=True)
+            f for f in glob.glob(os.path.join(uri, "*.jsonl"))
             if "hook-watch" not in f.replace("\\", "/")
         )
 
