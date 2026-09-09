@@ -67,6 +67,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
+        "thinking": {"type": "disabled"},
     }).encode("utf-8")
 
     headers = {
