@@ -51,7 +51,7 @@ import re as _re
 _MEMORY_READ_RE = _re.compile(
     r"argo\.memory\s+get"                  # Argo: argo.memory get fXXX
     r"|mem\s+(recall|get|search|list|query|find)"  # memengine: mem recall/get/search
-    r"|/memengine-[^/\s]+/seeddir",        # memengine 目录路径（cat/ls/grep 上记忆目录）
+    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/]seeddir",  # memengine 目录路径（含 symlink 无后缀路径）
     _re.IGNORECASE,
 )
 # 记忆写入：不算记忆访问（用户口径：只看读取/检索）
