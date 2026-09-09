@@ -224,7 +224,6 @@ function renderReport(d){
         kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
         kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
         if(pcKa.reason)kgHtml+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
-        if(pcKa.query_summary)kgHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>AI 概括: "+pcKa.query_summary+"</div>";
         kgHtml+="</div>";
       }
       kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
