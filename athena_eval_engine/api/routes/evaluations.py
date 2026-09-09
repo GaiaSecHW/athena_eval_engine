@@ -8,7 +8,7 @@ GET  /api/v1/evaluations/{id}/report → 报告
 from __future__ import annotations
 import os
 from concurrent.futures import ThreadPoolExecutor
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from ...application import evaluation_service as es
 from ...persistence.repositories import fact_repo
@@ -709,12 +709,15 @@ def _static_report_path(evaluation_id: str) -> str:
 from fastapi.responses import FileResponse
 
 
-@app.get("/reports/{evaluation_id}.html")
-def get_static_report(evaluation_id: str):
+@app.api_route("/reports/{evaluation_id}.html", methods=["GET", "HEAD"])
+def get_static_report(request: Request, evaluation_id: str):
     """直接返回固化 HTML（无计算，毫秒级）。不存在时回退动态接口。"""
     p = _static_report_path(evaluation_id)
     if os.path.isfile(p):
         return FileResponse(p, media_type="text/html")
+    # HEAD 请求不触发渲染，直接返回 404
+    if request.method == "HEAD":
+        raise HTTPException(status_code=404, detail="report not found")
     # 回退：现场固化一次并返回
     try:
         render_static_report(evaluation_id)
