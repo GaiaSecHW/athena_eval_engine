@@ -217,12 +217,6 @@ function renderReport(d){
       if(c.source_file){
         kgHtml+="<div style='font-size:12px;color:var(--acc);margin-top:2px;font-family:monospace'>"+c.source_file.split('/').pop()+"</div>";
       }
-      if(c.description){
-        var desc=String(c.description).replace(/</g,"&lt;");
-        // 只显示前 2 段（## 标题行），避免过长
-        var firstSec=desc.indexOf("## ",3); if(firstSec>0)desc=desc.slice(0,firstSec);
-        kgHtml+="<div style='font-size:13px;color:var(--sub);margin-top:4px;line-height:1.5'>"+desc.slice(0,300)+"</div>";
-      }
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
       if(pcKa&&kgActive){
