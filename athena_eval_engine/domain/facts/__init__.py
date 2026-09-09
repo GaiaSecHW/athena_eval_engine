@@ -69,6 +69,11 @@ class KnowledgeInteractionFact(BaseModel):
     interactions: list[dict] = Field(default_factory=list)  # 原始介入事件 [{tool, command, output_preview, timestamp}]
     resolver_version: str = "1.0"
     evidence: list[Evidence] = Field(default_factory=list)
+    # 记忆交互（与知识同维度：只统计读取/检索，不统计写入）
+    memory_access: bool = False
+    memory_access_event_count: int = 0
+    memory_successful_read_count: int = 0
+    memory_interactions: list[dict] = Field(default_factory=list)
 
 
 class ToolActionFact(BaseModel):

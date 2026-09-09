@@ -259,6 +259,17 @@ def run(evaluation_id: str) -> dict:
             md = json.loads(meta) if isinstance(meta, str) else (meta or None)
             bench_by_task.setdefault(tid, []).append(
                 BenchmarkItem(bi_id, "BS001", tid, ExpectedLabel(label) if label else None, tfid, md))
+        # 基线是评测级共享的：benchmark_item 的 UNIQUE(set_id, item_id) 导致第二条
+        # entry 的 INSERT IGNORE 被跳过 → 只有首个 task_id 拿到基线。把完整基线
+        # 分配给所有 entry 的 task_id，避免 bench_by_task.get(tid) 为空。
+        if bench_by_task and entries:
+            _all_items = [items[0] for items in bench_by_task.values()]
+            for e in entries:
+                _tid = e.get("task_id", "")
+                if _tid and _tid not in bench_by_task:
+                    bench_by_task[_tid] = [BenchmarkItem(b.benchmark_item_id, "BS001", _tid,
+                                                         b.expected_label, b.target_finding_id, b.metadata)
+                                           for b in _all_items]
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
 
@@ -468,13 +479,37 @@ def run(evaluation_id: str) -> dict:
                 if trace_case_ids:
                     effective_bench = [b for b in bench if b.benchmark_item_id in trace_case_ids]
                     if not effective_bench:
-                        raise ValueError(
-                            "CVuln trace 与所选 benchmark 没有重叠 case："
-                            f"task={e.get('task_id_actual', '')} "
-                            f"benchmark_cases={len(bench)} trace_cases={len(trace_case_ids)}"
-                        )
-                    print(f"[CVULN] 有效 benchmark case: task={e.get('task_id_actual', '')} "
-                          f"{len(bench)} -> {len(effective_bench)}", flush=True)
+                        # 两套 ID 体系（V-Bench UUID vs 漏洞中心 case-xxx）无交集 →
+                        # 从漏洞中心按 trace case ID 补取基线，不中断评测
+                        print(f"[CVULN] ⚠ benchmark({len(bench)}) 与 trace case({len(trace_case_ids)}) 无 ID 交集，"
+                              f"从漏洞中心补取: project={e.get('project_id','')}", flush=True)
+                        effective_bench = []
+                        try:
+                            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
+                            vc_bm = get_vuln_center_benchmark(e.get("project_id", ""), e.get("task_id_actual"))
+                            vc_by_id = {c.get("case_id", ""): c for c in (vc_bm.get("cases") or [])}
+                            for cid in trace_case_ids:
+                                c = vc_by_id.get(cid)
+                                if c:
+                                    effective_bench.append(BenchmarkItem(
+                                        cid, "BS001", e["task_id"],
+                                        ExpectedLabel(c.get("expected_label") or "VULNERABLE"),
+                                        c.get("target_finding_id"),
+                                        {"description": c.get("description", ""),
+                                         "vulnerability_type": c.get("vulnerability_type", ""),
+                                         "source_file": c.get("source_file", ""),
+                                         "source_function": c.get("source_function", "")}))
+                        except Exception as err:
+                            print(f"[CVULN] 漏洞中心补取失败: {err}", flush=True)
+                        # 漏洞中心没覆盖到的 case ID → 空 metadata 兜底
+                        _covered = {b.benchmark_item_id for b in effective_bench}
+                        for cid in trace_case_ids:
+                            if cid not in _covered:
+                                effective_bench.append(BenchmarkItem(cid, "BS001", e["task_id"], None))
+                        print(f"[CVULN] 补取完成: {len(effective_bench)} 条有效基线", flush=True)
+                    else:
+                        print(f"[CVULN] 有效 benchmark case: task={e.get('task_id_actual', '')} "
+                              f"{len(bench)} -> {len(effective_bench)}", flush=True)
                     bench = effective_bench
                 else:
                     # 兼容旧前端/API 客户端；新前端会提交 trace_case_ids。
@@ -564,6 +599,7 @@ def run(evaluation_id: str) -> dict:
     kg_access = kg_valid = kg_delivery = access = 0
     kg_access_events = kg_successful_reads = 0  # 交互级计数（M6 KDR 用）
     kg_tool_calls = total_tool_calls = 0  # 交互级计数（M5 KAR 用）
+    mem_read_count = mem_successful_reads = 0  # 记忆计数（M11/M12 用）
     for pair in pairs:
         kg_f = facts[pair.kg_task_run_id]; nogk_f = facts[pair.nogk_task_run_id]
         derived = PairDerivedFactComputer().compute(
@@ -578,6 +614,9 @@ def run(evaluation_id: str) -> dict:
             # 交互级累加：M6 KDR = 有效回复次数 / 总查询次数
             kg_access_events += kn.access_event_count
             kg_successful_reads += kn.successful_read_count
+            # 记忆累加（M11/M12）：只统计读取/检索
+            mem_read_count += getattr(kn, 'memory_access_event_count', 0)
+            mem_successful_reads += getattr(kn, 'memory_successful_read_count', 0)
             # 交互级累加：M5 KAR = 知识查询次数 / 总工具调用次数
             ta = kg_f["tool"]
             kg_tool_calls += ta.kg_count
@@ -614,6 +653,7 @@ def run(evaluation_id: str) -> dict:
     out = run_all_metrics(pair_views, kg_access=access, kg_valid=kg_valid,
                           kg_delivery=kg_delivery, access=access,
                           kg_access_events=kg_access_events, kg_successful_reads=kg_successful_reads,
+                          mem_read_count=mem_read_count, mem_successful_reads=mem_successful_reads,
                           kg_tool_calls=kg_tool_calls, total_tool_calls=total_tool_calls,
                           seed=42)
     print(f"[EVAL] 主指标计算完成: {len(out.get('metric_results',[]))} 条", flush=True)
@@ -639,6 +679,7 @@ def run(evaluation_id: str) -> dict:
         _g_kg_valid = _g_access = _g_kg_delivery = 0
         _g_kg_access_events = _g_kg_successful_reads = 0
         _g_kg_tool_calls = _g_total_tool_calls = 0
+        _g_mem_read = _g_mem_success = 0
         for pair in pairs:
             if pair.task_id != tid:
                 continue
@@ -651,12 +692,15 @@ def run(evaluation_id: str) -> dict:
                 if kn.access and kn.delivery: _g_kg_delivery += 1
                 _g_kg_access_events += kn.access_event_count
                 _g_kg_successful_reads += kn.successful_read_count
+                _g_mem_read += getattr(kn, 'memory_access_event_count', 0)
+                _g_mem_success += getattr(kn, 'memory_successful_read_count', 0)
                 ta = kg_f["tool"]
                 _g_kg_tool_calls += ta.kg_count
                 _g_total_tool_calls += ta.total_tool_calls
         g_out = run_all_metrics(gvs, kg_access=_g_access, kg_valid=_g_kg_valid,
                                   kg_delivery=_g_kg_delivery, access=_g_access,
                                   kg_access_events=_g_kg_access_events, kg_successful_reads=_g_kg_successful_reads,
+                                  mem_read_count=_g_mem_read, mem_successful_reads=_g_mem_success,
                                   kg_tool_calls=_g_kg_tool_calls, total_tool_calls=_g_total_tool_calls,
                                   seed=42)
         g_hits = diagnose(g_out["metric_results"], g_out["statistical_results"])
@@ -719,6 +763,16 @@ def run(evaluation_id: str) -> dict:
         cur.execute("INSERT IGNORE INTO evaluation_population_snapshot (population_snapshot_id, calculation_run_id, "
                     "population_type, population_entity_type, task_count, estimator_version, population_ids_uri, population_ids_hash) "
                     "VALUES (%s,%s,'primary_analysis','TASK_PAIR',%s,'1.0','uri','hash')", (pop_id, cr_id, len(pair_views)))
+        # 修复 metric_result 的 metric_id CHECK 约束（加 M11/M12）
+        try:
+            cur.execute("ALTER TABLE metric_result DROP CHECK metric_result_chk_1")
+        except Exception:
+            try: cur.execute("ALTER TABLE metric_result DROP CONSTRAINT metric_result_chk_1")
+            except Exception: pass
+        try:
+            cur.execute("ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN "
+                        "('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12'))")
+        except Exception: pass  # 可能已存在
         for m in out["metric_results"]:
             fact_repo.insert_metric_result(cur, cr_id, pop_id, m, evaluation_id)
         for s in out["statistical_results"]:
@@ -804,6 +858,13 @@ def run(evaluation_id: str) -> dict:
                     (f"rp-{evaluation_id}", evaluation_id, cr_id, f"snap-{evaluation_id}", rj))
         _set_status(cur, evaluation_id, final_status)
     _db_query(_finalize)
+
+    # ===== Phase 8: 固化静态报告 HTML（打开时零计算）=====
+    try:
+        from ..api.routes.evaluations import render_static_report
+        render_static_report(evaluation_id)
+    except Exception as e:
+        print(f"[REPORT] ⚠ 固化 HTML 失败（不影响评测结果）: {e}", flush=True)
 
     return {"status": final_status, "metrics": len(out["metric_results"]),
             "statistical_results": len(out["statistical_results"]),

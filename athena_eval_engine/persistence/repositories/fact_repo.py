@@ -107,9 +107,15 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
 
 def insert_knowledge_fact(cur, f: KnowledgeInteractionFact) -> str:
     import json as _json
-    # evidence_json 存 evidence 列表 + interactions（报告生成时从 DB 读取，避免内存丢失）
+    # evidence_json 存 evidence 列表 + interactions + memory_interactions（报告生成时从 DB 读取）
     ev_data = {"evidence": [e.model_dump() if hasattr(e, "model_dump") else e.__dict__ for e in f.evidence],
-               "interactions": f.interactions}
+               "interactions": f.interactions,
+               "memory": {
+                   "access": f.memory_access,
+                   "access_event_count": f.memory_access_event_count,
+                   "successful_read_count": f.memory_successful_read_count,
+                   "interactions": f.memory_interactions,
+               }}
     sql = """INSERT INTO knowledge_interaction_fact
         (knowledge_fact_id, task_run_id, evaluation_id, access, delivery, mount_status,
          access_event_count, read_event_count, successful_read_count, evidence_json, resolver_version)

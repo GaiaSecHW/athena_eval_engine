@@ -207,8 +207,14 @@ def chat_json(messages, **kwargs) -> dict:
             try:
                 return json.loads(raw.strip())
             except json.JSONDecodeError:
+                # 尝试提取 {...} 对象
                 start = raw.find("{")
                 end = raw.rfind("}")
+                if start >= 0 and end > start:
+                    return json.loads(raw[start:end + 1])
+                # 尝试提取 [...] 数组（布尔数组/索引对数组）
+                start = raw.find("[")
+                end = raw.rfind("]")
                 if start >= 0 and end > start:
                     return json.loads(raw[start:end + 1])
                 raise RuntimeError(f"JSON 解析失败: {raw[:200]}")

@@ -278,15 +278,34 @@ async function selEv(id){
       $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span></div>'+stepsHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
       let cnt=0;const poll=async()=>{cnt++;if(cnt>100)return;
         try{const st=await jget(`/api/v1/evaluations/${id}`);
-          if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
+          if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
+            // 优先固化 HTML（HEAD 探测）
+            try{
+              const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
+              if(probe.ok){
+                $("rep").innerHTML=`<iframe src="/reports/${id}.html" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+                return;
+              }
+            }catch(e){}
+            const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);
+          }
           else if(st.status==="FAILED"){selEv(id);}
           else{setTimeout(poll,3000);}
         }catch(e){}};
       setTimeout(poll,3000);return;
     }
   }catch(e){}
-  // COMPLETED: 加载报告
+  // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
   $("rep").innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  try{
+    // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
+    const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
+    if(probe.ok){
+      $("rep").innerHTML=`<iframe src="/reports/${id}.html" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+      // iframe 内的重跑/删除按钮通过 postMessage 回传
+      return;
+    }
+  }catch(e){}
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
   catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
@@ -813,8 +832,13 @@ function filterSideList(side){
     $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="opt-mid" style="color:var(--sub)">${p.department_name||""}</span><span class="opt-right" style="color:var(--acc)">${p.product_path||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else if(!s.task){
     if(!_sideData[side].tasks)return;
-    const f=_sideData[side].tasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")).toLowerCase().includes(q));
-    $(side+"-list").innerHTML=f.map(t=>`<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span><span class="opt-mid" style="color:var(--acc)">${t.task_type||""}</span><span class="opt-right" style="color:var(--sub)">${t.test_target||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    const f=_sideData[side].tasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")+" "+(t.status||"")).toLowerCase().includes(q));
+    $(side+"-list").innerHTML=f.map(t=>{
+      var st=t.status||'-';
+      var stColor=st==='success'?'var(--green)':(st==='failed'?'var(--red)':(st==='running'?'var(--acc)':'var(--gray)'));
+      var stText=st==='success'?'✓ 已完成':st==='failed'?'✗ 失败':st==='running'?'⏳ 运行中':st==='paused'?'⏸ 已暂停':st==='queued'?'排队中':st;
+      return `<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}<span style="font-size:12px;color:${stColor};font-weight:600">${stText}</span>${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${t.test_target}</span>`:""}</div>`;
+    }).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else{
     const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
     if(!_sideData[side].traces){
@@ -957,8 +981,15 @@ async function runEval(){
 
 // ===== ④ 系统 =====
 async function renderSystem(){let h=await jget("/api/v1/system/health");let s=await jget("/api/v1/system/schema");
-  $("view").innerHTML=`<div style="max-width:700px"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</div></div>
+  $("view").innerHTML=`<div style="max-width:700px"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</span></div></div>
   <div class="card" style="margin-top:16px"><h3>表清单（${s.tables.length}）</h3><table><tr><th>表</th><th>行数</th></tr>${s.tables.map(t=>`<tr><td class="num">${t.table}</td><td>${t.rows}</td></tr>`).join("")}</table></div></div>`;}
+
+// iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard
+window.addEventListener("message",function(ev){
+  var d=ev.data||{};
+  if(d.action==="retry"&&d.evaluation_id){retryEval(d.evaluation_id);}
+  else if(d.action==="delete"&&d.evaluation_id){deleteEval(d.evaluation_id,d.evaluation_id);}
+});
 
 render();
 </script>

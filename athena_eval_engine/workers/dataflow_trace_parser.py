@@ -156,6 +156,8 @@ class DataflowVulnScanTraceParser:
                         args = c.get("arguments", {})
                         tid = c.get("id", "")
                         is_kg = self._tool_kg.get(tid, False) if tid else self._is_kg_call(tool_name, args)
+                        from ..domain.raw_event import detect_memory_flags
+                        is_mem, is_mem_w = detect_memory_flags(tool_name, args)
                         evs.append(RawEvent(
                             event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                             event_type="TOOL_CALL", timestamp_ms=ts,
@@ -166,6 +168,8 @@ class DataflowVulnScanTraceParser:
                             source_table="jsonl", source_row_id=f"{eid}-{ci}",
                             parser_version=self.parser_version,
                             is_kg_interaction=is_kg,
+                            is_memory_interaction=is_mem,
+                            is_memory_write=is_mem_w,
                         ))
                     elif ct == "text":
                         evs.append(RawEvent(

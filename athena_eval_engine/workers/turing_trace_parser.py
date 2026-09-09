@@ -144,6 +144,10 @@ class TuringTraceParser(TraceParser):
         if not is_kg and tool_name == "bash" and outp and isinstance(outp, str) and "知识库" in outp:
             is_kg = True
 
+        # 记忆交互标记：memengine（mem save/recall + seeddir 记忆目录读取）
+        from ..domain.raw_event import detect_memory_flags
+        is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
+
         return RawEvent(
             event_id=f"evt-{trace_id}-{part_id}",
             trace_id=trace_id, session_id=session_id, event_type=event_type,
@@ -154,6 +158,8 @@ class TuringTraceParser(TraceParser):
             raw_type=raw_type, parse_status=parse_status, parse_error=parse_error,
             source_table="part", source_row_id=part_id, parser_version=self.parser_version,
             is_kg_interaction=is_kg,
+            is_memory_interaction=is_mem,
+            is_memory_write=is_mem_w,
         )
 
     def _classify(self, raw_type: str, data: dict) -> str:

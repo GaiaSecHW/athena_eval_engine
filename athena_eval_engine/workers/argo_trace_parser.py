@@ -132,6 +132,9 @@ class ArgoTraceParser:
                     tid = c.get("id", "")
                     # 从预收集的 tool_use_kg 取 is_kg 标记
                     is_kg = tool_use_kg.get(tid, False) if tool_use_kg else False
+                    # 记忆交互标记
+                    from ..domain.raw_event import detect_memory_flags
+                    is_mem, is_mem_w = detect_memory_flags(tool_lower, inp)
                     evs.append(RawEvent(
                         event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                         event_type="TOOL_CALL", timestamp_ms=ts,
@@ -142,6 +145,8 @@ class ArgoTraceParser:
                         source_table="jsonl", source_row_id=f"{eid}-{ci}",
                         parser_version=self.parser_version,
                         is_kg_interaction=is_kg,
+                        is_memory_interaction=is_mem,
+                        is_memory_write=is_mem_w,
                     ))
                 elif ct == "text":
                     evs.append(RawEvent(

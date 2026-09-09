@@ -147,13 +147,17 @@ class SecMateTraceParser(TraceParser):
                             if part_type == "tool_use":
                                 call_id = str(part.get("id", ""))
                                 info = calls.get(call_id, {})
+                                from ..domain.raw_event import detect_memory_flags
+                                _is_mem, _is_mem_w = detect_memory_flags(info.get("tool_name") or "", part.get("input"))
                                 yield RawEvent(event_id=event_id, trace_id=trace_id, session_id=session_id,
                                     event_type="TOOL_CALL", timestamp_ms=timestamp, message_id=record.get("uuid"),
                                     part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                     input_json=part.get("input") if isinstance(part.get("input"), dict) else None,
                                     output_json=results.get(call_id), raw_type="tool_use", source_table="jsonl",
                                     source_row_id=event_id, parser_version=self.parser_version,
-                                    is_kg_interaction=info.get("is_kg", False))
+                                    is_kg_interaction=info.get("is_kg", False),
+                                    is_memory_interaction=_is_mem,
+                                    is_memory_write=_is_mem_w)
                             elif part_type == "text":
                                 yield self._event(event_id, trace_id, session_id, "TEXT", timestamp, record, part.get("text"), "text")
                             elif part_type == "thinking":

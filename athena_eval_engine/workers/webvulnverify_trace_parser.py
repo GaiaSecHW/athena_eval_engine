@@ -217,6 +217,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                     call_id = pt.get("id", "")
                     inp = pt.get("input")
                     is_kg = self._is_kg_interaction(tool_name, inp)
+                    from ..domain.raw_event import detect_memory_flags
+                    is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
                     if tool_call_info and call_id:
                         tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg}
                     evs.append(RawEvent(
@@ -229,6 +231,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
                         is_kg_interaction=is_kg,
+                        is_memory_interaction=is_mem,
+                        is_memory_write=is_mem_w,
                     ))
 
                 elif ptype == "tool_result" and role == "Tool":

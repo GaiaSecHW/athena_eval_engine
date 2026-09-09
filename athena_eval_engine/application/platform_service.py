@@ -90,8 +90,8 @@ def get_projects():
              "description": p.get("description")} for p in items]
 
 
-def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter: str = "success"):
-    """默认只返回已完成（success）的任务。"""
+def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter: str | None = None):
+    """默认返回全部任务（含各状态）；status_filter 传状态字符串可过滤。"""
     if project_id:
         url = f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/{project_id}/user-tasks?page=1&page_size={page_size}&sort_by=created_at&sort_direction=desc"
     else:

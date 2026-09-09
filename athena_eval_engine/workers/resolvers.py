@@ -153,6 +153,9 @@ class KnowledgeResolverImpl:
         mount_status = "UNKNOWN"
         text_access = False
         interactions: list[dict] = []  # 原始介入事件
+        memory_interactions: list[dict] = []  # 记忆交互事件（只读）
+        mem_call_part_ids: set[str] = set()  # 记忆 CALL 的 part_id（用于 RESULT 配对）
+        mem_success_count = 0
         for idx, e in enumerate(events):
             # text part 含 Reference/Athena 指引 = prompt 注入了知识库（KG2.0 配置存在）
             if e.event_type == "TEXT" and self._text_patterns:
@@ -171,6 +174,21 @@ class KnowledgeResolverImpl:
             tool = e.tool_name or ""
             # 知识图谱交互由 parser 标记（is_kg_interaction），resolver 不再硬编码工具名
             is_kg = e.is_kg_interaction
+            # 记忆交互由 parser 标记（is_memory_interaction=读取/检索，is_memory_write=写入）
+            is_mem = getattr(e, "is_memory_interaction", False)
+            if is_mem and e.is_tool_call():
+                cmd = path if path else (e.input_json if isinstance(e.input_json, str) else json.dumps(e.input_json, ensure_ascii=False) if e.input_json else "")
+                memory_interactions.append({"tool": e.tool_name or "", "type": "CALL", "command": cmd[:300], "output": "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
+                if e.part_id:
+                    mem_call_part_ids.add(e.part_id)
+            # 记忆 RESULT：与 CALL 配对（同 part_id 或同工具名紧随）
+            if is_mem and e.is_tool_result():
+                out = e.output_json
+                out_str = out if isinstance(out, str) else (json.dumps(out, ensure_ascii=False) if out is not None else "")
+                memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": (out_str or "")[:500], "timestamp": e.timestamp_ms, "session_id": e.session_id})
+                # 有非空输出 = 成功读取
+                if out_str and out_str.strip() not in ("", "[]", "{}", "null"):
+                    mem_success_count += 1
             if is_kg and e.is_tool_call():
                 access_evs.append(_ev(e, "$.tool_name|path"))
                 # 捕获知识介入原始事件（TOOL_CALL — 命令/输入 + 后续行为窗口）
@@ -199,6 +217,7 @@ class KnowledgeResolverImpl:
                     interactions.append({"tool": tool, "type": "RESULT", "command": "", "output": out_preview, "timestamp": e.timestamp_ms, "session_id": e.session_id})
         # prompt 注入也算 access（KG2.0 配置存在）
         has_access = bool(access_evs) or text_access
+        mem_call_count = len([m for m in memory_interactions if m.get("type") == "CALL"])
         return KnowledgeInteractionFact(
             knowledge_fact_id=f"kif-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
@@ -207,6 +226,10 @@ class KnowledgeResolverImpl:
             successful_read_count=len(read_evs) if delivery_ok else 0,
             interactions=interactions,
             evidence=access_evs + read_evs,
+            memory_access=mem_call_count > 0,
+            memory_access_event_count=mem_call_count,
+            memory_successful_read_count=mem_success_count,
+            memory_interactions=memory_interactions,
         )
 
     def _is_kg_skill(self, tool: str) -> bool:

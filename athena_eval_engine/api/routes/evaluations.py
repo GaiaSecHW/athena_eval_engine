@@ -6,6 +6,7 @@ GET  /api/v1/evaluations/{id}/metrics → 指标
 GET  /api/v1/evaluations/{id}/report → 报告
 """
 from __future__ import annotations
+import os
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
@@ -186,6 +187,13 @@ def delete_evaluation(evaluation_id: str):
         print(f"[DELETE] 评测 {evaluation_id} 已删除", flush=True)
     finally:
         conn.close()
+    # 删除固化 HTML
+    try:
+        p = _static_report_path(evaluation_id)
+        if os.path.isfile(p):
+            os.remove(p)
+    except Exception:
+        pass
     return {"status": "ok", "evaluation_id": evaluation_id}
 
 
@@ -328,6 +336,11 @@ def get_metrics(evaluation_id: str):
 
 @app.get("/api/v1/evaluations/{evaluation_id}/report")
 def get_report(evaluation_id: str):
+    return _build_report(evaluation_id)
+
+
+def _build_report(evaluation_id: str):
+    """构建完整报告 JSON（含知识介入、case 结果、元信息）。固化 HTML 和动态接口共用。"""
     r = es.get_report(evaluation_id)
     if "error" in r:
         raise HTTPException(status_code=404, detail=r["error"])
@@ -455,6 +468,73 @@ def get_report(evaluation_id: str):
     finally:
         conn.close()
     return r
+
+
+REPORTS_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))), "reports")
+os.makedirs(REPORTS_DIR, exist_ok=True)
+
+
+def render_static_report(evaluation_id: str) -> str:
+    """固化报告为静态 HTML 文件。FINALIZE 阶段调用；返回文件路径。"""
+    import json as _json
+    r = _build_report(evaluation_id)
+    # 套壳：嵌入报告 JSON + dashboard 的 renderReport 渲染逻辑
+    html = """<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>__EVAL_ID__ 报告</title>
+<style>
+body{margin:0;font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:#f5f6f8;color:#1a1d23;font-size:16px}
+.action-bar{display:flex;gap:10px;align-items:center;padding:14px 24px;background:#fff;border-bottom:1px solid #e1e4e8;position:sticky;top:0;z-index:99}
+.action-bar .eid{font-family:monospace;font-size:14px;color:#6b7280;margin-right:auto}
+.action-bar button{border:none;padding:8px 18px;border-radius:9px;cursor:pointer;font-size:14px;font-weight:500}
+.btn-primary{background:#2563eb;color:#fff}
+.btn-danger{background:#dc2626;color:#fff}
+</style>
+</head>
+<body>
+<div class="action-bar">
+  <span class="eid">__EVAL_ID__</span>
+  <button class="btn-primary" onclick="parent.postMessage({action:'retry',evaluation_id:'__EVAL_ID__'},'*')">重跑</button>
+  <button class="btn-danger" onclick="parent.postMessage({action:'delete',evaluation_id:'__EVAL_ID__'},'*')">删除</button>
+</div>
+<div id="report-root">加载中…</div>
+<script>
+window.__REPORT_DATA__ = __REPORT_JSON__;
+</script>
+</body>
+</html>"""
+    # 转义 </script> 防止 JSON 里含脚本闭合标签
+    data_str = _json.dumps(r, ensure_ascii=False).replace("</", "<\\/")
+    html = html.replace("__EVAL_ID__", evaluation_id).replace("__REPORT_JSON__", data_str)
+    out_path = os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
+    with open(out_path, "w", encoding="utf-8") as f:
+        f.write(html)
+    print(f"[REPORT] 固化报告 HTML: {out_path} ({len(html)} chars)", flush=True)
+    return out_path
+
+
+def _static_report_path(evaluation_id: str) -> str:
+    return os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
+
+
+from fastapi.responses import FileResponse
+
+
+@app.get("/reports/{evaluation_id}.html")
+def get_static_report(evaluation_id: str):
+    """直接返回固化 HTML（无计算，毫秒级）。不存在时回退动态接口。"""
+    p = _static_report_path(evaluation_id)
+    if os.path.isfile(p):
+        return FileResponse(p, media_type="text/html")
+    # 回退：现场固化一次并返回
+    try:
+        render_static_report(evaluation_id)
+        return FileResponse(p, media_type="text/html")
+    except Exception:
+        raise HTTPException(status_code=404, detail="report not found")
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/pipeline")

@@ -227,6 +227,33 @@ def calc_m5(kg_tool_calls: int, total_tool_calls: int, confidence=0.95) -> tuple
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
 
+# ===== M11 记忆访问率 / M12 记忆交付率（与 M5/M6 同算法）=====
+def calc_m11(mem_read_count: int, total_tool_calls: int, confidence=0.95) -> tuple[MetricResult, list[StatisticalResult]]:
+    """M11 记忆访问率 = 记忆读取次数 / 总工具调用次数。同 M5 算法。"""
+    if total_tool_calls == 0:
+        m = MetricResult("M11", None, "ratio", 0, "kg_enabled_valid", calculation_status=NA, reason_code="NO_TOOL_CALLS")
+        return m, [StatisticalResult("M11", "wilson", testing_tier="SECONDARY", status=NA, reason_code="NO_TOOL_CALLS")]
+    lo, hi, st, rc = wilson(mem_read_count, total_tool_calls, confidence)
+    mar = mem_read_count / total_tool_calls
+    return (MetricResult("M11", mar, "ratio", total_tool_calls, "kg_enabled_valid",
+                         method={"uncertainty": "wilson"}),
+            [StatisticalResult("M11", "wilson", ci_lower=lo, ci_upper=hi,
+                               testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
+
+
+def calc_m12(mem_successful_reads: int, mem_read_events: int, confidence=0.95) -> tuple[MetricResult, list[StatisticalResult]]:
+    """M12 记忆交付率 = 成功记忆读取 / 记忆读取次数。同 M6 算法。"""
+    if mem_read_events == 0:
+        m = MetricResult("M12", None, "ratio", 0, "kg_access_valid", calculation_status=NA, reason_code="NO_MEMORY_ACCESS")
+        return m, [StatisticalResult("M12", "wilson", testing_tier="SECONDARY", status=NA, reason_code="NO_MEMORY_ACCESS")]
+    lo, hi, st, rc = wilson(mem_successful_reads, mem_read_events, confidence)
+    mdr = mem_successful_reads / mem_read_events
+    return (MetricResult("M12", mdr, "ratio", mem_read_events, "kg_access_valid",
+                         method={"uncertainty": "wilson"}),
+            [StatisticalResult("M12", "wilson", ci_lower=lo, ci_upper=hi,
+                               testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
+
+
 def calc_m6(successful_read_count: int, access_event_count: int, confidence=0.95) -> tuple[MetricResult, list[StatisticalResult]]:
     """M6 KDR 知识交付率 = 有效回复次数 / 总查询次数（交互级，非任务级）。
     successful_read_count: 所有 KG 运行中匹配到成功回复的事件数（Σ successful_read_count）
@@ -309,6 +336,7 @@ def calc_m10(pairs, *, seed=42): return _calc_delta_metric("M10", "delta_time", 
 
 def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delivery=0, access=0,
                      kg_access_events=0, kg_successful_reads=0,
+                     mem_read_count=0, mem_successful_reads=0,
                      kg_tool_calls=0, total_tool_calls=0, seed=42) -> dict:
     """跑全部 10 指标 + 统计证据。返回 {metric_results, statistical_results}。
     bootstrap 指标用线程池并行（numpy 释放 GIL）。"""
@@ -318,6 +346,9 @@ def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delive
     # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
     m6, s6 = calc_m6(kg_successful_reads, kg_access_events)
+    # M11/M12 记忆指标（同 M5/M6 算法）
+    m11, s11 = calc_m11(mem_read_count, total_tool_calls)
+    m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
     # M1/M2M3/M4/M7/M8/M9/M10 有 bootstrap，并行
     with ThreadPoolExecutor(max_workers=4) as pool:
         fut_m1 = pool.submit(calc_m1, pairs, seed=seed)
@@ -335,6 +366,6 @@ def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delive
         m9, s9 = fut_m9.result()
         m10, s10 = fut_m10.result()
     # 按顺序排列
-    mrs = [m1, m23["m2"], m23["m3"], m4, m5, m6, m7, m8, m9, m10]
-    srs = s1 + m23["statistical"] + s4 + s5 + s6 + s7 + s8 + s9 + s10
+    mrs = [m1, m23["m2"], m23["m3"], m4, m5, m6, m7, m8, m9, m10, m11, m12]
+    srs = s1 + m23["statistical"] + s4 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
     return {"metric_results": mrs, "statistical_results": srs}

@@ -363,7 +363,7 @@ CREATE TABLE metric_result (
     calculation_run_id    VARCHAR(64) NOT NULL,
     population_snapshot_id VARCHAR(64) NOT NULL,
     metric_id             VARCHAR(32) NOT NULL CHECK (metric_id IN
-                          ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10')),
+                          ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12')),
     metric_name           VARCHAR(128) NOT NULL,
     metric_version        VARCHAR(64) NOT NULL DEFAULT '1.0',
     estimate              DECIMAL(20,6),
@@ -720,3 +720,8 @@ ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_st
      'CALCULATING','STATISTICAL_ANALYSIS','DIAGNOSING','REPORTING','FINALIZING',
      'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',
      'CANCEL_REQUESTED','CANCELLING','CANCELLED'));
+
+-- Migration: add M11/M12 to metric_result CHECK (for existing deployments)
+ALTER TABLE metric_result DROP CHECK metric_result_chk_1;
+ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN
+    ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12'));

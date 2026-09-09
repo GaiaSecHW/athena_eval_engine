@@ -34,9 +34,50 @@ class RawEvent:
     source_row_id: str = ""
     parser_version: str = "1.0"
     is_kg_interaction: bool = False  # parser 标记：是否为知识图谱交互（Athena 检索/知识查询）
+    is_memory_interaction: bool = False  # parser 标记：是否为记忆交互（memengine/argo.memory 读取/检索）
+    is_memory_write: bool = False  # parser 标记：是否为记忆写入（mem save 等；不纳入访问统计）
 
     def is_tool_call(self) -> bool:
         return self.event_type == "TOOL_CALL"
 
     def is_tool_result(self) -> bool:
         return self.event_type == "TOOL_RESULT"
+
+
+# ===== 记忆交互检测（各 parser 共用）=====
+import re as _re
+
+# 记忆读取/检索：算记忆交互（访问统计口径）
+_MEMORY_READ_RE = _re.compile(
+    r"argo\.memory\s+get"                  # Argo: argo.memory get fXXX
+    r"|mem\s+(recall|get|search|list|query|find)"  # memengine: mem recall/get/search
+    r"|/memengine-[^/\s]+/seeddir",        # memengine 目录路径（cat/ls/grep 上记忆目录）
+    _re.IGNORECASE,
+)
+# 记忆写入：不算记忆访问（用户口径：只看读取/检索）
+_MEMORY_WRITE_RE = _re.compile(
+    r"mem\s+(save|store|add|write|insert|update)"
+    r"|argo\.memory\s+(save|store|add)",
+    _re.IGNORECASE,
+)
+
+
+def detect_memory_flags(tool_name: str, input_json) -> tuple[bool, bool]:
+    """检测工具调用是否为记忆读取/写入。返回 (is_memory_interaction, is_memory_write)。
+
+    记忆只看获取的（读取、检索），不看写入 —— 与用户口径一致。
+    各 parser 构造 RawEvent 时调用：
+        is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
+    """
+    if tool_name not in ("bash", "Bash"):
+        return False, False
+    cmd = str((input_json or {}).get("command", "")) if isinstance(input_json, dict) else str(input_json or "")
+    if not cmd:
+        return False, False
+    cmd_l = cmd.lower()
+    if _MEMORY_WRITE_RE.search(cmd_l):
+        return False, True   # 写入：标记 write，不算访问
+    if _MEMORY_READ_RE.search(cmd_l):
+        # memengine seeddir 下 cat/ls/grep 都是读；mem recall/get/search 都是读
+        return True, False
+    return False, False
