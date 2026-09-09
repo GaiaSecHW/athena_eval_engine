@@ -84,7 +84,6 @@ function selectReportTab(button,paneId){
   button.style.background='var(--acc)';button.style.color='#fff';button.style.borderColor='var(--acc)';button.style.boxShadow='0 8px 20px rgba(124,58,237,.28)';button.style.transform='translateY(-2px)';button.setAttribute('aria-selected','true');
 }
 
-function retryEval(eid){parent.postMessage({action:'retry',evaluation_id:eid},'*');}
 
 function renderReport(d){
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{},mc=p0.m2_m3_mcnemar||{};
@@ -306,7 +305,7 @@ function renderReport(d){
   $("rep").innerHTML=`
   <div style="margin-bottom:22px">
     <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
-    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span>${(d.status==='COMPLETED'||d.status==='COMPLETED_WITH_WARNINGS')?` <button class="btn g" style="font-size:13px;padding:5px 14px;margin-left:8px" onclick="retryEval('${d.evaluation_id}')">重跑</button>`:''}</div>
+    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
       <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
       <div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>
@@ -408,6 +407,5 @@ function renderReport(d){
 
   `;
   var diagHtml="";
-  const diagEl=$("diag-body");if(diagEl)diagEl.innerHTML=diagHtml+`<button class="btn g" style="margin-top:8px" id="diag-retry-btn">重新评测</button>`;
-  var drb=$("diag-retry-btn");if(drb)drb.onclick=function(){retryEval(d.evaluation_id);};
+  const diagEl=$("diag-body");if(diagEl)diagEl.innerHTML=diagHtml;
 }

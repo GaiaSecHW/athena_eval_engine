@@ -283,7 +283,7 @@ async function selEv(id){
             try{
               const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
               if(probe.ok){
-                $("rep").innerHTML=`<iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+                $("rep").innerHTML=`<div style="position:relative;width:100%;height:100%"><iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>`;
                 return;
               }
             }catch(e){}
@@ -301,7 +301,7 @@ async function selEv(id){
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
     if(probe.ok){
-      $("rep").innerHTML=`<iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe>`;
+      $("rep").innerHTML=`<div style="position:relative;width:100%;height:100%"><iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>`;
       // iframe 内的重跑/删除按钮通过 postMessage 回传
       return;
     }
@@ -309,6 +309,18 @@ async function selEv(id){
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
   catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
+function toggleRepFullscreen(){
+  var el=$("rep");
+  if(!document.fullscreenElement){
+    el.requestFullscreen().then(function(){var btn=el.querySelector("button");if(btn)btn.textContent="⛶ 退出全屏";}).catch(function(){});
+  }else{
+    document.exitFullscreen().then(function(){var btn=el.querySelector("button");if(btn)btn.textContent="⛶ 全屏";}).catch(function(){});
+  }
+}
+document.addEventListener("fullscreenchange",function(){
+  var btn=$("rep")&&$("rep").querySelector("button");
+  if(btn)btn.textContent=document.fullscreenElement?"⛶ 退出全屏":"⛶ 全屏";
+});
 function retryEval(eid){
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
     desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
@@ -663,7 +675,7 @@ function renderReport(d){
   $("rep").innerHTML=`
   <div style="margin-bottom:22px">
     <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
-    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span>${(d.status==='COMPLETED'||d.status==='COMPLETED_WITH_WARNINGS')?` <button class="btn g" style="font-size:13px;padding:5px 14px;margin-left:8px" onclick="retryEval('${d.evaluation_id}')">重跑</button>`:''}</div>
+    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
       <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
       <div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>
