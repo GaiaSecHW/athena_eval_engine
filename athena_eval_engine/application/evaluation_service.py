@@ -767,7 +767,7 @@ def run(evaluation_id: str) -> dict:
         _groups_pv[tid].append(pv)
     # 为每组计算指标
     _metric_groups: list[dict] = []
-    _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list]] = {}
+    _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict]]] = {}
     for tid, gvs in _groups_pv.items():
         if not gvs:
             continue
@@ -840,6 +840,7 @@ def run(evaluation_id: str) -> dict:
             _g_kg_facts.get("session_graph"),
             list(_g_nogk_facts.get("case_results", [])),
             list(_g_kg_facts.get("events", [])),
+            list(_g_knowledge.memory_interactions) if _g_knowledge and _g_knowledge.memory_interactions else [],
         )
         _metric_groups.append({
             "task_id": tid,
@@ -898,10 +899,11 @@ def run(evaluation_id: str) -> dict:
             fut_group_pcka = {}
             for group in _metric_groups:
                 (_g_cases, _g_interactions, _g_session_graph,
-                 _g_nogk_cases, _g_events) = _group_kg_inputs[group["task_id"]]
+                 _g_nogk_cases, _g_events, _g_mem_interactions) = _group_kg_inputs[group["task_id"]]
                 fut_group_pcka[group["task_id"]] = llm_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
-                    bench_by_task, _g_session_graph, _g_nogk_cases, _g_events)
+                    bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
+                    _g_mem_interactions)
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:

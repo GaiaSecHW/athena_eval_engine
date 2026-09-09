@@ -346,6 +346,7 @@ def rule_based_per_case_kg_analysis(case_results: list[dict]) -> list[dict]:
             "impact": impact,
             "reason": reason,
             "interactions": [],
+            "memory_interactions": [],
         })
     return result
 
@@ -418,7 +419,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -429,7 +430,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     """
     import re
 
-    if not case_results or not interactions:
+    if not case_results or (not interactions and not memory_interactions):
         return []
 
     # 知识图谱交互：只有 athena CLI 命令才算（vuln_hunt_* 是内部黑板，不算知识图谱）
@@ -528,6 +529,36 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             sampled_interactions.append(item)
             total_size += item_size
 
+    # 记忆交互采样
+    sampled_mem_interactions = []
+    if memory_interactions:
+        mem_calls = [(i, iv) for i, iv in enumerate(memory_interactions)
+                     if iv.get("type") == "CALL" and (iv.get("command") or "").strip()]
+        mem_total_size = 0
+        for idx, _ in mem_calls:
+            iv = memory_interactions[idx]
+            result_output = ""
+            for j in range(idx + 1, min(idx + 5, len(memory_interactions))):
+                r = memory_interactions[j]
+                if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
+                    result_output = (r.get("output") or "")[:500]
+                    break
+            full_cmd = iv.get("command") or ""
+            item = {
+                "tool": iv.get("tool", ""),
+                "command": full_cmd[:300],
+                "command_parsed": full_cmd[:200],
+                "answer": result_output,
+                "output_parsed": result_output[:300],
+                "session_id": iv.get("session_id", ""),
+                "timestamp": iv.get("timestamp"),
+            }
+            item_size = len(item["tool"]) + len(item["command"]) + len(item["answer"])
+            if mem_total_size + item_size > MAX_PROMPT_SIZE:
+                break
+            sampled_mem_interactions.append(item)
+            mem_total_size += item_size
+
     results = []
     for case in case_results:
         case_id = case.get("case_id", "")
@@ -607,6 +638,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             case_interactions = []
         else:
             case_interactions = sampled_interactions
+
+        # 3b. 过滤记忆交互
+        if sampled_mem_interactions:
+            if related_sessions:
+                case_mem_interactions = [iv for iv in sampled_mem_interactions
+                                         if iv.get("session_id", "") in related_sessions]
+            elif matched_fid:
+                case_mem_interactions = sampled_mem_interactions
+            else:
+                case_mem_interactions = []
+        else:
+            case_mem_interactions = []
 
         # 4. 从 events 提取挖掘过程摘要（按 related_sessions 过滤）
         mining_actions = []
@@ -702,6 +745,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "impact": "NEUTRAL",
                 "reason": "KG 与 No-KG 均确认此漏洞，知识图谱与记忆未产生差异化影响",
                 "interactions": case_interactions,
+                "memory_interactions": case_mem_interactions,
             })
             continue
 
@@ -765,6 +809,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     result = llm_mod.chat_json(fn_prompt, temperature=0)
                     result["case_id"] = case_id
                     result["interactions"] = []
+                    result["memory_interactions"] = case_mem_interactions
                     results.append(result)
                 except Exception:
                     results.append({
@@ -775,6 +820,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "impact": "NEUTRAL",
                         "reason": "Agent 未发现此漏洞，且无知识图谱与记忆介入。LLM 分析不可用。",
                         "interactions": [],
+                        "memory_interactions": case_mem_interactions,
                     })
                 continue
             # 非 FN 且无知识交互：直接判定，不调 LLM
@@ -788,6 +834,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "impact": impact,
                 "reason": reason,
                 "interactions": [],
+                "memory_interactions": case_mem_interactions,
             })
             continue
 
@@ -859,6 +906,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             result = llm_mod.chat_json(prompt, temperature=0)
             result["case_id"] = case_id
             result["interactions"] = case_interactions
+            result["memory_interactions"] = case_mem_interactions
             results.append(result)
         except Exception:
             results.append({
@@ -869,6 +917,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "impact": "NEUTRAL",
                 "reason": f"KG 判定: {confusion}（LLM 不可用，规则生成）",
                 "interactions": case_interactions,
+                "memory_interactions": case_mem_interactions,
             })
 
     return results
