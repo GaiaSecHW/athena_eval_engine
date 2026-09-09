@@ -670,11 +670,6 @@ svg{display:block;margin:0 auto;max-width:100%}
 </style>
 </head>
 <body>
-<div class="action-bar">
-  <span class="eid">__EVAL_ID__</span>
-  <button class="btn-primary" onclick="parent.postMessage({action:'retry',evaluation_id:'__EVAL_ID__'},'*')">重跑</button>
-  <button class="btn-danger" onclick="parent.postMessage({action:'delete',evaluation_id:'__EVAL_ID__'},'*')">删除</button>
-</div>
 <div id="rep"></div>
 <div id="diag-body"></div>
 <script>
