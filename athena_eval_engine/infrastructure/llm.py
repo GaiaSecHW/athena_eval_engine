@@ -18,11 +18,11 @@ DEFAULT_API_BASE = LLM_BASE_URL
 DEFAULT_MODEL = LLM_MODEL
 DEFAULT_API_KEY = LLM_API_KEY
 
-MAX_RETRIES = 3
+MAX_RETRIES = 20
 RETRY_DELAY = 5  # 秒，重试间隔
 
 # SSE 流式超时（秒）
-FIRST_TOKEN_TIMEOUT = 120   # 首 token 超时：2 分钟
+FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟（大 prompt 需要更长时间处理）
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 20
 

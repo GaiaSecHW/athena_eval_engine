@@ -288,7 +288,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         ]
 
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, timeout=120, max_tokens=16000)
+            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=16000)
             bools = result if isinstance(result, list) else []
         except Exception as e:
             print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败: {e}", flush=True)

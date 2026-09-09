@@ -200,7 +200,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
     ]
 
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
+        result = llm_mod.chat_json(prompt, temperature=0)
         if not result.get("evidence_refs"):
             refs = []
             for mid in ("M1", "M4", "M2", "M3"):
@@ -274,7 +274,7 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
     ]
 
     try:
-        result = llm_mod.chat(prompt, temperature=0, timeout=120)
+        result = llm_mod.chat(prompt, temperature=0)
         return result.strip()
     except Exception as e:
         import traceback as _tb
@@ -402,7 +402,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     ]
 
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
+        result = llm_mod.chat_json(prompt, temperature=0)
         return {
             "analysis": result.get("overall_analysis", ""),
             "suggestion": result.get("suggestion", ""),
@@ -755,7 +755,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     )},
                 ]
                 try:
-                    result = llm_mod.chat_json(fn_prompt, temperature=0, timeout=120)
+                    result = llm_mod.chat_json(fn_prompt, temperature=0)
                     result["case_id"] = case_id
                     result["interactions"] = []
                     results.append(result)
@@ -841,7 +841,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         ]
 
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, timeout=120)
+            result = llm_mod.chat_json(prompt, temperature=0)
             result["case_id"] = case_id
             result["interactions"] = case_interactions
             results.append(result)
