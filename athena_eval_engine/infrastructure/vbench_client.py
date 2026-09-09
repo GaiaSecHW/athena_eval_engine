@@ -86,6 +86,29 @@ def get_exported_projects() -> list[dict]:
     return [p for p in list_projects() if p.get("status") == "EXPORTED"]
 
 
+def _extract_source_from_traces(cases: list) -> None:
+    """从 ground_truths findings 的 traces 中提取 source_file/source_function，写入每个 case。
+
+    traces[].steps[] 中 role=SINK 的 step 的 path/symbol 即漏洞所在文件和函数。
+    """
+    for c in cases:
+        source_file = ""
+        source_function = ""
+        for f in (c.get("findings") or []):
+            for trace in (f.get("traces") or []):
+                for step in (trace.get("steps") or []):
+                    if step.get("role") == "SINK":
+                        source_file = step.get("path", "")
+                        source_function = step.get("symbol", "")
+                        break
+                if source_file:
+                    break
+            if source_file:
+                break
+        c["source_file"] = source_file
+        c["source_function"] = source_function
+
+
 def _read_benchmark_zip(zip_path: str) -> dict:
     """从 benchmark.zip 提取 benchmark.json + ground_truths（纯本地，无 kubectl）。"""
     with zipfile.ZipFile(zip_path) as zf:
@@ -98,6 +121,7 @@ def _read_benchmark_zip(zip_path: str) -> dict:
         for c in cases:
             gt = [n for n in names if n.endswith("ground_truths/" + c["case_id"] + ".json")]
             c["findings"] = json.loads(zf.read(gt[0])).get("findings", []) if gt else []
+        _extract_source_from_traces(cases)
         return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
                 "schema_version": benchmark.get("schema_version"), "cases": cases}
 
@@ -139,5 +163,6 @@ def get_benchmark(benchmark_set_id: str) -> dict:
     bm = json.loads(r.stdout.decode("utf-8").strip())
     benchmark = bm.get("benchmark", {})
     cases = benchmark.get("cases", [])
+    _extract_source_from_traces(cases)
     return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
             "schema_version": benchmark.get("schema_version"), "cases": cases}

@@ -262,7 +262,9 @@ def retry_evaluation(evaluation_id: str):
                             desc = " ".join(f.get("explanation", "") for f in fnd if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
                             case_details[cid] = {"description": desc,
                                                 "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
-                                                "target_finding_id": c.get("target_finding_id") or ""}
+                                                "target_finding_id": c.get("target_finding_id") or "",
+                                                "source_file": c.get("source_file") or "",
+                                                "source_function": c.get("source_function") or ""}
             except Exception:
                 pass
 

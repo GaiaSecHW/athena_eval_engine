@@ -164,6 +164,8 @@ def create(req: CreateRequest):
                         "description": desc,
                         "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
                         "target_finding_id": c.get("target_finding_id") or "",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
                     }
         print(f"[CREATE] case_details 构建完成: {len(case_details)} 条", flush=True)
     except Exception as e:
