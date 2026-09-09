@@ -283,7 +283,7 @@ async function selEv(id){
             try{
               const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
               if(probe.ok){
-                $("rep").innerHTML=`<div style="position:relative;width:100%;height:100%"><iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>`;
+                loadIframeReport(id);
                 return;
               }
             }catch(e){}
@@ -301,13 +301,17 @@ async function selEv(id){
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
     if(probe.ok){
-      $("rep").innerHTML=`<div style="position:relative;width:100%;height:100%"><iframe src="${U('/reports/'+id+'.html')}" style="width:100%;height:100%;border:none;background:#fff"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>`;
-      // iframe 内的重跑/删除按钮通过 postMessage 回传
+      loadIframeReport(id);
       return;
     }
   }catch(e){}
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
   catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
+}
+function loadIframeReport(id){
+  var rep=$("rep");
+  rep.style.overflow='hidden';
+  rep.innerHTML='<div style="position:relative;width:100%;height:100%"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>';
 }
 function toggleRepFullscreen(){
   var el=$("rep");
@@ -456,6 +460,7 @@ function selectReportTab(button,paneId){
 }
 
 function renderReport(d){
+  $("rep").style.overflowY='auto';
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{},mc=p0.m2_m3_mcnemar||{};
 
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
