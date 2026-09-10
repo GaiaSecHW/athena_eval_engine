@@ -673,19 +673,15 @@ def run(evaluation_id: str) -> dict:
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
-            # finding_count 保持工具调用数（JSD 用），CONFIRMED 数存 action_distribution
-            # 漏洞验证平台（WebVulnVerify/CVulnVerify）收到的数据本身就是漏洞，全部计为确认
-            # 漏洞挖掘平台（Turing/Argo/SecMate/DataflowVulnScan）需提取 validation_result=CONFIRMED
+            # finding_count 保持工具调用数（JSD 用），CONFIRMED/FP 数存 action_distribution
+            # 所有平台统一：只计 validation_result=CONFIRMED 的 finding
             from ..workers.ai_matcher import _extract_findings as _ef
             _findings = _ef(events)
-            _is_verify = parser.__class__.__name__ in ("WebVulnVerifyTraceParser", "CVulnVerifyTraceParser")
-            if _is_verify:
-                _confirmed = len(_findings)
-            else:
-                _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
-            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} "
-                  f"({'verify' if _is_verify else 'discovery'})", flush=True)
+            _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
+            _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
+            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp}", flush=True)
             ta.action_distribution["confirmed_finding_count"] = _confirmed
+            ta.action_distribution["false_positive_finding_count"] = _fp
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
@@ -971,6 +967,7 @@ def run(evaluation_id: str) -> dict:
                      for tr in task_runs]
     tool_stats_list = [{"task_run_id": tr.task_run_id,
                         "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
+                        "false_positive_count": facts[tr.task_run_id]["tool"].action_distribution.get("false_positive_finding_count", 0),
                         "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
                        for tr in task_runs]
     # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）

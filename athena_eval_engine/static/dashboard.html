@@ -751,6 +751,8 @@ function renderReport(d){
       const kgOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-KG"))||oc.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
       const nogkOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{};
       const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
+      const kgFP=kgTool.false_positive_count||0;const nogkFP=nogkTool.false_positive_count||0;
+      const isVerify=label.includes("验证");
       const kgKi=(d.knowledge_interactions||[]).find(k=>k.task_run_id.includes("-"+tid+"-KG"))||{};
       const kgKg=(kgKi.interactions||[]).filter(iv=>iv.type==="CALL").length;
       const nogkKg=0;
@@ -766,7 +768,8 @@ function renderReport(d){
         <h3>📊 ${label} — 漏洞检测统计</h3>
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
-        <tr><td>Agent 确认漏洞数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
+        <tr><td>${isVerify?"确认漏洞数":"Agent 确认漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
+        ${isVerify?`<tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr><tr><td>验证接收总数</td><td class="num">${kgFound+kgFP}</td><td class="num">${nogkFound+nogkFP}</td></tr>`:""}
         <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
         <tr><td>记忆查询次数</td><td class="num">${kgMem}</td><td class="num">${nogkMem}</td></tr>
         <tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr>
