@@ -1010,40 +1010,40 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 }
                 fn_prompt = [
                     {"role": "system", "content": (
-                        "你是漏洞挖掘失败分析员。Agent 未发现此基线漏洞（FN），请深入分析原因。\n\n"
-                        "# 知识图谱与记忆的使用方法\n"
-                        "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
-                        "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
-                        "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
-                        "用于跨会话积累和复用漏洞挖掘知识。\n"
+                        "你是知识图谱与记忆介入效果分析员。Agent 未发现此基线漏洞（FN），且无知识图谱与记忆交互记录。\n"
+                        "请分析知识图谱与记忆对发现此漏洞的潜在影响。\n\n"
+                        "# 知识图谱与记忆的作用\n"
+                        "知识图谱（KG）：提供项目代码结构、组件依赖、已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
+                        "记忆（Memory）：存储历史挖掘经验，用于跨会话复用漏洞挖掘知识。\n"
                         "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
-                        "# 分析方法\n"
-                        "Agent 未提交与基线漏洞匹配的 finding（FN）。请分析 agent_findings_list（Agent 实际提交的所有 finding）"
-                        "与 baseline_vulnerability 的差异：\n"
-                        "1. Agent 提交了哪些 finding？逐个对比 title/vuln_type/source/sink 与基线漏洞\n"
-                        "2. Agent 的 finding 涉及哪些文件/函数？与基线漏洞的 source_file/source_function 是否有交集？\n"
-                        "3. Agent 的 finding 的 vulnerability_type 与基线漏洞是否相关？\n"
-                        "4. Agent 的挖掘范围覆盖了哪些文件/目录？是否偏离了漏洞所在区域？\n"
-                        "5. No-KG 也漏报了吗（nogk_confusion）？双方都漏报说明漏洞本身难发现\n"
-                        "6. 知识图谱与记忆对漏洞挖掘的影响：正向（引导到正确区域）、负向（误导方向）、中性（无影响）\n\n"
-                        "# reason 写作要求\n"
-                        "reason 必须包含以下内容（1000字以内）：\n"
-                        "1. Agent 提交的 finding 概述：Agent 提交了哪些漏洞（列出 title/vuln_type/source/sink）\n"
-                        "2. 漏报原因：为什么这些 finding 都没有匹配到基线漏洞（是否接触过漏洞文件/函数？挖掘方向是否偏离？）\n"
-                        "3. KG 影响：知识图谱与记忆是否对挖掘有帮助或误导？如果没有知识交互，说明 Agent 没有使用知识\n"
-                        "4. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
-                        "必须引用 agent_findings_list 中的具体 title/source/sink 作为证据，不要泛泛而谈。\n\n"
+                        "# 分析要求\n"
+                        "1. 漏报根因：Agent 为什么没有发现这个漏洞？从 agent_findings_list 概括 Agent 的挖掘范围"
+                        "（涉及哪些模块/文件），与基线漏洞的位置（source_file/source_function）对比，"
+                        "说明 Agent 是否接触过漏洞所在区域。不要逐个列举 finding，只需概括挖掘范围和偏离方向。\n"
+                        "2. 知识图谱/记忆的潜在帮助：如果 Agent 使用了知识图谱/记忆，能帮助发现这个漏洞吗？"
+                        "需要什么具体知识（如：某文件的访问控制缺陷、某漏洞模式、某函数的安全问题等）？\n"
+                        "3. Agent 未使用知识的原因：Agent 为什么没有查询知识图谱/记忆？"
+                        "是因为挖掘方向已经偏离、不知道需要查、还是其他原因？\n"
+                        "4. 对比结论：No-KG 结果为 " + nogk_confusion + "，"
+                        "说明什么？双方都漏报说明漏洞本身难发现，还是缺少知识引导？\n\n"
+                        "# impact 判定\n"
+                        "- NEUTRAL：Agent 未使用知识图谱/记忆，无法评估知识的实际影响\n"
+                        "- POSITIVE/NEGATIVE：仅在 Agent 使用了知识但结果不同时适用\n\n"
+                        "# reason 写作要求（800字以内）\n"
+                        "1. 漏报根因（~300字）：Agent 的挖掘范围（涉及哪些模块），与基线漏洞位置的差异，偏离原因\n"
+                        "2. 知识潜在帮助（~300字）：知识图谱/记忆能提供什么帮助？需要什么具体知识？\n"
+                        "3. 对比结论（~200字）：与 No-KG 对比，知识是否产生了差异化影响\n"
+                        "不要逐个列举 agent_findings_list 中的每条 finding，只需概括挖掘范围和方向。\n\n"
                         "只返回 JSON。"
                     )},
                     {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
-                        '\n\n请对比基线漏洞信息与 Agent 实际提交的 finding，分析为什么 Agent 没有发现这个漏洞：\n'
-                        '1. 基线漏洞在 ' + (source_file or '未知') + ' 的 ' + (source_function or '未知') + ' 中，'
-                        '类型为 ' + (vuln_type or '未知') + '。\n'
-                        '2. 在 agent_findings_list 中，Agent 提交了哪些 finding？逐个对比 title/vuln_type/source/sink 与基线漏洞。\n'
-                        '3. Agent 的 finding 涉及的文件/函数与基线漏洞的 source_file 是否有交集？\n'
-                        '4. No-KG 结果为 ' + nogk_confusion + '，说明什么？\n'
-                        '5. 给出具体原因（如：Agent 提交的 finding 全部不涉及漏洞文件、挖掘方向偏离、漏洞类型不匹配、缺少知识引导等）\n\n'
-                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", "knowledge_summary": "无知识返回", "impact": "NEUTRAL", "reason": "1000字以内中文，必须包含Agent提交的finding概述、漏报原因、KG影响、对比结论"}'
+                        '\n\n基线漏洞：' + (vuln_type or '未知') + '，位于 ' + (source_file or '未知') +
+                        ' 的 ' + (source_function or '未知') + '。\n'
+                        'Agent 提交了 ' + str(len(agent_findings_list)) + ' 条 finding，'
+                        '请分析漏报根因和知识图谱/记忆的潜在帮助。\n\n'
+                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", '
+                        '"knowledge_summary": "无知识返回", "impact": "NEUTRAL", '
+                        '"reason": "800字以内中文"}'
                     )},
                 ]
                 try:
@@ -1114,13 +1114,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         fn_extra = ""
         if kg_judgment == "NOT_FOUND":
             fn_extra = (
-                "\n5. 为什么 Agent 没有发现这个漏洞？在 agent_findings_list 中，Agent 提交了哪些 finding？"
-                "逐个对比 title/vuln_type/source/sink 与基线漏洞（source_file="
-                + (case.get("source_file", "") or "未知") + "）。"
-                "\n6. Agent 的 finding 涉及的文件/函数与基线漏洞的 source_file 是否有交集？"
-                "\n7. 知识图谱与记忆是否包含此漏洞的相关信息？如果有，Agent 为什么没有利用？"
-                "\n8. No-KG 也漏报了吗（nogk_confusion）？如果都漏报说明漏洞本身难发现。"
-                "\n9. 必须给出具体原因（如：Agent 提交的 finding 全部不涉及漏洞文件、挖掘方向偏离、漏洞类型不匹配等），不要泛泛而谈。"
+                "\n5. 漏报根因：Agent 为什么没有发现这个漏洞？从 agent_findings_list 概括 Agent 的挖掘范围"
+                "（涉及哪些模块/文件），与基线漏洞位置（source_file="
+                + (case.get("source_file", "") or "未知") + "）对比，说明是否接触过漏洞所在区域。"
+                "不要逐个列举 finding，只需概括挖掘范围和偏离方向。"
+                "\n6. 知识图谱/记忆的潜在帮助：Agent 有知识交互记录（knowledge_interactions），"
+                "但仍然漏报。知识交互是否涉及漏洞所在区域？如果知识引导了正确方向，Agent 为什么还是没发现？"
+                "如果知识没有引导到正确方向，缺少什么知识？"
+                "\n7. No-KG 也漏报了吗（nogk_confusion）？如果都漏报说明漏洞本身难发现。"
             )
         prompt = [
             {"role": "system", "content": (
