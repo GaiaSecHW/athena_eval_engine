@@ -535,58 +535,80 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             "mining_context": f.get("_mining_context", {}),
         })
 
-    # 1 对 1 LLM 调用 + finding 一对一约束 + 基线匹配即停
+    # 1 对 1 LLM 调用 + finding 一对一约束 + 基线匹配即停 + 并行发送
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     available_indices = list(range(len(active_findings)))  # 候选 finding 池
     matches = []  # [(finding_idx, baseline_idx)]
     matched_case_ids = set()
     llm_call_count = 0
 
-    for bi, b in enumerate(benchmarks):
-        cid = b.benchmark_item_id or ""
-        matched = False
-        for fi in list(available_indices):
-            llm_call_count += 1
-            prompt = [
-                {"role": "system", "content": (
-                    "# 角色\n"
-                    "你是漏洞匹配判定器。判断给定的 finding 和 baseline 是否描述的是同一个漏洞。\n\n"
-                    "# 判断规则\n"
-                    "1. 同一个漏洞 = 相同漏洞类型 + 相同入口/source + 相同 sink + 相同文件/函数位置\n"
-                    "2. 路径格式可能不同：如 'src/main/java/.../FileService.java' 和 'FileService.java' 可能是同一文件\n"
-                    "3. 函数名相同是强信号，但描述的漏洞行为也需吻合\n"
-                    "4. 漏洞类型可能用不同术语：如 '注入' 和 'SQL Injection' 是同一类型\n"
-                    "5. 仅漏洞类型相同但位置/函数不同的，不是同一个漏洞\n"
-                    "6. 不看结论对错：即使 finding 和 baseline 对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n"
-                    "7. mining_context（读过的文件、搜索模式、推理摘要）作为辅助参考\n\n"
-                    "# 输出格式\n"
-                    '只返回 JSON：{"is_same": true} 或 {"is_same": false}，不要任何额外文字。'
-                )},
-                {"role": "user", "content": json.dumps({
-                    "baseline": baseline_list[bi],
-                    "finding": finding_list[fi],
-                }, ensure_ascii=False, indent=2)},
-            ]
+    _sys_prompt = (
+        "# 角色\n"
+        "你是漏洞匹配判定器。判断给定的 finding 和 baseline 是否描述的是同一个漏洞。\n\n"
+        "# 判断规则\n"
+        "1. 同一个漏洞 = 相同漏洞类型 + 相同入口/source + 相同 sink + 相同文件/函数位置\n"
+        "2. 路径格式可能不同：如 'src/main/java/.../FileService.java' 和 'FileService.java' 可能是同一文件\n"
+        "3. 函数名相同是强信号，但描述的漏洞行为也需吻合\n"
+        "4. 漏洞类型可能用不同术语：如 '注入' 和 'SQL Injection' 是同一类型\n"
+        "5. 仅漏洞类型相同但位置/函数不同的，不是同一个漏洞\n"
+        "6. 不看结论对错：即使 finding 和 baseline 对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n"
+        "7. mining_context（读过的文件、搜索模式、推理摘要）作为辅助参考\n\n"
+        "# 输出格式\n"
+        '只返回 JSON：{"is_same": true} 或 {"is_same": false}，不要任何额外文字。'
+    )
 
-            try:
-                result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
-                is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
-            except Exception as e:
-                print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败 (f{fi},b{bi}): {e}", flush=True)
-                is_same = False
+    def _check_pair(fi: int, bi: int, bl_desc: dict, fd_desc: dict) -> tuple[int, bool]:
+        """单次 LLM 判断：finding 和 baseline 是否同一漏洞。"""
+        prompt = [
+            {"role": "system", "content": _sys_prompt},
+            {"role": "user", "content": json.dumps({
+                "baseline": bl_desc, "finding": fd_desc,
+            }, ensure_ascii=False, indent=2)},
+        ]
+        try:
+            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+            is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
+        except Exception as e:
+            print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败 (f{fi},b{bi}): {e}", flush=True)
+            is_same = False
+        return fi, is_same
 
-            if is_same:
-                matches.append((fi, bi))
-                matched_case_ids.add(cid)
-                available_indices.remove(fi)  # finding 一对一：从候选池移除
-                matched = True
-                print(f"[AI_MATCH]   MATCHED case={cid[:20]} ← finding[{fi}] "
-                      f"id={active_findings[fi].get('display_id','')[:20]}", flush=True)
-                break  # 基线匹配即停
+    # baseline 串行（finding 一对一约束），每个 baseline 内 finding 并行发送
+    with ThreadPoolExecutor(max_workers=6) as pool:
+        for bi, b in enumerate(benchmarks):
+            cid = b.benchmark_item_id or ""
+            if not available_indices:
+                break  # 候选池已空，剩余 baseline 都不会匹配
 
-        if not matched:
-            md_desc = str((b.metadata or {}).get("vulnerability_type", ""))[:40]
-            print(f"[AI_MATCH]   UNMATCHED case={cid[:20]} label={b.expected_label.value if b.expected_label else 'NA'} "
-                  f"vuln_type={md_desc}", flush=True)
+            # 并行提交所有候选 finding 的 LLM 判断
+            futures = {}
+            for fi in list(available_indices):
+                fut = pool.submit(_check_pair, fi, bi, baseline_list[bi], finding_list[fi])
+                futures[fut] = fi
+                llm_call_count += 1
+
+            matched = False
+            for fut in as_completed(futures):
+                fi, is_same = fut.result()
+                if is_same and fi in available_indices:
+                    matches.append((fi, bi))
+                    matched_case_ids.add(cid)
+                    available_indices.remove(fi)  # finding 一对一：从候选池移除
+                    matched = True
+                    print(f"[AI_MATCH]   MATCHED case={cid[:20]} ← finding[{fi}] "
+                          f"id={active_findings[fi].get('display_id','')[:20]}", flush=True)
+                    break  # 基线匹配即停
+
+            # 取消未完成的 LLM 调用（已发出的不可取消，结果丢弃）
+            for f in futures:
+                if not f.done():
+                    f.cancel()
+
+            if not matched:
+                md_desc = str((b.metadata or {}).get("vulnerability_type", ""))[:40]
+                print(f"[AI_MATCH]   UNMATCHED case={cid[:20]} label={b.expected_label.value if b.expected_label else 'NA'} "
+                      f"vuln_type={md_desc}", flush=True)
 
     print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
           f"llm_calls={llm_call_count}", flush=True)
