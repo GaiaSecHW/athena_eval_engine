@@ -430,7 +430,8 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
         for j in range(idx + 1, min(idx + 5, len(interactions))):
             r = interactions[j]
             if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                result_output = (r.get("output") or "")                break
+                result_output = r.get("output") or ""
+                break
         interactions_data.append({
             "index": len(interactions_data),
             "tool": iv.get("tool", ""),
@@ -527,7 +528,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         try:
             d = json.loads(cmd_str) if isinstance(cmd_str, str) else cmd_str
             if not isinstance(d, dict):
-                return str(d)            return json.dumps(d, ensure_ascii=False)        except Exception:
+                return str(d)
+            return json.dumps(d, ensure_ascii=False)
+        except Exception:
             return cmd_str
     def _parse_kg_output(out_str):
         """将 athena CLI 输出解析成可读的'回答'文本。"""
@@ -551,7 +554,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for j in range(idx + 1, min(idx + 5, len(interactions))):
                 r = interactions[j]
                 if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                    result_output = (r.get("output") or "")                    break
+                    result_output = r.get("output") or ""
+                    break
             full_cmd = iv.get("command") or ""
             item = {
                 "tool": iv.get("tool", ""),
@@ -581,7 +585,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             if not is_kg:
                 continue
             question = f"查询知识"
-            answer = output            item = {
+            answer = output
+            item = {
                 "tool": tool,
                 "command": "",
                 "command_parsed": question,
@@ -608,7 +613,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for j in range(idx + 1, min(idx + 5, len(memory_interactions))):
                 r = memory_interactions[j]
                 if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                    result_output = (r.get("output") or "")                    break
+                    result_output = r.get("output") or ""
+                    break
             full_cmd = iv.get("command") or ""
             item = {
                 "tool": iv.get("tool", ""),
@@ -905,18 +911,22 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         tool = ev.tool_name or ""
         ts = ev.timestamp_ms or 0
         if tool == "bash":
-            cmd = str(inp.get("command", ""))            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
+            cmd = str(inp.get("command", ""))
+            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
                 return {"tool": "bash", "action": cmd, "session_id": ev.session_id, "ts": ts}
         elif tool == "read":
-            fp = str(inp.get("file_path", ""))            if fp:
+            fp = str(inp.get("file_path", ""))
+            if fp:
                 return {"tool": "read", "action": fp, "session_id": ev.session_id, "ts": ts}
         elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
                       "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
                       "mcp__workflow-tools__store_tracer_verdict") or \
              (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
-            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
+            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))
+            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
         elif tool == "write":
-            fp = str(inp.get("file_path") or inp.get("path") or "")            if fp:
+            fp = str(inp.get("file_path") or inp.get("path") or "")
+            if fp:
                 # CVulnVerify: write vuln_verify_final_verdict.json = 结论点
                 if "vuln_verify_final_verdict" in fp:
                     return {"tool": "finding", "action": fp, "session_id": ev.session_id, "ts": ts}
