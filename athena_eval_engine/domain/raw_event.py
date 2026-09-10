@@ -49,15 +49,17 @@ import re as _re
 
 # 记忆读取/检索：算记忆交互（访问统计口径）
 _MEMORY_READ_RE = _re.compile(
-    r"argo\.memory\s+get"                  # Argo: argo.memory get fXXX
+    r"argo\.memory\s+(get|search|recall|list|query|find)"  # Argo: argo.memory get/search/recall
     r"|mem\s+(recall|get|search|list|query|find)"  # memengine: mem recall/get/search
-    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/]seeddir",  # memengine 目录路径（含 symlink 无后缀路径）
+    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?",  # memengine 目录路径（含 seeddir 子目录和根目录）
     _re.IGNORECASE,
 )
 # 记忆写入：不算记忆访问（用户口径：只看读取/检索）
 _MEMORY_WRITE_RE = _re.compile(
-    r"mem\s+(save|store|add|write|insert|update)"
-    r"|argo\.memory\s+(save|store|add)",
+    r"mem\s+(?:save|store|add|write|insert|update)"
+    r"|argo\.memory\s+(?:save|store|add)"
+    r"|>>?\s*[^\s|]*[\\/]memengine"  # 重定向写入 memengine 路径（cat > / echo >）
+    r"|mkdir\s+[^|]*[\\/]memengine",  # mkdir 创建 memengine 目录
     _re.IGNORECASE,
 )
 
@@ -81,3 +83,30 @@ def detect_memory_flags(tool_name: str, input_json) -> tuple[bool, bool]:
         # memengine seeddir 下 cat/ls/grep 都是读；mem recall/get/search 都是读
         return True, False
     return False, False
+
+
+def usage_numbers(usage: dict) -> tuple[int, int, int, int]:
+    """从 usage dict 提取 token 数，兼容多种键名格式。
+
+    各 agent trace 的 usage 键名不同：
+    - Claude Code / SecMate: input_tokens, output_tokens, cache_read_input_tokens
+    - WebVulnVerify:          input_tokens, output_tokens, cache_read_tokens
+    - CVulnVerify / Dataflow: input, output, cacheRead, reasoning
+
+    返回 (input, output, reasoning, cache_read)。
+    """
+    if not isinstance(usage, dict):
+        return 0, 0, 0, 0
+
+    def num(*keys) -> int:
+        for k in keys:
+            v = usage.get(k)
+            if isinstance(v, (int, float)):
+                return int(v)
+        return 0
+
+    ti = num("input_tokens", "input")
+    to = num("output_tokens", "output")
+    tr = num("reasoning_tokens", "reasoning")
+    tcr = num("cache_read_tokens", "cacheRead", "cache_read_input_tokens", "cache_read")
+    return ti, to, tr, tcr

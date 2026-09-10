@@ -266,11 +266,9 @@ class ArgoTraceParser:
                         if isinstance(msg, dict):
                             usage = msg.get("usage", {})
                             if isinstance(usage, dict):
-                                ti += usage.get("input_tokens", 0) or 0
-                                to += usage.get("output_tokens", 0) or 0
-                                tr += usage.get("reasoning_tokens", 0) or 0  # may not exist
-                                cache = usage.get("cache_read_tokens", 0) or 0
-                                tcr += cache if isinstance(cache, (int, float)) else 0
+                                from ..domain.raw_event import usage_numbers
+                                ai, ao, ar, ac = usage_numbers(usage)
+                                ti += ai; to += ao; tr += ar; tcr += ac
                         n_step_finish += 1  # each assistant msg = one step
                     elif t == "queue-operation":
                         n_step_start += 1

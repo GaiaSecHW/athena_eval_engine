@@ -221,17 +221,8 @@ class DataflowVulnScanTraceParser:
     @staticmethod
     def _usage_numbers(usage: dict) -> tuple[int, int, int, int]:
         """兼容 input/output/reasoning/cacheRead（本格式）与 input_tokens 等（其他格式）。"""
-        def num(*keys) -> int:
-            for k in keys:
-                v = usage.get(k)
-                if isinstance(v, (int, float)):
-                    return int(v)
-            return 0
-        ti = num("input_tokens", "input")
-        to = num("output_tokens", "output")
-        tr = num("reasoning_tokens", "reasoning")
-        tcr = num("cache_read_tokens", "cacheRead", "cache_read")
-        return ti, to, tr, tcr
+        from ..domain.raw_event import usage_numbers
+        return usage_numbers(usage)
 
     def load_session(self, trace_source) -> dict:
         """从 JSONL 累计 token + step 数。"""

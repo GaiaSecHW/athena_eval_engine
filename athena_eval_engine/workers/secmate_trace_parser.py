@@ -168,10 +168,12 @@ class SecMateTraceParser(TraceParser):
                                 yield self._event(event_id, trace_id, session_id, "REASONING", timestamp, record, part.get("thinking"), "thinking")
                         usage = message.get("usage")
                         if isinstance(usage, dict):
-                            totals["input_tokens"] += usage.get("input_tokens", 0) or 0
-                            totals["output_tokens"] += usage.get("output_tokens", 0) or 0
-                            totals["reasoning_tokens"] += usage.get("reasoning_tokens", 0) or 0
-                            totals["cache_read_tokens"] += usage.get("cache_read_tokens", 0) or 0
+                            from ..domain.raw_event import usage_numbers
+                            _ti, _to, _tr, _tcr = usage_numbers(usage)
+                            totals["input_tokens"] += _ti
+                            totals["output_tokens"] += _to
+                            totals["reasoning_tokens"] += _tr
+                            totals["cache_read_tokens"] += _tcr
                             step_count += 1
                             yield RawEvent(event_id=f"{base_id}-usage", trace_id=trace_id, session_id=session_id,
                                 event_type="STEP_FINISH", timestamp_ms=timestamp, message_id=record.get("uuid"),
@@ -236,10 +238,12 @@ class SecMateTraceParser(TraceParser):
                     usage = record.get("message", {}).get("usage", {})
                     if not isinstance(usage, dict):
                         continue
-                    totals["input_tokens"] += usage.get("input_tokens", 0) or 0
-                    totals["output_tokens"] += usage.get("output_tokens", 0) or 0
-                    totals["reasoning_tokens"] += usage.get("reasoning_tokens", 0) or 0
-                    totals["cache_read_tokens"] += usage.get("cache_read_tokens", 0) or 0
+                    from ..domain.raw_event import usage_numbers
+                    _ti, _to, _tr, _tcr = usage_numbers(usage)
+                    totals["input_tokens"] += _ti
+                    totals["output_tokens"] += _to
+                    totals["reasoning_tokens"] += _tr
+                    totals["cache_read_tokens"] += _tcr
                     step_count += 1
         return {**totals, "time_created": min_ts, "time_updated": max_ts,
                 "_step_start_count": step_count, "_step_finish_count": step_count,

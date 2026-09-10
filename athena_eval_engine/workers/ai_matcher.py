@@ -101,7 +101,7 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 "session_id": e.session_id,
             }
 
-        # --- SecMate: findings-store MCP ---
+        # --- SecMate: findings-store MCP（旧格式） ---
         elif tool == "mcp__findings-store__store_finding":
             # 返回值是 JSON 字符串，其中 result 字段又是一个 JSON 字符串。
             finding_id = ""
@@ -129,6 +129,92 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 "session_id": e.session_id,
             }
 
+        # --- SecMate 新格式: store_tiered_finding（中间 finding） ---
+        elif tool.startswith("mcp__workflow-tools__store_tiered_fing"):
+            # finding_id 在 result 中（tool output）
+            finding_id = ""
+            try:
+                result = json.loads(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = json.loads(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            finding_id = finding_id or f"secmate-{e.event_id}"
+            findings[finding_id] = {
+                "finding_id": finding_id,
+                "display_id": finding_id,
+                "title": str(inp.get("vuln_type", ""))[:120],
+                "description": inp.get("description", ""),
+                "vuln_type": inp.get("vuln_type", ""),
+                "severity": inp.get("severity", "") or str(inp.get("score", "")),
+                "source": str(inp.get("file_path", "")),
+                "sink": str(inp.get("function_name", "")),
+                "validation_result": None,
+                "platform": "secmate",
+                "session_id": e.session_id,
+            }
+
+        # --- SecMate 新格式: store_tracer_verdict（最终判定 = 结论点） ---
+        elif tool == "mcp__workflow-tools__store_tracer_verdict":
+            outcome = inp.get("outcome", "")
+            vr = "CONFIRMED" if outcome in ("confirmed", "conditional") \
+                else ("FALSE_POSITIVE" if outcome == "refuted" else None)
+            # finding_id 在 result 中
+            finding_id = ""
+            try:
+                result = json.loads(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = json.loads(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            finding_id = finding_id or f"secmate-verdict-{e.event_id}"
+            findings[finding_id] = {
+                "finding_id": finding_id,
+                "display_id": finding_id,
+                "title": str(inp.get("title", ""))[:120] or str(inp.get("vuln_type", ""))[:120],
+                "description": inp.get("description", ""),
+                "vuln_type": inp.get("vuln_type", ""),
+                "severity": inp.get("severity", ""),
+                "source": str(inp.get("file_path", "") or inp.get("primary_location", "")),
+                "sink": str(inp.get("function_name", "")),
+                "validation_result": vr,
+                "platform": "secmate",
+                "session_id": e.session_id,
+            }
+
+        # --- CVulnVerify: write 工具写 vuln_verify_final_verdict.json ---
+        elif tool == "write":
+            fp = str(inp.get("file_path") or inp.get("path") or "")
+            if "vuln_verify_final_verdict" in fp:
+                content = inp.get("content", "")
+                if isinstance(content, str):
+                    try:
+                        vdata = json.loads(content)
+                        case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
+                        verdict = vdata.get("verdict", "")
+                        vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                        findings[case_id] = {
+                            "finding_id": case_id,
+                            "display_id": case_id,
+                            "title": f"CVulnVerify {case_id}",
+                            "description": str(vdata.get("ruled_out_by", "")),
+                            "vuln_type": "",
+                            "severity": "",
+                            "source": "",
+                            "sink": "",
+                            "validation_result": vr,
+                            "platform": "cvuln-verify",
+                            "session_id": e.session_id,
+                        }
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+
     # 关联 Turing: vuln-hunt_update_finding 的 validation_result
     for e in events:
         if not e.is_tool_call():
@@ -140,6 +226,73 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             vr = inp.get("validation_result", "")
             if fid in findings and vr in ("CONFIRMED", "FALSE_POSITIVE"):
                 findings[fid]["validation_result"] = vr
+
+    # --- DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件） ---
+    for e in events:
+        if e.event_type != "TEXT" or not e.output_json:
+            continue
+        text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+        if '"findings"' not in text:
+            continue
+        m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+        if not m:
+            continue
+        try:
+            data = json.loads(m.group(1))
+            for f in (data.get("findings") or []):
+                sf = str(f.get("source_file", ""))
+                ln = str(f.get("line", ""))
+                fid = f"dvs-{sf}:{ln}" if sf or ln else f"dvs-{e.event_id}"
+                findings[fid] = {
+                    "finding_id": fid,
+                    "display_id": fid,
+                    "title": str(f.get("title", ""))[:120],
+                    "description": str(f.get("summary", "")),
+                    "vuln_type": str(f.get("vuln_type", ""))[:60],
+                    "severity": str(f.get("severity", "")),
+                    "source": sf[:100],
+                    "sink": str(f.get("function_name", ""))[:100],
+                    "validation_result": "CONFIRMED",  # 出现在报告中 = 确认
+                    "platform": "dataflow-vuln-scan",
+                    "session_id": e.session_id,
+                }
+        except (json.JSONDecodeError, TypeError):
+            pass
+
+    # --- Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果） ---
+    # Argo agent 通过 Bash cat 读取 findings.json，tool result 含 finding 数组
+    for e in events:
+        if e.event_type != "TOOL_RESULT" or not e.output_json:
+            continue
+        out_str = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+        if '"verdict"' not in out_str or '"finding_id"' not in out_str:
+            continue
+        try:
+            data = json.loads(out_str)
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, list):
+            continue
+        for f in data:
+            fid = str(f.get("id", "") or f.get("finding_id", ""))
+            if not fid:
+                continue
+            verdict = f.get("verdict", "")
+            vr = "CONFIRMED" if verdict == "CONFIRMED" \
+                else ("FALSE_POSITIVE" if verdict == "FALSE_POSITIVE" else None)
+            findings[fid] = {
+                "finding_id": fid,
+                "display_id": fid,
+                "title": str(f.get("description", ""))[:120],
+                "description": f.get("description", ""),
+                "vuln_type": str(f.get("cwe", "")),
+                "severity": f.get("severity", ""),
+                "source": str(f.get("file", "")),
+                "sink": str(f.get("sink", "")),
+                "validation_result": vr,
+                "platform": "argo",
+                "session_id": e.session_id,
+            }
 
     return list(findings.values())
 

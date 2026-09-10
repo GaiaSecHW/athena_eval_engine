@@ -74,10 +74,43 @@ class OutcomeResolverImpl:
     def _latest_validation(self, events: list[RawEvent], target_finding_id: str | None) -> str | None:
         """取该 finding 的最后一个有效 validation_result（按 timestamp 排序）。
         CONFIRMED→POSITIVE / FALSE_POSITIVE→NEGATIVE / 无→None(UNDETERMINED)。
-        支持 Turing（vuln-hunt_update_finding）、Argo（ReportFindings outcome）、
-        WebVulnVerify（vulnerability_analyze status）。"""
+        支持 Turing（vuln-hunt_update_finding）、Argo（findings.json verdict）、
+        WebVulnVerify（vulnerability_analyze status）、
+        CVulnVerify（write vuln_verify_final_verdict.json verdict）、
+        DataflowVulnScan（assistant 文本 findings JSON）、
+        SecMate（store_tracer_verdict outcome）。"""
         candidates = []
         for e in events:
+            # DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件，非 tool call）
+            if e.event_type == "TEXT" and e.output_json:
+                text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                if '"findings"' in text:
+                    m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
+                    if m:
+                        try:
+                            data = json.loads(m.group(1))
+                            finds = data.get("findings", [])
+                            if finds:
+                                candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
+                            else:
+                                candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+                continue
+            # Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果）
+            if e.event_type == "TOOL_RESULT" and e.output_json:
+                out_str = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                if '"verdict"' in out_str and '"finding_id"' in out_str:
+                    try:
+                        data = json.loads(out_str)
+                        if isinstance(data, list):
+                            for f in data:
+                                vr = f.get("verdict", "")
+                                if vr in ("CONFIRMED", "FALSE_POSITIVE"):
+                                    candidates.append((e.timestamp_ms or 0, vr))
+                    except (json.JSONDecodeError, TypeError):
+                        pass
+                continue
             if not (e.tool_name and e.is_tool_call()):
                 continue
             d = e.input_json or {}
@@ -99,13 +132,62 @@ class OutcomeResolverImpl:
                     candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
                 elif status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE"):
                     candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
+            # CVulnVerify: write 工具写 vuln_verify_final_verdict.json
+            elif e.tool_name == "write":
+                fp = str(d.get("file_path") or d.get("path") or "")
+                if "vuln_verify_final_verdict" in fp:
+                    content = d.get("content", "")
+                    if isinstance(content, str):
+                        try:
+                            vdata = json.loads(content)
+                            verdict = vdata.get("verdict", "")
+                            if verdict == "confirmed":
+                                candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
+                            elif verdict == "ruled_out":
+                                candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            # SecMate: mcp__workflow-tools__store_tracer_verdict（outcome 字段）
+            elif e.tool_name == "mcp__workflow-tools__store_tracer_verdict":
+                outcome = d.get("outcome", "")
+                if outcome in ("confirmed", "conditional"):
+                    candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
+                elif outcome == "refuted":
+                    candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
         if not candidates:
             return None
         candidates.sort(key=lambda x: x[0])
         return candidates[-1][1]
 
     def _has_insert(self, events) -> bool:
-        return any(e.tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding") for e in events)
+        # 工具调用型结论点（store_tiered_fing 用前缀匹配，处理 LLM 拼写变体）
+        _exact = ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
+                  "vulnerability_analyze", "vulnerability_verify",
+                  "mcp__findings-store__store_finding",
+                  "mcp__workflow-tools__store_tracer_verdict")
+        if any(e.tool_name in _exact or
+               (e.tool_name and e.tool_name.startswith("mcp__workflow-tools__store_tiered_fing"))
+               for e in events):
+            return True
+        # CVulnVerify: write vuln_verify_final_verdict.json
+        for e in events:
+            if e.tool_name == "write":
+                fp = str((e.input_json or {}).get("file_path") or (e.input_json or {}).get("path") or "")
+                if "vuln_verify_final_verdict" in fp:
+                    return True
+        # DataflowVulnScan: assistant 文本含 findings JSON
+        for e in events:
+            if e.event_type == "TEXT" and e.output_json:
+                text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                if '"findings"' in text and "vuln_type" in text:
+                    return True
+        # Argo: TOOL_RESULT 含 findings JSON（findings.json 的 cat 结果）
+        for e in events:
+            if e.event_type == "TOOL_RESULT" and e.output_json:
+                out_str = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                if '"verdict"' in out_str and '"finding_id"' in out_str:
+                    return True
+        return False
 
     @staticmethod
     def _classify(gt: str, pred: str) -> tuple[Confusion, Outcome]:
@@ -299,8 +381,14 @@ class ToolActionResolverImpl:
         for c in self.access_rules.get("command_patterns", []):
             if re.search(c, path):
                 return "KG"
-        # FINDING：只有实际提交漏洞发现的工具才算（insert_finding / ReportFindings）
-        if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings", "mcp__findings-store__store_finding"):
+        # FINDING：只有实际提交漏洞发现的工具才算（store_tiered_fing 用前缀匹配）
+        if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
+                     "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
+                     "mcp__workflow-tools__store_tracer_verdict") or \
+           (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
+            return "FINDING"
+        # CVulnVerify: write vuln_verify_final_verdict.json = 提交验证结论
+        if tool == "write" and "vuln_verify_final_verdict" in path:
             return "FINDING"
         if tool in ("read", "grep", "glob") and "wiki" not in path:
             return "CODE"

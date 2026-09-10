@@ -666,7 +666,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     if fid not in _seen_fids:
                         _seen_fids.add(fid)
                         agent_findings_list.append(info)
-            # SecMate: mcp__findings-store__store_finding
+            # SecMate: mcp__findings-store__store_finding（旧格式）
             elif tool == "mcp__findings-store__store_finding":
                 finding_id = ""
                 try:
@@ -693,6 +693,63 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 if finding_id not in _seen_fids:
                     _seen_fids.add(finding_id)
                     agent_findings_list.append(info)
+            # SecMate 新格式: store_tiered_finding（中间 finding）
+            elif tool.startswith("mcp__workflow-tools__store_tiered_fing"):
+                finding_id = ""
+                try:
+                    result = json.loads(out_str)
+                    nested = result.get("result", result) if isinstance(result, dict) else result
+                    if isinstance(nested, str):
+                        nested = json.loads(nested)
+                    if isinstance(nested, dict):
+                        finding_id = str(nested.get("finding_id", ""))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                finding_id = finding_id or f"secmate-{ev.event_id}"
+                info = {
+                    "finding_id": finding_id, "display_id": finding_id,
+                    "title": str(inp.get("vuln_type", ""))[:120],
+                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
+                    "source": str(inp.get("file_path", ""))[:100],
+                    "sink": str(inp.get("function_name", ""))[:100],
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": None,
+                }
+                finding_events[finding_id] = info
+                if finding_id not in _seen_fids:
+                    _seen_fids.add(finding_id)
+                    agent_findings_list.append(info)
+            # SecMate 新格式: store_tracer_verdict（最终判定 = 结论点）
+            elif tool == "mcp__workflow-tools__store_tracer_verdict":
+                outcome = str(inp.get("outcome", ""))
+                vr = "CONFIRMED" if outcome in ("confirmed", "conditional") \
+                    else ("FALSE_POSITIVE" if outcome == "refuted" else None)
+                finding_id = ""
+                try:
+                    result = json.loads(out_str)
+                    nested = result.get("result", result) if isinstance(result, dict) else result
+                    if isinstance(nested, str):
+                        nested = json.loads(nested)
+                    if isinstance(nested, dict):
+                        finding_id = str(nested.get("finding_id", ""))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                finding_id = finding_id or f"secmate-verdict-{ev.event_id}"
+                info = {
+                    "finding_id": finding_id, "display_id": finding_id,
+                    "title": str(inp.get("title", "") or inp.get("vuln_type", ""))[:120],
+                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
+                    "source": str(inp.get("file_path", "") or inp.get("primary_location", ""))[:100],
+                    "sink": str(inp.get("function_name", ""))[:100],
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": vr,
+                }
+                finding_events[finding_id] = info
+                if finding_id not in _seen_fids:
+                    _seen_fids.add(finding_id)
+                    agent_findings_list.append(info)
             # WebVulnVerify: vulnerability_analyze / vulnerability_verify
             # 提交和判定在同一个 tool call，status 字段即 validation_result
             elif tool in ("vulnerability_analyze", "vulnerability_verify"):
@@ -713,6 +770,103 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 if vid not in _seen_fids:
                     _seen_fids.add(vid)
                     agent_findings_list.append(info)
+            # CVulnVerify: write 工具写 vuln_verify_final_verdict.json
+            elif tool == "write":
+                fp = str(inp.get("file_path") or inp.get("path") or "")
+                if "vuln_verify_final_verdict" in fp:
+                    content = inp.get("content", "")
+                    if isinstance(content, str):
+                        try:
+                            vdata = json.loads(content)
+                            case_id = str(vdata.get("case_id", "")) or f"cvv-{ev.event_id}"
+                            verdict = vdata.get("verdict", "")
+                            vr = "CONFIRMED" if verdict == "confirmed" \
+                                else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                            info = {
+                                "finding_id": case_id, "display_id": case_id,
+                                "title": f"CVulnVerify {case_id}"[:120],
+                                "vuln_type": "",
+                                "source": "", "sink": "",
+                                "session_id": ev.session_id,
+                                "timestamp": ev.timestamp_ms,
+                                "validation_result": vr,
+                            }
+                            finding_events[case_id] = info
+                            if case_id not in _seen_fids:
+                                _seen_fids.add(case_id)
+                                agent_findings_list.append(info)
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+        # DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件，非 tool call）
+        for ev in events:
+            if not hasattr(ev, "event_type") or ev.event_type != "TEXT":
+                continue
+            if not ev.output_json:
+                continue
+            text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+            if '"findings"' not in text:
+                continue
+            m = _re_finding.search(r'```json\s*(\{.*?\})\s*```', text, _re_finding.DOTALL)
+            if not m:
+                continue
+            try:
+                data = json.loads(m.group(1))
+                for f in (data.get("findings") or []):
+                    sf = str(f.get("source_file", ""))
+                    ln = str(f.get("line", ""))
+                    fid = f"dvs-{sf}:{ln}" if sf or ln else f"dvs-{ev.event_id}"
+                    if fid in _seen_fids:
+                        continue
+                    info = {
+                        "finding_id": fid, "display_id": fid,
+                        "title": str(f.get("title", ""))[:120],
+                        "vuln_type": str(f.get("vuln_type", ""))[:60],
+                        "source": sf[:100],
+                        "sink": str(f.get("function_name", ""))[:100],
+                        "session_id": ev.session_id,
+                        "timestamp": ev.timestamp_ms,
+                        "validation_result": "CONFIRMED",
+                    }
+                    finding_events[fid] = info
+                    _seen_fids.add(fid)
+                    agent_findings_list.append(info)
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果）
+        for ev in events:
+            if not hasattr(ev, "event_type") or ev.event_type != "TOOL_RESULT":
+                continue
+            if not ev.output_json:
+                continue
+            out_str = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+            if '"verdict"' not in out_str or '"finding_id"' not in out_str:
+                continue
+            try:
+                data = json.loads(out_str)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, list):
+                continue
+            for f in data:
+                fid = str(f.get("id", "") or f.get("finding_id", ""))
+                if not fid or fid in _seen_fids:
+                    continue
+                verdict = str(f.get("verdict", ""))
+                vr = "CONFIRMED" if verdict == "CONFIRMED" \
+                    else ("FALSE_POSITIVE" if verdict == "FALSE_POSITIVE" else None)
+                info = {
+                    "finding_id": fid, "display_id": fid,
+                    "title": str(f.get("description", ""))[:120],
+                    "vuln_type": str(f.get("cwe", ""))[:60],
+                    "source": str(f.get("file", ""))[:100],
+                    "sink": str(f.get("sink", ""))[:100],
+                    "session_id": ev.session_id,
+                    "timestamp": ev.timestamp_ms,
+                    "validation_result": vr,
+                }
+                finding_events[fid] = info
+                _seen_fids.add(fid)
+                agent_findings_list.append(info)
         # 关联 Turing: vuln_hunt_update_finding 的 validation_result（AI 判定结论点）
         for ev in events:
             if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
@@ -743,12 +897,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             if fp:
                 return {"tool": "read", "action": fp, "session_id": ev.session_id}
         elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
-                      "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding"):
-            title = str(inp.get("title", "") or inp.get("short_summary", ""))[:100]
+                      "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
+                      "mcp__workflow-tools__store_tracer_verdict") or \
+             (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
+            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))[:100]
             return {"tool": "finding", "action": title, "session_id": ev.session_id}
         elif tool == "write":
-            fp = str(inp.get("file_path", ""))[:100]
+            fp = str(inp.get("file_path") or inp.get("path") or "")[:100]
             if fp:
+                # CVulnVerify: write vuln_verify_final_verdict.json = 结论点
+                if "vuln_verify_final_verdict" in fp:
+                    return {"tool": "finding", "action": fp, "session_id": ev.session_id}
                 return {"tool": "write", "action": fp, "session_id": ev.session_id}
         return None
 
