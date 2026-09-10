@@ -90,7 +90,7 @@ def _build_narrative(metrics, stats, hits) -> dict:
     return {
         "summary": summary + "(rule-based v1)",
         "outcome_interpretation": summary,
-        "risk_interpretation": "; ".join(h.observed for h in hits[:3]) or "no significant regression risk",
+        "risk_interpretation": "; ".join(h.observed for h in hits) or "no significant regression risk",
         "mechanism_interpretation": "; ".join(h.observed for h in hits if "JSD" in h.observed) or "no significant behavior shift",
         "cost_interpretation": "; ".join(h.observed for h in hits if "Token" in h.observed) or "no significant cost change",
         "limitations": ["SINGLE_PAIRED_RUN", "v1 rule-based narrative"],
@@ -420,7 +420,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
     total_calls = len(call_interactions)
 
     # 取前 5 个 CALL 交互做详细分析（控制 prompt 大小）
-    sampled = call_interactions[:5]
+    sampled = call_interactions
 
     # 构建每个交互的数据（command + 对应 RESULT output，截断控制大小）
     interactions_data = []
@@ -430,18 +430,17 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
         for j in range(idx + 1, min(idx + 5, len(interactions))):
             r = interactions[j]
             if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                result_output = (r.get("output") or "")[:500]
-                break
+                result_output = (r.get("output") or "")                break
         interactions_data.append({
             "index": len(interactions_data),
             "tool": iv.get("tool", ""),
-            "command": (iv.get("command") or "")[:300],
+            "command": (iv.get("command") or ""),
             "output": result_output,
         })
 
     # 构建一次 LLM 调用，批量分析所有交互
     data = {
-        "knowledge_interactions": [{"tool": iv.get("tool",""), "question": (iv.get("command") or "")[:200], "answer": (iv.get("output") or "")[:200]} for _, iv in sampled],
+        "knowledge_interactions": [{"tool": iv.get("tool",""), "question": (iv.get("command") or ""), "answer": (iv.get("output") or "")} for _, iv in sampled],
         "outcome": outcome.get("outcome") if outcome else None,
         "prediction": outcome.get("prediction") if outcome else None,
         "baseline_count": baseline_count,
@@ -522,22 +521,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             import re as _re
             m = _re.search(r'ask\s+"([^"]*)"', cmd_str) or _re.search(r"ask\s+'([^']*)'", cmd_str)
             if m:
-                return f"查询知识: {m.group(1)[:150]}"
-            return f"查询知识: {cmd_str[:150]}"
+                return f"查询知识: {m.group(1)}"
+            return f"查询知识: {cmd_str}"
         # JSON 格式
         try:
             d = json.loads(cmd_str) if isinstance(cmd_str, str) else cmd_str
             if not isinstance(d, dict):
-                return str(d)[:200]
-            return json.dumps(d, ensure_ascii=False)[:200]
-        except Exception:
-            return cmd_str[:200]
-
+                return str(d)            return json.dumps(d, ensure_ascii=False)        except Exception:
+            return cmd_str
     def _parse_kg_output(out_str):
         """将 athena CLI 输出解析成可读的'回答'文本。"""
         out_str = out_str or ""
-        return out_str[:300]
-
+        return out_str
     # 提取知识图谱交互 CALL（KnowledgeResolver 已过滤，只含 athena 相关）
     kg_calls = [(i, iv) for i, iv in enumerate(interactions)
                 if iv.get("type") == "CALL"
@@ -556,12 +551,11 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for j in range(idx + 1, min(idx + 5, len(interactions))):
                 r = interactions[j]
                 if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                    result_output = (r.get("output") or "")[:500]
-                    break
+                    result_output = (r.get("output") or "")                    break
             full_cmd = iv.get("command") or ""
             item = {
                 "tool": iv.get("tool", ""),
-                "command": full_cmd[:300],
+                "command": full_cmd,
                 "command_parsed": _parse_kg_command(iv.get("tool", ""), full_cmd),
                 "answer": result_output,
                 "output_parsed": _parse_kg_output(result_output),
@@ -587,8 +581,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             if not is_kg:
                 continue
             question = f"查询知识"
-            answer = output[:200]
-            item = {
+            answer = output            item = {
                 "tool": tool,
                 "command": "",
                 "command_parsed": question,
@@ -615,15 +608,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for j in range(idx + 1, min(idx + 5, len(memory_interactions))):
                 r = memory_interactions[j]
                 if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                    result_output = (r.get("output") or "")[:500]
-                    break
+                    result_output = (r.get("output") or "")                    break
             full_cmd = iv.get("command") or ""
             item = {
                 "tool": iv.get("tool", ""),
-                "command": full_cmd[:300],
-                "command_parsed": full_cmd[:200],
+                "command": full_cmd,
+                "command_parsed": full_cmd,
                 "answer": result_output,
-                "output_parsed": result_output[:300],
+                "output_parsed": result_output,
                 "session_id": iv.get("session_id", ""),
                 "timestamp": iv.get("timestamp"),
             }
@@ -656,10 +648,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 display_id = display.group(1) if display else ""
                 info = {
                     "finding_id": fid, "display_id": display_id,
-                    "title": str(inp.get("title", ""))[:120],
-                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
-                    "source": str(inp.get("source", ""))[:100],
-                    "sink": str(inp.get("sink", ""))[:100],
+                    "title": str(inp.get("title", "")),
+                    "vuln_type": str(inp.get("vuln_type", "")),
+                    "source": str(inp.get("source", "")),
+                    "sink": str(inp.get("sink", "")),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": None,
@@ -678,9 +670,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     vr = "CONFIRMED" if outcome in ("confirmed", "fixed", "needs_review") else ("FALSE_POSITIVE" if outcome == "no_change_needed" else None)
                     info = {
                         "finding_id": fid, "display_id": fid,
-                        "title": str(f.get("short_summary", ""))[:120],
-                        "vuln_type": str(f.get("category", ""))[:60],
-                        "source": str(f.get("file", ""))[:100],
+                        "title": str(f.get("short_summary", "")),
+                        "vuln_type": str(f.get("category", "")),
+                        "source": str(f.get("file", "")),
                         "sink": "", "session_id": ev.session_id,
                         "timestamp": ev.timestamp_ms,
                         "validation_result": vr,
@@ -704,10 +696,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 finding_id = finding_id or str(inp.get("finding_id", "")) or f"secmate-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
-                    "title": str(inp.get("title", "") or inp.get("vuln_type", ""))[:120],
-                    "vuln_type": str(inp.get("vuln_type", "") or inp.get("category", ""))[:60],
-                    "source": str(inp.get("source", "") or inp.get("file_path", ""))[:100],
-                    "sink": str(inp.get("sink", "") or inp.get("function_name", ""))[:100],
+                    "title": str(inp.get("title", "") or inp.get("vuln_type", "")),
+                    "vuln_type": str(inp.get("vuln_type", "") or inp.get("category", "")),
+                    "source": str(inp.get("source", "") or inp.get("file_path", "")),
+                    "sink": str(inp.get("sink", "") or inp.get("function_name", "")),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": None,
@@ -731,10 +723,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 finding_id = finding_id or f"secmate-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
-                    "title": str(inp.get("vuln_type", ""))[:120],
-                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
-                    "source": str(inp.get("file_path", ""))[:100],
-                    "sink": str(inp.get("function_name", ""))[:100],
+                    "title": str(inp.get("vuln_type", "")),
+                    "vuln_type": str(inp.get("vuln_type", "")),
+                    "source": str(inp.get("file_path", "")),
+                    "sink": str(inp.get("function_name", "")),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": None,
@@ -761,10 +753,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 finding_id = finding_id or f"secmate-verdict-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
-                    "title": str(inp.get("title", "") or inp.get("vuln_type", ""))[:120],
-                    "vuln_type": str(inp.get("vuln_type", ""))[:60],
-                    "source": str(inp.get("file_path", "") or inp.get("primary_location", ""))[:100],
-                    "sink": str(inp.get("function_name", ""))[:100],
+                    "title": str(inp.get("title", "") or inp.get("vuln_type", "")),
+                    "vuln_type": str(inp.get("vuln_type", "")),
+                    "source": str(inp.get("file_path", "") or inp.get("primary_location", "")),
+                    "sink": str(inp.get("function_name", "")),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": vr,
@@ -782,8 +774,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 vid = str(inp.get("vulnerability_id", "")) or f"wvv-{ev.event_id}"
                 info = {
                     "finding_id": vid, "display_id": vid,
-                    "title": str(inp.get("category", ""))[:120],
-                    "vuln_type": str(inp.get("category", ""))[:60],
+                    "title": str(inp.get("category", "")),
+                    "vuln_type": str(inp.get("category", "")),
                     "source": "", "sink": "",
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
@@ -807,7 +799,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                 else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
                             info = {
                                 "finding_id": case_id, "display_id": case_id,
-                                "title": f"CVulnVerify {case_id}"[:120],
+                                "title": f"CVulnVerify {case_id}",
                                 "vuln_type": "",
                                 "source": "", "sink": "",
                                 "session_id": ev.session_id,
@@ -842,10 +834,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         continue
                     info = {
                         "finding_id": fid, "display_id": fid,
-                        "title": str(f.get("title", ""))[:120],
-                        "vuln_type": str(f.get("vuln_type", ""))[:60],
-                        "source": sf[:100],
-                        "sink": str(f.get("function_name", ""))[:100],
+                        "title": str(f.get("title", "")),
+                        "vuln_type": str(f.get("vuln_type", "")),
+                        "source": sf,
+                        "sink": str(f.get("function_name", "")),
                         "session_id": ev.session_id,
                         "timestamp": ev.timestamp_ms,
                         "validation_result": "CONFIRMED",
@@ -879,10 +871,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     else ("FALSE_POSITIVE" if verdict == "FALSE_POSITIVE" else None)
                 info = {
                     "finding_id": fid, "display_id": fid,
-                    "title": str(f.get("description", ""))[:120],
-                    "vuln_type": str(f.get("cwe", ""))[:60],
-                    "source": str(f.get("file", ""))[:100],
-                    "sink": str(f.get("sink", ""))[:100],
+                    "title": str(f.get("description", "")),
+                    "vuln_type": str(f.get("cwe", "")),
+                    "source": str(f.get("file", "")),
+                    "sink": str(f.get("sink", "")),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": vr,
@@ -913,22 +905,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         tool = ev.tool_name or ""
         ts = ev.timestamp_ms or 0
         if tool == "bash":
-            cmd = str(inp.get("command", ""))[:150]
-            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
+            cmd = str(inp.get("command", ""))            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
                 return {"tool": "bash", "action": cmd, "session_id": ev.session_id, "ts": ts}
         elif tool == "read":
-            fp = str(inp.get("file_path", ""))[:150]
-            if fp:
+            fp = str(inp.get("file_path", ""))            if fp:
                 return {"tool": "read", "action": fp, "session_id": ev.session_id, "ts": ts}
         elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
                       "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
                       "mcp__workflow-tools__store_tracer_verdict") or \
              (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
-            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))[:100]
-            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
+            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
         elif tool == "write":
-            fp = str(inp.get("file_path") or inp.get("path") or "")[:100]
-            if fp:
+            fp = str(inp.get("file_path") or inp.get("path") or "")            if fp:
                 # CVulnVerify: write vuln_verify_final_verdict.json = 结论点
                 if "vuln_verify_final_verdict" in fp:
                     return {"tool": "finding", "action": fp, "session_id": ev.session_id, "ts": ts}
@@ -946,7 +934,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         # 从 finding 提交点（结论点）倒推挖掘链
         finding_info = None
         if matched_fid:
-            finding_info = finding_events.get(matched_fid) or finding_events.get(matched_fid[:8])
+            finding_info = finding_events.get(matched_fid)
 
         if finding_info or case.get("session_id"):
             # TP/FP: 从 finding 提交点倒推，挖掘链 = 关联 session 中提交之前的动作
@@ -1027,7 +1015,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 fn_data = {
                     "baseline_vulnerability": {
                         "case_id": case_id,
-                        "description": description[:800],
+                        "description": description,
                         "vulnerability_type": vuln_type,
                         "source_file": source_file,
                         "source_function": source_function,
@@ -1036,7 +1024,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     "agent_findings_list": [{"title": f["title"], "vuln_type": f["vuln_type"],
                                              "source": f["source"], "sink": f["sink"],
                                              "validation_result": f.get("validation_result")}
-                                            for f in agent_findings_list[:20]],
+                                            for f in agent_findings_list],
                     "nogk_confusion": nogk_confusion,
                 }
                 fn_prompt = [
@@ -1114,7 +1102,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         data = {
             "baseline_vulnerability": {
                 "case_id": case_id,
-                "description": description[:800],
+                "description": description,
                 "vulnerability_type": vuln_type,
                 "source_file": case.get("source_file", ""),
                 "source_function": case.get("source_function", ""),
@@ -1135,7 +1123,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             "agent_findings_list": [{"title": f["title"], "vuln_type": f["vuln_type"],
                                      "source": f["source"], "sink": f["sink"],
                                      "validation_result": f.get("validation_result")}
-                                    for f in agent_findings_list[:20]],
+                                    for f in agent_findings_list],
             "knowledge_interactions": [{"tool": iv.get("tool",""),
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
@@ -1183,12 +1171,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         # token 估算 + LLM 压缩：防止输入超限（替代截断，保留信息完整性）
         _data_str = json.dumps(data, ensure_ascii=False)
-        if len(_data_str) > 1000000:  # ~350k tokens，500k 上下文的 70%
+        if len(_data_str) > 840000:  # ~280k tokens，400k 上下文的 70%
             print(f"[KG_ANALYSIS] prompt 数据过大 ({len(_data_str)} chars)，LLM 压缩中...", flush=True)
             # 1. LLM 压缩 mining_actions：用结构化摘要替代原始调用链
             _actions = data.get("mining_actions", [])
             _actions_str = json.dumps(_actions, ensure_ascii=False)
-            if len(_actions_str) > 300000:
+            if len(_actions_str) > 250000:
                 _compress_prompt = [
                     {"role": "system", "content": (
                         "你是调用链压缩器。将漏洞挖掘的工具调用序列压缩成结构化摘要。\n"
