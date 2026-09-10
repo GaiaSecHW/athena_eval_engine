@@ -51,7 +51,8 @@ import re as _re
 _MEMORY_READ_RE = _re.compile(
     r"argo\.memory\s+(get|search|recall|list|query|find)"  # Argo: argo.memory get/search/recall
     r"|mem\s+(recall|get|search|list|query|find)"  # memengine: mem recall/get/search
-    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?",  # memengine 目录路径（含 seeddir 子目录和根目录）
+    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?"  # memengine 目录路径（含 seeddir 子目录和根目录）
+    r"|[\\/]app[\\/]memory[\\/]",  # /app/memory/ 目录
     _re.IGNORECASE,
 )
 # 记忆写入：不算记忆访问（用户口径：只看读取/检索）
