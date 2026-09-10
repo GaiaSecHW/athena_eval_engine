@@ -1079,6 +1079,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             })
             continue
 
+        _agent_vr = case.get("agent_validation")
         data = {
             "baseline_vulnerability": {
                 "case_id": case_id,
@@ -1091,6 +1092,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "confusion": confusion,
                 "kg_judgment": kg_judgment,
                 "matched_finding_id": matched_fid or None,
+                "agent_validation": _agent_vr,
             },
             "matched_finding": ({
                 "title": finding_info["title"],
@@ -1110,59 +1112,75 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             "nogk_confusion": nogk_confusion,
         }
 
-        # FN 案例追加"为什么没有发现"的分析指令
-        fn_extra = ""
-        if kg_judgment == "NOT_FOUND":
-            fn_extra = (
-                "\n5. 漏报根因：Agent 为什么没有发现这个漏洞？从 agent_findings_list 概括 Agent 的挖掘范围"
-                "（涉及哪些模块/文件），与基线漏洞位置（source_file="
-                + (case.get("source_file", "") or "未知") + "）对比，说明是否接触过漏洞所在区域。"
-                "不要逐个列举 finding，只需概括挖掘范围和偏离方向。"
-                "\n6. 知识图谱/记忆的潜在帮助：Agent 有知识交互记录（knowledge_interactions），"
-                "但仍然漏报。知识交互是否涉及漏洞所在区域？如果知识引导了正确方向，Agent 为什么还是没发现？"
-                "如果知识没有引导到正确方向，缺少什么知识？"
-                "\n7. No-KG 也漏报了吗（nogk_confusion）？如果都漏报说明漏洞本身难发现。"
+        # 根据 confusion + agent_validation 构建场景特定的问题
+        if confusion == "TP":
+            _case_q = (
+                "## 场景：TP — Agent 找到并确认了漏洞\n"
+                "1. 为什么能挖到这个漏洞？Agent 的挖掘链（mining_actions）如何接触到漏洞代码？\n"
+                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否引导 Agent 到漏洞所在区域？\n"
+                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
+        elif confusion == "FN" and _agent_vr == "FALSE_POSITIVE":
+            _case_q = (
+                "## 场景：FN — Agent 找到此漏洞但确认为非漏洞\n"
+                "1. 为什么 Agent 将此漏洞确认为非漏洞（FALSE_POSITIVE）？判定依据是什么？\n"
+                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否影响了 Agent 的判定？\n"
+                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+            )
+        elif confusion == "FN":
+            _case_q = (
+                "## 场景：FN — Agent 未找到此漏洞\n"
+                "1. 为什么没挖到？从 agent_findings_list 概括 Agent 的挖掘范围，"
+                "与基线漏洞位置（" + (case.get("source_file") or "未知") + "）对比，是否偏离？\n"
+                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否涉及漏洞所在区域？缺少什么知识？\n"
+                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+            )
+        elif confusion == "FP":
+            _case_q = (
+                "## 场景：FP — 基线非漏洞但 Agent 报告为漏洞\n"
+                "1. 为什么误报？Agent 的挖掘链如何接触到这个非漏洞区域？\n"
+                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否误导了 Agent？\n"
+                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+            )
+        else:  # TN
+            _case_q = (
+                "## 场景：TN — 基线非漏洞，Agent 正确排除或未报告\n"
+                "1. 为什么正确排除（或未报告）？Agent 是否接触过此区域？\n"
+                "2. 知识与记忆是正向/负向/中性？\n"
+                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+            )
+
         prompt = [
             {"role": "system", "content": (
-                "你是知识图谱与记忆介入效果分析员。针对每个基线漏洞，分析知识图谱与记忆的介入情况。\n\n"
-                "# 知识图谱与记忆的使用方法\n"
-                "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
-                "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
-                "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
-                "用于跨会话积累和复用漏洞挖掘知识。\n"
+                "你是知识图谱与记忆介入效果分析员。结论先行，然后按场景分析。\n\n"
+                "# 知识图谱与记忆的作用\n"
+                "知识图谱（KG）：提供项目代码结构、组件依赖、已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
+                "记忆（Memory）：存储历史挖掘经验，用于跨会话复用漏洞挖掘知识。\n"
                 "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
                 "# 数据说明\n"
-                "- matched_finding：Agent 提交的、与基线漏洞匹配的 finding 详情。validation_result 是 AI 判定结论：\n"
-                "  CONFIRMED = AI 确认是漏洞，FALSE_POSITIVE = AI 判定非漏洞\n"
-                "- mining_actions：从 finding 提交点倒推的挖掘链（提交之前的 bash/read/write 等动作）\n"
-                "- agent_findings_list：Agent 提交的所有 finding 摘要\n"
-                "- knowledge_interactions：Agent 与知识图谱/记忆的交互记录\n\n"
-                "# impact 判定规则（基于 KG 结果与基线的对比 + 知识交互内容）\n"
-                "- POSITIVE（正向）：知识图谱与记忆提供的知识帮助 Agent 找到了与基线一致的漏洞，"
-                "或引导 Agent 聚焦到正确的漏洞区域\n"
-                "- NEGATIVE（负向）：知识图谱与记忆提供的信息误导了 Agent，导致与基线不符，"
-                "或 Agent 过度依赖知识而忽略了实际代码中的漏洞\n"
-                "- NEUTRAL（中性）：知识交互与漏洞排查无关，或知识未产生影响，"
-                "Agent 的挖掘行为在有/无知识时无显著差异\n\n"
-                "# reason 写作要求\n"
-                "reason 必须包含以下内容（1000字以内）：\n"
-                "1. 挖掘过程概述：Agent 在提交 finding 之前做了什么（mining_actions 中的 bash/read/write 动作）\n"
-                "2. finding 判定：matched_finding 的 validation_result 是什么（CONFIRMED/FALSE_POSITIVE）？与基线漏洞是否一致？\n"
-                "3. 知识交互详情：Agent 向知识图谱与记忆查询了什么内容？返回了什么结果？\n"
-                "4. 知识影响分析：知识图谱与记忆返回的信息是否帮助或误导了 Agent 的挖掘？具体说明\n"
-                "5. 对比结论：与 No-KG 结果对比，知识是否产生了差异化影响\n"
-                "必须引用 matched_finding、mining_actions、knowledge_interactions 中的具体内容作为证据，不要泛泛而谈。\n\n"
+                "- kg_status.confusion: TP/FN/FP/TN\n"
+                "- kg_status.agent_validation: Agent 对此 finding 的判定（CONFIRMED=确认漏洞, FALSE_POSITIVE=判定非漏洞）\n"
+                "- matched_finding: Agent 提交的与基线匹配的 finding（FN 无匹配时为 null）\n"
+                "- mining_actions: 从 finding 提交点倒推的挖掘链\n"
+                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录\n"
+                "- nogk_confusion: No-KG 条件下的 confusion 结果\n\n"
+                "# impact 判定规则\n"
+                "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现/排除漏洞\n"
+                "- NEGATIVE（负向）：知识误导 Agent，导致漏报/误报\n"
+                "- NEUTRAL（中性）：知识未产生影响，或无知识交互\n\n"
+                "# reason 写作要求（800字以内，结论先行）\n"
+                "第一句给出结论：知识与记忆是正向/负向/中性帮助。\n"
+                "然后按场景回答具体问题（见 user 消息）。\n"
+                "必须引用 knowledge_interactions、mining_actions 中的具体内容作为证据，不要泛泛而谈。\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
-                '\n\n分析：\n1. KG 是否识别此漏洞？matched_finding 的 validation_result 是什么？\n'
-                '2. Agent 向知识图谱与记忆问了什么？列出 knowledge_interactions 中的具体查询内容\n'
-                '3. 知识图谱与记忆返回了什么？返回内容是否与漏洞相关？\n'
-                '4. Agent 的挖掘链（mining_actions）是否接触过漏洞文件？\n'
-                '5. 知识对排查此漏洞是正向、负向还是中性？'
-                + fn_extra +
-                '\n\n返回 JSON: {"kg_judgment": "VULNERABILITY|NON_VULNERABILITY|NOT_FOUND", "query_summary": "<=200字中文，概括Agent查询了什么", "knowledge_summary": "<=200字中文，概括知识返回了什么", "impact": "POSITIVE|NEGATIVE|NEUTRAL", "reason": "1000字以内中文，必须包含挖掘过程、finding判定、知识交互详情、知识影响分析、对比结论"}'
+                '\n\n' + _case_q +
+                '\n\n返回 JSON: {"kg_judgment": "' + kg_judgment + '", '
+                '"query_summary": "<=200字中文，概括Agent查询了什么", '
+                '"knowledge_summary": "<=200字中文，概括知识返回了什么", '
+                '"impact": "POSITIVE|NEGATIVE|NEUTRAL", '
+                '"reason": "800字以内中文，结论先行"}'
             )},
         ]
 
