@@ -25,6 +25,7 @@ class ReportModel:
     summary: str = ""
     coverage: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
+    llm_token_usage: dict = field(default_factory=dict)
 
 
 def assemble(evaluation_id: str, metrics: list, stats: list,
@@ -470,6 +471,28 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
+def _get_related_sessions(session_graph, start_session):
+    """BFS 遍历 session_graph edges，获取所有可达 session（含 start_session）。
+
+    session_graph 由 parser.build_session_graph(events) 构建，通过共享文件/fact ID
+    关联同一 trace 内的不同 session（含跨 JSONL 文件的子 agent session）。
+    """
+    if not start_session:
+        return set()
+    visited = {start_session}
+    if not session_graph:
+        return visited
+    queue = [start_session]
+    edges = session_graph.get('edges', {})
+    while queue:
+        sid = queue.pop(0)
+        for related in edges.get(sid, set()):
+            if related not in visited:
+                visited.add(related)
+                queue.append(related)
+    return visited
+
+
 def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
@@ -888,27 +911,28 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         """从单个 event 提取挖掘行为摘要。"""
         inp = ev.input_json or {}
         tool = ev.tool_name or ""
+        ts = ev.timestamp_ms or 0
         if tool == "bash":
             cmd = str(inp.get("command", ""))[:150]
             if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
-                return {"tool": "bash", "action": cmd, "session_id": ev.session_id}
+                return {"tool": "bash", "action": cmd, "session_id": ev.session_id, "ts": ts}
         elif tool == "read":
             fp = str(inp.get("file_path", ""))[:150]
             if fp:
-                return {"tool": "read", "action": fp, "session_id": ev.session_id}
+                return {"tool": "read", "action": fp, "session_id": ev.session_id, "ts": ts}
         elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
                       "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
                       "mcp__workflow-tools__store_tracer_verdict") or \
              (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
             title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))[:100]
-            return {"tool": "finding", "action": title, "session_id": ev.session_id}
+            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
         elif tool == "write":
             fp = str(inp.get("file_path") or inp.get("path") or "")[:100]
             if fp:
                 # CVulnVerify: write vuln_verify_final_verdict.json = 结论点
                 if "vuln_verify_final_verdict" in fp:
-                    return {"tool": "finding", "action": fp, "session_id": ev.session_id}
-                return {"tool": "write", "action": fp, "session_id": ev.session_id}
+                    return {"tool": "finding", "action": fp, "session_id": ev.session_id, "ts": ts}
+                return {"tool": "write", "action": fp, "session_id": ev.session_id, "ts": ts}
         return None
 
     results = []
@@ -924,29 +948,36 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         if matched_fid:
             finding_info = finding_events.get(matched_fid) or finding_events.get(matched_fid[:8])
 
-        if finding_info:
-            # TP/FP: 从 insert_finding 提交点倒推，挖掘链 = 同 session 中提交之前的动作
-            finding_session = finding_info["session_id"]
-            finding_ts = finding_info["timestamp"]
+        if finding_info or case.get("session_id"):
+            # TP/FP: 从 finding 提交点倒推，挖掘链 = 关联 session 中提交之前的动作
+            # 优先用 finding_events 的 session_id/timestamp；Dataflow ID 不匹配时回退到 case_results
+            if finding_info:
+                finding_session = finding_info["session_id"]
+                finding_ts = finding_info["timestamp"]
+            else:
+                finding_session = case.get("session_id", "")
+                finding_ts = case.get("finding_ts")
+            # BFS: 通过 session_graph 获取所有关联 session（含跨 JSONL 子 agent session）
+            related_sessions = _get_related_sessions(session_graph, finding_session)
             mining_actions = []
             if events:
                 for ev in events:
                     if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
                         continue
-                    if ev.session_id != finding_session:
+                    if ev.session_id not in related_sessions:
                         continue
                     if finding_ts and (ev.timestamp_ms or 0) > finding_ts:
                         continue  # 跳过 finding 提交之后的事件
                     a = _extract_action(ev)
                     if a:
                         mining_actions.append(a)
-                    if len(mining_actions) >= 30:
-                        break
-            # 知识/记忆交互过滤到同 session
+                # 跨 session 事件按时间戳排序
+                mining_actions.sort(key=lambda a: a.get("ts", 0))
+            # 知识/记忆交互也扩展到关联 session
             case_interactions = [iv for iv in sampled_interactions
-                                 if iv.get("session_id") == finding_session]
+                                 if iv.get("session_id") in related_sessions]
             case_mem_interactions = [iv for iv in sampled_mem_interactions
-                                      if iv.get("session_id") == finding_session]
+                                      if iv.get("session_id") in related_sessions]
         elif confusion == "FN" and not matched_fid:
             # FN: Agent 没有提交匹配的 finding，没有挖掘链
             mining_actions = []
@@ -1150,28 +1181,40 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
 
-        # token 估算 + 截断：防止输入超限
+        # token 估算 + LLM 压缩：防止输入超限（替代截断，保留信息完整性）
         _data_str = json.dumps(data, ensure_ascii=False)
-        _data_len = len(_data_str)
-        if _data_len > 50000:  # ~12500 tokens，安全上限
-            print(f"[KG_ANALYSIS] prompt 数据过大 ({_data_len} chars)，截断中...", flush=True)
+        if len(_data_str) > 1000000:  # ~350k tokens，500k 上下文的 70%
+            print(f"[KG_ANALYSIS] prompt 数据过大 ({len(_data_str)} chars)，LLM 压缩中...", flush=True)
+            # 1. LLM 压缩 mining_actions：用结构化摘要替代原始调用链
+            _actions = data.get("mining_actions", [])
+            _actions_str = json.dumps(_actions, ensure_ascii=False)
+            if len(_actions_str) > 300000:
+                _compress_prompt = [
+                    {"role": "system", "content": (
+                        "你是调用链压缩器。将漏洞挖掘的工具调用序列压缩成结构化摘要。\n"
+                        "保留关键信息：读取的文件、搜索的模式、执行的命令、发现的代码片段。\n"
+                        "合并同类操作（如多次 read 同一文件只保留一次）。\n"
+                        '只返回 JSON：{"files_read": ["文件1", ...], "patterns_searched": ["模式1", ...], '
+                        '"key_commands": ["命令摘要1", ...], "summary": "<=300字中文摘要，描述挖掘过程"}'
+                    )},
+                    {"role": "user", "content": _actions_str},
+                ]
+                try:
+                    _compressed = llm_mod.chat_json(_compress_prompt, temperature=0, max_tokens=2000)
+                    if isinstance(_compressed, dict) and _compressed.get("summary"):
+                        data["mining_actions"] = [_compressed]
+                        print(f"[KG_ANALYSIS] mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要", flush=True)
+                except Exception as _e:
+                    print(f"[KG_ANALYSIS] mining_actions 压缩失败，回退截断: {_e}", flush=True)
+                    data["mining_actions"] = _actions[:15]
+            # 2. 压缩 knowledge_interactions 的 answer
+            for iv in data.get("knowledge_interactions", []):
+                if len(iv.get("answer", "")) > 200:
+                    iv["answer"] = iv["answer"][:200] + "..."
+            # 3. 限制 agent_findings_list
             if len(data.get("agent_findings_list", [])) > 10:
                 data["agent_findings_list"] = data["agent_findings_list"][:10]
-            if len(data.get("mining_actions", [])) > 15:
-                data["mining_actions"] = data["mining_actions"][:15]
-            _data_str = json.dumps(data, ensure_ascii=False)
-            if len(_data_str) > 50000:
-                data["agent_findings_list"] = data.get("agent_findings_list", [])[:5]
-                data["mining_actions"] = data.get("mining_actions", [])[:5]
-                for iv in data.get("knowledge_interactions", []):
-                    if len(iv.get("answer", "")) > 100:
-                        iv["answer"] = iv["answer"][:100]
-                _data_str = json.dumps(data, ensure_ascii=False)
-                if len(_data_str) > 50000:
-                    data["agent_findings_list"] = data.get("agent_findings_list", [])[:3]
-                    data["mining_actions"] = data.get("mining_actions", [])[:3]
-                    data["knowledge_interactions"] = data.get("knowledge_interactions", [])[:5]
-            print(f"[KG_ANALYSIS] 截断后 {len(json.dumps(data, ensure_ascii=False))} chars", flush=True)
+            print(f"[KG_ANALYSIS] 压缩后 {len(json.dumps(data, ensure_ascii=False))} chars", flush=True)
 
         prompt = [
             {"role": "system", "content": (

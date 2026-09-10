@@ -31,6 +31,25 @@ MAX_RATE_LIMIT_RETRIES = 20
 _MAX_CONCURRENCY = 6
 _llm_semaphore: threading.Semaphore | None = None
 
+# LLM token 用量累积器（线程安全，跨所有线程共享）
+_token_lock = threading.Lock()
+_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
+
+
+def reset_token_usage():
+    """重置 token 计数器（评测开始前调用）。"""
+    with _token_lock:
+        _token_usage["prompt_tokens"] = 0
+        _token_usage["completion_tokens"] = 0
+        _token_usage["total_tokens"] = 0
+        _token_usage["call_count"] = 0
+
+
+def get_token_usage() -> dict:
+    """获取当前累积的 LLM token 用量。"""
+    with _token_lock:
+        return dict(_token_usage)
+
 
 def is_enabled() -> bool:
     """是否允许发起 LLM 请求（开发环境可显式关闭）。"""
@@ -67,6 +86,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "temperature": temperature,
         "max_tokens": max_tokens,
         "stream": True,
+        "stream_options": {"include_usage": True},
         # 关闭推理模式（兼容各厂商参数，换模型无需改代码）
         "thinking": {"type": "disabled"},
         "chat_template_kwargs": {"enable_thinking": False},
@@ -148,6 +168,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
                 print(f"[LLM] first token received, stream timeout -> {STREAM_TIMEOUT}s", flush=True)
+            # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
+            usage = chunk.get("usage")
+            if usage:
+                with _token_lock:
+                    _token_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
+                    _token_usage["completion_tokens"] += usage.get("completion_tokens", 0)
+                    _token_usage["total_tokens"] += usage.get("total_tokens", 0)
+                    _token_usage["call_count"] += 1
             choices = chunk.get("choices") or []
             if not choices:
                 continue

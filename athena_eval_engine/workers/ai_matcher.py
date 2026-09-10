@@ -369,9 +369,9 @@ def _extract_mining_context(events: list[RawEvent], finding: dict, max_events: i
     提取读取的文件、搜索的模式、代码片段和推理摘要。
     不同平台描述同一漏洞的方式不同，但挖掘过程（读了哪些文件、分析了哪些函数）
     能帮助 LLM 判断是否在调查同一个漏洞。
+    跨 session 收集：不限制同一 session，包含子 agent session 的挖掘行为。
     """
     idx = finding.get("_event_idx", 0)
-    session_id = finding.get("session_id", "")
     start = max(0, idx - max_events)
 
     files_read: list[str] = []
@@ -380,8 +380,6 @@ def _extract_mining_context(events: list[RawEvent], finding: dict, max_events: i
     reasoning_parts: list[str] = []
 
     for e in events[start:idx]:
-        if e.session_id != session_id:
-            continue
         if e.event_type == "TOOL_CALL":
             tool = e.tool_name or ""
             inp = e.input_json or {}
@@ -623,12 +621,18 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         matched_fid = None
         finding_session = ""
         matched_vr = None
+        finding_ts = None
         if is_matched:
             for fi, ci in matches:
                 if ci == bi:
-                    matched_fid = active_findings[fi].get("display_id") or active_findings[fi].get("finding_id", "")[:8]
-                    finding_session = active_findings[fi].get("session_id", "")
-                    matched_vr = active_findings[fi].get("validation_result")
+                    f = active_findings[fi]
+                    matched_fid = f.get("display_id") or f.get("finding_id", "")[:8]
+                    finding_session = f.get("session_id", "")
+                    matched_vr = f.get("validation_result")
+                    # finding 提交时间戳（用于 KG 分析倒推挖掘链）
+                    _ei = f.get("_event_idx")
+                    if _ei is not None and _ei < len(events):
+                        finding_ts = events[_ei].timestamp_ms
                     break
 
         # confusion 矩阵：baseline 标签 + agent validation_result
@@ -641,7 +645,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
         case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                             "matched": is_matched, "matched_finding_id": matched_fid, "confusion": confusion,
-                            "session_id": finding_session, "agent_validation": matched_vr})
+                            "session_id": finding_session, "agent_validation": matched_vr,
+                            "finding_ts": finding_ts})
 
     # 聚合 outcome：所有 case 都是 TP 或 TN → SUCCESS，否则 FAIL
     all_correct = all(c["confusion"] in ("TP", "TN") for c in case_results) if case_results else False

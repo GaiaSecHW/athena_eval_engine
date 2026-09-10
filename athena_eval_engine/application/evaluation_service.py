@@ -16,6 +16,7 @@ from ..workers.resolvers import (
     OutcomeResolverImpl, KnowledgeResolverImpl, ToolActionResolverImpl, ResourceResolverImpl,
 )
 from ..workers.ai_matcher import ai_match_outcome
+from ..infrastructure import llm as llm_mod
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
 from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
@@ -702,6 +703,7 @@ def run(evaluation_id: str) -> dict:
         # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
         # 所有 trace 同时启动；LLM 并发由 llm.py 信号量控制（每评测最多 6 个）
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
+        llm_mod.reset_token_usage()
         _set_status_short(evaluation_id, "AI_MATCHING")
         print(f"[EVAL] 漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）", flush=True)
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
@@ -972,6 +974,8 @@ def run(evaluation_id: str) -> dict:
                         "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
                        for tr in task_runs]
     # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）
+    report.llm_token_usage = llm_mod.get_token_usage()
+    print(f"[EVAL] LLM token 用量: {report.llm_token_usage}", flush=True)
     rj = render_json(report)
 
     # 判断是否需要标记 COMPLETED_WITH_WARNINGS

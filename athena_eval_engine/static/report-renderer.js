@@ -437,5 +437,19 @@ function renderReport(d){
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
   })()}
 
+  ${(()=>{
+    const tu=r.llm_token_usage||{};
+    if(!tu.call_count) return "";
+    return `<div class="card" style="margin-bottom:16px">
+      <h3>🔧 评测引擎 LLM Token 消耗</h3>
+      <table><tr><th>项目</th><th>数值</th></tr>
+      <tr><td>LLM 调用次数</td><td class="num">${tu.call_count||0}</td></tr>
+      <tr><td>Prompt Tokens</td><td class="num">${(tu.prompt_tokens||0).toLocaleString()}</td></tr>
+      <tr><td>Completion Tokens</td><td class="num">${(tu.completion_tokens||0).toLocaleString()}</td></tr>
+      <tr><td>Total Tokens</td><td class="num">${(tu.total_tokens||0).toLocaleString()}</td></tr>
+      </table>
+    </div>`;
+  })()}
+
   `;
 }
