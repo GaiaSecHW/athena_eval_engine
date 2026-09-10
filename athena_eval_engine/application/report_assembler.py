@@ -5,8 +5,80 @@ AI 叙述性结论按 §6.4.2 契约产出 JSON(接 LLM glm-5.2)。
 """
 from __future__ import annotations
 import json
+import re
 from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
+
+
+def _extract_webvv_task_data(events: list) -> dict[str, dict]:
+    """从 WebVulnVerify trace 的 User message (task_data) 中提取 source/sink 等信息。
+
+    T002 的 User message 包含 T001 上报的 finding 数据，格式为：
+    <task_data>
+    VULNERABILITY INFORMATION:
+    - Vulnerability ID: 50318
+    - File URI: DPOrderFulfillmentService/.../FileBucketService.java
+    - URL: /rest/dp/order/fulfillment/v1/order/supplement
+    - Source: supplement() 方法接收...
+    - Sink: FileBucketService.getInputStream()...
+    </task_data>
+
+    返回 {vulnerability_id: {source, sink, file_uri, url}} 映射。
+    """
+    result_map: dict[str, dict] = {}
+    for e in events:
+        text = ""
+        if isinstance(e.input_json, str):
+            text = e.input_json
+        elif isinstance(e.output_json, str):
+            text = e.output_json
+        elif e.output_json is not None:
+            text = str(e.output_json)
+        elif e.input_json is not None:
+            text = str(e.input_json)
+
+        if not text or "task_data" not in text:
+            continue
+
+        vid_m = re.search(r'[Vv]ulnerability[_ ]?[Ii][Dd][:：]\s*(\S+)', text)
+        if not vid_m:
+            continue
+        vid = vid_m.group(1).strip()
+
+        def _extract_field(label: str) -> str:
+            m = re.search(rf'-\s*{label}[:：]\s*(.+?)(?=\n\s*-|\Z)', text, re.DOTALL)
+            return m.group(1).strip() if m else ""
+
+        result_map[vid] = {
+            "source": _extract_field("Source"),
+            "sink": _extract_field("Sink"),
+            "file_uri": _extract_field("File URI"),
+            "url": _extract_field("URL"),
+        }
+
+    return result_map
+
+
+def _extract_webvv_title(result_text: str) -> str:
+    """从 WebVulnVerify 的验证报告 (result 字段) 中提取具体标题。
+
+    优先提取"一句话结论"，其次提取元数据表中的"漏洞类型"。
+    如果都提取不到，返回空字符串（调用方回退到 category）。
+    """
+    if not result_text:
+        return ""
+
+    # 1. "一句话结论：xxx" → 取结论文本
+    m = re.search(r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)', result_text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    # 2. 元数据表 "| 漏洞类型 | xxx |" → 取值
+    m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
+    if m:
+        return m.group(1).strip()
+
+    return ""
 
 
 @dataclass
@@ -639,7 +711,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     agent_findings_list = []  # Agent 提交的所有 finding 摘要（用于 FN 展示）
     _seen_fids = set()
     if events:
-        import re as _re_finding
+        # 预提取 WebVulnVerify 的 task_data（T001 上报的 source/sink 等信息）
+        _webvv_task_data = _extract_webvv_task_data(events)
         for ev in events:
             if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
                 continue
@@ -648,9 +721,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             out_str = str(ev.output_json or "")
             # Turing: vuln_hunt_insert_finding
             if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding"):
-                m = _re_finding.search(r"id=([a-f0-9-]+)", out_str)
+                m = re.search(r"id=([a-f0-9-]+)", out_str)
                 fid = m.group(1) if m else str(inp.get("detection_id", "?"))
-                display = _re_finding.search(r"Finding\s+(\S+)", out_str)
+                display = re.search(r"Finding\s+(\S+)", out_str)
                 display_id = display.group(1) if display else ""
                 info = {
                     "finding_id": fid, "display_id": display_id,
@@ -778,11 +851,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE") \
                     else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
                 vid = str(inp.get("vulnerability_id", "")) or f"wvv-{ev.event_id}"
+                result_text = str(inp.get("result", ""))
+                # 从 task_data 提取 source/sink（T001 上报的原始 finding 信息）
+                td = _webvv_task_data.get(vid, {})
+                # 从验证报告中提取具体标题（一句话结论），回退到 category
+                title = _extract_webvv_title(result_text) or str(inp.get("category", ""))
                 info = {
                     "finding_id": vid, "display_id": vid,
-                    "title": str(inp.get("category", "")),
+                    "title": title,
                     "vuln_type": str(inp.get("category", "")),
-                    "source": "", "sink": "",
+                    "source": td.get("source", ""),
+                    "sink": td.get("sink", ""),
                     "session_id": ev.session_id,
                     "timestamp": ev.timestamp_ms,
                     "validation_result": vr,
@@ -827,7 +906,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
             if '"findings"' not in text:
                 continue
-            m = _re_finding.search(r'```json\s*(\{.*?\})\s*```', text, _re_finding.DOTALL)
+            m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
             if not m:
                 continue
             try:

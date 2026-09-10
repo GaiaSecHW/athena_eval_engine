@@ -38,6 +38,77 @@ def _secmate_tag_to_vr(tag: str) -> str | None:
     return None
 
 
+def _extract_webvv_task_data(events: list[RawEvent]) -> dict[str, dict]:
+    """从 WebVulnVerify trace 的 User message (task_data) 中提取 source/sink 等信息。
+
+    T002 的 User message 包含 T001 上报的 finding 数据，格式为：
+    <task_data>
+    VULNERABILITY INFORMATION:
+    - Vulnerability ID: 50318
+    - File URI: DPOrderFulfillmentService/.../FileBucketService.java
+    - URL: /rest/dp/order/fulfillment/v1/order/supplement
+    - Source: supplement() 方法接收...
+    - Sink: FileBucketService.getInputStream()...
+    </task_data>
+
+    返回 {vulnerability_id: {source, sink, file_uri, url}} 映射。
+    """
+    result_map: dict[str, dict] = {}
+    for e in events:
+        text = ""
+        if isinstance(e.input_json, str):
+            text = e.input_json
+        elif isinstance(e.output_json, str):
+            text = e.output_json
+        elif e.output_json is not None:
+            text = str(e.output_json)
+        elif e.input_json is not None:
+            text = str(e.input_json)
+
+        if not text or "task_data" not in text:
+            continue
+
+        vid_m = re.search(r'[Vv]ulnerability[_ ]?[Ii][Dd][:：]\s*(\S+)', text)
+        if not vid_m:
+            continue
+        vid = vid_m.group(1).strip()
+
+        def _extract_field(label: str) -> str:
+            m = re.search(rf'-\s*{label}[:：]\s*(.+?)(?=\n\s*-|\Z)', text, re.DOTALL)
+            return m.group(1).strip() if m else ""
+
+        result_map[vid] = {
+            "source": _extract_field("Source"),
+            "sink": _extract_field("Sink"),
+            "file_uri": _extract_field("File URI"),
+            "url": _extract_field("URL"),
+        }
+
+    return result_map
+
+
+def _extract_webvv_title(result_text: str) -> str:
+    """从 WebVulnVerify 的验证报告 (result 字段) 中提取具体标题。
+
+    优先提取"一句话结论"，其次提取元数据表中的"漏洞类型"。
+    如果都提取不到，返回空字符串（调用方回退到 category）。
+    """
+    if not result_text:
+        return ""
+
+    # 1. "一句话结论：xxx" → 取结论文本
+    m = re.search(r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)', result_text, re.DOTALL)
+    if m:
+        return m.group(1).strip()
+
+    # 2. 元数据表 "| 漏洞类型 | xxx |" → 取值
+    m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
+    if m:
+        return m.group(1).strip()
+
+    return ""
+
+
 def _extract_findings(events: list[RawEvent]) -> list[dict]:
     """从 events 提取 finding 列表，关联 insert→update 的 validation_result。
 
@@ -48,6 +119,9 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
     - DataflowVulnScan（pi-agent JSONL）：assistant TEXT 中 {"candidates":[{judgment:"confirmed"}]}
     """
     findings: dict[str, dict] = {}  # finding_id(UUID) → {title, vuln_type, ...}
+
+    # 预提取 WebVulnVerify 的 task_data（T001 上报的 source/sink 等信息）
+    _webvv_task_data = _extract_webvv_task_data(events)
 
     for _ei, e in enumerate(events):
         if not e.is_tool_call():
@@ -107,15 +181,20 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             vid = str(inp.get("vulnerability_id", "?"))
             status = inp.get("status", "")
             vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE", "LOCAL_VALIDATION_EXPLOITABLE") else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
+            result_text = inp.get("result", "")
+            # 从 task_data 提取 source/sink（T001 上报的原始 finding 信息）
+            td = _webvv_task_data.get(vid, {})
+            # 从验证报告中提取具体标题（一句话结论），回退到 category
+            title = _extract_webvv_title(result_text) or inp.get("category", "")
             findings[vid] = {
                 "finding_id": vid,
                 "display_id": vid,
-                "title": inp.get("category", ""),
-                "description": inp.get("result", ""),
+                "title": title,
+                "description": result_text,
                 "vuln_type": inp.get("category", ""),
                 "severity": "",
-                "source": "",
-                "sink": "",
+                "source": td.get("source", ""),
+                "sink": td.get("sink", ""),
                 "validation_result": vr,
                 "platform": "webvulnverify",
                 "confidence": inp.get("confidence"),
