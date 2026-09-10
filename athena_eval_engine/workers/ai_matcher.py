@@ -137,9 +137,9 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                     findings[fid] = {
                         "finding_id": fid,
                         "display_id": fid,
-                        "title": str(inp.get("vuln_type", ""))[:120] or str(inp.get("description", ""))[:120],
+                        "title": str(inp.get("vuln_type", "")) or str(inp.get("description", "")),
                         "description": str(inp.get("description", "")),
-                        "vuln_type": str(inp.get("vuln_type", ""))[:60],
+                        "vuln_type": str(inp.get("vuln_type", "")),
                         "severity": str(inp.get("score", "")),
                         "source": str(inp.get("file_path", "")),
                         "sink": str(inp.get("function_name", "")),
@@ -191,7 +191,7 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             findings[finding_id] = {
                 "finding_id": finding_id,
                 "display_id": finding_id,
-                "title": str(inp.get("vuln_type", ""))[:120],
+                "title": str(inp.get("vuln_type", "")),
                 "description": inp.get("description", ""),
                 "vuln_type": inp.get("vuln_type", ""),
                 "severity": inp.get("severity", "") or str(inp.get("score", "")),
@@ -226,7 +226,7 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             findings[finding_id] = {
                 "finding_id": finding_id,
                 "display_id": finding_id,
-                "title": str(inp.get("title", ""))[:120] or str(inp.get("vuln_type", ""))[:120],
+                "title": str(inp.get("title", "")) or str(inp.get("vuln_type", "")),
                 "description": inp.get("description", ""),
                 "vuln_type": inp.get("vuln_type", ""),
                 "severity": inp.get("severity", ""),
@@ -299,12 +299,12 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 findings[fid] = {
                     "finding_id": fid,
                     "display_id": fid,
-                    "title": str(f.get("vuln_type", ""))[:120],
+                    "title": str(f.get("vuln_type", "")),
                     "description": str(f.get("reason", "")),
-                    "vuln_type": str(f.get("vuln_type", ""))[:60],
+                    "vuln_type": str(f.get("vuln_type", "")),
                     "severity": str(f.get("severity", "")),
-                    "source": str(f.get("source_evidence", ""))[:100],
-                    "sink": fn[:100],
+                    "source": str(f.get("source_evidence", "")),
+                    "sink": fn,
                     "validation_result": vr,
                     "platform": "dataflow-vuln-scan",
                     "session_id": e.session_id,
@@ -336,7 +336,7 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             findings[fid] = {
                 "finding_id": fid,
                 "display_id": fid,
-                "title": str(f.get("description", ""))[:120],
+                "title": str(f.get("description", "")),
                 "description": f.get("description", ""),
                 "vuln_type": str(f.get("cwe", "")),
                 "severity": f.get("severity", ""),
@@ -390,25 +390,25 @@ def _extract_mining_context(events: list[RawEvent], finding: dict, max_events: i
                     files_read.append(path)
                 out_str = outp if isinstance(outp, str) else str(outp)
                 if out_str:
-                    code_snippets.append(out_str[:300])
+                    code_snippets.append(out_str)
             elif tool in ("grep", "rg", "search"):
                 pattern = inp.get("pattern") or inp.get("regex") or ""
                 if pattern:
                     patterns_searched.append(pattern)
             elif tool == "bash":
                 cmd = inp.get("command", "")
-                if cmd and len(cmd) < 200:
+                if cmd:
                     code_snippets.append(f"$ {cmd}")
         elif e.event_type == "REASONING":
             text = e.output_json if isinstance(e.output_json, str) else str(e.output_json or "")
             if text:
-                reasoning_parts.append(text[:300])
+                reasoning_parts.append(text)
 
     return {
-        "files_read": list(dict.fromkeys(files_read))[:10],
-        "patterns_searched": list(dict.fromkeys(patterns_searched))[:10],
-        "code_snippets": code_snippets[:5],
-        "reasoning": reasoning_parts[:3],
+        "files_read": list(dict.fromkeys(files_read)),
+        "patterns_searched": list(dict.fromkeys(patterns_searched)),
+        "code_snippets": code_snippets,
+        "reasoning": reasoning_parts,
     }
 
 
@@ -417,12 +417,12 @@ def _ev(e: RawEvent, fp=None):
                     part_id=e.part_id, tool_name=e.tool_name, event_timestamp=e.timestamp_ms, field_path=fp)
 
 
-def _pre_filter_findings(findings: list[dict], benchmarks: list, top_n: int = 10) -> list[dict]:
-    """按关键词相似度排序 findings，取最可能匹配基线的前 top_n 个。
+def _sort_findings_by_relevance(findings: list[dict], benchmarks: list) -> list[dict]:
+    """按关键词相似度排序 findings，使最可能匹配基线的 finding 排在前面。
 
-    避免只取前 N 个而错过匹配的 finding（Agent 可能提交 100+ 个 finding）。
+    不截断：返回全部 findings，仅按相关性排序（优化"基线匹配即停"策略）。
     """
-    if len(findings) <= top_n:
+    if len(findings) <= 1:
         return findings
 
     # 提取基线关键词
@@ -431,7 +431,6 @@ def _pre_filter_findings(findings: list[dict], benchmarks: list, top_n: int = 10
         md = b.metadata or {}
         for field in ("description", "vulnerability_type"):
             text = md.get(field, "") or ""
-            # 提取单词（>=3 字符）
             baseline_keywords.update(w.lower() for w in re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text))
 
     # 为每个 finding 计算与基线的相似度
@@ -440,9 +439,7 @@ def _pre_filter_findings(findings: list[dict], benchmarks: list, top_n: int = 10
         finding_words = set(w.lower() for w in re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text))
         return len(finding_words & baseline_keywords)
 
-    # 按相似度降序排序，取前 top_n
-    sorted_f = sorted(findings, key=_score, reverse=True)
-    return sorted_f[:top_n]
+    return sorted(findings, key=_score, reverse=True)
 
 
 def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]) -> OutcomeFact:
@@ -476,8 +473,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
           f"(CONFIRMED={sum(1 for f in active_findings if f.get('validation_result')=='CONFIRMED')} "
           f"FALSE_POSITIVE={sum(1 for f in active_findings if f.get('validation_result')=='FALSE_POSITIVE')})", flush=True)
     for i, f in enumerate(active_findings[:5]):
-        print(f"[AI_MATCH]   finding[{i}] id={f.get('display_id') or f.get('finding_id','')[:12]} "
-              f"title={str(f.get('title',''))[:60]} vuln_type={str(f.get('vuln_type',''))[:30]} "
+        print(f"[AI_MATCH]   finding[{i}] id={f.get('display_id') or f.get('finding_id','')} "
+              f"title={str(f.get('title',''))} vuln_type={str(f.get('vuln_type',''))} "
               f"validation={f.get('validation_result')}", flush=True)
     if len(active_findings) > 5:
         print(f"[AI_MATCH]   ...还有 {len(active_findings)-5} 条 finding", flush=True)
@@ -504,8 +501,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             validation_result=None, resolver_status="NO_FINDING",
         ), case_results
 
-    # 预过滤：取前 20 个 finding（避免过多）
-    active_findings = _pre_filter_findings(active_findings, benchmarks, top_n=20)
+    # 按相关性排序（不截断，优化"基线匹配即停"策略）
+    active_findings = _sort_findings_by_relevance(active_findings, benchmarks)
 
     # 为每个 finding 提取挖掘过程上下文（读了哪些文件、搜了什么、推理了什么）
     for f in active_findings:
@@ -518,16 +515,16 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         baseline_list.append({
             "case_id": b.benchmark_item_id or "",
             "vulnerability_type": md.get("vulnerability_type", ""),
-            "description": (md.get("description") or "")[:300],
+            "description": md.get("description") or "",
             "source_file": md.get("source_file") or "",
             "source_function": md.get("source_function") or "",
         })
     finding_list = []
     for f in active_findings:
         finding_list.append({
-            "title": (f.get("title") or "")[:200],
+            "title": f.get("title") or "",
             "vuln_type": f.get("vuln_type", ""),
-            "description": (f.get("description") or "")[:300],
+            "description": f.get("description") or "",
             "source": f.get("source", ""),
             "sink": f.get("sink", ""),
             "mining_context": f.get("_mining_context", {}),
@@ -594,8 +591,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                     matched_case_ids.add(cid)
                     available_indices.remove(fi)  # finding 一对一：从候选池移除
                     matched = True
-                    print(f"[AI_MATCH]   MATCHED case={cid[:20]} ← finding[{fi}] "
-                          f"id={active_findings[fi].get('display_id','')[:20]}", flush=True)
+                    print(f"[AI_MATCH]   MATCHED case={cid} ← finding[{fi}] "
+                          f"id={active_findings[fi].get('display_id','')}", flush=True)
                     break  # 基线匹配即停
 
             # 取消未完成的 LLM 调用（已发出的不可取消，结果丢弃）
@@ -604,8 +601,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                     f.cancel()
 
             if not matched:
-                md_desc = str((b.metadata or {}).get("vulnerability_type", ""))[:40]
-                print(f"[AI_MATCH]   UNMATCHED case={cid[:20]} label={b.expected_label.value if b.expected_label else 'NA'} "
+                md_desc = str((b.metadata or {}).get("vulnerability_type", ""))
+                print(f"[AI_MATCH]   UNMATCHED case={cid} label={b.expected_label.value if b.expected_label else 'NA'} "
                       f"vuln_type={md_desc}", flush=True)
 
     print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
@@ -626,7 +623,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             for fi, ci in matches:
                 if ci == bi:
                     f = active_findings[fi]
-                    matched_fid = f.get("display_id") or f.get("finding_id", "")[:8]
+                    matched_fid = f.get("display_id") or f.get("finding_id", "")
                     finding_session = f.get("session_id", "")
                     matched_vr = f.get("validation_result")
                     # finding 提交时间戳（用于 KG 分析倒推挖掘链）
@@ -652,8 +649,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     all_correct = all(c["confusion"] in ("TP", "TN") for c in case_results) if case_results else False
     matched_fids = set()
     for fi, _ in matches:
-        matched_fids.add(active_findings[fi].get("display_id") or active_findings[fi].get("finding_id", "")[:8])
-    matched_findings = [f for f in active_findings if (f.get("display_id") or f.get("finding_id", "")[:8]) in matched_fids]
+        matched_fids.add(active_findings[fi].get("display_id") or active_findings[fi].get("finding_id", ""))
+    matched_findings = [f for f in active_findings if (f.get("display_id") or f.get("finding_id", "")) in matched_fids]
     vr = matched_findings[0]["validation_result"] if matched_findings else None
 
     if all_correct:

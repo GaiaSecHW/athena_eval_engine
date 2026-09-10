@@ -227,7 +227,7 @@ class KnowledgeResolverImpl:
             if e.output_json is not None:
                 out_str = e.output_json if isinstance(e.output_json, str) else json.dumps(e.output_json, ensure_ascii=False)
             out.append({"tool": tool, "type": "CALL" if e.is_tool_call() else "RESULT",
-                         "command": cmd[:200], "output": out_str[:300]})
+                         "command": cmd, "output": out_str})
         return out
 
     def resolve(self, task_run: TaskRun, events: list[RawEvent]) -> KnowledgeInteractionFact:
@@ -262,7 +262,7 @@ class KnowledgeResolverImpl:
             is_mem = getattr(e, "is_memory_interaction", False)
             if is_mem and e.is_tool_call():
                 cmd = path if path else (e.input_json if isinstance(e.input_json, str) else json.dumps(e.input_json, ensure_ascii=False) if e.input_json else "")
-                memory_interactions.append({"tool": e.tool_name or "", "type": "CALL", "command": cmd[:300], "output": "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
+                memory_interactions.append({"tool": e.tool_name or "", "type": "CALL", "command": cmd, "output": "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
                 if e.part_id:
                     mem_call_part_ids.add(e.part_id)
             # 记忆 RESULT：与 CALL 配对（同 part_id 或同工具名紧随）
@@ -270,7 +270,7 @@ class KnowledgeResolverImpl:
             if is_mem and (e.is_tool_result() or (e.is_tool_call() and e.output_json is not None)):
                 out = e.output_json
                 out_str = out if isinstance(out, str) else (json.dumps(out, ensure_ascii=False) if out is not None else "")
-                memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": (out_str or "")[:500], "timestamp": e.timestamp_ms, "session_id": e.session_id})
+                memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": out_str or "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
                 # 有非空输出 = 成功读取
                 if out_str and out_str.strip() not in ("", "[]", "{}", "null"):
                     mem_success_count += 1
@@ -279,7 +279,7 @@ class KnowledgeResolverImpl:
                 # 捕获知识介入原始事件（TOOL_CALL — 命令/输入 + 后续行为窗口）
                 cmd = path if path else (e.input_json if isinstance(e.input_json, str) else json.dumps(e.input_json, ensure_ascii=False) if e.input_json else "")
                 follow_up = self._follow_up_summary(events, idx)
-                interactions.append({"tool": tool, "type": "CALL", "command": cmd[:300], "output": "", "timestamp": e.timestamp_ms, "follow_up": follow_up, "session_id": e.session_id})
+                interactions.append({"tool": tool, "type": "CALL", "command": cmd, "output": "", "timestamp": e.timestamp_ms, "follow_up": follow_up, "session_id": e.session_id})
             # Delivery：有 output 的事件都检查（TOOL_RESULT 或 TOOL_CALL 带 output）
             if e.is_tool_result() or (e.is_tool_call() and e.output_json is not None):
                 out = e.output_json
@@ -300,7 +300,7 @@ class KnowledgeResolverImpl:
                 if is_kg:
                     if "submit_knowledge" in tool:
                         continue
-                    out_preview = out_str[:500] if out_str else ""
+                    out_preview = out_str or ""
                     interactions.append({"tool": tool, "type": "RESULT", "command": "", "output": out_preview, "timestamp": e.timestamp_ms, "session_id": e.session_id})
         # prompt 注入也算 access（KG2.0 配置存在）
         has_access = bool(access_evs) or text_access

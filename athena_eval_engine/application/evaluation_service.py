@@ -130,7 +130,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> t
             "只返回 JSON: {\"source_file\": \"文件路径\", \"source_function\": \"函数名\"}\n"
             "如果无法确定，对应字段返回空字符串。不要输出其他内容。"
         )},
-        {"role": "user", "content": f"漏洞类型: {vulnerability_type}\n漏洞描述: {description[:2000]}"},
+        {"role": "user", "content": f"漏洞类型: {vulnerability_type}\n漏洞描述: {description}"},
     ]
     try:
         result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
@@ -240,7 +240,7 @@ def create(req: CreateRequest):
         for bid in item_ids:
             cd = case_details.get(bid) or {}
             if not cd:
-                print(f"[CREATE] ⚠ benchmark_item {bid[:25]} 在 case_details 中未找到 → metadata 将为空", flush=True)
+                print(f"[CREATE] ⚠ benchmark_item {bid} 在 case_details 中未找到 → metadata 将为空", flush=True)
             conn = connect(autocommit=True)
             try:
                 fact_repo.insert_benchmark_item(conn.cursor(), bid, req.benchmark_set_id,
