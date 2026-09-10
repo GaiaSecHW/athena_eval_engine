@@ -6,6 +6,7 @@ GET  /api/v1/evaluations/{id}/metrics → 指标
 GET  /api/v1/evaluations/{id}/report → 报告
 """
 from __future__ import annotations
+import json
 import os
 from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, Request
@@ -437,9 +438,11 @@ def _build_report(evaluation_id: str):
                     "FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
         r["outcome_details"] = [{"task_run_id": row[0], "outcome": row[1], "prediction": row[2],
                                  "resolver_status": row[3], "validation": row[4]} for row in cur.fetchall()]
-        # 工具统计（finding 提交数等）
-        cur.execute("SELECT task_run_id, kg_count, finding_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
-        r["tool_stats"] = [{"task_run_id": row[0], "kg_count": row[1], "finding_count": row[2], "total_tools": row[3]} for row in cur.fetchall()]
+        # 工具统计（confirmed_finding_count 从 action_distribution JSON 提取）
+        cur.execute("SELECT task_run_id, kg_count, finding_count, total_tool_calls, action_distribution FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
+        r["tool_stats"] = [{"task_run_id": row[0], "kg_count": row[1],
+                            "finding_count": (json.loads(row[4]).get("confirmed_finding_count", 0) if row[4] else 0),
+                            "total_tools": row[3]} for row in cur.fetchall()]
         # 资源统计（token/steps/duration 原始值）
         cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
         r["resource_stats"] = [{"task_run_id": row[0], "tokens": row[1], "steps": row[2], "duration": row[3], "time_valid": bool(row[4])} for row in cur.fetchall()]
@@ -676,6 +679,7 @@ svg{display:block;margin:0 auto;max-width:100%}
 </style>
 </head>
 <body>
+<div style="background:#1a1d23;color:#9ca3af;font-size:13px;padding:5px 28px;text-align:right;font-family:'SF Mono',Consolas,monospace">报告生成时间：__GEN_TIME__</div>
 <div id="rep"></div>
 <script>
 __RENDERER_JS__
@@ -688,9 +692,13 @@ renderReport(window.__REPORT_DATA__);
 </html>"""
     # 转义 </script> 防止 JSON 里含脚本闭合标签
     data_str = _json.dumps(r, ensure_ascii=False).replace("</", "<\\/")
+    from datetime import datetime, timezone, timedelta
+    _tz = timezone(timedelta(hours=8))
+    _gen_time = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S")
     html = (
         html
         .replace("__EVAL_ID__", evaluation_id)
+        .replace("__GEN_TIME__", _gen_time)
         .replace("__RENDERER_JS__", renderer_js)
         .replace("__REPORT_JSON__", data_str)
     )

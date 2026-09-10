@@ -652,7 +652,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 for f in (inp.get("findings") or []):
                     fid = f.get("id", f.get("finding_id", "")) or f"{f.get('file','')}:{f.get('line','')}"
                     outcome = f.get("outcome", "")
-                    vr = "CONFIRMED" if outcome == "confirmed" else ("FALSE_POSITIVE" if outcome == "no_change_needed" else None)
+                    vr = "CONFIRMED" if outcome in ("confirmed", "fixed", "needs_review") else ("FALSE_POSITIVE" if outcome == "no_change_needed" else None)
                     info = {
                         "finding_id": fid, "display_id": fid,
                         "title": str(f.get("short_summary", ""))[:120],

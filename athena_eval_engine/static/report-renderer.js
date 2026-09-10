@@ -370,7 +370,11 @@ function renderReport(d){
       const kgOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-KG"))||oc.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
       const nogkOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{};
       const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
-      const kgKg=kgTool.kg_count||0;const nogkKg=nogkTool.kg_count||0;
+      const kgKi=(d.knowledge_interactions||[]).find(k=>k.task_run_id.includes("-"+tid+"-KG"))||{};
+      const kgKg=(kgKi.interactions||[]).filter(iv=>iv.type==="CALL").length;
+      const nogkKg=0;
+      const kgMem=((kgKi.memory||{}).interactions||[]).filter(iv=>iv.type==="CALL").length;
+      const nogkMem=0;
       const kgTokens=kgRes.tokens||0;const nogkTokens=nogkRes.tokens||0;
       const kgTools=kgTool.total_tools||0;const nogkTools=nogkTool.total_tools||0;
       const kgSteps=kgRes.steps||0;const nogkSteps=nogkRes.steps||0;
@@ -381,8 +385,9 @@ function renderReport(d){
         <h3>📊 ${label} — 漏洞检测统计</h3>
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
-        <tr><td>Agent 提交发现数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
-        <tr><td>Athena 查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
+        <tr><td>Agent 确认漏洞数</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
+        <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
+        <tr><td>记忆查询次数</td><td class="num">${kgMem}</td><td class="num">${nogkMem}</td></tr>
         <tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr>
         <tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr>
         <tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr>

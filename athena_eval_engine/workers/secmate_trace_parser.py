@@ -25,7 +25,13 @@ _TOOL_MAP = {
 
 
 def is_secmate_trace(path: str) -> bool:
-    """Identify a SecMate SDK transcript without relying solely on its path."""
+    """Identify a SecMate SDK transcript without relying solely on its path.
+
+    SecMate traces use Claude SDK format with entrypoint="sdk-cli".
+    Historical traces may be stored directly in session/ (not session/secmate/)
+    with cwd="/app", so we only check entrypoint — Argo traces in session/argo/
+    are already matched by the path-based dispatch in _get_parser().
+    """
     paths = [path]
     if os.path.isdir(path):
         paths = sorted(glob.glob(os.path.join(path, "*.jsonl")))  # 不读子目录
@@ -39,8 +45,7 @@ def is_secmate_trace(path: str) -> bool:
                         record = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if (record.get("entrypoint") == "sdk-cli"
-                            and "/session/secmate" in str(record.get("cwd", ""))):
+                    if record.get("entrypoint") == "sdk-cli":
                         return True
         except OSError:
             continue

@@ -106,8 +106,9 @@ class OutcomeResolverImpl:
                         if isinstance(data, list):
                             for f in data:
                                 vr = f.get("verdict", "")
-                                if vr in ("CONFIRMED", "FALSE_POSITIVE"):
-                                    candidates.append((e.timestamp_ms or 0, vr))
+                                if vr in ("CONFIRMED", "FALSE_POSITIVE", "MANUAL_REVIEW"):
+                                    mapped = "CONFIRMED" if vr in ("CONFIRMED", "MANUAL_REVIEW") else "FALSE_POSITIVE"
+                                    candidates.append((e.timestamp_ms or 0, mapped))
                     except (json.JSONDecodeError, TypeError):
                         pass
                 continue
@@ -120,8 +121,9 @@ class OutcomeResolverImpl:
                 if target_finding_id and fid and fid != target_finding_id:
                     continue
                 vr = d.get("validation_result")
-                if vr in ("CONFIRMED", "FALSE_POSITIVE"):
-                    candidates.append((e.timestamp_ms or 0, vr))
+                if vr in ("CONFIRMED", "LIKELY", "POSSIBLE", "FALSE_POSITIVE"):
+                    mapped = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else "FALSE_POSITIVE"
+                    candidates.append((e.timestamp_ms or 0, mapped))
             # WebVulnVerify: vulnerability_analyze / vulnerability_verify
             elif e.tool_name in ("vulnerability_analyze", "vulnerability_verify"):
                 fid = str(d.get("vulnerability_id") or "")

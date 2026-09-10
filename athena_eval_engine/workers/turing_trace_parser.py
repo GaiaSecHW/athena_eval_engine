@@ -103,10 +103,14 @@ class TuringTraceParser(TraceParser):
         raw_data = row["data"]
         if isinstance(raw_data, str):
             try: data = json.loads(raw_data)
-            except json.JSONDecodeError as e: parse_status = "INVALID"; parse_error = f"json_decode: {e}"
+            except json.JSONDecodeError as e:
+                parse_status = "PARTIAL"; parse_error = f"json_decode: {e}"
+                data = self._regex_extract_partial(raw_data)
         elif isinstance(raw_data, (bytes, bytearray)):
             try: data = json.loads(raw_data.decode("utf-8"))
-            except Exception as e: parse_status = "INVALID"; parse_error = f"json_decode_bytes: {e}"
+            except Exception as e:
+                parse_status = "PARTIAL"; parse_error = f"json_decode_bytes: {e}"
+                data = self._regex_extract_partial(raw_data.decode("utf-8", errors="replace"))
         elif raw_data is not None and isinstance(raw_data, dict):
             data = raw_data
 
@@ -163,6 +167,49 @@ class TuringTraceParser(TraceParser):
             is_memory_interaction=is_mem,
             is_memory_write=is_mem_w,
         )
+
+    def _regex_extract_partial(self, raw_data: str) -> dict:
+        """JSON 解析失败时，用正则从畸形 JSON 中提取关键字段。
+
+        opencode.db 中 LLM 生成的 tool input JSON 有时引号丢失
+        （如 validation_result 值缺少引号、或 finding_id 值的闭合引号
+        丢失导致后续字段被吞入），使 json.loads 失败。此方法用正则
+        提取 type、tool、state.input 中的 finding_id / validation_result
+        等字段，使事件仍能被分类为 TOOL_CALL 并被 finding 提取逻辑处理。
+        """
+        data: dict = {}
+        m = re.search(r'"type"\s*:\s*"([^"]+)"', raw_data)
+        if m:
+            data["type"] = m.group(1)
+        m = re.search(r'"tool"\s*:\s*"([^"]+)"', raw_data)
+        if m:
+            data["tool"] = m.group(1)
+        inp: dict = {}
+        # finding_id: 用 UUID 专用模式，避免畸形 JSON 中引号缺失导致值截断
+        m = re.search(
+            r'"finding_id"\s*:\s*"?([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',
+            raw_data, re.IGNORECASE)
+        if m:
+            inp["finding_id"] = m.group(1)
+        # validation_result: 匹配已知枚举值（可能缺少引号）
+        m = re.search(
+            r'"validation_result"\s*:\s*"?(FALSE_POSITIVE|CONFIRMED|UNCERTAIN|LIKELY|POSSIBLE)',
+            raw_data, re.IGNORECASE)
+        if m:
+            inp["validation_result"] = m.group(1).upper()
+        # 其他字段：通用引号匹配
+        for field in ("detection_id", "title", "vuln_type", "severity",
+                       "description", "source", "sink"):
+            m = re.search(r'"%s"\s*:\s*"([^"]*)"' % field, raw_data)
+            if m:
+                inp[field] = m.group(1)
+        if inp:
+            data["state"] = {"input": inp}
+        # output: 提取 insert_finding 的 "id=UUID" 信息
+        m = re.search(r'"output"\s*:\s*"([^"]*)"', raw_data)
+        if m:
+            data.setdefault("state", {})["output"] = m.group(1)
+        return data
 
     def _classify(self, raw_type: str, data: dict) -> str:
         """part.type → event_type。opencode tool part（含 state）= 单个 TOOL_CALL 事件（call+result 合一）。"""

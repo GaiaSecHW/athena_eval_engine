@@ -513,13 +513,15 @@ def run(evaluation_id: str) -> dict:
                 })()
                 facts[r[0]] = {"outcome": _oc, "case_results": _cr}
             # tool action facts
-            cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
+            cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls, action_distribution FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
                 if r[0] in facts:
+                    _ad = json.loads(r[7]) if r[7] and isinstance(r[7], str) else (r[7] or {})
                     facts[r[0]]["tool"] = type('TA', (), {
                         'kg_count': r[1], 'finding_count': r[2], 'code_count': r[3],
                         'shell_count': r[4], 'other_count': r[5], 'total_tool_calls': r[6],
                         'tool_action_fact_id': r[0],
+                        'action_distribution': _ad if isinstance(_ad, dict) else {},
                     })()
             # resource facts
             cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
@@ -670,6 +672,19 @@ def run(evaluation_id: str) -> dict:
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
+            # finding_count 保持工具调用数（JSD 用），CONFIRMED 数存 action_distribution
+            # 漏洞验证平台（WebVulnVerify/CVulnVerify）收到的数据本身就是漏洞，全部计为确认
+            # 漏洞挖掘平台（Turing/Argo/SecMate/DataflowVulnScan）需提取 validation_result=CONFIRMED
+            from ..workers.ai_matcher import _extract_findings as _ef
+            _findings = _ef(events)
+            _is_verify = parser.__class__.__name__ in ("WebVulnVerifyTraceParser", "CVulnVerifyTraceParser")
+            if _is_verify:
+                _confirmed = len(_findings)
+            else:
+                _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
+            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} "
+                  f"({'verify' if _is_verify else 'discovery'})", flush=True)
+            ta.action_distribution["confirmed_finding_count"] = _confirmed
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
@@ -953,7 +968,7 @@ def run(evaluation_id: str) -> dict:
                       "validation": facts[tr.task_run_id]["outcome"].validation_result}
                      for tr in task_runs]
     tool_stats_list = [{"task_run_id": tr.task_run_id,
-                        "finding_count": facts[tr.task_run_id]["tool"].finding_count,
+                        "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
                         "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
                        for tr in task_runs]
     # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）
