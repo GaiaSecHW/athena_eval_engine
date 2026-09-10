@@ -230,6 +230,15 @@ def chat_json(messages, **kwargs) -> dict:
                 raise RuntimeError(f"JSON 解析失败: {raw[:200]}")
         except Exception as e:
             last_err = str(e)[:300]
+            err_lower = last_err.lower()
+            # context length / token limit 错误是确定性的，重试无意义
+            if any(kw in err_lower for kw in (
+                "context length", "too long", "maximum context",
+                "token limit", "context_window", "max_tokens",
+                "input too long", "prompt too long",
+            )):
+                print(f"[LLM] chat_json 输入超限，跳过重试: {last_err}", flush=True)
+                break
             print(f"[LLM] chat_json attempt {attempt+1}/{retries} failed: {last_err}", flush=True)
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)

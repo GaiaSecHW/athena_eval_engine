@@ -1150,6 +1150,29 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
 
+        # token 估算 + 截断：防止输入超限
+        _data_str = json.dumps(data, ensure_ascii=False)
+        _data_len = len(_data_str)
+        if _data_len > 50000:  # ~12500 tokens，安全上限
+            print(f"[KG_ANALYSIS] prompt 数据过大 ({_data_len} chars)，截断中...", flush=True)
+            if len(data.get("agent_findings_list", [])) > 10:
+                data["agent_findings_list"] = data["agent_findings_list"][:10]
+            if len(data.get("mining_actions", [])) > 15:
+                data["mining_actions"] = data["mining_actions"][:15]
+            _data_str = json.dumps(data, ensure_ascii=False)
+            if len(_data_str) > 50000:
+                data["agent_findings_list"] = data.get("agent_findings_list", [])[:5]
+                data["mining_actions"] = data.get("mining_actions", [])[:5]
+                for iv in data.get("knowledge_interactions", []):
+                    if len(iv.get("answer", "")) > 100:
+                        iv["answer"] = iv["answer"][:100]
+                _data_str = json.dumps(data, ensure_ascii=False)
+                if len(_data_str) > 50000:
+                    data["agent_findings_list"] = data.get("agent_findings_list", [])[:3]
+                    data["mining_actions"] = data.get("mining_actions", [])[:3]
+                    data["knowledge_interactions"] = data.get("knowledge_interactions", [])[:5]
+            print(f"[KG_ANALYSIS] 截断后 {len(json.dumps(data, ensure_ascii=False))} chars", flush=True)
+
         prompt = [
             {"role": "system", "content": (
                 "你是知识图谱与记忆介入效果分析员。结论先行，然后按场景分析。\n\n"
