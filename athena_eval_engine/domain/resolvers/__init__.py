@@ -20,10 +20,14 @@ class TraceParser(ABC):
         """构建 session 关系图。子类可覆盖实现 agent 专有逻辑。
 
         默认实现：按共享文件名和 fact ID 关联 session。
+        高频文件（如 package.json、README.md）被过多 session 共享时不建边，
+        避免全连通图导致 BFS 返回所有 session。
         """
         import re
         import os
         from collections import defaultdict
+        # 文件/fact 被 >此数量的 session 共享时不建边（防止常见文件产生噪声边）
+        _MAX_SESSIONS_PER_LINK = 5
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
             'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
@@ -38,6 +42,9 @@ class TraceParser(ABC):
             if not ev.is_tool_call():
                 if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
                     for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
+                        # f001 通常是系统初始化 fact（如 opencode session 初始化），
+                        # 几乎所有 session 都引用，不作为关联依据。
+                        # 下方频率过滤器也会自动过滤此类高频 fact。
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             graph['fact_to_sessions'][fid].add(sid)
@@ -66,18 +73,29 @@ class TraceParser(ABC):
                     if basename and len(basename) < 80:
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
-            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding"):
-                fid = str(inp.get("detection_id", ""))
+            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding",
+                          "vulnerability_analyze", "vulnerability_verify",
+                          "ReportFindings", "reportfindings"):
+                # Turing: detection_id; WebVulnVerify: vulnerability_id; Argo: findings[].id
+                fid = str(inp.get("detection_id") or inp.get("vulnerability_id") or "")
                 if fid:
                     sg['facts'].add(fid)
                     graph['fact_to_sessions'][fid].add(sid)
+                for f in (inp.get("findings") or []):
+                    fid = f.get("id") or f.get("finding_id", "")
+                    if fid:
+                        sg['facts'].add(fid)
+                        graph['fact_to_sessions'][fid].add(sid)
+        # 构建边：共享 fact 或文件的 session 互相关联
+        # 频率过滤：被 >_MAX_SESSIONS_PER_LINK 个 session 共享的项不建边（防止噪声）
         for fid, sids in graph['fact_to_sessions'].items():
-            for s1 in sids:
-                for s2 in sids:
-                    if s1 != s2:
-                        graph['edges'][s1].add(s2)
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            graph['edges'][s1].add(s2)
         for fm, sids in graph['file_to_sessions'].items():
-            if len(sids) > 1:
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
                     for s2 in sids:
                         if s1 != s2:

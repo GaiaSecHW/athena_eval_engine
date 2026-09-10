@@ -1205,15 +1205,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         data["mining_actions"] = [_compressed]
                         print(f"[KG_ANALYSIS] mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要", flush=True)
                 except Exception as _e:
-                    print(f"[KG_ANALYSIS] mining_actions 压缩失败，回退截断: {_e}", flush=True)
-                    data["mining_actions"] = _actions[:15]
-            # 2. 压缩 knowledge_interactions 的 answer
-            for iv in data.get("knowledge_interactions", []):
-                if len(iv.get("answer", "")) > 200:
-                    iv["answer"] = iv["answer"][:200] + "..."
-            # 3. 限制 agent_findings_list
-            if len(data.get("agent_findings_list", [])) > 10:
-                data["agent_findings_list"] = data["agent_findings_list"][:10]
+                    print(f"[KG_ANALYSIS] mining_actions 压缩失败，原样发送: {_e}", flush=True)
             print(f"[KG_ANALYSIS] 压缩后 {len(json.dumps(data, ensure_ascii=False))} chars", flush=True)
 
         prompt = [

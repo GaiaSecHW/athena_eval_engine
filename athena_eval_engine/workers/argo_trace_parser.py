@@ -298,6 +298,8 @@ class ArgoTraceParser:
         - 不硬编码排除文件列表
         """
         from collections import defaultdict as _dd
+        # 文件/fact 被 >此数量的 session 共享时不建边（防止常见文件产生噪声边）
+        _MAX_SESSIONS_PER_LINK = 5
         graph = {
             'sessions': {},
             'file_to_sessions': _dd(set),
@@ -316,6 +318,7 @@ class ArgoTraceParser:
                 # System events 可能有 fact 引用
                 if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
                     for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
+                        # f001 通常是系统初始化 fact，几乎所有 session 都引用，不作为关联依据
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             graph['fact_to_sessions'][fid].add(sid)
@@ -329,6 +332,7 @@ class ArgoTraceParser:
                 # argo.memory get fXXX → fact 关联
                 if "argo.memory" in cmd and " get" in cmd:
                     for fid in re.findall(r'f\d{3,5}', cmd):
+                        # f001 通常是系统初始化 fact，几乎所有 session 都引用，不作为关联依据
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             graph['fact_to_sessions'][fid].add(sid)
@@ -373,13 +377,15 @@ class ArgoTraceParser:
                     graph['fact_to_sessions'][vid].add(sid)
 
         # 构建边：共享 fact 或文件的 session 互相关联
+        # 频率过滤：被 >_MAX_SESSIONS_PER_LINK 个 session 共享的项不建边（防止噪声）
         for fid, sids in graph['fact_to_sessions'].items():
-            for s1 in sids:
-                for s2 in sids:
-                    if s1 != s2:
-                        graph['edges'][s1].add(s2)
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            graph['edges'][s1].add(s2)
         for fm, sids in graph['file_to_sessions'].items():
-            if len(sids) > 1:
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
                     for s2 in sids:
                         if s1 != s2:
