@@ -558,7 +558,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     if len(active_findings) > 5:
         print(f"[AI_MATCH]   ...还有 {len(active_findings)-5} 条 finding", flush=True)
 
-    # Agent 没提交任何有效 finding → 基线有漏洞则 FN，非漏洞则 TN
+    # Agent 没提交任何有效 finding → VULNERABLE=NA（未找到），NON-VULNERABLE=TN（正确）
     if not active_findings:
         print(f"[AI_MATCH] {task_run.condition.value} NO_ACTIVE_FINDING → outcome=FAIL", flush=True)
         case_results = []
@@ -567,7 +567,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
             case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                                 "matched": False, "matched_finding_id": None,
-                                "confusion": "FN" if is_vuln else "TN",
+                                "confusion": "NA" if is_vuln else "TN",
                                 "session_id": "", "agent_validation": None})
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -712,19 +712,25 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                     break
 
         # confusion 矩阵：baseline 标签 + agent validation_result
-        if is_vuln:
-            # VULNERABLE 基线：agent CONFIRMED → TP，agent FALSE_POSITIVE 或无匹配 → FN
-            confusion = "TP" if (is_matched and matched_vr == "CONFIRMED") else "FN"
+        # 四种状态：
+        #   漏洞→漏洞(TP): agent确认漏洞，基线是漏洞
+        #   漏洞→非漏洞(FP): agent确认漏洞，基线非漏洞
+        #   非漏洞→漏洞(FN): agent判非漏洞，基线是漏洞
+        #   未发现→漏洞(NA): agent没找到，基线是漏洞
+        #   非漏洞→非漏洞(TN): agent判非漏洞，基线非漏洞（正确，不在四种状态里）
+        if is_matched and matched_vr == "CONFIRMED":
+            confusion = "TP" if is_vuln else "FP"
+        elif is_matched:
+            confusion = "FN" if is_vuln else "TN"
         else:
-            # NON_VULNERABLE 基线：agent CONFIRMED → FP，agent FALSE_POSITIVE 或无匹配 → TN
-            confusion = "FP" if (is_matched and matched_vr == "CONFIRMED") else "TN"
+            confusion = "NA" if is_vuln else "TN"
 
         case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                             "matched": is_matched, "matched_finding_id": matched_fid, "confusion": confusion,
                             "session_id": finding_session, "agent_validation": matched_vr,
                             "finding_ts": finding_ts})
 
-    # 聚合 outcome：所有 case 都是 TP 或 TN → SUCCESS，否则 FAIL
+    # 聚合 outcome：VULNERABLE 基线需 TP，NON_VULNERABLE 基线需 TN
     all_correct = all(c["confusion"] in ("TP", "TN") for c in case_results) if case_results else False
     matched_fids = set()
     for fi, _ in matches:

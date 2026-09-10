@@ -424,46 +424,101 @@ def ai_vuln_analysis(facts: dict, bench_by_task: dict) -> dict:
 
     漏报原因分析由场景5（per_case_kg_analysis）在有知识交互数据时做，
     这里只统计混淆矩阵数字。
+
+    数据隔离：按 task_id 分组统计，避免 T001（挖掘）和 T002（验证）的 case_results
+    混在一起导致每个基线漏洞被计数两次。
     """
-    kg_cases = []
-    nogk_cases = []
+    # 按 task_id 分组，每组内再分 KG/NO-KG
+    task_stats: dict[str, dict] = {}
     for tr_id, f in facts.items():
         cr = f.get("case_results", [])
-        if "NOGK" in tr_id:
-            nogk_cases.extend(cr)
+        is_nogk = "NOGK" in tr_id
+        tid = f.get("_task_id", "") or "unknown"
+        if tid not in task_stats:
+            task_stats[tid] = {"kg": [], "nogk": []}
+        if is_nogk:
+            task_stats[tid]["nogk"].extend(cr)
         else:
-            kg_cases.extend(cr)
+            task_stats[tid]["kg"].extend(cr)
 
-    kg_tp = sum(1 for c in kg_cases if c.get("confusion") == "TP")
-    kg_fp = sum(1 for c in kg_cases if c.get("confusion") == "FP")
-    kg_fn = sum(1 for c in kg_cases if c.get("confusion") == "FN")
-    kg_tn = sum(1 for c in kg_cases if c.get("confusion") == "TN")
-    nogk_tp = sum(1 for c in nogk_cases if c.get("confusion") == "TP")
-    nogk_fp = sum(1 for c in nogk_cases if c.get("confusion") == "FP")
-    nogk_fn = sum(1 for c in nogk_cases if c.get("confusion") == "FN")
-    nogk_tn = sum(1 for c in nogk_cases if c.get("confusion") == "TN")
+    # 每个 task 独立统计
+    per_task: dict[str, dict] = {}
+    all_kg_tp = all_kg_fp = all_kg_fn = all_kg_tn = all_kg_na = 0
+    all_nogk_tp = all_nogk_fp = all_nogk_fn = all_nogk_tn = all_nogk_na = 0
+    for tid, stats in task_stats.items():
+        kg_cases = stats["kg"]
+        nogk_cases = stats["nogk"]
+        kg_tp = sum(1 for c in kg_cases if c.get("confusion") == "TP")
+        kg_fp = sum(1 for c in kg_cases if c.get("confusion") == "FP")
+        kg_fn = sum(1 for c in kg_cases if c.get("confusion") == "FN")
+        kg_tn = sum(1 for c in kg_cases if c.get("confusion") == "TN")
+        kg_na = sum(1 for c in kg_cases if c.get("confusion") == "NA")
+        nogk_tp = sum(1 for c in nogk_cases if c.get("confusion") == "TP")
+        nogk_fp = sum(1 for c in nogk_cases if c.get("confusion") == "FP")
+        nogk_fn = sum(1 for c in nogk_cases if c.get("confusion") == "FN")
+        nogk_tn = sum(1 for c in nogk_cases if c.get("confusion") == "TN")
+        nogk_na = sum(1 for c in nogk_cases if c.get("confusion") == "NA")
+        per_task[tid] = {
+            "kg_tp": kg_tp, "kg_fp": kg_fp, "kg_fn": kg_fn, "kg_tn": kg_tn, "kg_na": kg_na,
+            "nogk_tp": nogk_tp, "nogk_fp": nogk_fp, "nogk_fn": nogk_fn, "nogk_tn": nogk_tn, "nogk_na": nogk_na,
+        }
+        all_kg_tp += kg_tp; all_kg_fp += kg_fp; all_kg_fn += kg_fn; all_kg_tn += kg_tn; all_kg_na += kg_na
+        all_nogk_tp += nogk_tp; all_nogk_fp += nogk_fp; all_nogk_fn += nogk_fn; all_nogk_tn += nogk_tn; all_nogk_na += nogk_na
 
     return {
-        "kg_tp": kg_tp, "kg_fp": kg_fp, "kg_fn": kg_fn, "kg_tn": kg_tn,
-        "nogk_tp": nogk_tp, "nogk_fp": nogk_fp, "nogk_fn": nogk_fn, "nogk_tn": nogk_tn,
-        "tp": kg_tp, "fp": kg_fp, "fn": kg_fn, "tn": kg_tn,  # 兼容旧前端
+        "kg_tp": all_kg_tp, "kg_fp": all_kg_fp, "kg_fn": all_kg_fn, "kg_tn": all_kg_tn, "kg_na": all_kg_na,
+        "nogk_tp": all_nogk_tp, "nogk_fp": all_nogk_fp, "nogk_fn": all_nogk_fn, "nogk_tn": all_nogk_tn, "nogk_na": all_nogk_na,
+        "tp": all_kg_tp, "fp": all_kg_fp, "fn": all_kg_fn, "tn": all_kg_tn,  # 兼容旧前端
+        "per_task": per_task,
     }
 
 
-def rule_based_per_case_kg_analysis(case_results: list[dict]) -> list[dict]:
+def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = "",
+                                    nogk_case_results: list[dict] | None = None) -> list[dict]:
     """LLM 未启用时生成逐 case 的确定性降级结论，不发起重试。"""
     result = []
     for case in case_results:
+        case_id = case.get("case_id", "")
         confusion = case.get("confusion", "NA")
-        judgment = {"TP": "VULNERABILITY", "FP": "NON_VULNERABILITY"}.get(confusion, "NOT_FOUND")
+
+        # 提前计算 No-KG 的 confusion
+        nogk_confusion = "NA"
+        if nogk_case_results:
+            for nc in nogk_case_results:
+                if nc.get("case_id") == case_id:
+                    nogk_confusion = nc.get("confusion", "NA")
+                    break
+
+        # NON-VULNERABLE 基线，KG 和 NO-KG 都判非漏洞（TN）→ 不列出，不处理
+        if confusion == "TN" and nogk_confusion == "TN":
+            continue
+
+        # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
+        if confusion == "NA":
+            result.append({
+                "case_id": case_id,
+                "kg_judgment": "NOT_FOUND",
+                "query_summary": "无知识查询",
+                "knowledge_summary": "",
+                "impact": "NEUTRAL",
+                "reason": "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。",
+                "interactions": [],
+                "memory_interactions": [],
+            })
+            continue
+
+        # TP/FP = agent 确认为漏洞 → VULNERABILITY；FN/TN = agent 判定为非漏洞 → NON_VULNERABILITY
+        judgment = "VULNERABILITY" if confusion in ("TP", "FP") else "NON_VULNERABILITY"
         impact = "POSITIVE" if confusion == "TP" else "NEGATIVE" if confusion == "FP" else "NEUTRAL"
         if confusion == "FN":
-            reason = (f"Agent 未发现此漏洞（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
+            reason = (f"Agent 找到此漏洞但判定为非漏洞（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
                       f"源文件: {case.get('source_file', '未知')}。LLM 未启用，无法深入分析原因。")
+        elif confusion == "TN":
+            reason = f"Agent 正确判定为非漏洞（TN）。LLM 未启用，未生成深入分析。"
         else:
             reason = f"KG 判定: {confusion}（规则降级，LLM 未启用）"
         result.append({
-            "case_id": case.get("case_id", ""),
+            "case_id": case_id,
             "kg_judgment": judgment,
             "query_summary": "LLM 未启用，未生成知识查询归因。",
             "knowledge_summary": "",
@@ -565,14 +620,20 @@ def _get_related_sessions(session_graph, start_session):
     return visited
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category=""):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
-    1. KG 是否识别此漏洞（TP=漏洞, FP=非漏洞, FN=未找到）
+    1. KG 是否识别此漏洞（TP=漏洞, FP=非漏洞, FN=找到但判错, NA=未找到）
     2. Agent 向知识图谱与记忆问了什么
     3. 知识图谱与记忆返回了什么
     4. 对排查此漏洞是正向还是负向
+
+    四种状态：
+    - TP: agent确认漏洞，基线是漏洞（正确）
+    - FP: agent确认漏洞，基线非漏洞（误报）
+    - FN: agent判非漏洞，基线是漏洞（找到但判错）
+    - NA: agent没找到，基线是漏洞（漏报）→ 跳过，无trace数据
     """
     import re
 
@@ -1020,6 +1081,32 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         confusion = case.get("confusion", "NA")
         matched_fid = case.get("matched_finding_id", "")
 
+        # 提前计算 No-KG 的 confusion
+        nogk_confusion = "NA"
+        if nogk_case_results:
+            for nc in nogk_case_results:
+                if nc.get("case_id") == case_id:
+                    nogk_confusion = nc.get("confusion", "NA")
+                    break
+
+        # NON-VULNERABLE 基线，KG 和 NO-KG 都判非漏洞（TN）→ 不列出，不处理
+        if confusion == "TN" and nogk_confusion == "TN":
+            continue
+
+        # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
+        if confusion == "NA":
+            results.append({
+                "case_id": case_id,
+                "kg_judgment": "NOT_FOUND",
+                "query_summary": "无知识查询",
+                "knowledge_summary": "",
+                "impact": "NEUTRAL",
+                "reason": "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。",
+                "interactions": [],
+                "memory_interactions": [],
+            })
+            continue
+
         # 从 finding 提交点（结论点）倒推挖掘链
         finding_info = None
         if matched_fid:
@@ -1055,11 +1142,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                  if iv.get("session_id") in related_sessions]
             case_mem_interactions = [iv for iv in sampled_mem_interactions
                                       if iv.get("session_id") in related_sessions]
-        elif confusion == "FN" and not matched_fid:
-            # FN: Agent 没有提交匹配的 finding，没有挖掘链
-            mining_actions = []
-            case_interactions = []
-            case_mem_interactions = []
         else:
             # 回退：无 finding 信息时不过滤
             mining_actions = []
@@ -1067,19 +1149,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             case_mem_interactions = sampled_mem_interactions if matched_fid else []
 
         # 映射 confusion → kg_judgment
-        kg_judgment = "NOT_FOUND"
-        if confusion == "TP":
-            kg_judgment = "VULNERABILITY"
-        elif confusion == "FP":
-            kg_judgment = "NON_VULNERABILITY"
-
-        # 找 No-KG 的 confusion（不再用于 impact，但保留用于对比记录）
-        nogk_confusion = "NA"
-        if nogk_case_results:
-            for nc in nogk_case_results:
-                if nc.get("case_id") == case_id:
-                    nogk_confusion = nc.get("confusion", "NA")
-                    break
+        # TP/FP = agent 确认为漏洞 → VULNERABILITY；FN/TN = agent 判定为非漏洞 → NON_VULNERABILITY
+        kg_judgment = "VULNERABILITY" if confusion in ("TP", "FP") else "NON_VULNERABILITY"
 
         # KG 与 No-KG 都确认是漏洞（都 TP）→ 不需要 AI 介入分析
         if confusion == "TP" and nogk_confusion == "TP":
@@ -1095,84 +1166,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             })
             continue
 
-        # 无知识交互时的处理
+        # 无知识交互时的处理：直接判定，不调 LLM
         if not case_interactions:
-            # FN 案例且无知识交互：调 LLM 分析为什么没有发现漏洞
-            if kg_judgment == "NOT_FOUND":
-                source_file = case.get("source_file", "")
-                source_function = case.get("source_function", "")
-                fn_data = {
-                    "baseline_vulnerability": {
-                        "case_id": case_id,
-                        "description": description,
-                        "vulnerability_type": vuln_type,
-                        "source_file": source_file,
-                        "source_function": source_function,
-                    },
-                    "kg_status": {"confusion": confusion, "kg_judgment": kg_judgment},
-                    "agent_findings_list": [{"title": f["title"], "vuln_type": f["vuln_type"],
-                                             "source": f["source"], "sink": f["sink"],
-                                             "validation_result": f.get("validation_result")}
-                                            for f in agent_findings_list],
-                    "nogk_confusion": nogk_confusion,
-                }
-                fn_prompt = [
-                    {"role": "system", "content": (
-                        "你是知识图谱与记忆介入效果分析员。Agent 未发现此基线漏洞（FN），且无知识图谱与记忆交互记录。\n"
-                        "请分析知识图谱与记忆对发现此漏洞的潜在影响。\n\n"
-                        "# 知识图谱与记忆的作用\n"
-                        "知识图谱（KG）：提供项目代码结构、组件依赖、已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
-                        "记忆（Memory）：存储历史挖掘经验，用于跨会话复用漏洞挖掘知识。\n"
-                        "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
-                        "# 分析要求\n"
-                        "1. 漏报根因：Agent 为什么没有发现这个漏洞？从 agent_findings_list 概括 Agent 的挖掘范围"
-                        "（涉及哪些模块/文件），与基线漏洞的位置（source_file/source_function）对比，"
-                        "说明 Agent 是否接触过漏洞所在区域。不要逐个列举 finding，只需概括挖掘范围和偏离方向。\n"
-                        "2. 知识图谱/记忆的潜在帮助：如果 Agent 使用了知识图谱/记忆，能帮助发现这个漏洞吗？"
-                        "需要什么具体知识（如：某文件的访问控制缺陷、某漏洞模式、某函数的安全问题等）？\n"
-                        "3. Agent 未使用知识的原因：Agent 为什么没有查询知识图谱/记忆？"
-                        "是因为挖掘方向已经偏离、不知道需要查、还是其他原因？\n"
-                        "4. 对比结论：No-KG 结果为 " + nogk_confusion + "，"
-                        "说明什么？双方都漏报说明漏洞本身难发现，还是缺少知识引导？\n\n"
-                        "# impact 判定\n"
-                        "- NEUTRAL：Agent 未使用知识图谱/记忆，无法评估知识的实际影响\n"
-                        "- POSITIVE/NEGATIVE：仅在 Agent 使用了知识但结果不同时适用\n\n"
-                        "# reason 写作要求（800字以内）\n"
-                        "1. 漏报根因（~300字）：Agent 的挖掘范围（涉及哪些模块），与基线漏洞位置的差异，偏离原因\n"
-                        "2. 知识潜在帮助（~300字）：知识图谱/记忆能提供什么帮助？需要什么具体知识？\n"
-                        "3. 对比结论（~200字）：与 No-KG 对比，知识是否产生了差异化影响\n"
-                        "不要逐个列举 agent_findings_list 中的每条 finding，只需概括挖掘范围和方向。\n\n"
-                        "只返回 JSON。"
-                    )},
-                    {"role": "user", "content": json.dumps(fn_data, ensure_ascii=False, indent=2) + (
-                        '\n\n基线漏洞：' + (vuln_type or '未知') + '，位于 ' + (source_file or '未知') +
-                        ' 的 ' + (source_function or '未知') + '。\n'
-                        'Agent 提交了 ' + str(len(agent_findings_list)) + ' 条 finding，'
-                        '请分析漏报根因和知识图谱/记忆的潜在帮助。\n\n'
-                        '返回 JSON: {"kg_judgment": "NOT_FOUND", "query_summary": "无知识查询", '
-                        '"knowledge_summary": "无知识返回", "impact": "NEUTRAL", '
-                        '"reason": "800字以内中文"}'
-                    )},
-                ]
-                try:
-                    result = llm_mod.chat_json(fn_prompt, temperature=0)
-                    result["case_id"] = case_id
-                    result["interactions"] = []
-                    result["memory_interactions"] = case_mem_interactions
-                    results.append(result)
-                except Exception:
-                    results.append({
-                        "case_id": case_id,
-                        "kg_judgment": kg_judgment,
-                        "query_summary": "无知识查询",
-                        "knowledge_summary": "无知识返回",
-                        "impact": "NEUTRAL",
-                        "reason": "Agent 未发现此漏洞，且无知识图谱与记忆介入。LLM 分析不可用。",
-                        "interactions": [],
-                        "memory_interactions": case_mem_interactions,
-                    })
-                continue
-            # 非 FN 且无知识交互：直接判定，不调 LLM
             impact = "NEUTRAL"
             reason = "无知识图谱与记忆介入，无法评估知识对漏洞排查的影响"
             results.append({
@@ -1228,19 +1223,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否引导 Agent 到漏洞所在区域？\n"
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
-        elif confusion == "FN" and _agent_vr == "FALSE_POSITIVE":
+        elif confusion == "FN":
+            # FN: Agent 找到了漏洞但判定为非漏洞（FALSE_POSITIVE）
             _case_q = (
                 "## 场景：FN — Agent 找到此漏洞但确认为非漏洞\n"
                 "1. 为什么 Agent 将此漏洞确认为非漏洞（FALSE_POSITIVE）？判定依据是什么？\n"
                 "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否影响了 Agent 的判定？\n"
-                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
-            )
-        elif confusion == "FN":
-            _case_q = (
-                "## 场景：FN — Agent 未找到此漏洞\n"
-                "1. 为什么没挖到？从 agent_findings_list 概括 Agent 的挖掘范围，"
-                "与基线漏洞位置（" + (case.get("source_file") or "未知") + "）对比，是否偏离？\n"
-                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否涉及漏洞所在区域？缺少什么知识？\n"
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
         elif confusion == "FP":

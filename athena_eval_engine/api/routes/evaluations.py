@@ -246,7 +246,7 @@ def retry_evaluation(evaluation_id: str):
                     if _n == 0 and effective_vc_task:
                         print(f"[RETRY] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
                         bm = get_vuln_center_benchmark(bsid, None)
-                        print(f"[RETRY] 不带 task 过滤返回 {len(bm.get('cases') or [])} 条 VULNERABLE case", flush=True)
+                        print(f"[RETRY] 不带 task 过滤返回 {len(bm.get('cases') or [])} 条 case", flush=True)
                     for c in (bm.get("cases") or []):
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
@@ -468,7 +468,7 @@ def _build_report(evaluation_id: str):
         kg_oc_cases = _load_case_results_from_outcome("-KG")
         nogk_oc_cases = _load_case_results_from_outcome("-NOGK")
 
-        # 漏洞中心模式：只保留人工确认漏洞（VULNERABLE）的 case 作为基线。
+        # 漏洞中心模式：只保留人工确认 case（含漏洞与非漏洞）作为基线。
         # task_id_actual 不是有效的 source_task_id 时会返回 0 条，不带 task 过滤重试。
         _vc_fallback = {}
         _vc_valid_case_ids = None
@@ -491,23 +491,23 @@ def _build_report(evaluation_id: str):
                     print(f"[REPORT] 漏洞中心 task={_vc_task} 返回 0 条，不带 task 过滤重试", flush=True)
                     _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
                     _vc_cases = _vc_bm.get("cases") or []
-                    print(f"[REPORT] 不带 task 过滤返回 {len(_vc_cases)} 条 VULNERABLE case", flush=True)
+                    print(f"[REPORT] 不带 task 过滤返回 {len(_vc_cases)} 条 case", flush=True)
                 if _vc_cases:
                     _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
                     for c in _vc_cases:
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
                             _vc_fallback[cid] = c
-                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 VULNERABLE case，"
+                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case，"
                           f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
             except Exception as e:
                 print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
 
-        # 用漏洞中心返回的 VULNERABLE case 集合过滤 benchmark_item
+        # 用漏洞中心返回的 case 集合过滤 benchmark_item
         if _vc_valid_case_ids is not None:
             _before = len(raw_rows)
             raw_rows = [r for r in raw_rows if r[0] in _vc_valid_case_ids]
-            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条（只保留 VULNERABLE）", flush=True)
+            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条", flush=True)
 
         has_null_meta = any(r[2] is None for r in raw_rows)
         if has_null_meta and not _vc_fallback:

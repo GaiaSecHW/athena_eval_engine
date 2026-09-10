@@ -154,7 +154,7 @@ def create(req: CreateRequest):
     """Stage 0：建 evaluation + snapshot（冻结）。每步用独立连接避免远程防火墙重置。"""
     # 获取基线 case 详情（含漏洞描述）。数据源二选一：
     #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
-    #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认漏洞（含漏洞与非漏洞两类）
+    #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认 case（含漏洞与非漏洞两类）
     case_details = {}
     # 漏洞中心模式下，如果未指定 vc_source_task_id，用 entries 的 task_id_actual 补取
     effective_vc_task = req.vc_source_task_id
@@ -174,12 +174,12 @@ def create(req: CreateRequest):
             n_cases = len(bm.get("cases") or [])
             print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
             # task_id_actual 不是有效的 source_task_id 时会返回 0 条。
-            # 不带 task 过滤重试，拿到整个项目的人工确认漏洞（VULNERABLE）。
+            # 不带 task 过滤重试，拿到整个项目的人工确认 case（含漏洞与非漏洞）。
             if n_cases == 0 and effective_vc_task:
                 print(f"[CREATE] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
                 bm = get_vuln_center_benchmark(req.benchmark_set_id, None)
                 n_cases = len(bm.get("cases") or [])
-                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 VULNERABLE case", flush=True)
+                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 case", flush=True)
             for c in (bm.get("cases") or []):
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
@@ -344,7 +344,7 @@ def run(evaluation_id: str) -> dict:
                     bench_by_task[_tid] = [BenchmarkItem(b.benchmark_item_id, "BS001", _tid,
                                                          b.expected_label, b.target_finding_id, b.metadata)
                                            for b in _all_items]
-        # 漏洞中心模式：只保留人工确认漏洞（VULNERABLE）的 case 作为基线。
+        # 漏洞中心模式：只保留人工确认 case（含漏洞与非漏洞）作为基线。
         # task_id_actual 不是有效的 source_task_id 时会返回 0 条，不带 task 过滤重试。
         _bm_src = cfg.get("manifest", {}).get("benchmark_source", "")
         _vc_tid = cfg.get("manifest", {}).get("vc_source_task_id")
@@ -366,7 +366,7 @@ def run(evaluation_id: str) -> dict:
                     _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
                     _vc_cases = _vc_bm.get("cases") or []
                     _vc_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
-                    print(f"[LOAD] 不带 task 过滤返回 {len(_vc_ids)} 条 VULNERABLE case", flush=True)
+                    print(f"[LOAD] 不带 task 过滤返回 {len(_vc_ids)} 条 case", flush=True)
                 if _vc_ids:
                     _before = sum(len(v) for v in bench_by_task.values())
                     for tid in list(bench_by_task.keys()):
@@ -492,8 +492,8 @@ def run(evaluation_id: str) -> dict:
         _db_query(_load_facts)
         # 加载 outcomes + tool + resource facts
         def _load_facts_from_db(cur):
-            for tr_id in [t.task_run_id for t in task_runs]:
-                facts[tr_id] = {}
+            for t in task_runs:
+                facts[t.task_run_id] = {"_task_id": t.task_id}
             # outcomes（含 confusion_label + case_results from evidence_json）
             cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result, "
                         "confusion_label, benchmark_item_id, target_finding_id, gt_label, evidence_json "
@@ -512,7 +512,7 @@ def run(evaluation_id: str) -> dict:
                     'gt_label': ExpectedLabel(r[8]) if r[8] else None,
                     'case_results': _cr,
                 })()
-                facts[r[0]] = {"outcome": _oc, "case_results": _cr}
+                facts[r[0]] = {"outcome": _oc, "case_results": _cr, "_task_id": facts.get(r[0], {}).get("_task_id", "")}
             # tool action facts
             cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls, action_distribution FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
@@ -685,7 +685,7 @@ def run(evaluation_id: str) -> dict:
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "events": events}, parsed["src"]
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "events": events, "_task_id": tr.task_id}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
         _local_paths = {}
@@ -940,7 +940,7 @@ def run(evaluation_id: str) -> dict:
                 fut_group_pcka[group["task_id"]] = llm_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions)
+                    _g_mem_interactions, group["category"])
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:
@@ -949,7 +949,9 @@ def run(evaluation_id: str) -> dict:
     else:
         print("[EVAL] LLM 未启用，跳过 AI 请求并使用规则化报告", flush=True)
         for group in _metric_groups:
-            group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(group["case_results"])
+            _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
+            group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
+                group["case_results"], group["category"], _g_nogk_cases)
         report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
     # 保留全局字段以兼容既有消费者，同时标明来源类别，避免相同 case_id 混淆。
     for group in _metric_groups:
