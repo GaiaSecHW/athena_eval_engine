@@ -223,6 +223,7 @@ function renderReport(d){
       var _expBadge=_exp==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:11px'>基线: 漏洞</span>":_exp==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:11px'>基线: 非漏洞</span>":"";
       kgHtml+=_expBadge;
       kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
+      kgHtml+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
       kgHtml+="</div>";
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
