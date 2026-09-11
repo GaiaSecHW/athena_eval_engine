@@ -594,52 +594,16 @@ def run(evaluation_id: str) -> dict:
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
                 trace_source["source_task_id"] = e.get("task_id_actual", "")
-                trace_case_ids = {str(case_id) for case_id in e.get("trace_case_ids", []) if case_id}
+                trace_case_ids = [str(c) for c in e.get("trace_case_ids", []) if c]
+                # trace_case_ids 是验证平台的 case ID（case-20260905-*），
+                # 与基线 benchmark_item_id（case-20260821-*）属于不同命名空间，
+                # 不能用它过滤基线。它只传给 parser 做 JSONL 文件过滤。
+                trace_source["source_case_ids"] = trace_case_ids
                 if trace_case_ids:
-                    effective_bench = [b for b in bench if b.benchmark_item_id in trace_case_ids]
-                    if not effective_bench:
-                        # 两套 ID 体系（V-Bench UUID vs 漏洞中心 case-xxx）无交集 →
-                        # 从漏洞中心按 trace case ID 补取基线，不中断评测
-                        print(f"[CVULN] ⚠ benchmark({len(bench)}) 与 trace case({len(trace_case_ids)}) 无 ID 交集，"
-                              f"从漏洞中心补取: project={e.get('project_id','')}", flush=True)
-                        effective_bench = []
-                        try:
-                            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-                            _vc_proj2 = e.get("project_id", "")
-                            _vc_task2 = e.get("task_id_actual")
-                            vc_bm = get_vuln_center_benchmark(_vc_proj2, _vc_task2)
-                            if not (vc_bm.get("cases") or []):
-                                vc_bm = get_vuln_center_benchmark(_vc_proj2, None)
-                            vc_by_id = {c.get("case_id", ""): c for c in (vc_bm.get("cases") or [])}
-                            for cid in trace_case_ids:
-                                c = vc_by_id.get(cid)
-                                if c:
-                                    effective_bench.append(BenchmarkItem(
-                                        cid, "BS001", e["task_id"],
-                                        ExpectedLabel(c.get("expected_label") or "VULNERABLE"),
-                                        c.get("target_finding_id"),
-                                        {"description": c.get("description", ""),
-                                         "vulnerability_type": c.get("vulnerability_type", ""),
-                                         "source_file": c.get("source_file", ""),
-                                         "source_function": c.get("source_function", "")}))
-                        except Exception as err:
-                            print(f"[CVULN] 漏洞中心补取失败: {err}", flush=True)
-                        # 漏洞中心没覆盖到的 case ID → 空 metadata 兜底
-                        _covered = {b.benchmark_item_id for b in effective_bench}
-                        for cid in trace_case_ids:
-                            if cid not in _covered:
-                                effective_bench.append(BenchmarkItem(cid, "BS001", e["task_id"], None))
-                        print(f"[CVULN] 补取完成: {len(effective_bench)} 条有效基线", flush=True)
-                    else:
-                        print(f"[CVULN] 有效 benchmark case: task={e.get('task_id_actual', '')} "
-                              f"{len(bench)} -> {len(effective_bench)}", flush=True)
-                    bench = effective_bench
+                    print(f"[CVULN] task={e.get('task_id_actual', '')} "
+                          f"benchmark={len(bench)} trace_case_ids={len(trace_case_ids)}", flush=True)
                 else:
-                    # 兼容旧前端/API 客户端；新前端会提交 trace_case_ids。
-                    print("[CVULN] 未提供 trace_case_ids，使用完整 benchmark（兼容模式）", flush=True)
-                trace_source["source_case_ids"] = [
-                    benchmark.benchmark_item_id for benchmark in bench if benchmark.benchmark_item_id
-                ]
+                    print("[CVULN] 未提供 trace_case_ids，parser 将不过滤文件", flush=True)
             print(f"[PARSE] {cond.value} parser={parser.__class__.__name__}", flush=True)
             events = list(parser.parse(trace_source))
             print(f"[PARSE] {cond.value} events={len(events)}", flush=True)
