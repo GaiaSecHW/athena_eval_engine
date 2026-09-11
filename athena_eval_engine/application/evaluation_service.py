@@ -656,9 +656,18 @@ def run(evaluation_id: str) -> dict:
             _findings = _ef(events)
             _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
             _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
-            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp}", flush=True)
+            # WebVulnVerify: 验证接收总数 = Analyze 阶段的唯一 vulnerability_id 数
+            _analyze_vids = set()
+            for _e in events:
+                if _e.is_tool_call() and (_e.tool_name or "") == "vulnerability_analyze":
+                    _vid = str((_e.input_json or {}).get("vulnerability_id", ""))
+                    if _vid and _vid != "?":
+                        _analyze_vids.add(_vid)
+            _analyze_count = len(_analyze_vids) if _analyze_vids else (_confirmed + _fp)
+            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}", flush=True)
             ta.action_distribution["confirmed_finding_count"] = _confirmed
             ta.action_distribution["false_positive_finding_count"] = _fp
+            ta.action_distribution["analyze_received_count"] = _analyze_count
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
@@ -989,6 +998,7 @@ def run(evaluation_id: str) -> dict:
     tool_stats_list = [{"task_run_id": tr.task_run_id,
                         "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
                         "false_positive_count": facts[tr.task_run_id]["tool"].action_distribution.get("false_positive_finding_count", 0),
+                        "analyze_received_count": facts[tr.task_run_id]["tool"].action_distribution.get("analyze_received_count", 0),
                         "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
                        for tr in task_runs]
     # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）

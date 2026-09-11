@@ -352,7 +352,23 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             inp = e.input_json or {}
             fid = inp.get("finding_id", "")
             vr = inp.get("validation_result", "")
-            if fid in findings and vr in ("CONFIRMED", "LIKELY", "POSSIBLE", "FALSE_POSITIVE"):
+            if fid and vr in ("CONFIRMED", "LIKELY", "POSSIBLE", "FALSE_POSITIVE"):
+                # insert_finding 的 output 格式不匹配时 finding_id 未关联，
+                # 用 update_finding 的数据补建条目，确保 CONFIRMED 不丢失
+                if fid not in findings:
+                    findings[fid] = {
+                        "finding_id": fid,
+                        "display_id": "",
+                        "title": "",
+                        "description": str(inp.get("analysis", ""))[:200],
+                        "vuln_type": "",
+                        "severity": "",
+                        "source": "",
+                        "sink": "",
+                        "validation_result": None,
+                        "platform": "turing",
+                        "session_id": e.session_id,
+                    }
                 findings[fid]["validation_result"] = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else "FALSE_POSITIVE"
 
     # --- DataflowVulnScan: assistant 文本中的 candidates JSON（TEXT 事件） ---
