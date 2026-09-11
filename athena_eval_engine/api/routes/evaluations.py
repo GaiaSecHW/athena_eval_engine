@@ -12,6 +12,7 @@ from concurrent.futures import ThreadPoolExecutor
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from ...application import evaluation_service as es
+from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ...persistence.repositories import fact_repo
 from .web import router as web_router
 from .platform import router as platform_router
@@ -39,15 +40,15 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
         row = cur.fetchone()
         phase = row[0] if row else "UNKNOWN"
         if phase in _TERMINAL_EVALUATION_STATUSES:
-            print(f"[{source}] 忽略终态后的异常: {evaluation_id} status={phase}: {err_msg}", flush=True)
+            log(source, f"忽略终态后的异常: {evaluation_id} status={phase}: {err_msg}")
             return
-        print(f"[{source}] {evaluation_id} at {phase}: {err_msg}", flush=True)
+        log(source, f"{evaluation_id} at {phase}: {err_msg}")
         cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
                     "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s), "
                     "error_message=%s "
                     "WHERE evaluation_id=%s", (phase, err_msg, err_msg, evaluation_id))
     except Exception as db_error:
-        print(f"[{source}] 记录失败状态失败: {db_error}", flush=True)
+        log(source, f"记录失败状态失败: {db_error}")
     finally:
         if conn:
             conn.close()
@@ -90,26 +91,29 @@ def resume_stuck_evaluations():
                         f"WHERE evaluation_status IN ({placeholders})", stuck_states)
             stuck = cur.fetchall()
             if stuck:
-                print(f"[STARTUP] 发现 {len(stuck)} 个卡住的评测，准备续跑:", flush=True)
+                log("STARTUP", f"发现 {len(stuck)} 个卡住的评测，准备续跑:")
                 for eid, status in stuck:
-                    print(f"[STARTUP]   {eid} (was {status}) → 续跑", flush=True)
+                    log("STARTUP", f"{eid} (was {status}) → 续跑")
                     _executor.submit(_run_bg_resume, eid)
             else:
-                print(f"[STARTUP] 无卡住的评测", flush=True)
+                log("STARTUP", f"无卡住的评测")
         finally:
             conn.close()
     except Exception as e:
-        print(f"[STARTUP] 扫描卡住评测失败（DB 可能未就绪）: {e}", flush=True)
+        log("STARTUP", f"扫描卡住评测失败（DB 可能未就绪）: {e}")
 
 
 def _run_bg_resume(evaluation_id: str):
     """续跑单个评测（与 _run_bg 相同，但不设 RUNNING——保留原状态给 run() 覆盖）。"""
+    set_eval_ctx(evaluation_id)
     try:
         es.run(evaluation_id)
     except Exception as e:
         import traceback
         traceback.print_exc()
         _record_background_failure(evaluation_id, e, "EVAL RESUME FAILED")
+    finally:
+        clear_eval_ctx()
 
 
 @app.get("/health")
@@ -130,6 +134,7 @@ def create_evaluation(req: CreateRequest):
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
             from ...infrastructure.database import connect
+            set_eval_ctx(req.evaluation_id)
             # 标记 RUNNING
             conn = connect(autocommit=True)
             try:
@@ -144,6 +149,8 @@ def create_evaluation(req: CreateRequest):
                 import traceback
                 traceback.print_exc()
                 _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
+            finally:
+                clear_eval_ctx()
         _executor.submit(_run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -186,7 +193,7 @@ def delete_evaluation(evaluation_id: str):
         cur.execute("DELETE FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
         cur.execute("DELETE FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        print(f"[DELETE] 评测 {evaluation_id} 已删除", flush=True)
+        log("DELETE", f"评测 {evaluation_id} 已删除")
     finally:
         conn.close()
     # 删除固化 HTML
@@ -263,13 +270,13 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             try:
                 if bm_source == "vuln_center":
                     from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
-                    print(f"[RETRY] 漏洞中心取基线: project={bsid} task={effective_vc_task}", flush=True)
+                    log("RETRY", f"漏洞中心取基线: project={bsid} task={effective_vc_task}")
                     bm = get_vuln_center_benchmark(bsid, effective_vc_task)
                     _n = len(bm.get("cases") or [])
                     if _n == 0 and effective_vc_task:
-                        print(f"[RETRY] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
+                        log("RETRY", f"task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试")
                         bm = get_vuln_center_benchmark(bsid, None)
-                        print(f"[RETRY] 不带 task 过滤返回 {len(bm.get('cases') or [])} 条 case", flush=True)
+                        log("RETRY", f"不带 task 过滤返回 {len(bm.get('cases') or [])} 条 case")
                     for c in (bm.get("cases") or []):
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
@@ -325,7 +332,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             p = _static_report_path(evaluation_id)
             if os.path.isfile(p):
                 os.remove(p)
-                print(f"[RETRY] 删除旧报告: {p}", flush=True)
+                log("RETRY", f"删除旧报告: {p}")
         except Exception:
             pass
 
@@ -360,6 +367,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         # Step 6: 提交到线程池
         def _run_bg():
             from ...infrastructure.database import connect as _connect
+            set_eval_ctx(evaluation_id)
             conn = _connect(autocommit=True)
             try:
                 conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL WHERE evaluation_id=%s", (evaluation_id,))
@@ -371,6 +379,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 import traceback
                 traceback.print_exc()
                 _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
+            finally:
+                clear_eval_ctx()
         _executor.submit(_run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -499,31 +509,31 @@ def _build_report(evaluation_id: str):
             try:
                 from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
                 _vc_proj = erow[1] if erow else None
-                print(f"[REPORT] 漏洞中心校验基线: project={_vc_proj} task={_vc_task}", flush=True)
+                log("REPORT", f"漏洞中心校验基线: project={_vc_proj} task={_vc_task}")
                 _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_task)
                 _vc_cases = _vc_bm.get("cases") or []
                 if not _vc_cases:
                     # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
-                    print(f"[REPORT] 漏洞中心 task={_vc_task} 返回 0 条，不带 task 过滤重试", flush=True)
+                    log("REPORT", f"漏洞中心 task={_vc_task} 返回 0 条，不带 task 过滤重试")
                     _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
                     _vc_cases = _vc_bm.get("cases") or []
-                    print(f"[REPORT] 不带 task 过滤返回 {len(_vc_cases)} 条 case", flush=True)
+                    log("REPORT", f"不带 task 过滤返回 {len(_vc_cases)} 条 case")
                 if _vc_cases:
                     _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
                     for c in _vc_cases:
                         cid = c.get("case_id") or c.get("id") or ""
                         if cid:
                             _vc_fallback[cid] = c
-                    print(f"[REPORT] 漏洞中心返回 {len(_vc_valid_case_ids)} 条 case，"
-                          f"benchmark_item 表有 {len(raw_rows)} 条", flush=True)
+                    log("REPORT", f"漏洞中心返回 {len(_vc_valid_case_ids)} 条 case，"
+                          f"benchmark_item 表有 {len(raw_rows)} 条")
             except Exception as e:
-                print(f"[REPORT] 漏洞中心校验失败: {e}", flush=True)
+                log("REPORT", f"漏洞中心校验失败: {e}")
 
         # 用漏洞中心返回的 case 集合过滤 benchmark_item
         if _vc_valid_case_ids is not None:
             _before = len(raw_rows)
             raw_rows = [r for r in raw_rows if r[0] in _vc_valid_case_ids]
-            print(f"[REPORT] 过滤 benchmark_item: {_before} → {len(raw_rows)} 条", flush=True)
+            log("REPORT", f"过滤 benchmark_item: {_before} → {len(raw_rows)} 条")
 
         has_null_meta = any(r[2] is None for r in raw_rows)
         if has_null_meta and not _vc_fallback:
@@ -532,17 +542,17 @@ def _build_report(evaluation_id: str):
                 vc_proj = erow[1] if erow else None
                 if not _vc_task:
                     _vc_task = manifest.get("vc_source_task_id")
-                print(f"[REPORT] metadata 缺失，从漏洞中心补取: project={vc_proj} task={_vc_task}", flush=True)
+                log("REPORT", f"metadata 缺失，从漏洞中心补取: project={vc_proj} task={_vc_task}")
                 vc_bm = get_vuln_center_benchmark(vc_proj, _vc_task)
                 _vc_fb_count = len(vc_bm.get("cases") or [])
                 if _vc_fb_count == 0 and _vc_task:
                     # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
-                    print(f"[REPORT] 漏洞中心返回 0 条，不带 task 过滤重试", flush=True)
+                    log("REPORT", f"漏洞中心返回 0 条，不带 task 过滤重试")
                     vc_bm = get_vuln_center_benchmark(vc_proj, None)
                 for c in (vc_bm.get("cases") or []):
                     _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
             except Exception as e:
-                print(f"[REPORT] 漏洞中心补取失败: {e}", flush=True)
+                log("REPORT", f"漏洞中心补取失败: {e}")
 
         case_results = []
         for bid, label, meta in raw_rows:
@@ -591,8 +601,8 @@ def _build_report(evaluation_id: str):
                 _gc = _grp.get("case_results") or []
                 _grp["case_results"] = [c for c in _gc if c.get("case_id") in _vc_valid_case_ids]
                 if len(_gc) != len(_grp["case_results"]):
-                    print(f"[REPORT] metric_groups[{_grp.get('task_id','')}] case_results: "
-                          f"{len(_gc)} → {len(_grp['case_results'])} 条", flush=True)
+                    log("REPORT", f"metric_groups[{_grp.get('task_id','')}] case_results: "
+                          f"{len(_gc)} → {len(_grp['case_results'])} 条")
                 _pcka = _grp.get("per_case_kg_analysis") or []
                 _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _vc_valid_case_ids]
     finally:
@@ -723,7 +733,7 @@ renderReport(window.__REPORT_DATA__);
     os.makedirs(REPORTS_DIR, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
         f.write(html)
-    print(f"[REPORT] 固化报告 HTML: {out_path} ({len(html)} chars)", flush=True)
+    log("REPORT", f"固化报告 HTML: {out_path} ({len(html)} chars)")
     return out_path
 
 

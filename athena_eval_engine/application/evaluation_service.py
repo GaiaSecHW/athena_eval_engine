@@ -17,6 +17,7 @@ from ..workers.resolvers import (
 )
 from ..workers.ai_matcher import ai_match_outcome
 from ..infrastructure import llm as llm_mod
+from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
 from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
@@ -94,7 +95,7 @@ def _set_status_short(evaluation_id, status):
         except Exception as e:
             # CHECK 约束可能不含新状态（如 AI_MATCHING）→ 自动修复约束后重试
             if "Check constraint" in str(e) or "3819" in str(e):
-                print(f"[DB] CHECK 约束阻止设状态 {status}，自动修复...", flush=True)
+                log("DB", f"CHECK 约束阻止设状态 {status}，自动修复...")
                 cur = conn.cursor()
                 # 1) DROP 所有可能的旧约束（忽略所有错误）
                 for stmt in (
@@ -114,7 +115,7 @@ def _set_status_short(evaluation_id, status):
                         "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED','CANCEL_REQUESTED','CANCELLING','CANCELLED'))"
                     )
                 except Exception: pass
-                print(f"[DB] CHECK 约束已修复，重试设状态 {status}", flush=True)
+                log("DB", f"CHECK 约束已修复，重试设状态 {status}")
                 conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
             else:
                 raise
@@ -142,7 +143,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> t
         result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
         return result.get("source_file", ""), result.get("source_function", "")
     except Exception as e:
-        print(f"[CREATE] AI 提取 source_file/source_function 失败: {e}", flush=True)
+        log("CREATE", f"AI 提取 source_file/source_function 失败: {e}")
         return "", ""
 
 
@@ -171,21 +172,21 @@ def create(req: CreateRequest):
                 effective_vc_task = tid_actual
                 break
         if effective_vc_task:
-            print(f"[CREATE] vc_source_task_id 未指定，使用 entries 的 task_id_actual={effective_vc_task} 过滤", flush=True)
+            log("CREATE", f"vc_source_task_id 未指定，使用 entries 的 task_id_actual={effective_vc_task} 过滤")
     try:
         if req.benchmark_source == "vuln_center":
             from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-            print(f"[CREATE] 漏洞中心取基线: project={req.benchmark_set_id} task={effective_vc_task}", flush=True)
+            log("CREATE", f"漏洞中心取基线: project={req.benchmark_set_id} task={effective_vc_task}")
             bm = get_vuln_center_benchmark(req.benchmark_set_id, effective_vc_task)
             n_cases = len(bm.get("cases") or [])
-            print(f"[CREATE] 漏洞中心返回 {n_cases} 条 case", flush=True)
+            log("CREATE", f"漏洞中心返回 {n_cases} 条 case")
             # task_id_actual 不是有效的 source_task_id 时会返回 0 条。
             # 不带 task 过滤重试，拿到整个项目的人工确认 case（含漏洞与非漏洞）。
             if n_cases == 0 and effective_vc_task:
-                print(f"[CREATE] task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试", flush=True)
+                log("CREATE", f"task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试")
                 bm = get_vuln_center_benchmark(req.benchmark_set_id, None)
                 n_cases = len(bm.get("cases") or [])
-                print(f"[CREATE] 不带 task 过滤返回 {n_cases} 条 case", flush=True)
+                log("CREATE", f"不带 task 过滤返回 {n_cases} 条 case")
             for c in (bm.get("cases") or []):
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
@@ -200,10 +201,10 @@ def create(req: CreateRequest):
                     _fill_missing_source(case_details[cid])
         else:
             from ..infrastructure.vbench_client import get_benchmark
-            print(f"[CREATE] V-Bench 取基线: set_id={req.benchmark_set_id}", flush=True)
+            log("CREATE", f"V-Bench 取基线: set_id={req.benchmark_set_id}")
             bm = get_benchmark(req.benchmark_set_id)
             n_cases = len(bm.get("cases") or [])
-            print(f"[CREATE] V-Bench 返回 {n_cases} 条 case", flush=True)
+            log("CREATE", f"V-Bench 返回 {n_cases} 条 case")
             for c in (bm.get("cases") or []):
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
@@ -217,12 +218,12 @@ def create(req: CreateRequest):
                         "source_function": c.get("source_function") or "",
                     }
                     _fill_missing_source(case_details[cid])
-        print(f"[CREATE] case_details 构建完成: {len(case_details)} 条", flush=True)
+        log("CREATE", f"case_details 构建完成: {len(case_details)} 条")
     except Exception as e:
         import traceback as _tb
-        print(f"[CREATE] ⚠ 取基线数据失败: {e}", flush=True)
+        log("CREATE", f"⚠ 取基线数据失败: {e}")
         _tb.print_exc()
-        print(f"[CREATE] case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE", flush=True)
+        log("CREATE", f"case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE")
 
     # Step 1: benchmark_set
     conn = connect(autocommit=True)
@@ -241,12 +242,12 @@ def create(req: CreateRequest):
             _before = len(item_ids)
             item_ids = [bid for bid in item_ids if bid in case_details]
             if _before != len(item_ids):
-                print(f"[CREATE] task={e.get('task_id','')} 过滤掉 {_before - len(item_ids)} 条不属于当前任务的 case，"
-                      f"剩余 {len(item_ids)} 条", flush=True)
+                log("CREATE", f"task={e.get('task_id','')} 过滤掉 {_before - len(item_ids)} 条不属于当前任务的 case，"
+                      f"剩余 {len(item_ids)} 条")
         for bid in item_ids:
             cd = case_details.get(bid) or {}
             if not cd:
-                print(f"[CREATE] ⚠ benchmark_item {bid} 在 case_details 中未找到 → metadata 将为空", flush=True)
+                log("CREATE", f"⚠ benchmark_item {bid} 在 case_details 中未找到 → metadata 将为空")
             conn = connect(autocommit=True)
             try:
                 fact_repo.insert_benchmark_item(conn.cursor(), bid, req.benchmark_set_id,
@@ -299,7 +300,7 @@ def _db_query(fn, _retries=5):
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
             last_err = e
             if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                print(f"[DB RETRY] {attempt+1}/{_retries}: {e.args[0]}, retry...")
+                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry...")
                 import time; time.sleep(2 * (attempt + 1))  # 指数退避
                 continue
             raise
@@ -311,6 +312,7 @@ def _db_query(fn, _retries=5):
 
 def run(evaluation_id: str) -> dict:
     """跑完整管线。使用短连接：慢操作（trace 解析、LLM）期间不持有 MySQL 连接。"""
+    set_eval_ctx(evaluation_id)
 
     # 设置本评测的 LLM 并发上限（信号量，所有 LLM 调用共用）
     from ..infrastructure.llm import set_max_concurrency
@@ -368,20 +370,20 @@ def run(evaluation_id: str) -> dict:
                 _vc_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
                 if not _vc_ids:
                     # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
-                    print(f"[LOAD] 漏洞中心 task={_vc_tid} 返回 0 条，不带 task 过滤重试", flush=True)
+                    log("LOAD", f"漏洞中心 task={_vc_tid} 返回 0 条，不带 task 过滤重试")
                     _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
                     _vc_cases = _vc_bm.get("cases") or []
                     _vc_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
-                    print(f"[LOAD] 不带 task 过滤返回 {len(_vc_ids)} 条 case", flush=True)
+                    log("LOAD", f"不带 task 过滤返回 {len(_vc_ids)} 条 case")
                 if _vc_ids:
                     _before = sum(len(v) for v in bench_by_task.values())
                     for tid in list(bench_by_task.keys()):
                         bench_by_task[tid] = [b for b in bench_by_task[tid] if b.benchmark_item_id in _vc_ids]
                     _after = sum(len(v) for v in bench_by_task.values())
                     if _before != _after:
-                        print(f"[LOAD] 漏洞中心过滤 benchmark: {_before} → {_after} 条（只保留 VULNERABLE）", flush=True)
+                        log("LOAD", f"漏洞中心过滤 benchmark: {_before} → {_after} 条（只保留 VULNERABLE）")
             except Exception as e:
-                print(f"[LOAD] 漏洞中心校验失败（不影响评测）: {e}", flush=True)
+                log("LOAD", f"漏洞中心校验失败（不影响评测）: {e}")
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
 
@@ -400,7 +402,7 @@ def run(evaluation_id: str) -> dict:
         cur.execute("DELETE FROM evaluation_calculation_run WHERE calculation_run_id LIKE %s",
                     (f"CR-{evaluation_id}%",))
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        print(f"[RUN] 清理旧 facts（重跑）: evaluation_id={evaluation_id}", flush=True)
+        log("RUN", f"清理旧 facts（重跑）: evaluation_id={evaluation_id}")
     _db_query(_clear_old_facts)
     facts_already_exist = False
 
@@ -589,10 +591,10 @@ def run(evaluation_id: str) -> dict:
                                 files_in_dir += [f"{sub}/{f}" for f in _os.listdir(sub_path) if f.endswith((".jsonl", ".db"))]
                     size = sum(_os.path.getsize(_os.path.join(local_path, f)) for f in files_in_dir) if files_in_dir else 0
                 except: files_in_dir = []
-            print(f"[PARSE] {cond.value} task={e['task_id']} kind={e.get('trace_kind')} "
-                  f"path={local_path} exists={exists} is_dir={is_dir} size={size}B", flush=True)
+            log("PARSE", f"{cond.value} task={e['task_id']} kind={e.get('trace_kind')} "
+                  f"path={local_path} exists={exists} is_dir={is_dir} size={size}B")
             if not exists:
-                print(f"[PARSE] ⚠ trace 文件不存在: {local_path} (source_uri={src})", flush=True)
+                log("PARSE", f"⚠ trace 文件不存在: {local_path} (source_uri={src})")
             parser = _get_parser(local_path, e.get("trace_kind"))
             bench = list(bench_by_task.get(e["task_id"], []))
             trace_source = {"trace_id": tr.trace_id, "source_uri": local_path}
@@ -610,24 +612,24 @@ def run(evaluation_id: str) -> dict:
                         from ..infrastructure.vuln_center_client import get_task_id_by_case_id
                         _proj = e.get("project_id", "")
                         task_id_actual = get_task_id_by_case_id(_proj, trace_case_ids[0]) or ""
-                        print(f"[CVULN] manifest 无 task_id_actual，从漏洞中心搜索获取: "
-                              f"{task_id_actual}", flush=True)
+                        log("CVULN", f"manifest 无 task_id_actual，从漏洞中心搜索获取: "
+                              f"{task_id_actual}")
                     except Exception as err:
-                        print(f"[CVULN] 从漏洞中心获取 task_id 失败: {err}", flush=True)
+                        log("CVULN", f"从漏洞中心获取 task_id 失败: {err}")
                 trace_source["source_task_id"] = task_id_actual
                 # trace_case_ids 与 benchmark_item_id 属于不同命名空间，
                 # 不能用它过滤基线。它只传给 parser 做 JSONL 文件过滤。
                 trace_source["source_case_ids"] = trace_case_ids
                 if trace_case_ids:
-                    print(f"[CVULN] task={task_id_actual} "
-                          f"benchmark={len(bench)} trace_case_ids={len(trace_case_ids)}", flush=True)
+                    log("CVULN", f"task={task_id_actual} "
+                          f"benchmark={len(bench)} trace_case_ids={len(trace_case_ids)}")
                 else:
-                    print("[CVULN] 未提供 trace_case_ids，parser 将不过滤文件", flush=True)
-            print(f"[PARSE] {cond.value} parser={parser.__class__.__name__}", flush=True)
+                    log("CVULN", f"未提供 trace_case_ids，parser 将不过滤文件")
+            log("PARSE", f"{cond.value} parser={parser.__class__.__name__}")
             events = list(parser.parse(trace_source))
-            print(f"[PARSE] {cond.value} events={len(events)}", flush=True)
+            log("PARSE", f"{cond.value} events={len(events)}")
             if not events:
-                print(f"[PARSE] ⚠ {cond.value} 解析出 0 个事件！path={local_path}", flush=True)
+                log("PARSE", f"⚠ {cond.value} 解析出 0 个事件！path={local_path}")
             # 跨 JSONL 文件时按时间戳排序，确保事件顺序正确
             events.sort(key=lambda e: (e.timestamp_ms or 0, e.event_id))
             session = parser.load_session(trace_source)
@@ -642,7 +644,7 @@ def run(evaluation_id: str) -> dict:
             from concurrent.futures import ThreadPoolExecutor
             tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
             bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
-            print(f"[MATCH] {cond.value} bench_items={len(bench)} starting ai_match + resolve...", flush=True)
+            log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
                 fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events)
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
@@ -652,10 +654,10 @@ def run(evaluation_id: str) -> dict:
                 kn = fut_kn.result()
                 ta = fut_ta.result()
                 rs = fut_rs.result()
-            print(f"[MATCH] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
+            log("MATCH", f"{cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
-                  f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}", flush=True)
+                  f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}")
             # finding_count 保持工具调用数（JSD 用），CONFIRMED/FP 数存 action_distribution
             # 所有平台统一：只计 validation_result=CONFIRMED 的 finding
             from ..workers.ai_matcher import _extract_findings as _ef
@@ -670,7 +672,7 @@ def run(evaluation_id: str) -> dict:
                     if _vid and _vid != "?":
                         _analyze_vids.add(_vid)
             _analyze_count = len(_analyze_vids) if _analyze_vids else (_confirmed + _fp)
-            print(f"[MATCH] {cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}", flush=True)
+            log("MATCH", f"{cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}")
             ta.action_distribution["confirmed_finding_count"] = _confirmed
             ta.action_distribution["false_positive_finding_count"] = _fp
             ta.action_distribution["analyze_received_count"] = _analyze_count
@@ -693,7 +695,7 @@ def run(evaluation_id: str) -> dict:
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         _set_status_short(evaluation_id, "AI_MATCHING")
-        print(f"[EVAL] 漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）", flush=True)
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
         for tr, f, src in results:
@@ -719,7 +721,7 @@ def run(evaluation_id: str) -> dict:
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
     _set_status_short(evaluation_id, "PAIRING")
     pairs = TaskPairMatcherImpl().match(task_runs)
-    print(f"[EVAL] 配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})", flush=True)
+    log("EVAL", f"配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
     kg_access = kg_valid = kg_delivery = access = 0
     kg_access_events = kg_successful_reads = 0  # 交互级计数（M6 KDR 用）
@@ -789,7 +791,7 @@ def run(evaluation_id: str) -> dict:
                 jsd=pv.jsd, delta_token=pv.delta_token,
                 delta_steps=pv.delta_steps, delta_time=pv.delta_time))
             _item_pv_task_ids.append(pair.task_id)
-    print(f"[EVAL] item 级 pair_views: {len(item_pair_views)} 个 (任务级 {len(pair_views)})", flush=True)
+    log("EVAL", f"item 级 pair_views: {len(item_pair_views)} 个 (任务级 {len(pair_views)})")
 
     # 存配对数据（短连接）
     pair_derived = []
@@ -807,7 +809,7 @@ def run(evaluation_id: str) -> dict:
     _db_query(_insert_pairs)
 
     _set_status_short(evaluation_id, "CALCULATING")
-    print(f"[EVAL] 开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}", flush=True)
+    log("EVAL", f"开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}")
     out = run_all_metrics(pair_views, confusion_pairs=item_pair_views or None,
                           kg_access=access, kg_valid=kg_valid,
                           kg_delivery=kg_delivery, access=access,
@@ -815,7 +817,7 @@ def run(evaluation_id: str) -> dict:
                           mem_read_count=mem_read_count, mem_successful_reads=mem_successful_reads,
                           kg_tool_calls=kg_tool_calls, total_tool_calls=total_tool_calls,
                           seed=42)
-    print(f"[EVAL] 主指标计算完成: {len(out.get('metric_results',[]))} 条", flush=True)
+    log("EVAL", f"主指标计算完成: {len(out.get('metric_results',[]))} 条")
 
     # ===== Phase 4b: 分组计算指标（挖掘/验证各自独立）=====
     # 按 task_id 分组 pair_views，每组独立算指标
@@ -949,9 +951,9 @@ def run(evaluation_id: str) -> dict:
 
     # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
     _set_status_short(evaluation_id, "REPORTING")
-    print(f"[EVAL] 开始生成报告 + AI 分析...", flush=True)
+    log("EVAL", f"开始生成报告 + AI 分析...")
     hits = diagnose(out["metric_results"], out["statistical_results"])
-    print(f"[EVAL] 诊断完成: {len(hits)} 条告警", flush=True)
+    log("EVAL", f"诊断完成: {len(hits)} 条告警")
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
@@ -970,7 +972,7 @@ def run(evaluation_id: str) -> dict:
     if _llm_enabled():
         # 每个类别独立做逐漏洞 KG 归因，避免将挖掘与验证 trace 混入同一结论。
         from concurrent.futures import ThreadPoolExecutor as _TP
-        print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...", flush=True)
+        log("EVAL", f"并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...")
         with _TP(max_workers=3) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
                                         metric_groups=_metric_groups, tool_stats=tool_stats_list)
@@ -988,9 +990,9 @@ def run(evaluation_id: str) -> dict:
             report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
-        print(f"[EVAL] LLM 分析完成", flush=True)
+        log("EVAL", f"LLM 分析完成")
     else:
-        print("[EVAL] LLM 未启用，跳过 AI 请求并使用规则化报告", flush=True)
+        log("EVAL", f"LLM 未启用，跳过 AI 请求并使用规则化报告")
         for group in _metric_groups:
             _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
             group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
@@ -1011,7 +1013,7 @@ def run(evaluation_id: str) -> dict:
                       "validation": facts[tr.task_run_id]["outcome"].validation_result}
                      for tr in task_runs]
     report.llm_token_usage = llm_mod.get_token_usage()
-    print(f"[EVAL] LLM token 用量: {report.llm_token_usage}", flush=True)
+    log("EVAL", f"LLM token 用量: {report.llm_token_usage}")
     rj = render_json(report)
 
     # 判断是否需要标记 COMPLETED_WITH_WARNINGS
@@ -1025,9 +1027,9 @@ def run(evaluation_id: str) -> dict:
         _warnings.append(f"NA_METRICS:{','.join(na_metrics)}")
     final_status = "COMPLETED_WITH_WARNINGS" if _warnings else "COMPLETED"
     if _warnings:
-        print(f"[EVAL] 评测完成（带警告）: {', '.join(_warnings)}", flush=True)
+        log("EVAL", f"评测完成（带警告）: {', '.join(_warnings)}")
     else:
-        print(f"[EVAL] 评测完成", flush=True)
+        log("EVAL", f"评测完成")
 
     # ===== Phase 7: 写入报告 + 标记完成（短连接）=====
     def _finalize(cur):
@@ -1042,8 +1044,9 @@ def run(evaluation_id: str) -> dict:
         from ..api.routes.evaluations import render_static_report
         render_static_report(evaluation_id)
     except Exception as e:
-        print(f"[REPORT] ⚠ 固化 HTML 失败（不影响评测结果）: {e}", flush=True)
+        log("REPORT", f"⚠ 固化 HTML 失败（不影响评测结果）: {e}")
 
+    clear_eval_ctx()
     return {"status": final_status, "metrics": len(out["metric_results"]),
             "statistical_results": len(out["statistical_results"]),
             "report_uri": f"report/{evaluation_id}", "pair_count": len(pair_views)}

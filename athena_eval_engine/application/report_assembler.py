@@ -8,6 +8,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
+from ..infrastructure.log_util import log
 
 
 def _extract_json_objects_from_text(text: str) -> list[dict]:
@@ -382,7 +383,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
         return result
     except Exception as e:
         import traceback as _tb
-        print(f"[REPORT] ai_narrative LLM 失败，降级规则生成: {e}", flush=True)
+        log("REPORT", f"ai_narrative LLM 失败，降级规则生成: {e}")
         _tb.print_exc()
         m1 = m_by.get("M1")
         summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
@@ -449,7 +450,7 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
         return result.strip()
     except Exception as e:
         import traceback as _tb
-        print(f"[REPORT] ai_summary LLM 失败，降级规则生成: {e}", flush=True)
+        log("REPORT", f"ai_summary LLM 失败，降级规则生成: {e}")
         _tb.print_exc()
         parts = []
         parts.append("基准漏洞 " + str(baseline_count) + " 个")
@@ -637,7 +638,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
         }
     except Exception as e:
         import traceback as _tb
-        print(f"[REPORT] ai_per_case_kg_analysis LLM 失败，降级规则生成: {e}", flush=True)
+        log("REPORT", f"ai_per_case_kg_analysis LLM 失败，降级规则生成: {e}")
         _tb.print_exc()
         oc = outcome.get("outcome") if outcome else "UNKNOWN"
         analysis = "知识查询 " + str(total_calls) + " 次，结果为 " + oc + "（LLM 不可用，规则生成）"
@@ -1338,7 +1339,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         # token 估算 + LLM 压缩：防止输入超限（替代截断，保留信息完整性）
         _data_str = json.dumps(data, ensure_ascii=False)
         if len(_data_str) > 840000:  # ~280k tokens，400k 上下文的 70%
-            print(f"[KG_ANALYSIS] prompt 数据过大 ({len(_data_str)} chars)，LLM 压缩中...", flush=True)
+            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，LLM 压缩中...")
             # 1. LLM 压缩 mining_actions：用结构化摘要替代原始调用链
             _actions = data.get("mining_actions", [])
             _actions_str = json.dumps(_actions, ensure_ascii=False)
@@ -1357,10 +1358,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _compressed = llm_mod.chat_json(_compress_prompt, temperature=0, max_tokens=8000)
                     if isinstance(_compressed, dict) and _compressed.get("summary"):
                         data["mining_actions"] = [_compressed]
-                        print(f"[KG_ANALYSIS] mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要", flush=True)
+                        log("KG_ANALYSIS", f"mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要")
                 except Exception as _e:
-                    print(f"[KG_ANALYSIS] mining_actions 压缩失败，原样发送: {_e}", flush=True)
-            print(f"[KG_ANALYSIS] 压缩后 {len(json.dumps(data, ensure_ascii=False))} chars", flush=True)
+                    log("KG_ANALYSIS", f"mining_actions 压缩失败，原样发送: {_e}")
+            log("KG_ANALYSIS", f"压缩后 {len(json.dumps(data, ensure_ascii=False))} chars")
 
         prompt = [
             {"role": "system", "content": (

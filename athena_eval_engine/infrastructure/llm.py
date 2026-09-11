@@ -13,6 +13,7 @@ import threading
 import http.client
 from urllib.parse import urlparse
 from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY, LLM_ENABLED
+from .log_util import log
 
 DEFAULT_API_BASE = LLM_BASE_URL
 DEFAULT_MODEL = LLM_MODEL
@@ -77,8 +78,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     path = parsed.path.rstrip("/") + "/chat/completions"
     _model = model or DEFAULT_MODEL
     first_token_timeout = timeout if timeout is not None else FIRST_TOKEN_TIMEOUT
-    print(f"[LLM] POST {base}{path} model={_model} msgs={len(messages)} "
-          f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s", flush=True)
+    log("LLM", f"POST {base}{path} model={_model} msgs={len(messages)} "
+          f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s")
 
     body = json.dumps({
         "model": _model,
@@ -118,7 +119,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             except (socket.timeout, TimeoutError) as e:
                 conn.close()
                 conn = None
-                print(f"[LLM] 首 token 超时（{first_token_timeout}s）: {e}", flush=True)
+                log("LLM", f"首 token 超时（{first_token_timeout}s）: {e}")
                 raise RuntimeError(f"LLM 首 token 超时（{first_token_timeout}s）") from e
             status = resp.status
             if status == 429:
@@ -127,7 +128,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 if retry_after:
                     try: delay = int(retry_after)
                     except ValueError: pass
-                print(f"[LLM] 429 rate limited, retry in {delay}s", flush=True)
+                log("LLM", f"429 rate limited, retry in {delay}s")
                 conn.close()
                 conn = None
                 time.sleep(delay)
@@ -135,7 +136,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             if status != 200:
                 data = resp.read().decode("utf-8")
                 err_preview = data[:500]
-                print(f"[LLM] HTTP {status} from {base}: {err_preview}", flush=True)
+                log("LLM", f"HTTP {status} from {base}: {err_preview}")
                 conn.close()
                 conn = None
                 raise RuntimeError(f"LLM HTTP {status}: {err_preview}")
@@ -168,7 +169,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 first_token = False
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
-                print(f"[LLM] first token received, stream timeout -> {STREAM_TIMEOUT}s", flush=True)
+                log("LLM", f"first token received, stream timeout -> {STREAM_TIMEOUT}s")
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
             if usage:
@@ -198,15 +199,15 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             content = "".join(reasoning_parts)
 
         if finish_reason and finish_reason != "stop":
-            print(f"[LLM] 非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}", flush=True)
+            log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}")
 
         if content:
-            print(f"[LLM] OK stream done content_len={len(content)}", flush=True)
+            log("LLM", f"OK stream done content_len={len(content)}")
             return content
         raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
     except (socket.timeout, TimeoutError) as e:
         phase = "首 token" if first_token else "后续 token 断流"
-        print(f"[LLM] {phase}超时: {e}", flush=True)
+        log("LLM", f"{phase}超时: {e}")
         raise RuntimeError(f"LLM {phase}超时（{first_token_timeout if first_token else STREAM_TIMEOUT}s）") from e
     finally:
         if conn:
@@ -226,10 +227,10 @@ def chat(messages, **kwargs) -> str:
             return _chat_once(messages, **{k: v for k, v in kwargs.items() if k != "retries"})
         except Exception as e:
             last_err = str(e)[:300]
-            print(f"[LLM] chat attempt {attempt+1}/{retries} failed: {last_err}", flush=True)
+            log("LLM", f"chat attempt {attempt+1}/{retries} failed: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
-    print(f"[LLM] chat exhausted {retries} retries: {last_err}", flush=True)
+    log("LLM", f"chat exhausted {retries} retries: {last_err}")
     raise RuntimeError(f"LLM 调用失败（{retries} 次重试后）: {last_err}")
 
 
@@ -274,10 +275,10 @@ def chat_json(messages, **kwargs) -> dict:
                 "token limit", "context_window",
                 "input too long", "prompt too long",
             )):
-                print(f"[LLM] chat_json 输入超限，跳过重试: {last_err}", flush=True)
+                log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
                 break
-            print(f"[LLM] chat_json attempt {attempt+1}/{retries} failed: {last_err}", flush=True)
+            log("LLM", f"chat_json attempt {attempt+1}/{retries} failed: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
-    print(f"[LLM] chat_json exhausted {retries} retries: {last_err}", flush=True)
+    log("LLM", f"chat_json exhausted {retries} retries: {last_err}")
     raise RuntimeError(f"chat_json 失败（{retries} 次重试后）: {last_err}")

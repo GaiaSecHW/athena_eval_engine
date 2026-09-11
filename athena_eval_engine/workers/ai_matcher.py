@@ -18,6 +18,7 @@ from ..domain.facts import OutcomeFact, Evidence
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Outcome, Prediction, Confusion, ExpectedLabel
 from ..infrastructure import llm as llm_mod
+from ..infrastructure.log_util import log
 
 
 def _extract_json_objects_from_text(text: str) -> list[dict]:
@@ -785,19 +786,19 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     findings = _extract_findings(events)
     # 所有 CONFIRMED + FALSE_POSITIVE 的 finding 参与匹配，UNDETERMINED(None) 不参与
     active_findings = [f for f in findings if f.get("validation_result") in ("CONFIRMED", "FALSE_POSITIVE")]
-    print(f"[AI_MATCH] {task_run.condition.value} findings_extracted={len(findings)} active={len(active_findings)} "
+    log("AI_MATCH", f"{task_run.condition.value} findings_extracted={len(findings)} active={len(active_findings)} "
           f"(CONFIRMED={sum(1 for f in active_findings if f.get('validation_result')=='CONFIRMED')} "
-          f"FALSE_POSITIVE={sum(1 for f in active_findings if f.get('validation_result')=='FALSE_POSITIVE')})", flush=True)
+          f"FALSE_POSITIVE={sum(1 for f in active_findings if f.get('validation_result')=='FALSE_POSITIVE')})")
     for i, f in enumerate(active_findings[:5]):
-        print(f"[AI_MATCH]   finding[{i}] id={f.get('display_id') or f.get('finding_id','')} "
+        log("AI_MATCH", f"finding[{i}] id={f.get('display_id') or f.get('finding_id','')} "
               f"title={str(f.get('title',''))} vuln_type={str(f.get('vuln_type',''))} "
-              f"validation={f.get('validation_result')}", flush=True)
+              f"validation={f.get('validation_result')}")
     if len(active_findings) > 5:
-        print(f"[AI_MATCH]   ...还有 {len(active_findings)-5} 条 finding", flush=True)
+        log("AI_MATCH", f"...还有 {len(active_findings)-5} 条 finding")
 
     # Agent 没提交任何有效 finding → VULNERABLE=NA（未找到），NON-VULNERABLE=TN（正确）
     if not active_findings:
-        print(f"[AI_MATCH] {task_run.condition.value} NO_ACTIVE_FINDING → outcome=FAIL", flush=True)
+        log("AI_MATCH", f"{task_run.condition.value} NO_ACTIVE_FINDING → outcome=FAIL")
         case_results = []
         for b in benchmarks:
             cid = b.benchmark_item_id or ""
@@ -870,15 +871,15 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 matches.append((fi, bi))
                 matched_case_ids.add(cid)
                 available_indices.remove(fi)
-                print(f"[AI_MATCH]   DET_MATCHED case={cid} ← finding[{fi}] "
-                      f"id={f.get('display_id','')}", flush=True)
+                log("AI_MATCH", f"DET_MATCHED case={cid} ← finding[{fi}] "
+                      f"id={f.get('display_id','')}")
                 break
 
     det_matched = len(matched_case_ids)
     if det_matched:
-        print(f"[AI_MATCH] {task_run.condition.value} deterministic_match={det_matched} "
+        log("AI_MATCH", f"{task_run.condition.value} deterministic_match={det_matched} "
               f"remaining_findings={len(available_indices)} "
-              f"unmatched_baselines={len(benchmarks)-det_matched}", flush=True)
+              f"unmatched_baselines={len(benchmarks)-det_matched}")
 
     # === 两阶段匹配：Phase 1 标题预筛选 → Phase 2 详细 1vs1 ===
     from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -938,13 +939,13 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             except Exception as e:
                 # 预筛选失败 → fallback 到全部 finding
                 prefilter_candidates[bi] = list(range(len(active_findings)))
-                print(f"[AI_MATCH] {task_run.condition.value} prefilter FAILED (b{bi}): {e}, fallback all", flush=True)
+                log("AI_MATCH", f"{task_run.condition.value} prefilter FAILED (b{bi}): {e}, fallback all")
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
-    print(f"[AI_MATCH] {task_run.condition.value} prefilter: {len(benchmarks)} baselines, "
+    log("AI_MATCH", f"{task_run.condition.value} prefilter: {len(benchmarks)} baselines, "
           f"{prefilter_llm_calls} calls, {total_cand} candidates "
           f"(avg {total_cand / max(len(benchmarks), 1):.1f}/baseline, "
-          f"was {len(benchmarks) * len(active_findings)} pairs)", flush=True)
+          f"was {len(benchmarks) * len(active_findings)} pairs)")
 
     # --- Phase 2: 详细 1vs1 对比（仅对预筛选候选）---
     _sys_prompt = (
@@ -1008,7 +1009,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 except Exception as e:
                     # LLM 重试耗尽 → 取消剩余 futures 并向上抛出，让评测变 FAILED
                     _fi = futures.get(fut, -1)
-                    print(f"[AI_MATCH] {task_run.condition.value} LLM 重试耗尽 (f{_fi},b{bi}): {e}", flush=True)
+                    log("AI_MATCH", f"{task_run.condition.value} LLM 重试耗尽 (f{_fi},b{bi}): {e}")
                     for f in futures:
                         if not f.done():
                             f.cancel()
@@ -1018,8 +1019,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                     matched_case_ids.add(cid)
                     available_indices.remove(fi)  # finding 一对一：从候选池移除
                     matched = True
-                    print(f"[AI_MATCH]   MATCHED case={cid} ← finding[{fi}] "
-                          f"id={active_findings[fi].get('display_id','')}", flush=True)
+                    log("AI_MATCH", f"MATCHED case={cid} ← finding[{fi}] "
+                          f"id={active_findings[fi].get('display_id','')}")
                     break  # 基线匹配即停
 
             # 取消未完成的 LLM 调用（已发出的不可取消，结果丢弃）
@@ -1029,12 +1030,12 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
             if not matched:
                 md_desc = str((b.metadata or {}).get("vulnerability_type", ""))
-                print(f"[AI_MATCH]   UNMATCHED case={cid} label={b.expected_label.value if b.expected_label else 'NA'} "
-                      f"vuln_type={md_desc}", flush=True)
+                log("AI_MATCH", f"UNMATCHED case={cid} label={b.expected_label.value if b.expected_label else 'NA'} "
+                      f"vuln_type={md_desc}")
 
-    print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
+    log("AI_MATCH", f"{task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
           f"prefilter_llm={prefilter_llm_calls} detail_llm={llm_call_count} "
-          f"total_llm={prefilter_llm_calls + llm_call_count}", flush=True)
+          f"total_llm={prefilter_llm_calls + llm_call_count}")
 
     # per-case confusion 矩阵（考虑 agent validation_result）
     case_results = []

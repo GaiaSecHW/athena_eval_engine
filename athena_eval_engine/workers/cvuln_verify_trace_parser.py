@@ -17,6 +17,7 @@ import glob
 from typing import Iterator
 from datetime import datetime
 from ..domain.raw_event import RawEvent
+from ..infrastructure.log_util import log
 
 
 class CVulnVerifyTraceParser:
@@ -56,15 +57,15 @@ class CVulnVerifyTraceParser:
 
         filtered = [path for path, case_id in task_files if case_id in source_case_ids]
         if filtered:
-            print(f"[CVULN] benchmark case 过滤: task={source_task_id} "
-                  f"files={len(task_files)} -> {len(filtered)}", flush=True)
+            log("CVULN", f"benchmark case 过滤: task={source_task_id} "
+                  f"files={len(task_files)} -> {len(filtered)}")
             return filtered
 
         # 不同 benchmark 来源的 case ID 可能不在同一命名空间。完全不命中时
         # 保留任务级过滤，避免把有效 trace 错误地解析为空。
-        print(f"[CVULN] benchmark case 未命中 trace，回退任务级过滤: "
+        log("CVULN", f"benchmark case 未命中 trace，回退任务级过滤: "
               f"task={source_task_id} benchmark_cases={len(source_case_ids)} "
-              f"task_files={len(task_files)}", flush=True)
+              f"task_files={len(task_files)}")
         return [path for path, _ in task_files]
 
     def _source_task_id(self, path: str) -> str | None:
