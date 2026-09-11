@@ -58,7 +58,7 @@ class OutcomeResolverImpl:
             )
         pred = "POSITIVE" if validation == "CONFIRMED" else "NEGATIVE"
         confusion, outcome = self._classify(benchmark.expected_label.value, pred)
-        evs = [e for e in events if e.tool_name and (e.tool_name.startswith("vuln-hunt_") or e.tool_name.startswith("vuln_hunt_") or e.tool_name == "ReportFindings" or e.tool_name in ("vulnerability_analyze", "vulnerability_verify"))][:1]
+        evs = [e for e in events if e.tool_name and (e.tool_name.startswith("vuln-hunt_") or e.tool_name.startswith("vuln_hunt_") or e.tool_name == "ReportFindings" or e.tool_name in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"))][:1]
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
@@ -124,8 +124,9 @@ class OutcomeResolverImpl:
                 if vr in ("CONFIRMED", "LIKELY", "POSSIBLE", "FALSE_POSITIVE"):
                     mapped = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else "FALSE_POSITIVE"
                     candidates.append((e.timestamp_ms or 0, mapped))
-            # WebVulnVerify: vulnerability_analyze / vulnerability_verify
-            elif e.tool_name in ("vulnerability_analyze", "vulnerability_verify"):
+            # WebVulnVerify: vulnerability_analyze / vulnerability_verify / vulnerability_cvss
+            elif e.tool_name in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"):
+                # vulnerability_id 由 WebVulnVerifyTraceParser 归一化（analyze 从 result 文本提取）
                 fid = str(d.get("vulnerability_id") or "")
                 if target_finding_id and fid and fid != target_finding_id:
                     continue
@@ -164,7 +165,7 @@ class OutcomeResolverImpl:
     def _has_insert(self, events) -> bool:
         # 工具调用型结论点（store_tiered_fing 用前缀匹配，处理 LLM 拼写变体）
         _exact = ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
-                  "vulnerability_analyze", "vulnerability_verify",
+                  "vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss",
                   "mcp__findings-store__store_finding",
                   "mcp__workflow-tools__store_tracer_verdict")
         if any(e.tool_name in _exact or
@@ -385,7 +386,7 @@ class ToolActionResolverImpl:
                 return "KG"
         # FINDING：只有实际提交漏洞发现的工具才算（store_tiered_fing 用前缀匹配）
         if tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
-                     "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
+                     "vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss", "mcp__findings-store__store_finding",
                      "mcp__workflow-tools__store_tracer_verdict") or \
            (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
             return "FINDING"

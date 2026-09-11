@@ -20,6 +20,34 @@ from ..domain.enums import Outcome, Prediction, Confusion, ExpectedLabel
 from ..infrastructure import llm as llm_mod
 
 
+def _extract_json_objects_from_text(text: str) -> list[dict]:
+    """Extract JSON objects from text containing ```json blocks.
+
+    Uses json.JSONDecoder().raw_decode() to handle JSON values that
+    contain backticks (e.g., `` `memcpy_s` `` in string values), which
+    would break regex-based extraction that looks for closing ``` markers.
+    """
+    decoder = json.JSONDecoder()
+    results: list[dict] = []
+    search_start = 0
+    marker = '```json'
+    while True:
+        idx = text.find(marker, search_start)
+        if idx == -1:
+            break
+        brace_idx = text.find('{', idx + len(marker))
+        if brace_idx == -1:
+            break
+        try:
+            obj, end_pos = decoder.raw_decode(text, brace_idx)
+            if isinstance(obj, dict):
+                results.append(obj)
+            search_start = end_pos
+        except json.JSONDecodeError:
+            search_start = idx + len(marker)
+    return results
+
+
 def _secmate_tag_to_vr(tag: str) -> str | None:
     """Map SecMate review_verdict tag to validation_result.
 
@@ -176,30 +204,35 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                     "session_id": e.session_id,
                 }
 
-        # --- WebVulnVerify: vulnerability_analyze / vulnerability_verify ---
-        elif tool in ("vulnerability_analyze", "vulnerability_verify"):
+        # --- WebVulnVerify: vulnerability_analyze / vulnerability_verify / vulnerability_cvss ---
+        elif tool in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"):
+            # vulnerability_id 由 WebVulnVerifyTraceParser 归一化（analyze 从 result 文本提取）
             vid = str(inp.get("vulnerability_id", "?"))
+            result_text = str(inp.get("result", ""))
             status = inp.get("status", "")
             vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE", "LOCAL_VALIDATION_EXPLOITABLE") else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
-            result_text = inp.get("result", "")
             # 从 task_data 提取 source/sink（T001 上报的原始 finding 信息）
             td = _webvv_task_data.get(vid, {})
             # 从验证报告中提取具体标题（一句话结论），回退到 category
             title = _extract_webvv_title(result_text) or inp.get("category", "")
-            findings[vid] = {
-                "finding_id": vid,
-                "display_id": vid,
-                "title": title,
-                "description": result_text,
-                "vuln_type": inp.get("category", ""),
-                "severity": "",
-                "source": td.get("source", ""),
-                "sink": td.get("sink", ""),
-                "validation_result": vr,
-                "platform": "webvulnverify",
-                "confidence": inp.get("confidence"),
-                "session_id": e.session_id,
-            }
+            # vulnerability_cvss 无 status/result，不覆盖已有的 analyze/verify 结论
+            if tool == "vulnerability_cvss" and vid in findings:
+                findings[vid]["confidence"] = inp.get("confidence")
+            else:
+                findings[vid] = {
+                    "finding_id": vid,
+                    "display_id": vid,
+                    "title": title,
+                    "description": result_text,
+                    "vuln_type": inp.get("category", ""),
+                    "severity": "",
+                    "source": td.get("source", ""),
+                    "sink": td.get("sink", ""),
+                    "validation_result": vr,
+                    "platform": "webvulnverify",
+                    "confidence": inp.get("confidence"),
+                    "session_id": e.session_id,
+                }
 
         # --- SecMate: store_finding（findings-store MCP 或 workflow-tools alias） ---
         elif tool in ("mcp__findings-store__store_finding", "mcp__workflow-tools__store_finding"):
@@ -317,6 +350,8 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
             }
 
         # --- CVulnVerify: write 工具写 vuln_verify_final_verdict.json ---
+        # verdict JSON 含 case_id（与漏洞中心 case ID 同源，可用于确定性匹配）
+        # 尽量从 verdict 中提取漏洞标题/类型等信息，辅助 AI 语义匹配
         elif tool == "write":
             fp = str(inp.get("file_path") or inp.get("path") or "")
             if "vuln_verify_final_verdict" in fp:
@@ -327,15 +362,23 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                         case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
                         verdict = vdata.get("verdict", "")
                         vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                        # 尝试从 verdict JSON 提取漏洞信息（字段名可能不固定）
+                        case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
+                        vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
+                        src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
+                        fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
+                        desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
+                        if not desc:
+                            desc = str(vdata.get("ruled_out_by", ""))
                         findings[case_id] = {
                             "finding_id": case_id,
                             "display_id": case_id,
-                            "title": f"CVulnVerify {case_id}",
-                            "description": str(vdata.get("ruled_out_by", "")),
-                            "vuln_type": "",
-                            "severity": "",
-                            "source": "",
-                            "sink": "",
+                            "title": case_title if case_title else f"CVulnVerify {case_id}",
+                            "description": desc,
+                            "vuln_type": vt,
+                            "severity": str(vdata.get("severity", "")),
+                            "source": src,
+                            "sink": fn,
                             "validation_result": vr,
                             "platform": "cvuln-verify",
                             "session_id": e.session_id,
@@ -371,41 +414,74 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                     }
                 findings[fid]["validation_result"] = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else "FALSE_POSITIVE"
 
-    # --- DataflowVulnScan: assistant 文本中的 candidates JSON（TEXT 事件） ---
-    # DVS agent 输出 {"candidates":[{vuln_type,severity,function_name,line,reason,judgment,confidence,...}]}
-    # judgment="confirmed" → CONFIRMED，空 candidates = 无漏洞
+    # --- DataflowVulnScan: 从 vuln-report 阶段的 findings JSON 提取（上报给漏洞中心的数据格式） ---
+    # DVS agent vuln-report 阶段输出 {"findings":[{title,vuln_type,severity,function_name,line,summary,...}]}
+    # 每个 taint chain session 产出一个 vuln-report finding
+    # 用唯一计数器做 key，避免同标题/同函数的 finding 互相覆盖
+    _dvs_counter = 0
+    _dvs_fn_lines_with_findings: set[str] = set()
+    for e in events:
+        if e.event_type != "TEXT" or not e.output_json:
+            continue
+        text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+        if '"findings"' not in text:
+            continue
+        # 用 raw_decode 提取 JSON 对象（兼容 JSON 值内含反引号的情况）
+        for data in _extract_json_objects_from_text(text):
+            for f in (data.get("findings") or []):
+                _dvs_counter += 1
+                title = str(f.get("title", ""))
+                fn = str(f.get("function_name", ""))
+                ln = str(f.get("line", ""))
+                vt = str(f.get("vuln_type", ""))
+                _dvs_fn_lines_with_findings.add(f"{fn}:{ln}")
+                fid = f"dvs-{_dvs_counter}"
+                findings[fid] = {
+                    "finding_id": fid,
+                    "display_id": fid,
+                    "title": title,
+                    "description": str(f.get("summary", "")),
+                    "vuln_type": vt,
+                    "severity": str(f.get("severity", "")),
+                    "source": str(f.get("source_file", "")),
+                    "sink": fn,
+                    "validation_result": "CONFIRMED",
+                    "platform": "dataflow-vuln-scan",
+                    "session_id": e.session_id,
+                }
+
+    # 补充: 从 vuln-judge 阶段的 candidates JSON 提取 confirmed 候选，
+    # 仅限没有对应 vuln-report finding 的 fn:line（避免重复计数）
     for e in events:
         if e.event_type != "TEXT" or not e.output_json:
             continue
         text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
         if '"candidates"' not in text:
             continue
-        m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-        if not m:
-            continue
-        try:
-            data = json.loads(m.group(1))
+        for data in _extract_json_objects_from_text(text):
             for f in (data.get("candidates") or []):
+                if f.get("judgment") != "confirmed":
+                    continue
                 fn = str(f.get("function_name", ""))
                 ln = str(f.get("line", ""))
-                fid = f"dvs-{fn}:{ln}" if fn or ln else f"dvs-{e.event_id}"
-                judgment = f.get("judgment", "")
-                vr = "CONFIRMED" if judgment == "confirmed" else None
+                if f"{fn}:{ln}" in _dvs_fn_lines_with_findings:
+                    continue
+                _dvs_counter += 1
+                vt = str(f.get("vuln_type", ""))
+                fid = f"dvs-{_dvs_counter}"
                 findings[fid] = {
                     "finding_id": fid,
                     "display_id": fid,
-                    "title": str(f.get("vuln_type", "")),
+                    "title": vt,
                     "description": str(f.get("reason", "")),
-                    "vuln_type": str(f.get("vuln_type", "")),
+                    "vuln_type": vt,
                     "severity": str(f.get("severity", "")),
                     "source": str(f.get("source_evidence", "")),
                     "sink": fn,
-                    "validation_result": vr,
+                    "validation_result": "CONFIRMED",
                     "platform": "dataflow-vuln-scan",
                     "session_id": e.session_id,
                 }
-        except (json.JSONDecodeError, TypeError):
-            pass
 
     # --- Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果） ---
     # Argo agent 通过 Bash cat 读取 findings.json，tool result 含 finding 数组
@@ -627,6 +703,38 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             "mining_context": f.get("_mining_context", {}),
         })
 
+    # === 确定性匹配：finding_id == benchmark_item_id（仅 CVulnVerify 平台）===
+    # T002 的 finding_id 即漏洞中心 case_id，与 benchmark_item_id 同源
+    # 仅对 cvuln-verify 平台生效，不影响其他 agent 的 LLM 语义匹配
+    available_indices = list(range(len(active_findings)))
+    matches = []  # [(finding_idx, baseline_idx)]
+    matched_case_ids = set()
+
+    for bi, b in enumerate(benchmarks):
+        cid = b.benchmark_item_id or ""
+        if not cid:
+            continue
+        for fi in list(available_indices):
+            f = active_findings[fi]
+            # 仅 CVulnVerify 平台使用 case_id 确定性匹配
+            if f.get("platform") != "cvuln-verify":
+                continue
+            f_fid = str(f.get("finding_id", ""))
+            f_did = str(f.get("display_id", ""))
+            if f_fid == cid or f_did == cid:
+                matches.append((fi, bi))
+                matched_case_ids.add(cid)
+                available_indices.remove(fi)
+                print(f"[AI_MATCH]   DET_MATCHED case={cid} ← finding[{fi}] "
+                      f"id={f.get('display_id','')}", flush=True)
+                break
+
+    det_matched = len(matched_case_ids)
+    if det_matched:
+        print(f"[AI_MATCH] {task_run.condition.value} deterministic_match={det_matched} "
+              f"remaining_findings={len(available_indices)} "
+              f"unmatched_baselines={len(benchmarks)-det_matched}", flush=True)
+
     # === 两阶段匹配：Phase 1 标题预筛选 → Phase 2 详细 1vs1 ===
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
@@ -670,6 +778,10 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     with ThreadPoolExecutor(max_workers=8) as pre_pool:
         pre_futures = {}
         for bi in range(len(benchmarks)):
+            # 跳过已确定性匹配的 benchmark
+            if benchmarks[bi].benchmark_item_id in matched_case_ids:
+                prefilter_candidates[bi] = []
+                continue
             fut = pre_pool.submit(_prefilter_one, bi)
             pre_futures[fut] = bi
             prefilter_llm_calls += 1
@@ -721,15 +833,14 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
         return fi, is_same
 
-    available_indices = list(range(len(active_findings)))  # 候选 finding 池
-    matches = []  # [(finding_idx, baseline_idx)]
-    matched_case_ids = set()
     llm_call_count = 0
 
     # baseline 串行（finding 一对一约束），每个 baseline 内候选 finding 并行发送
     with ThreadPoolExecutor(max_workers=8) as pool:
         for bi, b in enumerate(benchmarks):
             cid = b.benchmark_item_id or ""
+            if cid in matched_case_ids:
+                continue  # 已确定性匹配，跳过
             if not available_indices:
                 break  # 候选池已空，剩余 baseline 都不会匹配
 

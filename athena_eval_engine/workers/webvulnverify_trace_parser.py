@@ -28,6 +28,7 @@ timestamp：
 from __future__ import annotations
 import json
 import os
+import re
 import glob
 from typing import Iterator
 from datetime import datetime
@@ -219,6 +220,15 @@ class WebVulnVerifyTraceParser(TraceParser):
                     tool_name = _TOOL_MAP.get(pt.get("name", ""), pt.get("name", "").lower())
                     call_id = pt.get("id", "")
                     inp = pt.get("input")
+                    # WebVulnVerify 特有归一化：vulnerability_analyze 的 vulnerability_id
+                    # 嵌在 result 文本里（如 "**漏洞 ID**: 50346" / "| 漏洞 ID | 50327 |"），
+                    # 提取后写入 input_json，使下游公共方法只需 inp.get("vulnerability_id")
+                    if tool_name == "vulnerability_analyze" and isinstance(inp, dict) and not inp.get("vulnerability_id"):
+                        result_text = str(inp.get("result", ""))
+                        if result_text:
+                            m = re.search(r'漏洞\s*ID[^\d]*(\d+)', result_text)
+                            if m:
+                                inp = {**inp, "vulnerability_id": m.group(1)}
                     is_kg = self._is_kg_interaction(tool_name, inp)
                     from ..domain.raw_event import detect_memory_flags
                     is_mem, is_mem_w = detect_memory_flags(tool_name, inp)

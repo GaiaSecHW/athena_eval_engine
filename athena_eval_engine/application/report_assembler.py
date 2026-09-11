@@ -10,6 +10,34 @@ from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
 
 
+def _extract_json_objects_from_text(text: str) -> list[dict]:
+    """Extract JSON objects from text containing ```json blocks.
+
+    Uses json.JSONDecoder().raw_decode() to handle JSON values that
+    contain backticks (e.g., `` `memcpy_s` `` in string values), which
+    would break regex-based extraction that looks for closing ``` markers.
+    """
+    decoder = json.JSONDecoder()
+    results: list[dict] = []
+    search_start = 0
+    marker = '```json'
+    while True:
+        idx = text.find(marker, search_start)
+        if idx == -1:
+            break
+        brace_idx = text.find('{', idx + len(marker))
+        if brace_idx == -1:
+            break
+        try:
+            obj, end_pos = decoder.raw_decode(text, brace_idx)
+            if isinstance(obj, dict):
+                results.append(obj)
+            search_start = end_pos
+        except json.JSONDecodeError:
+            search_start = idx + len(marker)
+    return results
+
+
 def _extract_webvv_task_data(events: list) -> dict[str, dict]:
     """从 WebVulnVerify trace 的 User message (task_data) 中提取 source/sink 等信息。
 
@@ -174,7 +202,7 @@ def render_json(model: ReportModel) -> str:
     return json.dumps(model.__dict__, default=lambda o: o.__dict__, ensure_ascii=False, indent=2)
 
 
-def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None) -> dict:
+def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None, tool_stats: list = None) -> dict:
     """Stage 3 AI narrative (LLM glm-5.2)."""
     m_by = {m.metric_id: m for m in metrics}
     s_by = {s.metric_id: s for s in stats if s.metric_id}
@@ -220,6 +248,24 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
                                   "calculation_status": m.get("calculation_status")}
             group_cost_data.append(entry)
 
+    # 构建 finding 流转数据（T001 提交 → T002 接收 → T002 验证）
+    finding_flow_data = []
+    if tool_stats:
+        # 按 task_id 分组，每组内分 KG/NOGK
+        _by_task: dict[str, dict] = {}
+        for ts in tool_stats:
+            tid = ts.get("task_id", "unknown")
+            cond = "KG" if "NOGK" not in (ts.get("condition") or ts.get("task_run_id", "")) else "NOGK"
+            if tid not in _by_task:
+                _by_task[tid] = {}
+            _by_task[tid][cond] = {
+                "submitted": ts.get("analyze_received_count", 0),  # 入口：提交/接收的疑似漏洞数
+                "confirmed": ts.get("finding_count", 0),           # 出口：确认为漏洞的数
+                "false_positive": ts.get("false_positive_count", 0),
+            }
+        for tid in sorted(_by_task.keys()):
+            finding_flow_data.append({"task_id": tid, **_by_task[tid]})
+
     # 根据报告类型构建 prompt
     if all_verify:
         _metric_def = (
@@ -242,7 +288,8 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             '  "conclusion": "分析结论(300-500字)。分两段写：'
             "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
             "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent行为模式变化与知识/记忆依赖。"
-            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
+            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
+            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘提交多少疑似漏洞、确认多少为漏洞；漏洞验证接收多少疑似漏洞、确认多少为漏洞。",\n'
             '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
             '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
             "}"
@@ -274,7 +321,8 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "第一段【准确性】：基于准确率变化、救回率、回归率、漏报率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
             "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
             "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
-            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。",\n'
+            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
+            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘提交多少疑似漏洞、确认多少为漏洞；漏洞验证接收多少疑似漏洞、确认多少为漏洞。",\n'
             '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
             '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
             "}"
@@ -315,6 +363,9 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "## 全局指标结果（所有分组的汇总中位数）\n"
             + json.dumps(metric_data, ensure_ascii=False, indent=2) + "\n\n"
             + _cost_section
+            + ("## 漏洞流转数据（入口=提交/接收的疑似漏洞数，出口=确认为漏洞的数）\n"
+               + json.dumps(finding_flow_data, ensure_ascii=False, indent=2) + "\n\n"
+               if finding_flow_data else "")
             + "## McNemar 联合检验（统计显著性）\n"
             + json.dumps(mc_data, ensure_ascii=False, indent=2) + "\n\n"
             "## 诊断命中规则（自动异常检测）\n"
@@ -905,32 +956,39 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 if finding_id not in _seen_fids:
                     _seen_fids.add(finding_id)
                     agent_findings_list.append(info)
-            # WebVulnVerify: vulnerability_analyze / vulnerability_verify
+            # WebVulnVerify: vulnerability_analyze / vulnerability_verify / vulnerability_cvss
             # 提交和判定在同一个 tool call，status 字段即 validation_result
-            elif tool in ("vulnerability_analyze", "vulnerability_verify"):
+            elif tool in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"):
                 status = str(inp.get("status", ""))
                 vr = "CONFIRMED" if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE") \
                     else ("FALSE_POSITIVE" if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE") else None)
-                vid = str(inp.get("vulnerability_id", "")) or f"wvv-{ev.event_id}"
+                # vulnerability_id 由 WebVulnVerifyTraceParser 归一化（analyze 从 result 文本提取）
+                vid = str(inp.get("vulnerability_id", ""))
+                if not vid:
+                    vid = f"wvv-{ev.event_id}"
                 result_text = str(inp.get("result", ""))
                 # 从 task_data 提取 source/sink（T001 上报的原始 finding 信息）
                 td = _webvv_task_data.get(vid, {})
                 # 从验证报告中提取具体标题（一句话结论），回退到 category
                 title = _extract_webvv_title(result_text) or str(inp.get("category", ""))
-                info = {
-                    "finding_id": vid, "display_id": vid,
-                    "title": title,
-                    "vuln_type": str(inp.get("category", "")),
-                    "source": td.get("source", ""),
-                    "sink": td.get("sink", ""),
-                    "session_id": ev.session_id,
-                    "timestamp": ev.timestamp_ms,
-                    "validation_result": vr,
-                }
-                finding_events[vid] = info
-                if vid not in _seen_fids:
-                    _seen_fids.add(vid)
-                    agent_findings_list.append(info)
+                # vulnerability_cvss 无 status/result，不覆盖已有的 analyze/verify 结论
+                if tool == "vulnerability_cvss" and vid in finding_events:
+                    pass
+                else:
+                    info = {
+                        "finding_id": vid, "display_id": vid,
+                        "title": title,
+                        "vuln_type": str(inp.get("category", "")),
+                        "source": td.get("source", ""),
+                        "sink": td.get("sink", ""),
+                        "session_id": ev.session_id,
+                        "timestamp": ev.timestamp_ms,
+                        "validation_result": vr,
+                    }
+                    finding_events[vid] = info
+                    if vid not in _seen_fids:
+                        _seen_fids.add(vid)
+                        agent_findings_list.append(info)
             # CVulnVerify: write 工具写 vuln_verify_final_verdict.json
             elif tool == "write":
                 fp = str(inp.get("file_path") or inp.get("path") or "")
@@ -943,11 +1001,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             verdict = vdata.get("verdict", "")
                             vr = "CONFIRMED" if verdict == "confirmed" \
                                 else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                            case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
                             info = {
                                 "finding_id": case_id, "display_id": case_id,
-                                "title": f"CVulnVerify {case_id}",
-                                "vuln_type": "",
-                                "source": "", "sink": "",
+                                "title": case_title if case_title else f"CVulnVerify {case_id}",
+                                "vuln_type": str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or ""),
+                                "source": str(vdata.get("source_file", "") or vdata.get("source", "") or ""),
+                                "sink": str(vdata.get("function_name", "") or vdata.get("sink", "") or ""),
                                 "session_id": ev.session_id,
                                 "timestamp": ev.timestamp_ms,
                                 "validation_result": vr,
@@ -959,6 +1019,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         except (json.JSONDecodeError, TypeError):
                             pass
         # DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件，非 tool call）
+        _dvs_ra_counter = 0
+        _dvs_ra_fn_lines: set[str] = set()
         for ev in events:
             if not hasattr(ev, "event_type") or ev.event_type != "TEXT":
                 continue
@@ -967,15 +1029,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
             if '"findings"' not in text:
                 continue
-            m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-            if not m:
-                continue
-            try:
-                data = json.loads(m.group(1))
+            for data in _extract_json_objects_from_text(text):
                 for f in (data.get("findings") or []):
+                    _dvs_ra_counter += 1
                     sf = str(f.get("source_file", ""))
                     ln = str(f.get("line", ""))
-                    fid = f"dvs-{sf}:{ln}" if sf or ln else f"dvs-{ev.event_id}"
+                    fn = str(f.get("function_name", ""))
+                    _dvs_ra_fn_lines.add(f"{fn}:{ln}")
+                    fid = f"dvs-ra-{_dvs_ra_counter}"
                     if fid in _seen_fids:
                         continue
                     info = {
@@ -983,7 +1044,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "title": str(f.get("title", "")),
                         "vuln_type": str(f.get("vuln_type", "")),
                         "source": sf,
-                        "sink": str(f.get("function_name", "")),
+                        "sink": fn,
                         "session_id": ev.session_id,
                         "timestamp": ev.timestamp_ms,
                         "validation_result": "CONFIRMED",
@@ -991,8 +1052,40 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     finding_events[fid] = info
                     _seen_fids.add(fid)
                     agent_findings_list.append(info)
-            except (json.JSONDecodeError, TypeError):
-                pass
+        # 补充: vuln-judge 阶段 confirmed 候选（无对应 vuln-report finding 的 fn:line）
+        for ev in events:
+            if not hasattr(ev, "event_type") or ev.event_type != "TEXT":
+                continue
+            if not ev.output_json:
+                continue
+            text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+            if '"candidates"' not in text:
+                continue
+            for data in _extract_json_objects_from_text(text):
+                for c in (data.get("candidates") or []):
+                    if c.get("judgment") != "confirmed":
+                        continue
+                    fn = str(c.get("function_name", ""))
+                    ln = str(c.get("line", ""))
+                    if f"{fn}:{ln}" in _dvs_ra_fn_lines:
+                        continue
+                    _dvs_ra_counter += 1
+                    fid = f"dvs-ra-{_dvs_ra_counter}"
+                    if fid in _seen_fids:
+                        continue
+                    info = {
+                        "finding_id": fid, "display_id": fid,
+                        "title": str(c.get("vuln_type", "")),
+                        "vuln_type": str(c.get("vuln_type", "")),
+                        "source": str(c.get("source_evidence", "")),
+                        "sink": fn,
+                        "session_id": ev.session_id,
+                        "timestamp": ev.timestamp_ms,
+                        "validation_result": "CONFIRMED",
+                    }
+                    finding_events[fid] = info
+                    _seen_fids.add(fid)
+                    agent_findings_list.append(info)
         # Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果）
         for ev in events:
             if not hasattr(ev, "event_type") or ev.event_type != "TOOL_RESULT":
@@ -1059,7 +1152,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             if fp:
                 return {"tool": "read", "action": fp, "session_id": ev.session_id, "ts": ts}
         elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
-                      "vulnerability_analyze", "vulnerability_verify", "mcp__findings-store__store_finding",
+                      "vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss", "mcp__findings-store__store_finding",
                       "mcp__workflow-tools__store_tracer_verdict") or \
              (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
             title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))

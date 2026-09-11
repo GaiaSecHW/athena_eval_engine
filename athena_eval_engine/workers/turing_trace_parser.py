@@ -180,6 +180,26 @@ class TuringTraceParser(TraceParser):
         from ..domain.raw_event import detect_memory_flags
         is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
 
+        # Turing 特有归一化：agent 绕过 vuln_hunt_update_finding 工具，
+        # 直接用 bash + python3 + urllib.request 调 MCP server HTTP 接口
+        # 设置 validation_result。从 output 中提取 finding_id + VR，
+        # 归一化为 vuln_hunt_update_finding 工具调用，使下游 _extract_findings
+        # 能正确处理。
+        if tool_name == "bash" and isinstance(inp, dict):
+            cmd = str(inp.get("command", "")).lower()
+            if "mcp" in cmd and ("vulnhunt" in cmd or "vuln_hunt" in cmd or "turing-app-security" in cmd):
+                outp_str = str(outp) if outp else ""
+                m_vr = re.search(r"validated as '(\w+)'", outp_str, re.I)
+                if m_vr:
+                    vr = m_vr.group(1).upper()
+                    m_fid = re.search(
+                        r'([a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12})',
+                        outp_str, re.I)
+                    if m_fid:
+                        tool_name = "vuln_hunt_update_finding"
+                        inp = {**inp, "finding_id": m_fid.group(1),
+                               "validation_result": vr}
+
         return RawEvent(
             event_id=f"evt-{trace_id}-{part_id}",
             trace_id=trace_id, session_id=session_id, event_type=event_type,

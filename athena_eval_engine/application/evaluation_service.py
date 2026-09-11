@@ -956,6 +956,15 @@ def run(evaluation_id: str) -> dict:
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
 
+    # tool_stats_list 供 ai_narrative 引用漏洞流转数据
+    tool_stats_list = [{"task_run_id": tr.task_run_id,
+                        "task_id": tr.task_id,
+                        "condition": tr.condition,
+                        "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
+                        "false_positive_count": facts[tr.task_run_id]["tool"].action_distribution.get("false_positive_finding_count", 0),
+                        "analyze_received_count": facts[tr.task_run_id]["tool"].action_distribution.get("analyze_received_count", 0),
+                        "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
+                       for tr in task_runs]
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
@@ -964,7 +973,7 @@ def run(evaluation_id: str) -> dict:
         print(f"[EVAL] 并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...", flush=True)
         with _TP(max_workers=3) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
-                                        metric_groups=_metric_groups)
+                                        metric_groups=_metric_groups, tool_stats=tool_stats_list)
 
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
             fut_group_pcka = {}
@@ -1001,13 +1010,6 @@ def run(evaluation_id: str) -> dict:
                       "resolver_status": facts[tr.task_run_id]["outcome"].resolver_status,
                       "validation": facts[tr.task_run_id]["outcome"].validation_result}
                      for tr in task_runs]
-    tool_stats_list = [{"task_run_id": tr.task_run_id,
-                        "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
-                        "false_positive_count": facts[tr.task_run_id]["tool"].action_distribution.get("false_positive_finding_count", 0),
-                        "analyze_received_count": facts[tr.task_run_id]["tool"].action_distribution.get("analyze_received_count", 0),
-                        "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
-                       for tr in task_runs]
-    # ai_summary 已合并进 narrative，不再单独调用（省一次 LLM）
     report.llm_token_usage = llm_mod.get_token_usage()
     print(f"[EVAL] LLM token 用量: {report.llm_token_usage}", flush=True)
     rj = render_json(report)

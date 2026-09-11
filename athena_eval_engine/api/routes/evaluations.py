@@ -458,6 +458,7 @@ def _build_report(evaluation_id: str):
         r["tool_stats"] = [{"task_run_id": row[0], "kg_count": row[1],
                             "finding_count": (json.loads(row[4]).get("confirmed_finding_count", 0) if row[4] else 0),
                             "false_positive_count": (json.loads(row[4]).get("false_positive_finding_count", 0) if row[4] else 0),
+                            "analyze_received_count": (json.loads(row[4]).get("analyze_received_count", 0) if row[4] else 0),
                             "total_tools": row[3]} for row in cur.fetchall()]
         # 资源统计（token/steps/duration 原始值）
         cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
