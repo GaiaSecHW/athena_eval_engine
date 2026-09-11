@@ -16,7 +16,7 @@ import re
 from ..domain.raw_event import RawEvent
 from ..domain.facts import OutcomeFact, Evidence
 from ..domain.task_run import TaskRun, BenchmarkItem
-from ..domain.enums import Outcome, Prediction, Confusion
+from ..domain.enums import Outcome, Prediction, Confusion, ExpectedLabel
 from ..infrastructure import llm as llm_mod
 
 
@@ -569,13 +569,15 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                                 "matched": False, "matched_finding_id": None,
                                 "confusion": "NA" if is_vuln else "TN",
                                 "session_id": "", "agent_validation": None})
+        has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
             condition=task_run.condition, condition_source=task_run.condition_source,
             benchmark_item_id=benchmarks[0].benchmark_item_id,
-            gt_label=benchmarks[0].expected_label, prediction=Prediction.NEGATIVE,
-            outcome=Outcome.FAIL, confusion_label=Confusion.FN,
+            gt_label=ExpectedLabel.VULNERABLE if has_vuln else benchmarks[0].expected_label,
+            prediction=Prediction.NEGATIVE,
+            outcome=Outcome.FAIL, confusion_label=Confusion.NA if has_vuln else Confusion.TN,
             target_finding_id=benchmarks[0].target_finding_id,
             validation_result=None, resolver_status="NO_FINDING",
         ), case_results
@@ -747,10 +749,21 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     matched_findings = [f for f in active_findings if (f.get("display_id") or f.get("finding_id", "")) in matched_fids]
     vr = matched_findings[0]["validation_result"] if matched_findings else None
 
+    has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
     if all_correct:
         pred = "POSITIVE"; outcome = Outcome.SUCCESS; confusion_label = Confusion.TP; resolver_status = "AI_MATCHED"
     else:
-        pred = "NEGATIVE"; outcome = Outcome.FAIL; confusion_label = Confusion.FN
+        pred = "NEGATIVE"; outcome = Outcome.FAIL
+        # 按实际 case_results 聚合 confusion_label，而非无条件 FN
+        confusions = {c["confusion"] for c in case_results}
+        if "NA" in confusions:
+            confusion_label = Confusion.NA       # agent 没找到漏洞
+        elif "FN" in confusions:
+            confusion_label = Confusion.FN      # agent 找到但判错
+        elif "FP" in confusions:
+            confusion_label = Confusion.FP      # agent 误报
+        else:
+            confusion_label = Confusion.FN       # 兜底
         resolver_status = "AI_PARTIAL_MATCH" if matched_case_ids else "AI_UNMATCHED"
 
     oc = OutcomeFact(
@@ -758,7 +771,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
         condition=task_run.condition, condition_source=task_run.condition_source,
         benchmark_item_id=benchmarks[0].benchmark_item_id,
-        gt_label=benchmarks[0].expected_label, prediction=Prediction(pred),
+        gt_label=ExpectedLabel.VULNERABLE if has_vuln else benchmarks[0].expected_label,
+        prediction=Prediction(pred),
         outcome=outcome, confusion_label=confusion_label,
         target_finding_id=benchmarks[0].target_finding_id,
         validation_result=vr, resolver_status=resolver_status,

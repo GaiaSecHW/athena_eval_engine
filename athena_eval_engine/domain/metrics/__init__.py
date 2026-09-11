@@ -334,14 +334,17 @@ def calc_m9(pairs, *, seed=42): return _calc_delta_metric("M9", "delta_steps", p
 def calc_m10(pairs, *, seed=42): return _calc_delta_metric("M10", "delta_time", pairs, seed=seed, unit="ms")
 
 
-def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delivery=0, access=0,
+def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0, kg_valid=0, kg_delivery=0, access=0,
                      kg_access_events=0, kg_successful_reads=0,
                      mem_read_count=0, mem_successful_reads=0,
                      kg_tool_calls=0, total_tool_calls=0, seed=42) -> dict:
     """跑全部 10 指标 + 统计证据。返回 {metric_results, statistical_results}。
-    bootstrap 指标用线程池并行（numpy 释放 GIL）。"""
+    bootstrap 指标用线程池并行（numpy 释放 GIL）。
+    confusion_pairs: 按 benchmark_item 展开的 pair 列表，用于 M1-M4 混淆矩阵。
+    为 None 时回退到 pairs（任务级）。"""
     from concurrent.futures import ThreadPoolExecutor
     mrs = []; srs = []
+    cp = confusion_pairs or pairs  # M1-M4 用 item 级 pair
     # M5/M6 无 bootstrap，瞬时完成，直接算
     # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
@@ -349,11 +352,11 @@ def run_all_metrics(pairs: list[PairView], *, kg_access=0, kg_valid=0, kg_delive
     # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M1/M2M3/M4/M7/M8/M9/M10 有 bootstrap，并行
+    # M1/M2M3/M4 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
     with ThreadPoolExecutor(max_workers=4) as pool:
-        fut_m1 = pool.submit(calc_m1, pairs, seed=seed)
-        fut_m23 = pool.submit(calc_m2_m3, pairs, seed=seed)
-        fut_m4 = pool.submit(calc_m4, pairs, seed=seed)
+        fut_m1 = pool.submit(calc_m1, cp, seed=seed)
+        fut_m23 = pool.submit(calc_m2_m3, cp, seed=seed)
+        fut_m4 = pool.submit(calc_m4, cp, seed=seed)
         fut_m7 = pool.submit(calc_m7, pairs, seed=seed)
         fut_m8 = pool.submit(calc_m8, pairs, seed=seed)
         fut_m9 = pool.submit(calc_m9, pairs, seed=seed)

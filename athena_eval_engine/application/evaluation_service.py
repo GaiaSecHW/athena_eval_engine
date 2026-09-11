@@ -737,12 +737,45 @@ def run(evaluation_id: str) -> dict:
         dtm = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_TIME"), None)
         bench = bench_by_task.get(pair.task_id) or [BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)]
         bench_item = bench[0] if bench else BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)
+        # gt 取 VULNERABLE 优先：基线有漏洞项时，评测目标是发现漏洞
+        has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in bench)
         pair_views.append(PairView(
             kg_success=kg_f["outcome"].outcome.value == "SUCCESS",
             nogk_success=nogk_f["outcome"].outcome.value == "SUCCESS",
-            gt=bench_item.expected_label.value if bench_item and bench_item.expected_label else "NA",
+            gt="VULNERABLE" if has_vuln else (bench_item.expected_label.value if bench_item and bench_item.expected_label else "NA"),
             kg_outcome=kg_f["outcome"].outcome.value, nogk_outcome=nogk_f["outcome"].outcome.value,
             jsd=j, delta_token=dt, delta_steps=ds, delta_time=dtm))
+
+    # 按 benchmark_item 展开 pair_views，供 M1-M4 混淆矩阵使用
+    # 任务级 pair 只有 1 个 gt，BA 会因缺正/负类而 NO_STRATUM；
+    # 展开后每条 case 独立，混淆矩阵可正确聚合。
+    item_pair_views: list[PairView] = []
+    _item_pv_task_ids: list[str] = []
+    for i, pair in enumerate(pairs):
+        pv = pair_views[i]
+        kg_cr = facts[pair.kg_task_run_id].get("case_results", [])
+        nogk_cr = facts[pair.nogk_task_run_id].get("case_results", [])
+        if not kg_cr or not nogk_cr:
+            continue
+        nogk_by_id = {c.get("case_id"): c for c in nogk_cr}
+        for kc in kg_cr:
+            nc = nogk_by_id.get(kc.get("case_id"))
+            if not nc:
+                continue
+            kg_conf = kc.get("confusion", "")
+            nogk_conf = nc.get("confusion", "")
+            kg_ok = kg_conf in ("TP", "FP")
+            nogk_ok = nogk_conf in ("TP", "FP")
+            item_pair_views.append(PairView(
+                kg_success=kg_ok, nogk_success=nogk_ok,
+                gt=kc.get("expected_label", "NA"),
+                kg_outcome="SUCCESS" if kg_ok else "FAIL",
+                nogk_outcome="SUCCESS" if nogk_ok else "FAIL",
+                jsd=pv.jsd, delta_token=pv.delta_token,
+                delta_steps=pv.delta_steps, delta_time=pv.delta_time))
+            _item_pv_task_ids.append(pair.task_id)
+    print(f"[EVAL] item 级 pair_views: {len(item_pair_views)} 个 (任务级 {len(pair_views)})", flush=True)
+
     # 存配对数据（短连接）
     pair_derived = []
     for pair in pairs:
@@ -760,7 +793,8 @@ def run(evaluation_id: str) -> dict:
 
     _set_status_short(evaluation_id, "CALCULATING")
     print(f"[EVAL] 开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}", flush=True)
-    out = run_all_metrics(pair_views, kg_access=access, kg_valid=kg_valid,
+    out = run_all_metrics(pair_views, confusion_pairs=item_pair_views or None,
+                          kg_access=access, kg_valid=kg_valid,
                           kg_delivery=kg_delivery, access=access,
                           kg_access_events=kg_access_events, kg_successful_reads=kg_successful_reads,
                           mem_read_count=mem_read_count, mem_successful_reads=mem_successful_reads,
@@ -779,6 +813,10 @@ def run(evaluation_id: str) -> dict:
     for i, pv in enumerate(pair_views):
         tid = _pv_task_ids[i] if i < len(_pv_task_ids) else "T001"
         _groups_pv[tid].append(pv)
+    _groups_item_pv: dict[str, list[PairView]] = _dd2(list)
+    for i, pv in enumerate(item_pair_views):
+        tid = _item_pv_task_ids[i] if i < len(_item_pv_task_ids) else "T001"
+        _groups_item_pv[tid].append(pv)
     # 为每组计算指标
     _metric_groups: list[dict] = []
     _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict]]] = {}
@@ -807,7 +845,8 @@ def run(evaluation_id: str) -> dict:
                 ta = kg_f["tool"]
                 _g_kg_tool_calls += ta.kg_count
                 _g_total_tool_calls += ta.total_tool_calls
-        g_out = run_all_metrics(gvs, kg_access=_g_access, kg_valid=_g_kg_valid,
+        g_out = run_all_metrics(gvs, confusion_pairs=_groups_item_pv.get(tid) or None,
+                                kg_access=_g_access, kg_valid=_g_kg_valid,
                                   kg_delivery=_g_kg_delivery, access=_g_access,
                                   kg_access_events=_g_kg_access_events, kg_successful_reads=_g_kg_successful_reads,
                                   mem_read_count=_g_mem_read, mem_successful_reads=_g_mem_success,
