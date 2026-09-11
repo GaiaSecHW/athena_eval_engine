@@ -407,22 +407,18 @@ function fmtNum(v){const a=Math.abs(v);
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M1:{n:"准确率变化(ΔBA)",short:"准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
+  M1:{n:"准确率变化(ΔBA)",short:"Δ准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
      range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无差异",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
      interp:(v)=>v==null?"无基准，无法计算":v>0.05?`KG 准确率高出 ${(v*100).toFixed(1)}pp`:v<-0.05?`KG 准确率低 ${(-v*100).toFixed(1)}pp`:"准确率无明显差异",
      formula:"BA_KG - BA_NoKG, BA=(TPR+TNR)/2, TPR=TP/(TP+FN), TNR=TN/(TN+FP)"},
-  M2:{n:"救回率(IR)",short:"救回率",d:"No-KG 失败的任务里 KG 救回的比例。越高越好。",u:"ratio",
-     range:[{v:0,t:"无救回",c:"red"},{v:0.3,t:"一般",c:"amber"},{v:0.7,t:"高效",c:"green"}],
-     interp:(v)=>v==null?"无失败任务可分析":v>=0.7?`救回率 ${v*100}%, 高效`:v>=0.3?`救回率 ${v*100}%, 一般`:`救回率 ${v*100}%, 偏低`,
-     formula:"C / (C + D), C=救回(NoKG失败->KG成功), D=持续失败"},
-  M3:{n:"回归率(RR)",short:"回归率",d:"No-KG 成功的任务里 KG 反而搞坏的比例。越低越好。",u:"ratio",
-     range:[{v:0,t:"无回归",c:"green"},{v:0.1,t:"少量",c:"amber"},{v:0.3,t:"严重",c:"red"}],
-     interp:(v)=>v==null?"无成功任务可分析":v<0.1?`回归率 ${v*100}%, 安全`:v<0.3?`回归率 ${v*100}%, 需关注`:`回归率 ${v*100}%, 严重`,
-     formula:"B / (A + B), B=回归(NoKG成功->KG失败), A=保持"},
-  M4:{n:"漏报率变化(ΔFNR)",short:"漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
+  M4:{n:"漏报率变化(ΔFNR)",short:"Δ漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
      range:[{v:-1,t:"KG 漏报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 漏报多",c:"red"}],
      interp:(v)=>v==null?"无基准":v<0?`KG 漏报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 漏报增加 ${(v*100).toFixed(1)}pp`:"漏报率无变化",
      formula:"FNR_KG - FNR_NoKG, FNR=FN/(FN+TP)"},
+  M13:{n:"误报率变化(ΔFPR)",short:"Δ误报率",d:"KG vs No-KG 误报率差值。负值=KG 误报更少(好)，正值=更多。",u:"ratio",
+     range:[{v:-1,t:"KG 误报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 误报多",c:"red"}],
+     interp:(v)=>v==null?"无基准":v<0?`KG 误报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 误报增加 ${(v*100).toFixed(1)}pp`:"误报率无变化",
+     formula:"FPR_KG - FPR_NoKG, FPR=FP/(FP+TN)"},
   M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 占比低`,
@@ -469,12 +465,12 @@ function selectReportTab(button,paneId){
 
 function renderReport(d){
   $("rep").style.overflowY='auto';
-  const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{},mc=p0.m2_m3_mcnemar||{};
+  const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
 
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
     const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零"};
+    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零"};
     if(!m||m.calculation_status!=="CALCULATED"){
       const rc=m?m.reason_code||m.calculation_status:"无数据";
       const reason=RC[rc]||rc||"无数据";
@@ -488,6 +484,16 @@ function renderReport(d){
       for(let i=mi.range.length-1;i>=0;i--){if(v>=mi.range[i].v){col=mi.range[i].c==="green"?"var(--green)":mi.range[i].c==="red"?"var(--red)":"var(--amber)";break;}}
     }
     const valStr=fmt(v,m.unit);
+    // KG/No-KG 绝对值拆分显示（M1/M4/M13 差值类指标）
+    const KG_FIELDS={"M1":{kg:"ba_kg",nogk:"ba_nogk"},"M4":{kg:"fnr_kg",nogk:"fnr_nogk"},"M13":{kg:"fpr_kg",nogk:"fpr_nogk"}};
+    let kgBreakdown="";
+    if(KG_FIELDS[mid]&&m.method){
+      const kf=KG_FIELDS[mid];
+      const kgV=m.method[kf.kg],nogkV=m.method[kf.nogk];
+      if(kgV!=null&&nogkV!=null){
+        kgBreakdown=`<div style="display:flex;gap:12px;margin-top:4px;font-size:13px"><span>KG <b style="color:var(--acc)">${(kgV*100).toFixed(1)}%</b></span><span>No-KG <b>${(nogkV*100).toFixed(1)}%</b></span></div>`;
+      }
+    }
     let rangeBar="";
     if(mi.range&&mi.range.length>=2){
       const min=mi.range[0].v,max=mi.range[mi.range.length-1].v;
@@ -495,7 +501,7 @@ function renderReport(d){
       rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
     }
     var formulaHtml=mi.formula?"<details style='margin-top:4px'><summary style='cursor:pointer;font-size:12px;color:var(--gray)'>计算公式</summary><div style='font-size:12px;color:var(--sub);font-family:monospace;background:var(--p2);padding:4px 6px;border-radius:4px;margin-top:4px'>"+mi.formula+"</div></details>":"";
-    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
+    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div>'+kgBreakdown+'<div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
   }
 
   // 知识图谱与记忆介入情况：两种方案分别统计
@@ -817,7 +823,7 @@ function renderReport(d){
       const isVerify=cat==="verify";
       const groups=[
         ["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
-          [["M1",gp0.M1],["M2",gp0.M2],["M3",gp0.M3],["M4",gp0.M4]]],
+          [["M1",gp0.M1],["M4",gp0.M4],["M13",gp0.M13]]],
         ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
           isVerify?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
         ...(!isVerify?[["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
@@ -828,7 +834,7 @@ function renderReport(d){
           <span style="font-weight:700;font-size:15px">${g[0]}</span>
           <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
         </div>
-        <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+        <div class="mcards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
           ${g[2].map(m=>mCard(m[0],m[1])).join("")}
         </div>
       </div>`).join("")}`;

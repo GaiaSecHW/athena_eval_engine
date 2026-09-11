@@ -137,6 +137,27 @@ def _extract_webvv_title(result_text: str) -> str:
     return ""
 
 
+def _extract_verdict_from_bash_cmd(cmd: str) -> dict | None:
+    """从 bash cat > heredoc 命令中提取 verdict JSON。
+
+    命令格式：
+        cat > /tmp/.../vuln_verify_final_verdict.json << 'JSONEOF'
+        { "case_id": "...", "verdict": "confirmed", ... }
+        JSONEOF
+    """
+    brace_idx = cmd.find("{")
+    if brace_idx == -1:
+        return None
+    decoder = json.JSONDecoder()
+    try:
+        obj, _end = decoder.raw_decode(cmd, brace_idx)
+        if isinstance(obj, dict) and "case_id" in obj:
+            return obj
+    except json.JSONDecodeError:
+        pass
+    return None
+
+
 def _extract_findings(events: list[RawEvent]) -> list[dict]:
     """从 events 提取 finding 列表，关联 insert→update 的 validation_result。
 
@@ -388,6 +409,37 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                         }
                     except (json.JSONDecodeError, TypeError):
                         pass
+
+        # --- CVulnVerify: bash cat > 写 vuln_verify_final_verdict.json ---
+        # 部分 agent 绕过 write 工具，用 bash cat > heredoc 写 verdict
+        elif tool in ("bash", "bash_tool", "shell"):
+            cmd = str(inp.get("command", ""))
+            if "vuln_verify_final_verdict" in cmd:
+                _vr_json = _extract_verdict_from_bash_cmd(cmd)
+                if _vr_json:
+                    case_id = str(_vr_json.get("case_id", "")) or f"cvv-{e.event_id}"
+                    verdict = _vr_json.get("verdict", "")
+                    vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                    case_title = str(_vr_json.get("case_title", "") or _vr_json.get("title", "") or "")
+                    vt = str(_vr_json.get("vuln_type", "") or _vr_json.get("vulnerability_type", "") or "")
+                    src = str(_vr_json.get("source_file", "") or _vr_json.get("source", "") or "")
+                    fn = str(_vr_json.get("function_name", "") or _vr_json.get("sink", "") or "")
+                    desc = str(_vr_json.get("summary", "") or _vr_json.get("description", "") or "")
+                    if not desc:
+                        desc = str(_vr_json.get("ruled_out_by", ""))
+                    findings[case_id] = {
+                        "finding_id": case_id,
+                        "display_id": case_id,
+                        "title": case_title if case_title else f"CVulnVerify {case_id}",
+                        "description": desc,
+                        "vuln_type": vt,
+                        "severity": str(_vr_json.get("severity", "")),
+                        "source": src,
+                        "sink": fn,
+                        "validation_result": vr,
+                        "platform": "cvuln-verify",
+                        "session_id": e.session_id,
+                    }
 
     # 关联 Turing: vuln-hunt_update_finding 的 validation_result
     for e in events:

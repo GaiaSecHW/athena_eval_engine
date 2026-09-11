@@ -96,12 +96,6 @@ def diagnose(metrics: list, stats: list, *, kar_ref=0.8, kdr_ref=0.9,
             hits.append(DiagnosticHit("D4", f"行为偏移={m7.estimate:.2f}(大) + 准确率提升",
                                      "工具行为变化伴随总体效果提升",
                                      "可继续观察行为变化模式"))
-        m3 = m_by.get("M3"); s3 = s_by_metric.get("M3")
-        if m3 and _dir(m3, s3) == "↑":
-            hits.append(DiagnosticHit("D5", f"行为偏移={m7.estimate:.2f}(大) + 回归率上升",
-                                     "工具行为变化伴随回归风险上升",
-                                     "检查是否引入新的误判路径"))
-
     # 准确率提升 但 token 大增
     if m1 and _dir(m1, s1) == "↑" and m8 and m8.estimate is not None and s8 and s8.ci_lower is not None and s8.ci_lower > 0:
         hits.append(DiagnosticHit("D6", f"准确率提升 + token增加{m8.estimate:.0f}",

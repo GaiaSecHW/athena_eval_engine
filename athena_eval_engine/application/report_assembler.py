@@ -145,15 +145,10 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
             "calculation_status": m.calculation_status, "reason_code": m.reason_code,
             "ci_lower": s.ci_lower if s else None, "ci_upper": s.ci_upper if s else None,
             "p_value": s.p_value if s else None, "median": m.median, "iqr": m.iqr,
+            "method": m.method or {},
         }
 
-    p0 = {mid: _entry(mid) for mid in ("M1", "M2", "M3", "M4")}
-    p0["m2_m3_mcnemar"] = {
-        "joint_analysis_id": joint[0].joint_analysis_id if joint else None,
-        "statistic": joint[0].statistic if joint else None,
-        "p_value": joint[0].p_value if joint else None,
-        "status": joint[0].status if joint else None,
-    } if joint else None
+    p0 = {mid: _entry(mid) for mid in ("M1", "M4", "M13", "M14")}
     p1 = {mid: _entry(mid) for mid in ("M5", "M6", "M7", "M11", "M12")}
     p2 = {mid: _entry(mid) for mid in ("M8", "M9", "M10")}
 
@@ -184,7 +179,8 @@ def _build_narrative(metrics, stats, hits) -> dict:
         return {"source": src, "metric_id": mid, "field": field_name, "value": val} if val is not None else None
 
     refs = [r for r in [_ref("M1", "estimate"), _ref("M1", "ci_lower"),
-                        _ref("M4", "estimate"), _ref("M2", "estimate"), _ref("M3", "estimate")] if r]
+                        _ref("M4", "estimate"), _ref("M13", "estimate"),
+                        _ref("M14", "estimate")] if r]
     m1 = m_by.get("M1")
     summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
     return {
@@ -211,9 +207,9 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
     # 漏洞验证报告不包含成本效率(M8/M9/M10)和行为偏移(M7)
     all_verify = metric_groups and all(g.get("category") == "verify" for g in metric_groups)
     if all_verify:
-        _metric_ids = ("M1", "M2", "M3", "M4", "M5", "M6", "M11", "M12")
+        _metric_ids = ("M1", "M4", "M5", "M6", "M11", "M12", "M13", "M14")
     else:
-        _metric_ids = ("M1", "M2", "M3", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12")
+        _metric_ids = ("M1", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M14")
 
     metric_data = []
     for mid in _metric_ids:
@@ -378,7 +374,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
         result = llm_mod.chat_json(prompt, temperature=0)
         if not result.get("evidence_refs"):
             refs = []
-            for mid in ("M1", "M4", "M2", "M3"):
+            for mid in ("M1", "M4", "M13", "M14"):
                 m = m_by.get(mid)
                 if m and m.estimate is not None:
                     refs.append({"source": "metric_result", "metric_id": mid, "field": "estimate", "value": m.estimate})
