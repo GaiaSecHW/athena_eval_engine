@@ -76,7 +76,10 @@ class CreateRequest:
 
 
 def _set_status(cur, evaluation_id, status):
-    cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+    if status == "FAILED":
+        cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+    else:
+        cur.execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
 
 
 def _set_status_short(evaluation_id, status):
@@ -84,7 +87,10 @@ def _set_status_short(evaluation_id, status):
     conn = connect(autocommit=True)
     try:
         try:
-            conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+            if status == "FAILED":
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+            else:
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
         except Exception as e:
             # CHECK 约束可能不含新状态（如 AI_MATCHING）→ 自动修复约束后重试
             if "Check constraint" in str(e) or "3819" in str(e):

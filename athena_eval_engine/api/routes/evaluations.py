@@ -362,7 +362,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             from ...infrastructure.database import connect as _connect
             conn = _connect(autocommit=True)
             try:
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING' WHERE evaluation_id=%s", (evaluation_id,))
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL WHERE evaluation_id=%s", (evaluation_id,))
             finally:
                 conn.close()
             try:
