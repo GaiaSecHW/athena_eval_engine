@@ -67,6 +67,36 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
     return accumulated
 
 
+def search_vuln_cases(project_id: str, search_term: str, page_size: int = 20) -> list[dict]:
+    """按 case ID 搜索漏洞中心 case，不走 scope=vuln_center。
+
+    用于 CVulnVerify 从 trace_case_ids 反查 source_task.task_id。
+    返回原始 case 列表，调用方自行提取所需字段。
+    """
+    params = {
+        "project_id": project_id,
+        "search": search_term,
+        "sort_field": "created_at",
+        "sort_direction": "desc",
+        "page": 1,
+        "page_size": page_size,
+    }
+    url = f"{VULN_CENTER_API_URL}?{urllib.parse.urlencode(params)}"
+    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
+    with urllib.request.urlopen(req, timeout=20) as r:
+        data = json.loads(r.read().decode("utf-8"))
+    return data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+
+
+def get_task_id_by_case_id(project_id: str, case_id: str) -> str | None:
+    """通过 case ID 搜索漏洞中心，返回 source_task.task_id。"""
+    items = search_vuln_cases(project_id, case_id, page_size=1)
+    if not items:
+        return None
+    source_task = items[0].get("source_task") or {}
+    return source_task.get("task_id")
+
+
 def _render_description_value(value) -> str:
     """移植 vbench_next import_service._render_description_value。"""
     if value is None or value == "":

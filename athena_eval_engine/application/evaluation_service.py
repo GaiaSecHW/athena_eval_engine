@@ -593,14 +593,27 @@ def run(evaluation_id: str) -> dict:
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
-                trace_source["source_task_id"] = e.get("task_id_actual", "")
+                task_id_actual = e.get("task_id_actual", "")
                 trace_case_ids = [str(c) for c in e.get("trace_case_ids", []) if c]
-                # trace_case_ids 是验证平台的 case ID（case-20260905-*），
-                # 与基线 benchmark_item_id（case-20260821-*）属于不同命名空间，
+                # CVulnVerify 的 JSONL 文件在项目目录下（非任务目录），
+                # 需要任务 ID 来过滤出本次评测的文件。
+                # 优先用 manifest 的 task_id_actual；缺失时从漏洞中心
+                # 按 trace_case_ids 搜索获取 source_task.task_id。
+                if not task_id_actual and trace_case_ids:
+                    try:
+                        from ..infrastructure.vuln_center_client import get_task_id_by_case_id
+                        _proj = e.get("project_id", "")
+                        task_id_actual = get_task_id_by_case_id(_proj, trace_case_ids[0]) or ""
+                        print(f"[CVULN] manifest 无 task_id_actual，从漏洞中心搜索获取: "
+                              f"{task_id_actual}", flush=True)
+                    except Exception as err:
+                        print(f"[CVULN] 从漏洞中心获取 task_id 失败: {err}", flush=True)
+                trace_source["source_task_id"] = task_id_actual
+                # trace_case_ids 与 benchmark_item_id 属于不同命名空间，
                 # 不能用它过滤基线。它只传给 parser 做 JSONL 文件过滤。
                 trace_source["source_case_ids"] = trace_case_ids
                 if trace_case_ids:
-                    print(f"[CVULN] task={e.get('task_id_actual', '')} "
+                    print(f"[CVULN] task={task_id_actual} "
                           f"benchmark={len(bench)} trace_case_ids={len(trace_case_ids)}", flush=True)
                 else:
                     print("[CVULN] 未提供 trace_case_ids，parser 将不过滤文件", flush=True)
