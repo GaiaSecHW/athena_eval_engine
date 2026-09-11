@@ -419,6 +419,10 @@ const MI={
      range:[{v:-1,t:"KG 误报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 误报多",c:"red"}],
      interp:(v)=>v==null?"无基准":v<0?`KG 误报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 误报增加 ${(v*100).toFixed(1)}pp`:"误报率无变化",
      formula:"FPR_KG - FPR_NoKG, FPR=FP/(FP+TN)"},
+  M14:{n:"精确率变化(ΔPrecision)",short:"Δ精确率",d:"KG vs No-KG 精确率差值。正值=KG 报出的漏洞更准，负值=更差。",u:"ratio",
+     range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
+     interp:(v)=>v==null?"无基准":v>0?`KG 精确率高出 ${(v*100).toFixed(1)}pp`:v<0?`KG 精确率低 ${(-v*100).toFixed(1)}pp`:"精确率无明显差异",
+     formula:"Precision_KG - Precision_NoKG, Precision=TP/(TP+FP)"},
   M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 占比低`,
@@ -485,7 +489,7 @@ function renderReport(d){
     }
     const valStr=fmt(v,m.unit);
     // KG/No-KG 绝对值拆分显示（M1/M4/M13 差值类指标）
-    const KG_FIELDS={"M1":{kg:"ba_kg",nogk:"ba_nogk"},"M4":{kg:"fnr_kg",nogk:"fnr_nogk"},"M13":{kg:"fpr_kg",nogk:"fpr_nogk"}};
+    const KG_FIELDS={"M1":{kg:"ba_kg",nogk:"ba_nogk"},"M4":{kg:"fnr_kg",nogk:"fnr_nogk"},"M13":{kg:"fpr_kg",nogk:"fpr_nogk"},"M14":{kg:"precision_kg",nogk:"precision_nogk"}};
     let kgBreakdown="";
     if(KG_FIELDS[mid]&&m.method){
       const kf=KG_FIELDS[mid];
@@ -823,7 +827,7 @@ function renderReport(d){
       const isVerify=cat==="verify";
       const groups=[
         ["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
-          [["M1",gp0.M1],["M4",gp0.M4],["M13",gp0.M13]]],
+          [["M1",gp0.M1],["M4",gp0.M4],["M13",gp0.M13],["M14",gp0.M14]]],
         ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
           isVerify?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
         ...(!isVerify?[["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
