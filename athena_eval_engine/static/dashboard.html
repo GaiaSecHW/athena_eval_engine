@@ -629,9 +629,6 @@ function renderReport(d){
         if(nogkJsonl)kgHtml+="NO-KG trace: "+nogkJsonl;
         kgHtml+="</div>";
       }
-      if(c.source_file){
-        kgHtml+="<div style='font-size:12px;color:var(--acc);margin-top:2px;font-family:monospace'>"+c.source_file.split('/').pop()+"</div>";
-      }
       if(c.description){
         var desc=String(c.description).replace(/</g,"&lt;");
         var firstSec=desc.indexOf("## ",3); if(firstSec>0)desc=desc.slice(0,firstSec);
@@ -700,7 +697,6 @@ function renderReport(d){
           kgHtml+="</details>";
         }
       }
-      kgHtml+="<div style='font-size:12px;color:var(--gray);margin-top:4px'>基线标签: "+(c.expected_label||"NA")+" · Case ID: "+(c.case_id||"").slice(0,8)+"</div>";
       kgHtml+="</div>";
     });
   }

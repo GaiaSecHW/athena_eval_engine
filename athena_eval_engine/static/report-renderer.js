@@ -233,9 +233,6 @@ function renderReport(d){
         kgHtml+="</div>";
       }
       kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
-      if(c.source_file){
-        kgHtml+="<div style='font-size:12px;color:var(--acc);margin-top:2px;font-family:monospace'>"+c.source_file.split('/').pop()+"</div>";
-      }
       // 知识与记忆交互明细
       if(pcKa&&kgActive){
         // 知识图谱交互
@@ -299,7 +296,6 @@ function renderReport(d){
           kgHtml+="</details>";
         }
       }
-      kgHtml+="<div style='font-size:12px;color:var(--gray);margin-top:4px'>基线标签: "+(c.expected_label||"NA")+" · Case ID: "+(c.case_id||"").slice(0,8)+"</div>";
       kgHtml+="</div>";
     });
   }
