@@ -24,6 +24,54 @@ _TOOL_MAP = {
 }
 
 
+def _find_jsonl_files(path: str) -> list[str]:
+    """Find .jsonl files in a SecMate trace directory.
+
+    SecMate stores agent transcripts in a subdirectory whose name is the
+    normalized form of the parent run path (/ replaced by -), e.g.::
+
+        .../run/.worker-config/projects/-data-files-...-run/*.jsonl
+
+    Strategy: top-level → computed subdirectory → one-level subdirs fallback.
+    """
+    if not os.path.isdir(path):
+        return [path]
+    # 先读顶层 .jsonl（T002 等格式，文件直接在 projects/ 下）
+    files = sorted(
+        f for f in glob.glob(os.path.join(path, "*.jsonl"))
+        if "hook-watch" not in f.replace("\\", "/")
+    )
+    if files:
+        return files
+    # 顶层为空，按 SecMate 目录规则计算子目录路径：
+    # 子目录名 = URI 路径的规范化形式（/ 替换为 -）
+    # 完整路径 = URI/.worker-config/projects/{子目录名}/
+    normalized = path.replace("\\", "/").rstrip("/")
+    suffix = "/.worker-config/projects"
+    if normalized.endswith(suffix):
+        # URI 已含 /.worker-config/projects，子目录名用去掉后缀的路径
+        subdir_name = normalized[:-len(suffix)].replace("/", "-")
+        subdir_path = os.path.join(path, subdir_name)
+    else:
+        # URI 不含 /.worker-config/projects，拼接指定目录
+        subdir_name = normalized.replace("/", "-")
+        subdir_path = os.path.join(path, ".worker-config", "projects", subdir_name)
+    if os.path.isdir(subdir_path):
+        return sorted(
+            f for f in glob.glob(os.path.join(subdir_path, "*.jsonl"))
+            if "hook-watch" not in f.replace("\\", "/")
+        )
+    # 兜底：搜索一级子目录
+    for sub in os.listdir(path):
+        sub_path = os.path.join(path, sub)
+        if os.path.isdir(sub_path):
+            files.extend(sorted(
+                f for f in glob.glob(os.path.join(sub_path, "*.jsonl"))
+                if "hook-watch" not in f.replace("\\", "/")
+            ))
+    return files
+
+
 def is_secmate_trace(path: str) -> bool:
     """Identify a SecMate SDK transcript without relying solely on its path.
 
@@ -34,13 +82,7 @@ def is_secmate_trace(path: str) -> bool:
     """
     paths = [path]
     if os.path.isdir(path):
-        paths = sorted(glob.glob(os.path.join(path, "*.jsonl")))
-        if not paths:
-            # 顶层无 jsonl，搜索一级子目录（SecMate 子代理 transcript 存在子目录中）
-            for sub in os.listdir(path):
-                sub_path = os.path.join(path, sub)
-                if os.path.isdir(sub_path):
-                    paths.extend(sorted(glob.glob(os.path.join(sub_path, "*.jsonl"))))
+        paths = _find_jsonl_files(path)
     for candidate in paths:
         try:
             with open(candidate, "r", encoding="utf-8") as f:
@@ -66,23 +108,7 @@ class SecMateTraceParser(TraceParser):
 
     @staticmethod
     def _files(uri: str) -> list[str]:
-        if not os.path.isdir(uri):
-            return [uri]
-        # 先读顶层 .jsonl，顶层为空时搜索一级子目录
-        # （SecMate 子代理 transcript 存在 -data-files-...-run/ 等子目录中）
-        files = sorted(
-            f for f in glob.glob(os.path.join(uri, "*.jsonl"))
-            if "hook-watch" not in f.replace("\\", "/")
-        )
-        if not files:
-            for sub in os.listdir(uri):
-                sub_path = os.path.join(uri, sub)
-                if os.path.isdir(sub_path):
-                    files.extend(sorted(
-                        f for f in glob.glob(os.path.join(sub_path, "*.jsonl"))
-                        if "hook-watch" not in f.replace("\\", "/")
-                    ))
-        return files
+        return _find_jsonl_files(uri)
 
     @staticmethod
     def _is_kg_call(tool_name: str, tool_input: object) -> bool:
