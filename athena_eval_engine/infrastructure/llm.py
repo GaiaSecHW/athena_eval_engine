@@ -146,6 +146,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         # ── Phase 2: 逐行读 SSE 流 ──
         content_parts = []
         reasoning_parts = []
+        finish_reason = None
         while True:
             line = resp.readline()
             if not line:
@@ -186,11 +187,18 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             rc = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             if rc:
                 reasoning_parts.append(rc)
+            # 捕获 finish_reason（stop=正常，length=max_tokens 截断，content_filter=被过滤）
+            fr = choices[0].get("finish_reason")
+            if fr:
+                finish_reason = fr
 
         content = "".join(content_parts)
         if not content and reasoning_parts:
             # reasoning 占满 max_tokens 时，用 reasoning 文本作为回退
             content = "".join(reasoning_parts)
+
+        if finish_reason and finish_reason != "stop":
+            print(f"[LLM] 非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}", flush=True)
 
         if content:
             print(f"[LLM] OK stream done content_len={len(content)}", flush=True)
