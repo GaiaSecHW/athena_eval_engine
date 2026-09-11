@@ -187,8 +187,11 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 if not fid:
                     # Argo 格式没有 id/finding_id，用 file:line 生成唯一 key
                     fid = f"{f.get('file','')}:{f.get('line','')}"
-                outcome = f.get("outcome", "")
-                vr = "CONFIRMED" if outcome in ("confirmed", "fixed", "needs_review") else ("FALSE_POSITIVE" if outcome == "no_change_needed" else None)
+                verdict = str(f.get("verdict", "")).upper()
+                vr = ("CONFIRMED" if verdict == "CONFIRMED"
+                      else "FALSE_POSITIVE" if verdict == "FALSE_POSITIVE"
+                      else "NEEDS_REVIEW" if verdict in ("MANUAL_REVIEW", "NEEDS_REVIEW")
+                      else None)
                 findings[fid] = {
                     "finding_id": fid,
                     "display_id": fid,
@@ -414,14 +417,21 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                     }
                 findings[fid]["validation_result"] = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else "FALSE_POSITIVE"
 
-    # --- DataflowVulnScan: 从 vuln-report 阶段的 findings JSON 提取（上报给漏洞中心的数据格式） ---
-    # DVS agent vuln-report 阶段输出 {"findings":[{title,vuln_type,severity,function_name,line,summary,...}]}
-    # 每个 taint chain session 产出一个 vuln-report finding
-    # 用唯一计数器做 key，避免同标题/同函数的 finding 互相覆盖
+    # --- DataflowVulnScan: 从 events.jsonl 的 vuln_intake_result 提取上报记录 ---
+    # DVS app 目录的 events.jsonl 记录了服务端自动提交到漏洞中心的结果。
+    # 每个 status=reported 的 vuln_intake_result 事件对应一个漏洞中心 case。
+    # session 文件可能被清理（4/33 个 DVS run），events.jsonl 是完整记录。
     _dvs_counter = 0
     _dvs_fn_lines_with_findings: set[str] = set()
+    _has_intake_events = any(
+        e.event_type == "TEXT" and e.session_id == "dvs-intake-result"
+        for e in events
+    )
     for e in events:
         if e.event_type != "TEXT" or not e.output_json:
+            continue
+        # 有 intake events 时只从 intake 提取；否则从 session 提取
+        if _has_intake_events and e.session_id != "dvs-intake-result":
             continue
         text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
         if '"findings"' not in text:
@@ -435,9 +445,11 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 ln = str(f.get("line", ""))
                 vt = str(f.get("vuln_type", ""))
                 _dvs_fn_lines_with_findings.add(f"{fn}:{ln}")
-                fid = f"dvs-{_dvs_counter}"
+                # intake events 用 case_id 做 key（同一 finding_id 可能被多个 DVS run 各上报一次）
+                case_id = str(f.get("case_id", ""))
+                fid = case_id if case_id else f"dvs-{_dvs_counter}"
                 findings[fid] = {
-                    "finding_id": fid,
+                    "finding_id": str(f.get("finding_id", fid)),
                     "display_id": fid,
                     "title": title,
                     "description": str(f.get("summary", "")),
@@ -451,72 +463,153 @@ def _extract_findings(events: list[RawEvent]) -> list[dict]:
                 }
 
     # 补充: 从 vuln-judge 阶段的 candidates JSON 提取 confirmed 候选，
-    # 仅限没有对应 vuln-report finding 的 fn:line（避免重复计数）
-    for e in events:
-        if e.event_type != "TEXT" or not e.output_json:
-            continue
-        text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-        if '"candidates"' not in text:
-            continue
-        for data in _extract_json_objects_from_text(text):
-            for f in (data.get("candidates") or []):
-                if f.get("judgment") != "confirmed":
-                    continue
-                fn = str(f.get("function_name", ""))
-                ln = str(f.get("line", ""))
-                if f"{fn}:{ln}" in _dvs_fn_lines_with_findings:
-                    continue
-                _dvs_counter += 1
-                vt = str(f.get("vuln_type", ""))
-                fid = f"dvs-{_dvs_counter}"
-                findings[fid] = {
-                    "finding_id": fid,
-                    "display_id": fid,
-                    "title": vt,
-                    "description": str(f.get("reason", "")),
-                    "vuln_type": vt,
-                    "severity": str(f.get("severity", "")),
-                    "source": str(f.get("source_evidence", "")),
-                    "sink": fn,
-                    "validation_result": "CONFIRMED",
-                    "platform": "dataflow-vuln-scan",
-                    "session_id": e.session_id,
-                }
+    # 仅限没有 intake events 时（intake 已包含所有上报的 finding）
+    if not _has_intake_events:
+        for e in events:
+            if e.event_type != "TEXT" or not e.output_json:
+                continue
+            text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+            if '"candidates"' not in text:
+                continue
+            for data in _extract_json_objects_from_text(text):
+                for f in (data.get("candidates") or []):
+                    if f.get("judgment") != "confirmed":
+                        continue
+                    fn = str(f.get("function_name", ""))
+                    ln = str(f.get("line", ""))
+                    if f"{fn}:{ln}" in _dvs_fn_lines_with_findings:
+                        continue
+                    _dvs_counter += 1
+                    vt = str(f.get("vuln_type", ""))
+                    fid = f"dvs-{_dvs_counter}"
+                    findings[fid] = {
+                        "finding_id": fid,
+                        "display_id": fid,
+                        "title": vt,
+                        "description": str(f.get("reason", "")),
+                        "vuln_type": vt,
+                        "severity": str(f.get("severity", "")),
+                        "source": str(f.get("source_evidence", "")),
+                        "sink": fn,
+                        "validation_result": "CONFIRMED",
+                        "platform": "dataflow-vuln-scan",
+                        "session_id": e.session_id,
+                    }
 
-    # --- Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果） ---
-    # Argo agent 通过 Bash cat 读取 findings.json，tool result 含 finding 数组
+    # --- Argo: TOOL_RESULT 中含 findings.json 数据 ---
+    # Argo agent 通过 bash cat/python3 读取 findings.json，TOOL_RESULT 含 finding 列表
+    # findings.json 是权威数据源（由 ReportFindings 工具后端维护），比 ReportFindings TOOL_CALL 更完整
+    _argo_fj_findings: dict[str, dict] = {}
     for e in events:
         if e.event_type != "TOOL_RESULT" or not e.output_json:
             continue
         out_str = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-        if '"verdict"' not in out_str or '"finding_id"' not in out_str:
-            continue
-        try:
-            data = json.loads(out_str)
-        except (json.JSONDecodeError, TypeError):
-            continue
-        if not isinstance(data, list):
-            continue
-        for f in data:
-            fid = str(f.get("id", "") or f.get("finding_id", ""))
-            if not fid:
-                continue
-            verdict = f.get("verdict", "")
-            vr = "CONFIRMED" if verdict in ("CONFIRMED", "MANUAL_REVIEW") \
-                else ("FALSE_POSITIVE" if verdict == "FALSE_POSITIVE" else None)
-            findings[fid] = {
-                "finding_id": fid,
-                "display_id": fid,
-                "title": str(f.get("description", "")),
-                "description": f.get("description", ""),
-                "vuln_type": str(f.get("cwe", "")),
-                "severity": f.get("severity", ""),
-                "source": str(f.get("file", "")),
-                "sink": str(f.get("sink", "")),
-                "validation_result": vr,
-                "platform": "argo",
-                "session_id": e.session_id,
-            }
+
+        # 策略1: JSON 解析（cat findings.json 原始输出，可能被 head 截断）
+        if '"verdict"' in out_str and ('"id"' in out_str or '"finding_id"' in out_str):
+            decoder = json.JSONDecoder()
+            start = out_str.find('[')
+            if start >= 0:
+                parsed_any = False
+                try:
+                    data = json.loads(out_str[start:])
+                    if isinstance(data, list):
+                        for fnd in data:
+                            if not isinstance(fnd, dict):
+                                continue
+                            fid = str(fnd.get("id", "") or fnd.get("finding_id", ""))
+                            if not fid:
+                                continue
+                            verdict = str(fnd.get("verdict", "")).upper()
+                            vr = ("CONFIRMED" if verdict == "CONFIRMED"
+                                  else "FALSE_POSITIVE" if verdict == "FALSE_POSITIVE"
+                                  else "NEEDS_REVIEW" if verdict in ("MANUAL_REVIEW", "NEEDS_REVIEW")
+                                  else None)
+                            sink_val = fnd.get("sink", "")
+                            _argo_fj_findings[fid] = {
+                                "finding_id": fid, "display_id": fid,
+                                "title": str(fnd.get("description", ""))[:200],
+                                "description": str(fnd.get("description", "")),
+                                "vuln_type": str(fnd.get("cwe", "")),
+                                "severity": str(fnd.get("severity", "")),
+                                "source": str(fnd.get("file", "")),
+                                "sink": str(sink_val) if not isinstance(sink_val, dict) else json.dumps(sink_val, ensure_ascii=False),
+                                "validation_result": vr, "platform": "argo",
+                                "session_id": e.session_id,
+                            }
+                        parsed_any = True
+                except json.JSONDecodeError:
+                    pass
+                if not parsed_any:
+                    # 截断的 JSON — 逐个 raw_decode 提取对象
+                    pos = start + 1
+                    while pos < len(out_str):
+                        while pos < len(out_str) and out_str[pos] in ' \n\r\t,':
+                            pos += 1
+                        if pos >= len(out_str) or out_str[pos] == ']':
+                            break
+                        try:
+                            fnd, offset = decoder.raw_decode(out_str, pos)
+                            if isinstance(fnd, dict) and fnd.get("verdict"):
+                                fid = str(fnd.get("id", "") or fnd.get("finding_id", ""))
+                                if fid:
+                                    verdict = str(fnd.get("verdict", "")).upper()
+                                    vr = ("CONFIRMED" if verdict == "CONFIRMED"
+                                          else "FALSE_POSITIVE" if verdict == "FALSE_POSITIVE"
+                                          else "NEEDS_REVIEW" if verdict in ("MANUAL_REVIEW", "NEEDS_REVIEW")
+                                          else None)
+                                    sink_val = fnd.get("sink", "")
+                                    _argo_fj_findings[fid] = {
+                                        "finding_id": fid, "display_id": fid,
+                                        "title": str(fnd.get("description", ""))[:200],
+                                        "description": str(fnd.get("description", "")),
+                                        "vuln_type": str(fnd.get("cwe", "")),
+                                        "severity": str(fnd.get("severity", "")),
+                                        "source": str(fnd.get("file", "")),
+                                        "sink": str(sink_val) if not isinstance(sink_val, dict) else json.dumps(sink_val, ensure_ascii=False),
+                                        "validation_result": vr, "platform": "argo",
+                                        "session_id": e.session_id,
+                                    }
+                            pos += offset
+                        except json.JSONDecodeError:
+                            pos += 1
+
+        # 策略2: 正则提取格式化文本（python3 print 输出）
+        # 格式: f044 CONFIRMED CWE-862 ssd_fw_v7/... [314, 372]
+        for m in re.finditer(r'(f\d{3})\s+(CONFIRMED|FALSE_POSITIVE|MANUAL_REVIEW|NEEDS_REVIEW)\s+(CWE-\d+)\s+(\S+\.\w+)\s+\[(\d+),\s*(\d+)\]', out_str):
+            fid, verdict, cwe, file_val = m.group(1), m.group(2), m.group(3), m.group(4)
+            if fid not in _argo_fj_findings:
+                vr = ("CONFIRMED" if verdict == "CONFIRMED"
+                      else "FALSE_POSITIVE" if verdict == "FALSE_POSITIVE"
+                      else "NEEDS_REVIEW")
+                _argo_fj_findings[fid] = {
+                    "finding_id": fid, "display_id": fid,
+                    "title": "", "description": "",
+                    "vuln_type": cwe, "severity": "",
+                    "source": file_val, "sink": "",
+                    "validation_result": vr, "platform": "argo",
+                    "session_id": e.session_id,
+                }
+        # 策略3: 管道分隔格式（--- f012 | CWE-862 | CONFIRMED | file）
+        for m in re.finditer(r'---\s+(f\d{3})\s+\|\s*(CWE-\d+)\s*\|\s*(CONFIRMED|FALSE_POSITIVE|MANUAL_REVIEW|NEEDS_REVIEW)\s*\|\s*(\S+)', out_str):
+            fid, cwe, verdict, file_val = m.group(1), m.group(2), m.group(3), m.group(4)
+            if fid not in _argo_fj_findings:
+                vr = ("CONFIRMED" if verdict == "CONFIRMED"
+                      else "FALSE_POSITIVE" if verdict == "FALSE_POSITIVE"
+                      else "NEEDS_REVIEW")
+                _argo_fj_findings[fid] = {
+                    "finding_id": fid, "display_id": fid,
+                    "title": "", "description": "",
+                    "vuln_type": cwe, "severity": "",
+                    "source": file_val, "sink": "",
+                    "validation_result": vr, "platform": "argo",
+                    "session_id": e.session_id,
+                }
+
+    # findings.json 是权威数据源，如果提取到则替换 ReportFindings 的结果
+    if _argo_fj_findings:
+        findings = {k: v for k, v in findings.items() if v.get("platform") != "argo"}
+        findings.update(_argo_fj_findings)
 
     # 为每个 finding 关联提交事件索引（用于后续提取挖掘过程上下文）
     for fid, f in findings.items():

@@ -51,6 +51,102 @@ class DataflowVulnScanTraceParser:
             return rel
         return os.path.splitext(os.path.basename(fpath))[0]
 
+    def _find_dvs_app_dir(self, uri: str) -> str | None:
+        """从 trace 目录路径推导 DVS app 目录路径。
+
+        trace: /data/files/{project_id}/tasks/{task_id}/session/dataflow_vuln_scan
+        app:   /data/files/{project_id}/app/secflow-app-dataflow-vuln-scan
+        """
+        parts = uri.replace("\\", "/").rstrip("/").split("/")
+        if "files" not in parts:
+            return None
+        idx = parts.index("files")
+        if idx + 1 >= len(parts):
+            return None
+        project_id = parts[idx + 1]
+        dvs_app = f"/data/files/{project_id}/app/secflow-app-dataflow-vuln-scan"
+        return dvs_app if os.path.isdir(dvs_app) else None
+
+    def _find_task_id(self, uri: str) -> str:
+        """从 trace 目录路径提取 task_id。"""
+        parts = uri.replace("\\", "/").rstrip("/").split("/")
+        if "tasks" not in parts:
+            return ""
+        idx = parts.index("tasks")
+        return parts[idx + 1] if idx + 1 < len(parts) else ""
+
+    def _parse_intake_events(self, uri: str, trace_id: str) -> list[RawEvent]:
+        """从 DVS app 目录的 events.jsonl 提取 vuln_intake_result 事件。
+
+        每个 status=reported 的 vuln_intake_result 对应一个漏洞中心 case。
+        session 文件可能被清理（4/33 个 DVS run），events.jsonl 是完整记录。
+        """
+        dvs_app = self._find_dvs_app_dir(uri)
+        if not dvs_app:
+            return []
+        task_id = self._find_task_id(uri)
+        if not task_id:
+            return []
+
+        events_files = sorted(glob.glob(
+            os.path.join(dvs_app, "dvs_*", "output", "events.jsonl")
+        ))
+        results: list[RawEvent] = []
+        for fpath in events_files:
+            dvs_name = os.path.basename(os.path.dirname(os.path.dirname(fpath)))
+            with open(fpath, "r", encoding="utf-8", errors="replace") as f:
+                for line_no, line in enumerate(f, 1):
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        d = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if d.get("event_type") != "vuln_intake_result":
+                        continue
+                    if d.get("parent_task_id") != task_id:
+                        continue
+                    payload = d.get("payload", {})
+                    if payload.get("status") != "reported":
+                        continue
+                    fid = str(payload.get("finding_id", ""))
+                    case_id = str(payload.get("case_id", ""))
+                    fn = str(payload.get("function", ""))
+                    ln = str(payload.get("line", ""))
+                    title = str(payload.get("title", ""))
+                    vt = str(payload.get("vuln_type", ""))
+                    severity = str(payload.get("severity", ""))
+                    source_file = str(payload.get("source_file", ""))
+                    summary = str(payload.get("summary", ""))
+                    findings_json = json.dumps({
+                        "findings": [{
+                            "finding_id": fid,
+                            "case_id": case_id,
+                            "function_name": fn,
+                            "line": ln,
+                            "title": title,
+                            "vuln_type": vt,
+                            "severity": severity,
+                            "source_file": source_file,
+                            "summary": summary,
+                        }]
+                    }, ensure_ascii=False)
+                    ts = self._parse_ts(d.get("created_at", ""))
+                    eid = f"intake-{dvs_name}-{line_no}"
+                    results.append(RawEvent(
+                        event_id=eid, trace_id=trace_id,
+                        session_id="dvs-intake-result",
+                        event_type="TEXT", timestamp_ms=ts,
+                        message_id=d.get("id", ""), part_id=f"{eid}-x0",
+                        step_no=None, tool_name=None,
+                        input_json=None, output_json=findings_json,
+                        raw_type="text", parse_status="OK",
+                        source_table="jsonl", source_row_id=f"{eid}-x0",
+                        parser_version=self.parser_version,
+                    ))
+        return results
+
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""
         uri = trace_source["source_uri"]
@@ -102,6 +198,11 @@ class DataflowVulnScanTraceParser:
                         self._seen_msg_ids.add(mid)
                     for ev in self._obj_to_events(d, trace_id, sid, line_no):
                         yield ev
+
+        # 从 DVS app 目录的 events.jsonl 提取上报记录（vuln_intake_result）
+        # session 文件可能被清理，events.jsonl 是完整上报记录
+        for ev in self._parse_intake_events(uri, trace_id):
+            yield ev
 
     def _is_kg_call(self, tool_name: str, args) -> bool:
         """判断是否为知识图谱调用：bash command 含 athena CLI 脚本路径（与 CVulnVerify/Argo 一致）。"""

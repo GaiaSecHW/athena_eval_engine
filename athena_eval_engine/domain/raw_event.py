@@ -47,12 +47,21 @@ class RawEvent:
 # ===== 记忆交互检测（各 parser 共用）=====
 import re as _re
 
-# 记忆读取/检索：算记忆交互（访问统计口径）
-_MEMORY_READ_RE = _re.compile(
+# 记忆读取（CLI 命令）：argo.memory get/search/recall 等，总是算记忆交互
+_MEMORY_CLI_RE = _re.compile(
     r"argo\.memory\s+(get|search|recall|list|query|find)"  # Argo: argo.memory get/search/recall
-    r"|mem\s+(recall|get|search|list|query|find)"  # memengine: mem recall/get/search
-    r"|[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?"  # memengine 目录路径（含 seeddir 子目录和根目录）
+    r"|mem\s+(recall|get|search|list|query|find)",  # memengine: mem recall/get/search
+    _re.IGNORECASE,
+)
+# 记忆读取（路径引用）：memengine 或 /app/memory/ 目录
+_MEMORY_PATH_RE = _re.compile(
+    r"[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?"  # memengine 目录路径（含 seeddir 子目录和根目录）
     r"|[\\/]app[\\/]memory[\\/]",  # /app/memory/ 目录
+    _re.IGNORECASE,
+)
+# 内容读取命令（cat/head/tail/grep 等；不含 ls/find/wc/stat 等纯列文件命令）
+_MEMORY_CONTENT_READ_RE = _re.compile(
+    r"\b(?:cat|head|tail|grep|sed|awk|less|more|for)\b",
     _re.IGNORECASE,
 )
 # 记忆写入：不算记忆访问（用户口径：只看读取/检索）
@@ -69,6 +78,7 @@ def detect_memory_flags(tool_name: str, input_json) -> tuple[bool, bool]:
     """检测工具调用是否为记忆读取/写入。返回 (is_memory_interaction, is_memory_write)。
 
     记忆只看获取的（读取、检索），不看写入 —— 与用户口径一致。
+    ls/find/wc/stat 等纯列文件命令不算记忆读取（没有任务含义）。
     各 parser 构造 RawEvent 时调用：
         is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
     """
@@ -80,8 +90,15 @@ def detect_memory_flags(tool_name: str, input_json) -> tuple[bool, bool]:
     cmd_l = cmd.lower()
     if _MEMORY_WRITE_RE.search(cmd_l):
         return False, True   # 写入：标记 write，不算访问
-    if _MEMORY_READ_RE.search(cmd_l):
-        # memengine seeddir 下 cat/ls/grep 都是读；mem recall/get/search 都是读
+    # CLI 命令（argo.memory/mem recall 等）：总是算记忆读取
+    if _MEMORY_CLI_RE.search(cmd_l):
+        return True, False
+    # 路径引用（memengine/app/memory）：仅当含内容读取命令时算
+    if _MEMORY_PATH_RE.search(cmd_l) and _MEMORY_CONTENT_READ_RE.search(cmd_l):
+        # ls/find/wc/stat 等纯列文件命令不含 cat 时不算
+        first_token = cmd_l.strip().split()[0] if cmd_l.strip() else ""
+        if first_token in ("ls", "find", "wc", "stat", "file", "du", "tree") and "cat" not in cmd_l:
+            return False, False
         return True, False
     return False, False
 
