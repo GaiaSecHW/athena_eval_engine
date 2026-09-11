@@ -649,7 +649,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         return fi, is_same
 
     # baseline 串行（finding 一对一约束），每个 baseline 内 finding 并行发送
-    with ThreadPoolExecutor(max_workers=6) as pool:
+    with ThreadPoolExecutor(max_workers=8) as pool:
         for bi, b in enumerate(benchmarks):
             cid = b.benchmark_item_id or ""
             if not available_indices:

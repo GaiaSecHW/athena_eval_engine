@@ -308,7 +308,7 @@ def run(evaluation_id: str) -> dict:
 
     # 设置本评测的 LLM 并发上限（信号量，所有 LLM 调用共用）
     from ..infrastructure.llm import set_max_concurrency
-    set_max_concurrency(6)
+    set_max_concurrency(8)
 
     # ===== Phase 1: 读配置（短连接）=====
     def _load_config(cur):
