@@ -209,10 +209,10 @@ function renderEvList(){
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
-    var btns=isTerminal?'<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
+    var btns='<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
-      '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>'+
-      '</span>':'';
+      (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
+      '</span>';
     return '<div class="it '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
       '<div class="n">'+(e.name||e.evaluation_id)+'</div>'+
       '<div class="m"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
@@ -243,11 +243,10 @@ async function selEv(id){
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
       var name=s.name||"";
-      var m1=name.match(/FAILED at (\w+):\s*(.+)/)||[];
-      var m2=name.match(/\| ERROR:\s*(.+)/)||[];
+      var m1=name.match(/FAILED at (\w+):/)||[];
       var phase=m1[1]||"";
       var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
-      var errMsg=m1[2]||m2[1]||"无详细错误信息";
+      var errMsg=s.error_message||"无详细错误信息";
       $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p><button class="btn" style="margin-top:16px" id="retry-btn">重试</button></div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
@@ -276,8 +275,11 @@ async function selEv(id){
         stepsHtml+='</div></div>';
       });
       stepsHtml+='</div>';
+      // 运行中也可强制重跑（卡住时用户可手动重启）
+      stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span></div>'+stepsHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
-      let cnt=0;const poll=async()=>{cnt++;if(cnt>100)return;
+      var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
+      let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         try{const st=await jget(`/api/v1/evaluations/${id}`);
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
             // 优先固化 HTML（HEAD 探测）
@@ -603,6 +605,24 @@ function renderReport(d){
         kgHtml+="</div>";
       }
       kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      // JSONL trace 文件名（KG/NO-KG 各自匹配到的 session 所在文件）
+      function jsonlName(uri,sid){
+        if(!uri)return '';
+        var base=uri.split('/').pop();
+        // 目录 → session_id.jsonl；单文件 → 文件名
+        if(base&&(base.endsWith('.jsonl')||base.endsWith('.db')))return base;
+        if(sid)return sid+'.jsonl';
+        return base||'';
+      }
+      var kgJsonl=jsonlName(c.kg_source_uri,c.session_id);
+      var nogkJsonl=jsonlName(c.nogk_source_uri,c.nogk_session_id);
+      if(kgJsonl||nogkJsonl){
+        kgHtml+="<div style='font-size:11px;color:var(--gray);margin-top:2px;font-family:monospace'>";
+        if(kgJsonl)kgHtml+="KG trace: "+kgJsonl;
+        if(kgJsonl&&nogkJsonl)kgHtml+=" · ";
+        if(nogkJsonl)kgHtml+="NO-KG trace: "+nogkJsonl;
+        kgHtml+="</div>";
+      }
       if(c.source_file){
         kgHtml+="<div style='font-size:12px;color:var(--acc);margin-top:2px;font-family:monospace'>"+c.source_file.split('/').pop()+"</div>";
       }

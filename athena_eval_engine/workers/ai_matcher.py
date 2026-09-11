@@ -633,19 +633,19 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     )
 
     def _check_pair(fi: int, bi: int, bl_desc: dict, fd_desc: dict) -> tuple[int, bool]:
-        """单次 LLM 判断：finding 和 baseline 是否同一漏洞。"""
+        """单次 LLM 判断：finding 和 baseline 是否同一漏洞。
+
+        chat_json 内部已做 20 次重试；重试耗尽后 raise RuntimeError，
+        此处不 catch，让异常向上传播使评测变 FAILED。
+        """
         prompt = [
             {"role": "system", "content": _sys_prompt},
             {"role": "user", "content": json.dumps({
                 "baseline": bl_desc, "finding": fd_desc,
             }, ensure_ascii=False, indent=2)},
         ]
-        try:
-            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
-            is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
-        except Exception as e:
-            print(f"[AI_MATCH] {task_run.condition.value} LLM 匹配失败 (f{fi},b{bi}): {e}", flush=True)
-            is_same = False
+        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
         return fi, is_same
 
     # baseline 串行（finding 一对一约束），每个 baseline 内 finding 并行发送
@@ -664,7 +664,16 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
             matched = False
             for fut in as_completed(futures):
-                fi, is_same = fut.result()
+                try:
+                    fi, is_same = fut.result()
+                except Exception as e:
+                    # LLM 重试耗尽 → 取消剩余 futures 并向上抛出，让评测变 FAILED
+                    _fi = futures.get(fut, -1)
+                    print(f"[AI_MATCH] {task_run.condition.value} LLM 重试耗尽 (f{_fi},b{bi}): {e}", flush=True)
+                    for f in futures:
+                        if not f.done():
+                            f.cancel()
+                    raise
                 if is_same and fi in available_indices:
                     matches.append((fi, bi))
                     matched_case_ids.add(cid)

@@ -43,8 +43,9 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
             return
         print(f"[{source}] {evaluation_id} at {phase}: {err_msg}", flush=True)
         cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
-                    "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s) "
-                    "WHERE evaluation_id=%s", (phase, err_msg, evaluation_id))
+                    "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s), "
+                    "error_message=%s "
+                    "WHERE evaluation_id=%s", (phase, err_msg, err_msg, evaluation_id))
     except Exception as db_error:
         print(f"[{source}] 记录失败状态失败: {db_error}", flush=True)
     finally:

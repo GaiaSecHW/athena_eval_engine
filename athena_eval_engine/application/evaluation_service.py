@@ -869,6 +869,9 @@ def run(evaluation_id: str) -> dict:
                 "source_function": _g_meta.get("source_function", ""),
                 "nogk_matched": _g_nogk_case.get("matched", False),
                 "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
+                "nogk_session_id": _g_nogk_case.get("session_id", ""),
+                "kg_source_uri": _g_kg_facts.get("_source_uri", ""),
+                "nogk_source_uri": _g_nogk_facts.get("_source_uri", ""),
             })
         _g_knowledge = _g_kg_facts.get("knowledge")
         _group_kg_inputs[tid] = (
@@ -1016,13 +1019,15 @@ def get_status(evaluation_id: str) -> dict:
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT evaluation_status, evaluation_name FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        cur.execute("SELECT evaluation_status, evaluation_name, error_message, started_at "
+                    "FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         r = cur.fetchone()
         if not r:
             return {"error": "not found"}
         cur.execute("SELECT COUNT(*) FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
         n_metrics = cur.fetchone()[0]
-        return {"evaluation_id": evaluation_id, "status": r[0], "name": r[1], "metrics": n_metrics}
+        return {"evaluation_id": evaluation_id, "status": r[0], "name": r[1], "metrics": n_metrics,
+                "error_message": r[2], "started_at": r[3].isoformat() if r[3] else None}
     finally:
         conn.close()
 
