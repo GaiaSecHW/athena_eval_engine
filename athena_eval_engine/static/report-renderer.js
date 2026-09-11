@@ -382,10 +382,13 @@ function renderReport(d){
       const kgSteps=kgRes.steps||0;const nogkSteps=nogkRes.steps||0;
       const kgDur=kgRes.duration||0;const nogkDur=nogkRes.duration||0;
       const group=mg.find(g=>g.task_id===tid);
-      const baseline=Array.isArray(group&&group.case_results)?group.case_results.length:(d.baseline_count||0);
+      const cr=Array.isArray(group&&group.case_results)?group.case_results:[];
+      const baseline=cr.length||(d.baseline_count||0);
+      const vulnN=cr.filter(c=>c.expected_label==="VULNERABLE").length;
+      const nonVulnN=cr.filter(c=>c.expected_label==="NON_VULNERABLE").length;
       return `<div class="card" style="margin-bottom:16px">
         <h3>📊 ${label} — 漏洞检测统计</h3>
-        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b></div>
+        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
         <tr><td>${isVerify?"确认漏洞数":"Agent 确认漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
         ${isVerify?`<tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr><tr><td>验证接收总数</td><td class="num">${kgFound+kgFP}</td><td class="num">${nogkFound+nogkFP}</td></tr>`:""}
