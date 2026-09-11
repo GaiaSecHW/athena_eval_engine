@@ -203,14 +203,20 @@ function renderReport(d){
       var conf=c.confusion||"NA";
       var nogkConf=c.nogk_confusion||"NA";
       function confBadge(label,conf){
-        var icon=conf==="TP"?'✅':conf==="FP"?'❌':conf==="FN"?'❌':conf==="TN"?'✅':'⏳';
-        var color=conf==="TP"?"var(--green)":(conf==="FP"||conf==="FN")?"var(--red)":conf==="TN"?"var(--green)":"var(--amber)";
-        var text=conf==="TP"?"命中":conf==="FP"?"误报":conf==="FN"?"漏报":conf==="TN"?"正确跳过":"待定";
-        return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+text+"</span>";
+        var isCorrect=conf==="TP"||conf==="TN";
+        var isFound=conf==="TP"||conf==="FP";
+        var icon=isCorrect?'✅':'❌';
+        var color=isCorrect?"var(--green)":"var(--red)";
+        var judgment=isFound?"漏洞":"未发现";
+        var correctness=isCorrect?"正确":"错误";
+        return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+judgment+" ("+correctness+")</span>";
       }
       kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
       kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
       kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
+      var _exp=c.expected_label||"";
+      var _expBadge=_exp==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:11px'>基线: 漏洞</span>":_exp==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:11px'>基线: 非漏洞</span>":"";
+      kgHtml+=_expBadge;
       kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
       kgHtml+="</div>";
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
