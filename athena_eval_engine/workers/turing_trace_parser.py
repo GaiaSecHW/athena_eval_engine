@@ -29,7 +29,8 @@ class TuringTraceParser(TraceParser):
 
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: dict {trace_id, source_uri(.db path), session_id?}"""
-        uri = trace_source["source_uri"]
+        self._source_uri = trace_source["source_uri"]
+        uri = self._source_uri
         trace_id = trace_source["trace_id"]
         fallback_sid = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
 
@@ -43,6 +44,31 @@ class TuringTraceParser(TraceParser):
                 yield self._part_to_event(row, trace_id, row_sid)
         finally:
             conn.close()
+
+    def build_session_graph(self, events):
+        """Turing (opencode) 特有：在基类图基础上加 parent_id 父子边。
+
+        opencode 的子代理 session（finding 入库、知识查询等）通过 session 表
+        的 parent_id 关联到父挖掘 session。基类只按共享文件/fact ID 建边，
+        子代理 session 不读文件所以没有共享文件 → 图中断连。
+        """
+        graph = super().build_session_graph(events)
+        uri = getattr(self, '_source_uri', None)
+        if not uri:
+            return graph
+        try:
+            conn = self._connect(uri)
+            conn.row_factory = sqlite3.Row
+            for row in conn.execute("SELECT id, parent_id FROM session WHERE parent_id IS NOT NULL"):
+                sid = row["id"]
+                pid = row["parent_id"]
+                if sid in graph['sessions'] and pid in graph['sessions']:
+                    graph['edges'][sid].add(pid)
+                    graph['edges'][pid].add(sid)
+            conn.close()
+        except Exception:
+            pass
+        return graph
 
     def _connect(self, uri):
         """以只读 immutable 模式打开 SQLite，避免 NFS 上 WAL 冲突。"""

@@ -67,13 +67,14 @@ class TraceParser(ABC):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
             elif tool == "read":
-                fp = str(inp.get("file_path", ""))
+                fp = str(inp.get("file_path") or inp.get("filePath") or "")
                 if fp:
                     basename = os.path.basename(fp)
                     if basename and len(basename) < 80:
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
             elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding",
+                          "vuln_hunt_query_detection", "vuln_hunt_update_detection_status",
                           "vulnerability_analyze", "vulnerability_verify",
                           "ReportFindings", "reportfindings"):
                 # Turing: detection_id; WebVulnVerify: vulnerability_id; Argo: findings[].id
