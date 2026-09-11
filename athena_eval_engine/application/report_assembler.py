@@ -1142,11 +1142,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                  if iv.get("session_id") in related_sessions]
             case_mem_interactions = [iv for iv in sampled_mem_interactions
                                       if iv.get("session_id") in related_sessions]
-            # 回退：session_graph 未关联到知识交互 session 时，使用全部 task 级交互
-            if not case_interactions and sampled_interactions:
-                case_interactions = sampled_interactions
-            if not case_mem_interactions and sampled_mem_interactions:
-                case_mem_interactions = sampled_mem_interactions
         else:
             # 回退：无 finding 信息时不过滤
             mining_actions = []
