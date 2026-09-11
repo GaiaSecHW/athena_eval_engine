@@ -259,10 +259,11 @@ def chat_json(messages, **kwargs) -> dict:
         except Exception as e:
             last_err = str(e)[:300]
             err_lower = last_err.lower()
+            # "content 为空" 是 reasoning 偶发问题，需要重试（不是输入超限）
             # context length / token limit 错误是确定性的，重试无意义
-            if any(kw in err_lower for kw in (
+            if "content 为空" not in err_lower and any(kw in err_lower for kw in (
                 "context length", "too long", "maximum context",
-                "token limit", "context_window", "max_tokens",
+                "token limit", "context_window",
                 "input too long", "prompt too long",
             )):
                 print(f"[LLM] chat_json 输入超限，跳过重试: {last_err}", flush=True)

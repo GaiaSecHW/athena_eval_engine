@@ -657,7 +657,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             {"role": "system", "content": _prefilter_sys},
             {"role": "user", "content": user_msg},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
         indices = []
         if isinstance(result, dict):
             raw_ids = result.get("possible_ids", [])
@@ -717,7 +717,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 "baseline": bl_desc, "finding": fd_desc,
             }, ensure_ascii=False, indent=2)},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
         is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
         return fi, is_same
 

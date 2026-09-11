@@ -6,7 +6,7 @@
 - M5/M6：Wilson CI
 - M7：JSD median + IQR + Paired Bootstrap
 - M8-M10：ΔToken/Steps/Time median + IQR + Paired Bootstrap CI + Wilcoxon
-分母=0 → NA + reason；UNDETERMINED 不计。
+分母=0 → 该率为 0（CALCULATED）；UNDETERMINED 不计。
 """
 from __future__ import annotations
 import math
@@ -15,7 +15,6 @@ from typing import Callable
 import numpy as np
 from ..statistics.engine import (
     gt_stratified_paired_bootstrap, paired_bootstrap, wilson, mcnemar, wilcoxon,
-    _UndefinedReplicate,
 )
 
 CALCULATED = "CALCULATED"; NA = "NA"; BLOCKED = "BLOCKED"
@@ -97,45 +96,46 @@ def _confusion(pairs: list[PairView]) -> dict:
                 tp_n=tp_n, fp_n=fp_n, fn_n=fn_n, tn_n=tn_n)
 
 
-def _ba(cm, kg=True) -> float | None:
-    """BA = (TPR+TNR)/2。TPR=TP/(TP+FN), TNR=TN/(TN+FP)。"""
+def _ba(cm, kg=True) -> float:
+    """BA = (TPR+TNR)/2。TPR=TP/(TP+FN), TNR=TN/(TN+FP)。分母为 0 时该率为 0。"""
     tp = cm["tp_kg"] if kg else cm["tp_n"]
     fn = cm["fn_kg"] if kg else cm["fn_n"]
     tn = cm["tn_kg"] if kg else cm["tn_n"]
     fp = cm["fp_kg"] if kg else cm["fp_n"]
-    if (tp + fn) == 0 or (tn + fp) == 0:
-        raise _UndefinedReplicate()
-    return (tp / (tp + fn) + tn / (tn + fp)) / 2
+    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
+    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0
+    return (tpr + tnr) / 2
 
 
-def _fnr(cm, kg=True) -> float | None:
+def _fnr(cm, kg=True) -> float:
+    """FNR = FN/(FN+TP)。分母为 0 时返回 0（没有正样本就没有漏报）。"""
     fn = cm["fn_kg"] if kg else cm["fn_n"]
     tp = cm["tp_kg"] if kg else cm["tp_n"]
     if fn + tp == 0:
-        raise _UndefinedReplicate()
+        return 0.0
     return fn / (fn + tp)
 
 
 # ===== M1 ΔBA =====
 def calc_m1(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
     cm = _confusion(pairs)
-    try:
-        est = _ba(cm, True) - _ba(cm, False)
-    except _UndefinedReplicate:
-        return (MetricResult("M1", None, "ratio", len(pairs), "primary_analysis",
-                             calculation_status=NA, reason_code="NO_STRATUM",
-                             method={"point_estimator": "dataset_confusion_matrix"}), [])
+    est = _ba(cm, True) - _ba(cm, False)
+    # 先尝试 GT 分层 bootstrap；单 GT 类别时回退到非分层 bootstrap
     br = gt_stratified_paired_bootstrap(pairs, lambda ps: _ba(_confusion(ps), True) - _ba(_confusion(ps), False),
                                         B=2000, seed=seed)
+    test_name = "gt_stratified_paired_bootstrap"
+    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
+        br = paired_bootstrap(pairs, lambda ps: _ba(_confusion(ps), True) - _ba(_confusion(ps), False),
+                              B=2000, seed=seed)
+        test_name = "paired_bootstrap"
     status = CALCULATED if br.status == "CALCULATED" else NA
-    # bootstrap 失败时，点估计不输出（NA 合约：NA 行不携带 estimate）
     m1_est = est if status == CALCULATED else None
     return (MetricResult("M1", m1_est, "ratio", len(pairs), "primary_analysis",
                          calculation_status=status,
                          reason_code=br.reason_code,
-                         method={"uncertainty": "gt_stratified_paired_bootstrap",
+                         method={"uncertainty": test_name,
                                  "bootstrap_valid_replicates": br.valid}),
-            [StatisticalResult("M1", "gt_stratified_paired_bootstrap",
+            [StatisticalResult("M1", test_name,
                                ci_lower=br.ci_lower, ci_upper=br.ci_upper,
                                testing_tier="PRIMARY", scope_type="METRIC",
                                status=status, reason_code=br.reason_code,
@@ -146,12 +146,15 @@ def calc_m1(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[Stati
 def calc_m2_m3(pairs: list[PairView], *, seed=42) -> dict:
     cm = _confusion(pairs)
     A, B, C, D = cm["A"], cm["B"], cm["C"], cm["D"]
-    # M2 IR = C/(C+D)
+    # M2 IR = C/(C+D)；分母为 0 时 IR=0
     if C + D == 0:
-        m2 = MetricResult("M2", None, "ratio", C + D, "primary_analysis",
-                          calculation_status=NA, reason_code="NO_VALID_DENOMINATOR", method={})
-        m2s = [StatisticalResult("M2", "paired_bootstrap", testing_tier="PRIMARY",
-                                 status=NA, reason_code="NO_VALID_DENOMINATOR")]
+        m2 = MetricResult("M2", 0.0, "ratio", C + D, "primary_analysis",
+                          calculation_status=CALCULATED, reason_code=None,
+                          method={"point_estimator": "conditional_improvement_rate"})
+        m2s = [StatisticalResult("M2", "paired_bootstrap", ci_lower=0.0, ci_upper=0.0,
+                                 testing_tier="PRIMARY", scope_type="METRIC",
+                                 status=CALCULATED, reason_code=None,
+                                 details={"valid": 0, "attempts": 0})]
     else:
         ir = C / (C + D)
         br = paired_bootstrap(pairs, lambda ps: (lambda c: c["C"] / (c["C"] + c["D"]) if c["C"] + c["D"] else None)(_confusion(ps)) or 0,
@@ -162,12 +165,15 @@ def calc_m2_m3(pairs: list[PairView], *, seed=42) -> dict:
                                  testing_tier="PRIMARY", scope_type="METRIC",
                                  status=CALCULATED if br.status == "CALCULATED" else NA,
                                  reason_code=br.reason_code, details={"valid": br.valid})]
-    # M3 RR = B/(A+B)
+    # M3 RR = B/(A+B)；分母为 0 时 RR=0
     if A + B == 0:
-        m3 = MetricResult("M3", None, "ratio", A + B, "primary_analysis",
-                          calculation_status=NA, reason_code="NO_VALID_DENOMINATOR", method={})
-        m3s = [StatisticalResult("M3", "paired_bootstrap", testing_tier="PRIMARY",
-                                  status=NA, reason_code="NO_VALID_DENOMINATOR")]
+        m3 = MetricResult("M3", 0.0, "ratio", A + B, "primary_analysis",
+                          calculation_status=CALCULATED, reason_code=None,
+                          method={"point_estimator": "conditional_regression_rate"})
+        m3s = [StatisticalResult("M3", "paired_bootstrap", ci_lower=0.0, ci_upper=0.0,
+                                 testing_tier="PRIMARY", scope_type="METRIC",
+                                 status=CALCULATED, reason_code=None,
+                                 details={"valid": 0, "attempts": 0})]
     else:
         rr = B / (A + B)
         br = paired_bootstrap(pairs, lambda ps: (lambda c: c["B"] / (c["A"] + c["B"]) if c["A"] + c["B"] else None)(_confusion(ps)) or 0,
@@ -191,20 +197,21 @@ def calc_m2_m3(pairs: list[PairView], *, seed=42) -> dict:
 # ===== M4 ΔFNR =====
 def calc_m4(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
     cm = _confusion(pairs)
-    try:
-        est = _fnr(cm, True) - _fnr(cm, False)
-    except _UndefinedReplicate:
-        return (MetricResult("M4", None, "ratio", len(pairs), "primary_analysis",
-                             calculation_status=NA, reason_code="NO_POSITIVE_GT", method={}), [])
+    est = _fnr(cm, True) - _fnr(cm, False)
+    # 先尝试 GT 分层 bootstrap；单 GT 类别时回退到非分层 bootstrap
     br = gt_stratified_paired_bootstrap(pairs, lambda ps: _fnr(_confusion(ps), True) - _fnr(_confusion(ps), False),
                                         B=2000, seed=seed)
+    test_name = "gt_stratified_paired_bootstrap"
+    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
+        br = paired_bootstrap(pairs, lambda ps: _fnr(_confusion(ps), True) - _fnr(_confusion(ps), False),
+                              B=2000, seed=seed)
+        test_name = "paired_bootstrap"
     status = CALCULATED if br.status == "CALCULATED" else NA
-    # bootstrap 失败时，点估计不输出（NA 合约：NA 行不携带 estimate）
     m4_est = est if status == CALCULATED else None
     return (MetricResult("M4", m4_est, "ratio", len(pairs), "primary_analysis",
                          calculation_status=status, reason_code=br.reason_code,
-                         method={"uncertainty": "gt_stratified_paired_bootstrap", "valid": br.valid}),
-            [StatisticalResult("M4", "gt_stratified_paired_bootstrap",
+                         method={"uncertainty": test_name, "valid": br.valid}),
+            [StatisticalResult("M4", test_name,
                                ci_lower=br.ci_lower, ci_upper=br.ci_upper,
                                testing_tier="PRIMARY", scope_type="METRIC",
                                status=status, reason_code=br.reason_code,

@@ -469,7 +469,7 @@ function renderReport(d){
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
     const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足"};
+    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零"};
     if(!m||m.calculation_status!=="CALCULATED"){
       const rc=m?m.reason_code||m.calculation_status:"无数据";
       const reason=RC[rc]||rc||"无数据";

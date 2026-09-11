@@ -200,10 +200,32 @@ def delete_evaluation(evaluation_id: str):
 
 
 @app.post("/api/v1/evaluations/{evaluation_id}/retry")
-def retry_evaluation(evaluation_id: str):
-    """重试失败的评测：删除全部数据，重新解析+计算+报告。"""
+def retry_evaluation(evaluation_id: str, force: bool = False):
+    """重试失败的评测：删除全部数据，重新解析+计算+报告。
+
+    force=true: 跳过状态检查，强制重跑（用于任务挂了但状态卡在运行中的情况）。
+    """
     try:
         from ...infrastructure.database import connect
+
+        # Step 0: 检查当前状态 — 运行中禁止重跑，避免并发写冲突
+        _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                           'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                           'DIAGNOSING', 'REPORTING', 'FINALIZING')
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
+            if row[0] in _RUNNING_STATES and not force:
+                raise HTTPException(status_code=409,
+                                   detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
+                                         f"retry not allowed. Wait for completion, delete first, "
+                                         f"or retry with ?force=true to force.")
+        finally:
+            conn.close()
 
         # Step 1: 获取 benchmark_set_id + config_json（一个连接）
         bsid = None
@@ -336,14 +358,6 @@ def retry_evaluation(evaluation_id: str):
                 conn.close()
 
         # Step 6: 提交到线程池
-        def _run_bg():
-            from ...infrastructure.database import connect as _connect
-            conn = _connect(autocommit=True)
-            try:
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING' WHERE evaluation_id=%s", (evaluation_id,))
-            finally:
-                conn.close()
-        # 重新提交到线程池
         def _run_bg():
             from ...infrastructure.database import connect as _connect
             conn = _connect(autocommit=True)
