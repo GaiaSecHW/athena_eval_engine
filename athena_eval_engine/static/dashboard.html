@@ -401,6 +401,11 @@ function fmt(v,u){
     return s+'<span class="ci">'+(u==="tokens"?" tok":" steps")+'</span>';}
   return Number(v).toFixed(3);
 }
+function fmtNum(v){const a=Math.abs(v);
+  if(a>=1e9)return(v/1e9).toFixed(2)+'B';
+  if(a>=1e6)return(v/1e6).toFixed(2)+'M';
+  if(a>=1e3)return(v/1e3).toFixed(1)+'K';
+  return Math.round(v).toString();}
 const MI={
   M1:{n:"准确率变化(ΔBA)",short:"准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
      range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无差异",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
@@ -440,15 +445,15 @@ const MI={
      formula:"median(JSD_i), JSD_i=(0.5*KL(P||M)+0.5*KL(Q||M))/ln2, M=(P+Q)/2, P/Q=工具使用概率分布"},
   M8:{n:"Token变化(ΔToken)",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
      range:[{v:-1,t:"KG 更省",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更耗",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${Math.abs(v).toLocaleString()} token`:v>0?`KG 多用 ${v.toLocaleString()} token`:"token 消耗无差异",
+     interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${fmtNum(Math.abs(v))} token`:v>0?`KG 多用 ${fmtNum(v)} token`:"token 消耗无差异",
      formula:"median(KG_tokens - NoKG_tokens)"},
   M9:{n:"步数变化(ΔSteps)",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
      range:[{v:-1,t:"KG 更少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更多",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${Math.abs(v)} 步`:v>0?`KG 多 ${v} 步`:"步数无差异",
+     interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${fmtNum(Math.abs(v))} 步`:v>0?`KG 多 ${fmtNum(v)} 步`:"步数无差异",
      formula:"median(KG_steps - NoKG_steps)"},
   M10:{n:"时长变化(ΔTime)",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
      range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${(-v/1000).toFixed(1)}s`:v>0?`KG 慢 ${(v/1000).toFixed(1)}s`:"时长无差异",
+     interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${fmtDur(-v)}`:v>0?`KG 慢 ${fmtDur(v)}`:"时长无差异",
      formula:"median(KG_duration_ms - NoKG_duration_ms)"}
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}

@@ -1265,7 +1265,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     {"role": "user", "content": _actions_str},
                 ]
                 try:
-                    _compressed = llm_mod.chat_json(_compress_prompt, temperature=0, max_tokens=2000)
+                    _compressed = llm_mod.chat_json(_compress_prompt, temperature=0, max_tokens=8000)
                     if isinstance(_compressed, dict) and _compressed.get("summary"):
                         data["mining_actions"] = [_compressed]
                         print(f"[KG_ANALYSIS] mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要", flush=True)
