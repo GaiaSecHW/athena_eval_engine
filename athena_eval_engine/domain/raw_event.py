@@ -79,27 +79,61 @@ def detect_memory_flags(tool_name: str, input_json) -> tuple[bool, bool]:
 
     记忆只看获取的（读取、检索），不看写入 —— 与用户口径一致。
     ls/find/wc/stat 等纯列文件命令不算记忆读取（没有任务含义）。
+    read 工具直读记忆文件算记忆读取；grep 工具搜索记忆目录也算。
+    glob 工具只列文件不算。
     各 parser 构造 RawEvent 时调用：
         is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
     """
-    if tool_name not in ("bash", "Bash"):
-        return False, False
-    cmd = str((input_json or {}).get("command", "")) if isinstance(input_json, dict) else str(input_json or "")
-    if not cmd:
-        return False, False
-    cmd_l = cmd.lower()
-    if _MEMORY_WRITE_RE.search(cmd_l):
-        return False, True   # 写入：标记 write，不算访问
-    # CLI 命令（argo.memory/mem recall 等）：总是算记忆读取
-    if _MEMORY_CLI_RE.search(cmd_l):
-        return True, False
-    # 路径引用（memengine/app/memory）：仅当含内容读取命令时算
-    if _MEMORY_PATH_RE.search(cmd_l) and _MEMORY_CONTENT_READ_RE.search(cmd_l):
-        # ls/find/wc/stat 等纯列文件命令不含 cat 时不算
-        first_token = cmd_l.strip().split()[0] if cmd_l.strip() else ""
-        if first_token in ("ls", "find", "wc", "stat", "file", "du", "tree") and "cat" not in cmd_l:
+    tn = (tool_name or "").lower()
+
+    # bash 工具：检查命令内容
+    if tn in ("bash", "bash_tool", "shell"):
+        cmd = str((input_json or {}).get("command", "")) if isinstance(input_json, dict) else str(input_json or "")
+        if not cmd:
             return False, False
-        return True, False
+        cmd_l = cmd.lower()
+        if _MEMORY_WRITE_RE.search(cmd_l):
+            return False, True   # 写入：标记 write，不算访问
+        # CLI 命令（argo.memory/mem recall 等）：总是算记忆读取
+        if _MEMORY_CLI_RE.search(cmd_l):
+            return True, False
+        # 路径引用（memengine/app/memory）：仅当含内容读取命令时算
+        if _MEMORY_PATH_RE.search(cmd_l) and _MEMORY_CONTENT_READ_RE.search(cmd_l):
+            # ls/find/wc/stat 等纯列文件命令不含 cat 时不算
+            first_token = cmd_l.strip().split()[0] if cmd_l.strip() else ""
+            if first_token in ("ls", "find", "wc", "stat", "file", "du", "tree") and "cat" not in cmd_l:
+                return False, False
+            return True, False
+        return False, False
+
+    # read 工具：检查 file_path 是否指向记忆目录（直读文件内容，算记忆读取）
+    if tn in ("read", "readfile"):
+        if not isinstance(input_json, dict):
+            return False, False
+        fp = str(input_json.get("file_path", "") or input_json.get("path", ""))
+        if fp and _MEMORY_PATH_RE.search(fp.lower()):
+            return True, False
+        return False, False
+
+    # grep 工具：检查 path 是否指向记忆目录（搜索文件内容，算记忆读取）
+    if tn in ("grep", "rg"):
+        if not isinstance(input_json, dict):
+            return False, False
+        path = str(input_json.get("path", "") or input_json.get("cwd", ""))
+        if path and _MEMORY_PATH_RE.search(path.lower()):
+            return True, False
+        return False, False
+
+    # write/edit 工具：检查 file_path 是否指向记忆目录（算写入）
+    if tn in ("write", "edit"):
+        if not isinstance(input_json, dict):
+            return False, False
+        fp = str(input_json.get("file_path", ""))
+        if fp and _MEMORY_PATH_RE.search(fp.lower()):
+            return False, True
+        return False, False
+
+    # glob 等其他工具：只列文件不读内容，不算
     return False, False
 
 
