@@ -627,14 +627,69 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             "mining_context": f.get("_mining_context", {}),
         })
 
-    # 1 对 1 LLM 调用 + finding 一对一约束 + 基线匹配即停 + 并行发送
+    # === 两阶段匹配：Phase 1 标题预筛选 → Phase 2 详细 1vs1 ===
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    available_indices = list(range(len(active_findings)))  # 候选 finding 池
-    matches = []  # [(finding_idx, baseline_idx)]
-    matched_case_ids = set()
-    llm_call_count = 0
+    _PREFILTER_LIMIT = 100  # 预筛选 finding 数量上限，防止 token 超限
 
+    # --- Phase 1: 标题预筛选（每基线 1 次 LLM，O(N) 调用）---
+    _prefilter_sys = (
+        "下面是一些代码安全漏洞的标题。"
+        "请从标题分析哪些漏洞描述跟基线的描述的是同一个漏洞。"
+        "将可能匹配的漏洞的 ID 原样返回，便于核对。"
+        "只返回 JSON：{\"possible_ids\": [\"ID1\", \"ID2\"]}。"
+        "无匹配返回空数组 []。"
+    )
+
+    def _prefilter_one(bi: int) -> tuple[int, list[int]]:
+        """预筛选：基线标题 + finding 标题列表 → 候选 finding 索引。"""
+        bl = baseline_list[bi]
+        baseline_title = bl.get("vulnerability_type", "")
+        # ID → finding_list 索引映射（用于核对返回的 ID）
+        id_to_idx: dict[str, int] = {}
+        lines = [f"基线漏洞标题：{baseline_title}", "", "以下是要比较的漏洞标题："]
+        for i, f in enumerate(active_findings[:_PREFILTER_LIMIT]):
+            fid = f.get("display_id") or f.get("finding_id", "") or str(i)
+            id_to_idx[fid] = i
+            lines.append(f"[{fid}] {finding_list[i].get('title', '')}")
+        user_msg = "\n".join(lines)
+        prompt = [
+            {"role": "system", "content": _prefilter_sys},
+            {"role": "user", "content": user_msg},
+        ]
+        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        indices = []
+        if isinstance(result, dict):
+            raw_ids = result.get("possible_ids", [])
+            indices = [id_to_idx[x] for x in raw_ids
+                       if isinstance(x, str) and x in id_to_idx]
+        return bi, indices
+
+    prefilter_candidates: dict[int, list[int]] = {}
+    prefilter_llm_calls = 0
+    with ThreadPoolExecutor(max_workers=8) as pre_pool:
+        pre_futures = {}
+        for bi in range(len(benchmarks)):
+            fut = pre_pool.submit(_prefilter_one, bi)
+            pre_futures[fut] = bi
+            prefilter_llm_calls += 1
+        for fut in as_completed(pre_futures):
+            bi = pre_futures[fut]
+            try:
+                _, indices = fut.result()
+                prefilter_candidates[bi] = indices
+            except Exception as e:
+                # 预筛选失败 → fallback 到全部 finding
+                prefilter_candidates[bi] = list(range(len(active_findings)))
+                print(f"[AI_MATCH] {task_run.condition.value} prefilter FAILED (b{bi}): {e}, fallback all", flush=True)
+
+    total_cand = sum(len(v) for v in prefilter_candidates.values())
+    print(f"[AI_MATCH] {task_run.condition.value} prefilter: {len(benchmarks)} baselines, "
+          f"{prefilter_llm_calls} calls, {total_cand} candidates "
+          f"(avg {total_cand / max(len(benchmarks), 1):.1f}/baseline, "
+          f"was {len(benchmarks) * len(active_findings)} pairs)", flush=True)
+
+    # --- Phase 2: 详细 1vs1 对比（仅对预筛选候选）---
     _sys_prompt = (
         "# 角色\n"
         "你是漏洞匹配判定器。判断给定的 finding 和 baseline 是否描述的是同一个漏洞。\n\n"
@@ -666,16 +721,26 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
         return fi, is_same
 
-    # baseline 串行（finding 一对一约束），每个 baseline 内 finding 并行发送
+    available_indices = list(range(len(active_findings)))  # 候选 finding 池
+    matches = []  # [(finding_idx, baseline_idx)]
+    matched_case_ids = set()
+    llm_call_count = 0
+
+    # baseline 串行（finding 一对一约束），每个 baseline 内候选 finding 并行发送
     with ThreadPoolExecutor(max_workers=8) as pool:
         for bi, b in enumerate(benchmarks):
             cid = b.benchmark_item_id or ""
             if not available_indices:
                 break  # 候选池已空，剩余 baseline 都不会匹配
 
-            # 并行提交所有候选 finding 的 LLM 判断
+            # 只提交预筛选通过的候选 finding
+            candidates = prefilter_candidates.get(bi, list(range(len(active_findings))))
+            candidates = [fi for fi in candidates if fi in available_indices]
+            if not candidates:
+                continue
+
             futures = {}
-            for fi in list(available_indices):
+            for fi in candidates:
                 fut = pool.submit(_check_pair, fi, bi, baseline_list[bi], finding_list[fi])
                 futures[fut] = fi
                 llm_call_count += 1
@@ -712,7 +777,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                       f"vuln_type={md_desc}", flush=True)
 
     print(f"[AI_MATCH] {task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
-          f"llm_calls={llm_call_count}", flush=True)
+          f"prefilter_llm={prefilter_llm_calls} detail_llm={llm_call_count} "
+          f"total_llm={prefilter_llm_calls + llm_call_count}", flush=True)
 
     # per-case confusion 矩阵（考虑 agent validation_result）
     case_results = []
