@@ -571,6 +571,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     if not case_results or (not interactions and not memory_interactions):
         return []
 
+    # session 压缩缓存：同一 session 压缩一次，跨 case 复用
+    _session_compress_cache: dict[str, dict] = {}
+
+    # 有知识/记忆查询的 session_id 集合（用于判断 session 是否需要 LLM 压缩）
+    _kg_session_ids = {iv.get("session_id", "") for iv in interactions if iv.get("type") == "CALL"}
+    _mem_session_ids = {iv.get("session_id", "") for iv in memory_interactions if iv.get("type") == "CALL"} if memory_interactions else set()
+
     # 知识图谱交互：只有 athena CLI 命令才算（vuln_hunt_* 是内部黑板，不算知识图谱）
     # KnowledgeResolver 已经只捕获 athena 相关交互，这里不再按工具名过滤
     def _is_kg_interaction(iv):
@@ -1183,26 +1190,73 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
 
-        # token 估算 + 聚合：防止输入超限（不截断，用聚合保留完整语义）
+        # token 估算 + 按 session 分组压缩：防止输入超限（不截断，用 LLM 逐 session 压缩）
         _data_str = json.dumps(data, ensure_ascii=False)
         if len(_data_str) > 840000:  # ~280k tokens，400k 上下文的 70%
-            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，聚合 mining_actions...")
-            # 聚合 mining_actions：按工具类型分组统计，保留完整 action 文本但去重
+            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，按 session 压缩 mining_actions...")
+            # 1. mining_actions 按 session_id 分组，每组单独用 LLM 压缩成摘要（缓存复用）
             _actions = data.get("mining_actions", [])
             if _actions:
-                _by_tool: dict[str, list[str]] = {}
+                _by_session: dict[str, list] = {}
                 for a in _actions:
-                    t = a.get("tool", "other")
-                    act = a.get("action", "")
-                    if act and act not in _by_tool.setdefault(t, []):
-                        _by_tool[t].append(act)
-                data["mining_actions"] = [
-                    {"tool": t, "actions": acts, "count": len(acts)}
-                    for t, acts in _by_tool.items()
-                ]
-                log("KG_ANALYSIS", f"mining_actions 聚合: {len(_actions)} 条 → {len(data['mining_actions'])} 组")
+                    sid = a.get("session_id", "unknown")
+                    _by_session.setdefault(sid, []).append(a)
+                _compressed = []
+                _cache_hits = 0
+                for sid, acts in _by_session.items():
+                    if sid in _session_compress_cache:
+                        _compressed.append(_session_compress_cache[sid])
+                        _cache_hits += 1
+                        continue
+                    _has_kg_mem = sid in _kg_session_ids or sid in _mem_session_ids
+                    if _has_kg_mem:
+                        _sys_content = (
+                            "你是漏洞挖掘过程分析员。将一个 session 内的工具调用序列压缩成挖掘过程摘要。\n\n"
+                            "# 压缩目标\n"
+                            "分析知识与记忆的介入对漏洞挖掘产生了什么影响。以下内容必须保留：\n"
+                            "1. 知识/记忆查询的完整问答：Agent 查询了什么、检索了什么、得到了什么回答\n"
+                            "2. 知识/记忆回答对后续行为的影响：得到回答后 Agent 接下来做了什么（读了哪些新文件、搜索了什么新模式、提交了什么 finding）\n"
+                            "3. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
+                            "4. 判定决策点：Agent 提交 finding（确认漏洞）、排除漏洞、验证结果的依据\n\n"
+                            "# 知识与记忆的识别规则\n"
+                            "工具调用序列中，以下操作属于知识/记忆访问：\n"
+                            "- 知识查询：命令中包含知识库检索工具调用（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等\n"
+                            "- 记忆读取：命令中包含记忆目录路径（如 memengine、/app/memory）的 read/grep/cat 操作，或记忆检索 CLI 命令（如 mem recall），用于读取历史挖掘经验\n"
+                            "其他 read/grep/bash 为普通文件操作。\n\n"
+                            '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
+                        )
+                    else:
+                        _sys_content = (
+                            "你是漏洞挖掘过程分析员。将一个 session 内的工具调用序列压缩成挖掘过程摘要。\n\n"
+                            "# 压缩目标\n"
+                            "此 session 无知识与记忆查询。以下内容必须保留：\n"
+                            "1. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
+                            "2. 判定决策点：Agent 提交 finding（确认漏洞）、排除漏洞、验证结果的依据\n"
+                            "3. 与前后 session 的衔接：此 session 的操作结果如何导向下一步\n\n"
+                            '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述挖掘过程", "key_actions": ["关键操作1", ...]}'
+                        )
+                    _comp_prompt = [
+                        {"role": "system", "content": _sys_content},
+                        {"role": "user", "content": json.dumps(acts, ensure_ascii=False)},
+                    ]
+                    try:
+                        _r = llm_mod.chat_json(_comp_prompt, temperature=0, max_tokens=8000)
+                        if isinstance(_r, dict):
+                            _session_compress_cache[sid] = _r
+                            _compressed.append(_r)
+                        else:
+                            _fallback = {"session_id": sid, "mining_summary": str(_r)[:500]}
+                            _session_compress_cache[sid] = _fallback
+                            _compressed.append(_fallback)
+                    except Exception as _e:
+                        log("KG_ANALYSIS", f"session {sid} LLM 压缩失败: {_e}")
+                        _fallback = {"session_id": sid, "mining_summary": "压缩失败", "tool_count": len(acts)}
+                        _session_compress_cache[sid] = _fallback
+                        _compressed.append(_fallback)
+                data["mining_actions"] = _compressed
+                log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
 
-            # 聚合 knowledge_interactions：只保留 question（查询命令），不传 answer（完整输出）
+            # 2. knowledge_interactions 保留 question（查询命令），不传 answer（完整输出）
             _kis = data.get("knowledge_interactions", [])
             if _kis:
                 data["knowledge_interactions"] = [
@@ -1211,11 +1265,11 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 ]
 
             _data_str = json.dumps(data, ensure_ascii=False)
-            log("KG_ANALYSIS", f"聚合后 {len(_data_str)} chars")
+            log("KG_ANALYSIS", f"压缩后 {len(_data_str)} chars")
 
-            # 聚合后仍超限 → 跳过 LLM，规则降级
+            # 压缩后仍超限 → 跳过 LLM，规则降级
             if len(_data_str) > 840000:
-                log("KG_ANALYSIS", f"聚合后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
+                log("KG_ANALYSIS", f"压缩后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
                 results.append({
                     "case_id": case_id,
                     "kg_judgment": kg_judgment,
