@@ -400,8 +400,8 @@ function renderReport(d){
         <h3>📊 ${label} — 漏洞检测统计</h3>
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
-        <tr><td>${isVerify?"验证接收总数":"提交疑似漏洞数"}</td><td class="num">${kgRecv}</td><td class="num">${nogkRecv}</td></tr>
-        <tr><td>${isVerify?"确认漏洞数":"Agent 确认漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
+        <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td><td class="num">${nogkRecv}</td></tr>
+        <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
         <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr>
         <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
         <tr><td>记忆查询次数</td><td class="num">${kgMem}</td><td class="num">${nogkMem}</td></tr>
