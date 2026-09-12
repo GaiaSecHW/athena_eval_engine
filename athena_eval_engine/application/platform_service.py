@@ -594,87 +594,50 @@ for path in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
 def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
     """自动判断挖掘 trace 的 trace_kind。
 
-    扫描 tasks/{task_id}/ 目录结构，按特征判断平台类型：
-    - tools/secmate-*/run/.worker-config/projects/ 有 .jsonl → secmate
-    - session/argo/ 有 .jsonl → argo
-    - session/dataflow_vuln_scan/ 有 .jsonl → dataflow
-    - 有 opencode.db → turing
-    - session/WebVerify/ 有 .jsonl → webvulnverify（挖掘 task 下的验证 trace）
+    按各适配器定义的绝对路径扫描，哪个目录有对应文件就用哪个适配器：
+    - secmate:      tasks/{task_id}/tools/secmate-*/run/.worker-config/projects/*/ 有 .jsonl
+    - argo:         tasks/{task_id}/session/argo/ 有 .jsonl
+    - turing:       tasks/{task_id}/tools/Turing-*/session/opencode/opencode.db 存在
+    - dataflow:     tasks/{task_id}/session/dataflow_vuln_scan/ 有 .jsonl
+    - webvulnverify: tasks/{task_id}/session/WebVerify/ 有 .jsonl
 
     k8s 部署：DATA_ROOT 直读；dev 模式：kubectl exec。
     """
     task_base = os.path.join(DATA_ROOT, project_id, "tasks", task_id)
 
+    # 各 trace_kind 的文件特征：(trace_kind, glob_pattern, is_file_check)
+    # 按优先级排列：secmate > argo > turing > dataflow > webvulnverify
+    _RULES = [
+        ("secmate",      os.path.join(task_base, "tools", "secmate-*", "run", ".worker-config", "projects", "*", "*.jsonl"), False),
+        ("argo",         os.path.join(task_base, "session", "argo", "**", "*.jsonl"), False),
+        ("turing",       os.path.join(task_base, "tools", "Turing-*", "session", "opencode", "opencode.db"), True),
+        ("dataflow",     os.path.join(task_base, "session", "dataflow_vuln_scan", "**", "*.jsonl"), False),
+        ("webvulnverify", os.path.join(task_base, "session", "WebVerify", "*.jsonl"), False),
+    ]
+
     if _K8S_MODE:
-        # SecMate: tools/secmate-*/run/.worker-config/projects/*/
-        for d in glob.glob(os.path.join(task_base, "tools", "secmate-*", "run", ".worker-config", "projects", "*")):
-            if os.path.isdir(d) and glob.glob(os.path.join(d, "*.jsonl")):
-                return "secmate"
-        # Argo: session/argo/
-        argo_dir = os.path.join(task_base, "session", "argo")
-        if os.path.isdir(argo_dir) and glob.glob(os.path.join(argo_dir, "**", "*.jsonl"), recursive=True):
-            return "argo"
-        # Dataflow: session/dataflow_vuln_scan/
-        dvs_dir = os.path.join(task_base, "session", "dataflow_vuln_scan")
-        if os.path.isdir(dvs_dir) and glob.glob(os.path.join(dvs_dir, "**", "*.jsonl"), recursive=True):
-            return "dataflow"
-        # Turing: opencode.db
-        for p in glob.glob(os.path.join(task_base, "**", "opencode.db"), recursive=True):
-            if os.path.isfile(p):
-                return "turing"
-        # WebVulnVerify: session/WebVerify/
-        wv_dir = os.path.join(task_base, "session", "WebVerify")
-        if os.path.isdir(wv_dir) and glob.glob(os.path.join(wv_dir, "*.jsonl")):
-            return "webvulnverify"
-        # SecMate fallback: findings.db 存在
-        for p in glob.glob(os.path.join(task_base, "tools", "secmate-*", "run", "findings.db")):
-            if os.path.isfile(p):
-                return "secmate"
+        for trace_kind, pattern, is_file in _RULES:
+            matches = glob.glob(pattern, recursive=not is_file)
+            if matches and any(os.path.isfile(m) for m in matches):
+                return trace_kind
     else:
         env = dict(os.environ, MSYS_NO_PATHCONV="1")
         pod = _get_sched_pod()
         remote_base = f"{DATA_ROOT}/{project_id}/tasks/{task_id}"
-        # SecMate
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", remote_base, "-type", "d", "-path", "*/.worker-config/projects/*",
-               "-name", "*.jsonl", "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "secmate"
-        # Argo
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", os.path.join(remote_base, "session/argo"), "-name", "*.jsonl",
-               "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "argo"
-        # Dataflow
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", os.path.join(remote_base, "session/dataflow_vuln_scan"), "-name", "*.jsonl",
-               "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "dataflow"
-        # Turing
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", remote_base, "-name", "opencode.db", "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "turing"
-        # WebVulnVerify
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", os.path.join(remote_base, "session/WebVerify"), "-name", "*.jsonl",
-               "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "webvulnverify"
-        # SecMate fallback: findings.db
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", remote_base, "-name", "findings.db", "-path", "*/secmate-*/run/*",
-               "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            return "secmate"
+        # dev 模式：用 find 命令逐个检查
+        _REMOTE_RULES = [
+            ("secmate",      f"{remote_base}/tools/secmate-*/run/.worker-config/projects/*/", "-name", "*.jsonl"),
+            ("argo",         f"{remote_base}/session/argo/", "-name", "*.jsonl"),
+            ("turing",       f"{remote_base}/tools/Turing-*/session/opencode/opencode.db", "-name", "opencode.db"),
+            ("dataflow",     f"{remote_base}/session/dataflow_vuln_scan/", "-name", "*.jsonl"),
+            ("webvulnverify", f"{remote_base}/session/WebVerify/", "-name", "*.jsonl"),
+        ]
+        for trace_kind, search_path, name_flag, name_val in _REMOTE_RULES:
+            cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+                   "find", search_path, name_flag, name_val, "-print", "-quit"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+            if r.stdout and r.stdout.strip():
+                return trace_kind
     return None
 
 
