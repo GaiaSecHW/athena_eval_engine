@@ -271,8 +271,7 @@ class SecMateTraceParser(TraceParser):
                                 event_type="TOOL_RESULT", timestamp_ms=timestamp, message_id=record.get("uuid"),
                                 part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                 input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
-                                source_row_id=event_id, parser_version=self.parser_version,
-                                is_kg_interaction=info.get("is_kg", False))
+                                source_row_id=event_id, parser_version=self.parser_version)
                     elif record.get("type") == "queue-operation" and record.get("operation") == "enqueue":
                         yield self._event(f"{base_id}-queue", trace_id, session_id, "SYSTEM_EVENT", timestamp,
                                           record, record.get("content"), "queue-enqueue")

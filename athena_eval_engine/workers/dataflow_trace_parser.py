@@ -243,9 +243,6 @@ class DataflowVulnScanTraceParser(TraceParser):
                     raw_type="toolResult", parse_status="OK",
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
-                    is_kg_interaction=is_kg,
-                    is_memory_interaction=is_mem,
-                    is_memory_write=is_mem_w,
                 ))
             else:
                 for ci, c in enumerate(content):

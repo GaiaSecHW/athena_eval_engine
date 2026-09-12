@@ -261,9 +261,6 @@ class WebVulnVerifyTraceParser(TraceParser):
                     call_id = pt.get("tool_call_id", "")
                     info = (tool_call_info or {}).get(call_id, {})
                     tool_name = info.get("tool_name", "")
-                    is_kg = info.get("is_kg", False)
-                    is_mem = info.get("is_mem", False)
-                    is_mem_w = info.get("is_mem_w", False)
                     content = pt.get("content")
                     is_error = pt.get("is_error", False)
                     evs.append(RawEvent(
@@ -275,9 +272,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                         raw_type="tool_result", parse_status="OK",
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
-                        is_kg_interaction=is_kg,
-                        is_memory_interaction=is_mem,
-                        is_memory_write=is_mem_w,
+                        # KG/记忆标记不继承到 TOOL_RESULT——避免同一次交互计两次
+                        # resolver 通过 tool_name 匹配配对 CALL→RESULT
                     ))
 
         return evs

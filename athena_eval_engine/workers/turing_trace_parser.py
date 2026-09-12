@@ -168,6 +168,18 @@ class TuringTraceParser(TraceParser):
         self.parser_version = parser_version
 
     @staticmethod
+    def _connect(uri: str) -> sqlite3.Connection:
+        """以只读模式打开 opencode.db（避免锁大库）。"""
+        return sqlite3.connect(f"file:{uri}?immutable=1", uri=True)
+
+    @staticmethod
+    def _check_schema(conn):
+        cur = conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+        tables = {r["name"] for r in cur.fetchall()}
+        if "part" not in tables or "session" not in tables:
+            raise RuntimeError(f"Schema Gate BLOCK: required tables [session, part] missing, got {tables}")
+
+    @staticmethod
     def _is_finding_tool(tool_name: str) -> bool:
         """Turing 平台 finding 提交工具——仅 update_finding 是结论写入工具。"""
         return tool_name == "vuln_hunt_update_finding"
