@@ -252,7 +252,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     )
 
     def _prefilter_one(bi: int) -> tuple[int, list[int]]:
-        """预筛选：基线标题 + finding 标题列表 → 候选 finding 索引。"""
+        """预筛选：基线标题 + 漏洞报告标题列表 → 候选漏洞报告索引。"""
         bl = baseline_list[bi]
         baseline_title = bl.get("vulnerability_type", "")
         # ID → finding_list 索引映射（用于核对返回的 ID）
@@ -306,14 +306,14 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     # --- Phase 2: 详细 1vs1 对比（仅对预筛选候选）---
     _sys_prompt = (
         "# 角色\n"
-        "你是漏洞匹配判定器。判断给定的 finding 和 baseline 是否描述的是同一个漏洞。\n\n"
+        "你是漏洞匹配判定器。判断给定的漏洞报告和基线漏洞是否描述的是同一个漏洞。\n\n"
         "# 判断规则\n"
         "1. 同一个漏洞 = 相同漏洞类型 + 相同入口/source + 相同 sink + 相同文件/函数位置\n"
         "2. 路径格式可能不同：如 'src/main/java/.../FileService.java' 和 'FileService.java' 可能是同一文件\n"
         "3. 函数名相同是强信号，但描述的漏洞行为也需吻合\n"
         "4. 漏洞类型可能用不同术语：如 '注入' 和 'SQL Injection' 是同一类型\n"
         "5. 仅漏洞类型相同但位置/函数不同的，不是同一个漏洞\n"
-        "6. 不看结论对错：即使 finding 和 baseline 对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n"
+        "6. 不看结论对错：即使漏洞报告和基线对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n"
         "7. mining_context（读过的文件、搜索模式、推理摘要）作为辅助参考\n\n"
         "# 输出格式\n"
         '只返回 JSON：{"is_same": true} 或 {"is_same": false}，不要任何额外文字。'
@@ -328,7 +328,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         prompt = [
             {"role": "system", "content": _sys_prompt},
             {"role": "user", "content": json.dumps({
-                "baseline": bl_desc, "finding": fd_desc,
+                "基线漏洞": bl_desc, "漏洞报告": fd_desc,
             }, ensure_ascii=False, indent=2)},
         ]
         result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)

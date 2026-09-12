@@ -191,7 +191,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "第一段【准确性】：基于准确率变化、漏报率变化、误报率变化、精确率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
             "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent行为模式变化与知识/记忆依赖。"
             '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
-            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘提交多少疑似漏洞、确认多少为漏洞；漏洞验证接收多少疑似漏洞、确认多少为漏洞。",\n'
+            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
             '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
             '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
             "}"
@@ -224,7 +224,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
             "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
             '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
-            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘提交多少疑似漏洞、确认多少为漏洞；漏洞验证接收多少疑似漏洞、确认多少为漏洞。",\n'
+            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
             '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
             '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
             "}"
@@ -265,7 +265,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "## 全局指标结果（所有分组的汇总中位数）\n"
             + json.dumps(metric_data, ensure_ascii=False, indent=2) + "\n\n"
             + _cost_section
-            + ("## 漏洞流转数据（入口=提交/接收的疑似漏洞数，出口=确认为漏洞的数）\n"
+            + ("## 漏洞流转数据（入口=发现漏洞报告数，出口=上报漏洞数）\n"
                + json.dumps(finding_flow_data, ensure_ascii=False, indent=2) + "\n\n"
                if finding_flow_data else "")
             + "## McNemar 联合检验（统计显著性）\n"
@@ -340,7 +340,7 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
             "基于输入数据，写一段 200-300 字的中文评测摘要。纯文本输出，不要 JSON。\n\n"
             "# 内容要求\n"
             "1. 评测范围：基线漏洞数、评测名称\n"
-            "2. 漏洞发现：KG 与 No-KG 各提交多少 finding、outcome 是成功还是失败\n"
+            "2. 漏洞发现：KG 与 No-KG 各发现多少漏洞报告、outcome 是成功还是失败\n"
             "3. 知识图谱与记忆介入：介入次数(interventions)、知识访问率(kar)、行为偏移(jsd)\n"
             "4. 成本对比：token 差值(delta_token)、步数差值(delta_steps)、时长差值(delta_time_ms)，正值=KG 更耗\n"
             "5. 结论：知识图谱与记忆是否有帮助？"
@@ -531,7 +531,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
 
     prompt = [
         {"role": "system", "content": "你是知识图谱与记忆介入效果分析员。分析 Agent 从知识图谱获取了什么知识，以及这些知识是否帮助发现了正确的漏洞。\n\n判断标准：\n- TRUSTED：Agent 信任并利用知识图谱的信息，直接帮助发现了漏洞\n- QUESTIONED：Agent 查询了知识但对结果有疑问，未直接利用\n- IGNORED：Agent 查询了知识但完全忽略了返回的内容\n\n只返回 JSON，不要任何额外文字。"},
-        {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + '\n\n对每个知识交互分析：\n1. Agent 请求了什么知识？（从 command 分析）\n2. 知识图谱返回了什么？（从 output 分析）\n3. 这次知识介入对漏洞发现的影响是什么？\n\n返回 JSON:\n{"interactions_analysis": [{"index": 0, "tool": "...", "command_summary": "<=50字中文", "output_summary": "<=50字中文", "impact": "TRUSTED|QUESTIONED|IGNORED", "reason": "<=100字中文"}], "overall_analysis": "<=200字中文总体分析", "suggestion": "<=100字中文建议"}'},
+        {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + '\n\n对每个知识交互分析：\n1. Agent 请求了什么知识？（从 command 字段分析）\n2. 知识图谱返回了什么？（从 output 字段分析）\n3. 这次知识介入对漏洞发现的影响是什么？\n\n返回 JSON:\n{"interactions_analysis": [{"index": 0, "tool": "工具名", "command_summary": "<=50字中文", "output_summary": "<=50字中文", "impact": "TRUSTED|QUESTIONED|IGNORED", "reason": "<=100字中文"}], "overall_analysis": "<=200字中文总体分析", "suggestion": "<=100字中文建议"}'},
     ]
 
     try:
@@ -1158,32 +1158,32 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         # 根据 confusion + agent_validation 构建场景特定的问题
         if confusion == "TP":
             _case_q = (
-                "## 场景：TP — Agent 找到并确认了漏洞\n"
-                "1. 为什么能挖到这个漏洞？Agent 的挖掘链（mining_actions）如何接触到漏洞代码？\n"
-                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否引导 Agent 到漏洞所在区域？\n"
-                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "## 场景：Agent 找到并确认了漏洞\n"
+                "1. 为什么能挖到这个漏洞？Agent 的挖掘过程是如何一步步接触到漏洞代码的？\n"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否引导到了漏洞所在区域？\n"
+                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
         elif confusion == "FN":
-            # FN: Agent 找到了漏洞但判定为非漏洞（FALSE_POSITIVE）
+            # FN: Agent 找到了漏洞但判定为非漏洞
             _case_q = (
-                "## 场景：FN — Agent 找到此漏洞但确认为非漏洞\n"
-                "1. 为什么 Agent 将此漏洞确认为非漏洞（FALSE_POSITIVE）？判定依据是什么？\n"
-                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否影响了 Agent 的判定？\n"
-                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "## 场景：Agent 找到此漏洞但确认为非漏洞\n"
+                "1. 为什么 Agent 将此漏洞判定为非漏洞？判定依据是什么？\n"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否影响了判定？\n"
+                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
         elif confusion == "FP":
             _case_q = (
-                "## 场景：FP — 基线非漏洞但 Agent 报告为漏洞\n"
-                "1. 为什么误报？Agent 的挖掘链如何接触到这个非漏洞区域？\n"
-                "2. 知识与记忆是正向/负向/中性？knowledge_interactions 是否误导了 Agent？\n"
-                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "## 场景：基线非漏洞但 Agent 报告为漏洞\n"
+                "1. 为什么误报？Agent 的挖掘过程如何接触到这个非漏洞区域？\n"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否误导了 Agent？\n"
+                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
         else:  # TN
             _case_q = (
-                "## 场景：TN — 基线非漏洞，Agent 正确排除或未报告\n"
+                "## 场景：基线非漏洞，Agent 正确排除或未报告\n"
                 "1. 为什么正确排除（或未报告）？Agent 是否接触过此区域？\n"
                 "2. 知识与记忆是正向/负向/中性？\n"
-                "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
 
         # token 估算 + 按 session 分组压缩：防止输入超限（不截断，用 LLM 逐 session 压缩）
@@ -1206,19 +1206,19 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         continue
                     _comp_prompt = [
                         {"role": "system", "content": (
-                            "你是漏洞挖掘过程分析员。将一个 session 内的工具调用序列压缩成挖掘过程摘要。\n\n"
+                            "你是漏洞挖掘过程分析员。将一个会话内的工具调用序列压缩成挖掘过程摘要。\n\n"
                             "# 压缩目标\n"
                             "分析知识与记忆的介入对漏洞挖掘产生了什么影响。以下内容必须保留：\n"
                             "1. 知识/记忆查询的完整问答：Agent 查询了什么、检索了什么、得到了什么回答\n"
-                            "2. 知识/记忆回答对后续行为的影响：得到回答后 Agent 接下来做了什么（读了哪些新文件、搜索了什么新模式、提交了什么 finding）\n"
+                            "2. 知识/记忆回答对后续行为的影响：得到回答后 Agent 接下来做了什么（读了哪些新文件、搜索了什么新模式、提交了什么漏洞报告）\n"
                             "3. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
-                            "4. 判定决策点：Agent 提交 finding（确认漏洞）、排除漏洞、验证结果的依据\n\n"
+                            "4. 判定决策点：Agent 提交漏洞报告（确认漏洞）、排除漏洞、验证结果的依据\n\n"
                             "# 知识与记忆的识别规则\n"
                             "工具调用序列中，以下操作属于知识/记忆访问：\n"
                             "- 知识查询：命令中包含知识库检索工具调用（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等\n"
                             "- 记忆读取：命令中包含记忆目录路径（如 memengine、/app/memory）的 read/grep/cat 操作，或记忆检索 CLI 命令（如 mem recall），用于读取历史挖掘经验\n"
                             "其他 read/grep/bash 为普通文件操作。\n\n"
-                            '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
+                            '只返回 JSON：{"session_id": "会话标识", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
                         )},
                         {"role": "user", "content": json.dumps(acts, ensure_ascii=False)},
                     ]
@@ -1268,21 +1268,25 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         prompt = [
             {"role": "system", "content": (
                 "你是知识图谱与记忆介入效果分析员。结论先行，然后按场景分析。\n\n"
-                "# 数据说明\n"
-                "- kg_status.confusion: TP/FN/FP/TN\n"
-                "- kg_status.agent_validation: Agent 对此 finding 的判定（CONFIRMED=确认漏洞, FALSE_POSITIVE=判定非漏洞）\n"
-                "- matched_finding: Agent 提交的与基线匹配的 finding（FN 无匹配时为 null）\n"
-                "- mining_actions: 从 finding 提交点倒推的挖掘链。数据量大时已按 session 压缩，每条是一个 session 的摘要，含 mining_summary（挖掘过程）、knowledge_queries（知识/记忆问答）、key_actions（关键操作）\n"
-                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录\n"
-                "- nogk_confusion: No-KG 条件下的 confusion 结果\n\n"
+                "# 你收到的数据\n"
+                "JSON 中包含以下内容：\n"
+                "1. baseline_vulnerability：基线漏洞信息（漏洞描述、类型、源文件、源函数）\n"
+                "2. kg_status：启用知识图谱与记忆条件下的挖掘结果\n"
+                "   - confusion（判定结果）：TP=找到并确认了漏洞；FN=找到了但判定为非漏洞；FP=基线不是漏洞但报告为漏洞；TN=基线不是漏洞且正确排除\n"
+                "   - agent_validation：Agent 自身的判定，CONFIRMED=确认是漏洞，FALSE_POSITIVE=判定不是漏洞\n"
+                "3. matched_finding：Agent 提交的漏洞报告中与基线匹配的那条（Agent 没找到时为 null）\n"
+                "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
+                "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录（含查询命令）\n"
+                "6. mining_actions：从漏洞提交点倒推的完整挖掘过程。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
+                "7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
                 "# impact 判定规则\n"
-                "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现/排除漏洞\n"
-                "- NEGATIVE（负向）：知识误导 Agent，导致漏报/误报\n"
+                "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
+                "- NEGATIVE（负向）：知识误导 Agent，导致漏报或误报\n"
                 "- NEUTRAL（中性）：知识未产生影响，或无知识交互\n\n"
                 "# reason 写作要求（800字以内，结论先行）\n"
                 "第一句给出结论：知识与记忆是正向/负向/中性帮助。\n"
                 "然后按场景回答具体问题（见 user 消息）。\n"
-                "必须引用 mining_actions 的 session 摘要和 knowledge_interactions 中的具体内容作为证据，不要泛泛而谈。\n\n"
+                "必须从挖掘过程记录和知识查询记录中引用具体内容作为证据，不要泛泛而谈。\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
