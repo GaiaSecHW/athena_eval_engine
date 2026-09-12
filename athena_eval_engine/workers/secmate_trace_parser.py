@@ -136,13 +136,13 @@ class SecMateTraceParser(TraceParser):
     def _is_finding_tool(tool_name: str) -> bool:
         """SecMate 平台 finding 提交工具。
 
-        从源码论证（findings_store/server.py + workflows/secmate-flash/tools_mcp.py）：
+        从源码论证（findings_store/server.py + workflows/secmate-all-lite/tools_mcp.py）：
         - mcp__findings-store__store_finding — 核心 finding 存储
         - mcp__findings-store__store_finding_finalize_batch — 批量 finding 存储
         - mcp__workflow-tools__store_finding — workflow 别名
         - mcp__workflow-tools__store_tiered_finding[_ext] — 中间 finding
-        - mcp__workflow-tools__store_tracer_verdict — 最终判定
-        - mcp__workflow-tools__store_final_verdict — 旧格式 fallback
+        - mcp__workflow-tools__store_final_verdict — 最终裁决（secmate-all-lite，当前工作流）
+        - mcp__workflow-tools__store_tracer_verdict — 最终判定（secmate-flash，旧工作流兼容）
         """
         t = tool_name or ""
         return (t in ("mcp__findings-store__store_finding",
@@ -153,9 +153,106 @@ class SecMateTraceParser(TraceParser):
                 or t.startswith("mcp__workflow-tools__store_tiered_fing"))
 
     @staticmethod
-    def _tool_results(record: dict) -> list[tuple[str, str]]:
-        """Return every (tool_use_id, result text) in a Claude SDK user record."""
+    def _is_assistant_record(record: dict) -> bool:
+        """判断是否为 assistant 记录（兼容两种格式）。
+
+        格式1 (Claude API): record.type == "assistant"
+        格式2 (SDK transcript): record.type == "message" and message.role == "assistant"
+        """
+        if record.get("type") == "assistant":
+            return True
+        if record.get("type") == "message":
+            msg = record.get("message")
+            return isinstance(msg, dict) and msg.get("role") == "assistant"
+        return False
+
+    @staticmethod
+    def _is_user_record(record: dict) -> bool:
+        """判断是否为 user 记录（兼容两种格式）。
+
+        格式1: record.type == "user"
+        格式2: record.type == "message" and message.role == "user"
+        """
+        if record.get("type") == "user":
+            return True
+        if record.get("type") == "message":
+            msg = record.get("message")
+            return isinstance(msg, dict) and msg.get("role") == "user"
+        return False
+
+    @staticmethod
+    def _is_tool_result_record(record: dict) -> bool:
+        """判断是否为 toolResult 记录（格式2 专用）。
+
+        格式2: record.type == "message" and message.role == "toolResult"
+        """
+        if record.get("type") == "message":
+            msg = record.get("message")
+            return isinstance(msg, dict) and msg.get("role") == "toolResult"
+        return False
+
+    @staticmethod
+    def _tool_call_parts(record: dict) -> list[dict]:
+        """提取 record 中的 tool call parts（兼容两种格式）。
+
+        格式1: content 中 type="tool_use", 字段 input
+        格式2: content 中 type="toolCall", 字段 arguments
+        统一输出: {id, name, input(统一), raw_type}
+        """
         message = record.get("message")
+        if not isinstance(message, dict):
+            return []
+        content = message.get("content", [])
+        if not isinstance(content, list):
+            return []
+        parts = []
+        for part in content:
+            if not isinstance(part, dict):
+                continue
+            pt = part.get("type")
+            if pt == "tool_use":
+                parts.append({
+                    "id": str(part.get("id", "")),
+                    "name": part.get("name", ""),
+                    "input": part.get("input") if isinstance(part.get("input"), dict) else None,
+                    "raw_type": "tool_use",
+                })
+            elif pt == "toolCall":
+                args = part.get("arguments")
+                parts.append({
+                    "id": str(part.get("id", "")),
+                    "name": part.get("name", ""),
+                    "input": args if isinstance(args, dict) else None,
+                    "raw_type": "toolCall",
+                })
+        return parts
+
+    @staticmethod
+    def _tool_results(record: dict) -> list[tuple[str, str]]:
+        """Return every (tool_use_id, result text) in a record.
+
+        兼容三种格式：
+        1. Claude API user record: content 中 type="tool_result"
+        2. SDK transcript: type="message" role="toolResult"
+        3. 旧格式: record.toolUseResult
+        """
+        message = record.get("message")
+        # 格式2: role="toolResult" 的独立消息
+        if isinstance(message, dict) and message.get("role") == "toolResult":
+            call_id = str(message.get("toolCallId", ""))
+            content = message.get("content", [])
+            if isinstance(content, list):
+                texts = []
+                for part in content:
+                    if isinstance(part, dict) and part.get("type") == "text":
+                        texts.append(part.get("text", ""))
+                    elif isinstance(part, str):
+                        texts.append(part)
+                return [(call_id, "\n".join(texts))] if texts else []
+            elif isinstance(content, str):
+                return [(call_id, content)]
+            return []
+        # 格式1: user record 中 content 含 tool_result
         content = message.get("content", []) if isinstance(message, dict) else []
         results = []
         if isinstance(content, list):
@@ -166,6 +263,7 @@ class SecMateTraceParser(TraceParser):
                                     value if isinstance(value, str) else json.dumps(value, ensure_ascii=False)))
         if results:
             return results
+        # 格式3: 旧格式 fallback
         value = record.get("toolUseResult")
         if value is None:
             return []
@@ -187,17 +285,20 @@ class SecMateTraceParser(TraceParser):
                         record = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if record.get("type") == "assistant":
-                        message = record.get("message")
-                        for part in message.get("content", []) if isinstance(message, dict) else []:
-                            if isinstance(part, dict) and part.get("type") == "tool_use":
-                                call_id = str(part.get("id", ""))
-                                if call_id:
-                                    calls[call_id] = {
-                                        "tool_name": _TOOL_MAP.get(part.get("name", ""), str(part.get("name", "")).lower()),
-                                        "is_kg": self._is_kg_call(str(part.get("name", "")), part.get("input")),
-                                    }
-                    elif record.get("type") == "user":
+                    if self._is_assistant_record(record):
+                        for part in self._tool_call_parts(record):
+                            call_id = part["id"]
+                            if call_id:
+                                raw_name = part["name"]
+                                calls[call_id] = {
+                                    "tool_name": _TOOL_MAP.get(raw_name, str(raw_name).lower()),
+                                    "is_kg": self._is_kg_call(str(raw_name), part["input"]),
+                                }
+                    elif self._is_tool_result_record(record):
+                        for call_id, result in self._tool_results(record):
+                            if call_id and result:
+                                results[call_id] = result
+                    elif self._is_user_record(record):
                         for call_id, result in self._tool_results(record):
                             if call_id and result:
                                 results[call_id] = result
@@ -220,24 +321,32 @@ class SecMateTraceParser(TraceParser):
                         max_ts = timestamp if max_ts is None else max(max_ts, timestamp)
                     base_id = f"{session_id}-{line_no}"
                     message = record.get("message")
-                    if record.get("type") == "assistant" and isinstance(message, dict):
+                    if self._is_assistant_record(record) and isinstance(message, dict):
                         content = message.get("content", [])
+                        # 用 _tool_call_parts 统一提取 tool call（兼容 tool_use 和 toolCall）
+                        tool_parts = {p["id"]: p for p in self._tool_call_parts(record)}
                         for index, part in enumerate(content if isinstance(content, list) else []):
                             if not isinstance(part, dict):
                                 continue
                             part_type = part.get("type")
                             event_id = f"{base_id}-{index}"
-                            if part_type == "tool_use":
+                            if part_type in ("tool_use", "toolCall"):
                                 call_id = str(part.get("id", ""))
                                 info = calls.get(call_id, {})
+                                # 统一取 input：tool_use → part.input, toolCall → part.arguments
+                                inp = part.get("input")
+                                if inp is None:
+                                    inp = part.get("arguments")
+                                    if not isinstance(inp, dict):
+                                        inp = None
                                 from ..domain.raw_event import detect_memory_flags
-                                _is_mem, _is_mem_w = detect_memory_flags(info.get("tool_name") or "", part.get("input"))
+                                _is_mem, _is_mem_w = detect_memory_flags(info.get("tool_name") or "", inp)
                                 _mapped = info.get("tool_name") or ""
                                 yield RawEvent(event_id=event_id, trace_id=trace_id, session_id=session_id,
                                     event_type="TOOL_CALL", timestamp_ms=timestamp, message_id=record.get("uuid"),
                                     part_id=event_id, step_no=None, tool_name=_mapped,
-                                    input_json=part.get("input") if isinstance(part.get("input"), dict) else None,
-                                    output_json=results.get(call_id), raw_type="tool_use", source_table="jsonl",
+                                    input_json=inp,
+                                    output_json=results.get(call_id), raw_type=part_type, source_table="jsonl",
                                     source_row_id=event_id, parser_version=self.parser_version,
                                     is_kg_interaction=info.get("is_kg", False),
                                     is_memory_interaction=_is_mem,
@@ -261,7 +370,18 @@ class SecMateTraceParser(TraceParser):
                                 part_id=f"{base_id}-usage", step_no=None, tool_name=None, input_json=usage,
                                 output_json=None, raw_type="usage", source_table="jsonl",
                                 source_row_id=f"{base_id}-usage", parser_version=self.parser_version)
-                    elif record.get("type") == "user":
+                    elif self._is_tool_result_record(record):
+                        for result_index, (call_id, result) in enumerate(self._tool_results(record)):
+                            if not result:
+                                continue
+                            info = calls.get(call_id, {})
+                            event_id = f"{base_id}-result{result_index}"
+                            yield RawEvent(event_id=event_id, trace_id=trace_id, session_id=session_id,
+                                event_type="TOOL_RESULT", timestamp_ms=timestamp, message_id=record.get("uuid"),
+                                part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
+                                input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
+                                source_row_id=event_id, parser_version=self.parser_version)
+                    elif self._is_user_record(record):
                         for result_index, (call_id, result) in enumerate(self._tool_results(record)):
                             if not result:
                                 continue
@@ -313,7 +433,7 @@ class SecMateTraceParser(TraceParser):
                     if timestamp is not None:
                         min_ts = timestamp if min_ts is None else min(min_ts, timestamp)
                         max_ts = timestamp if max_ts is None else max(max_ts, timestamp)
-                    if record.get("type") != "assistant":
+                    if not self._is_assistant_record(record):
                         continue
                     usage = record.get("message", {}).get("usage", {})
                     if not isinstance(usage, dict):
@@ -335,7 +455,9 @@ class SecMateTraceParser(TraceParser):
         SecMate session 关联机制（从源码与 trace 论证）：
         1. SEED_ID 共享：planner prompt 含 SEED_ID=xxx，sessions 共享同一 seed 关联
         2. finding_id 共享：store_finding/query_finding 工具调用中的 finding_id
-        3. 共享文件（与基类默认实现相同）
+        3. source_task_id/source_session_id：store_finding 的 input 含 source_task_id
+           和 source_session_id，用于跨 session 关联（从 findings_db/server.py 论证）
+        4. 共享文件（与基类默认实现相同）
         """
         import re
         import os
@@ -348,6 +470,8 @@ class SecMateTraceParser(TraceParser):
             'sessions': {}, 'file_to_sessions': defaultdict(set),
             'seed_to_sessions': defaultdict(set),
             'finding_id_to_sessions': defaultdict(set),
+            'source_task_to_sessions': defaultdict(set),
+            'source_session_to_sessions': defaultdict(set),
             'edges': defaultdict(set),
         }
         for ev in events:
@@ -355,7 +479,8 @@ class SecMateTraceParser(TraceParser):
             if not sid:
                 continue
             if sid not in graph['sessions']:
-                graph['sessions'][sid] = {'files': set(), 'seeds': set(), 'finding_ids': set()}
+                graph['sessions'][sid] = {'files': set(), 'seeds': set(), 'finding_ids': set(),
+                                           'source_task_ids': set(), 'source_session_ids': set()}
             sg = graph['sessions'][sid]
 
             # TEXT 事件：提取 SEED_ID（来自 planner prompt）
@@ -370,9 +495,8 @@ class SecMateTraceParser(TraceParser):
             tool = ev.tool_name or ""
             inp = ev.input_json or {}
 
-            # store_finding/query_finding：提取 finding_id
-            # 从源码论证：findings_store 注册了 query 和 query_finding_overview，
-            # workflow_tools 注册了 query_finding，均含 finding_id 参数
+            # store_finding/query_finding：提取 finding_id + source_task_id + source_session_id
+            # 从源码论证：findings_store 的 store_finding input 含 source_task_id 和 source_session_id
             if "store_finding" in tool or "query_finding" in tool or "store_tiered_finding" in tool \
                     or tool in ("mcp__findings-store__query", "mcp__findings-store__query_finding_overview"):
                 fid = str(inp.get("finding_id") or inp.get("parent_id") or "")
@@ -385,6 +509,15 @@ class SecMateTraceParser(TraceParser):
                     for m in re.finditer(r'"finding_id"\s*:\s*"?(\d+)', out_str):
                         sg['finding_ids'].add(m.group(1))
                         graph['finding_id_to_sessions'][m.group(1)].add(sid)
+                # source_task_id / source_session_id 关联
+                stid = str(inp.get("source_task_id", "") or "")
+                ssid = str(inp.get("source_session_id", "") or "")
+                if stid:
+                    sg['source_task_ids'].add(stid)
+                    graph['source_task_to_sessions'][stid].add(sid)
+                if ssid:
+                    sg['source_session_ids'].add(ssid)
+                    graph['source_session_to_sessions'][ssid].add(sid)
 
             # 共享文件（与基类默认实现相同）
             if tool == "bash":
@@ -402,7 +535,7 @@ class SecMateTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：共享 SEED_ID 或 finding_id 的 session 互相关联
+        # 构建边：共享 SEED_ID / finding_id / source_task_id / source_session_id 的 session 互相关联
         for seed, sids in graph['seed_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
@@ -410,6 +543,18 @@ class SecMateTraceParser(TraceParser):
                         if s1 != s2:
                             graph['edges'][s1].add(s2)
         for fid, sids in graph['finding_id_to_sessions'].items():
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            graph['edges'][s1].add(s2)
+        for stid, sids in graph['source_task_to_sessions'].items():
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            graph['edges'][s1].add(s2)
+        for ssid, sids in graph['source_session_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
                     for s2 in sids:
@@ -428,28 +573,30 @@ class SecMateTraceParser(TraceParser):
         """Map SecMate review_verdict tag to validation_result.
 
         tag 值含义（从实际 trace 数据验证）：
-        - review_positive / confirm_positive → CONFIRMED
-        - review_negative / reviewer_fp → FALSE_POSITIVE
-        - conditional / needs_review → None（不确定，不算确认）
+        - review_positive[,confirmed[,challenge_required]] → CONFIRMED
+        - review_negative[,reviewer_fp|conditional|hardening] → FALSE_POSITIVE
+        - reviewer_fp → FALSE_POSITIVE
+        - review_conditional / conditional / needs_review → None（不确定，不算确认）
         """
         if not tag:
             return None
         tag_l = tag.lower()
-        if "review_positive" in tag_l or "confirm_positive" in tag_l:
+        if "review_positive" in tag_l:
             return "CONFIRMED"
         if "review_negative" in tag_l or "reviewer_fp" in tag_l:
             return "FALSE_POSITIVE"
         return None
 
     def _extract_action(self, ev):
-        """SecMate 平台挖掘行为：追加 store_finding/store_tracer_verdict 为结论点。"""
+        """SecMate 平台挖掘行为：追加 store_finding/store_final_verdict 为结论点。"""
         tool = ev.tool_name or ""
         ts = ev.timestamp_ms or 0
         if tool in ("mcp__findings-store__store_finding", "mcp__workflow-tools__store_finding"):
             inp = ev.input_json or {}
             title = str(inp.get("title", "") or inp.get("vuln_type", ""))
             return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
-        if tool == "mcp__workflow-tools__store_tracer_verdict" or \
+        if tool == "mcp__workflow-tools__store_final_verdict" or \
+           tool == "mcp__workflow-tools__store_tracer_verdict" or \
            (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
             inp = ev.input_json or {}
             title = str(inp.get("title", "") or inp.get("vuln_type", ""))
@@ -459,12 +606,15 @@ class SecMateTraceParser(TraceParser):
     def extract_findings(self, events: list[RawEvent]) -> list[dict]:
         """提取 SecMate 平台的 finding。
 
-        从源码论证（findings_db/server.py + workflows/secmate-flash/tools_mcp.py）：
+        从源码论证（findings_db/server.py + workflows/secmate-all-lite/tools_mcp.py）：
         1. store_finding（findings-store MCP 或 workflow-tools alias）— 核心 finding 存储
         2. store_finding_finalize_batch — 批量 finding 存储（findings 列表）
         3. store_tiered_finding[_ext]（中间 finding，新格式）
-        4. store_tracer_verdict（最终判定，outcome=confirmed/conditional/refuted）
-        5. store_final_verdict（旧格式 fallback）
+        4. store_final_verdict（最终裁决，secmate-all-lite 工作流）
+           judgment=final_positive/final_negative/final_unresolved
+           final_strength=confirmed/conditional/negative/unresolved
+        5. store_tracer_verdict（最终判定，secmate-flash 旧工作流兼容）
+           outcome=confirmed/conditional/refuted
         """
         findings: dict[str, dict] = {}
 
@@ -498,6 +648,7 @@ class SecMateTraceParser(TraceParser):
                             "source": str(inp.get("file_path", "")),
                             "sink": str(inp.get("function_name", "")),
                             "validation_result": vr,
+                            "level": level,
                             "platform": "secmate",
                             "session_id": e.session_id,
                         }
@@ -523,6 +674,7 @@ class SecMateTraceParser(TraceParser):
                         "source": str(inp.get("source", "") or inp.get("source_refs", "") or inp.get("file_path", "")),
                         "sink": str(inp.get("sink", "") or inp.get("function_name", "")),
                         "validation_result": None,
+                        "level": level,
                         "platform": "secmate",
                         "session_id": e.session_id,
                     }
@@ -562,6 +714,7 @@ class SecMateTraceParser(TraceParser):
                         "source": str(bf.get("source", "") or bf.get("source_refs", "") or bf.get("file_path", "")),
                         "sink": str(bf.get("sink", "") or bf.get("function_name", "")),
                         "validation_result": self._secmate_tag_to_vr(b_tag) if b_level == "review_verdict" else None,
+                        "level": b_level,
                         "platform": "secmate",
                         "session_id": e.session_id,
                     }
@@ -589,16 +742,53 @@ class SecMateTraceParser(TraceParser):
                     "source": str(inp.get("file_path", "")),
                     "sink": str(inp.get("function_name", "")),
                     "validation_result": None,
+                    "level": str(inp.get("level", "")),
                     "platform": "secmate",
                     "session_id": e.session_id,
                 }
 
-            # store_tracer_verdict / store_final_verdict
-            # 从源码论证：store_tracer_verdict 的 input 含 outcome（confirmed/conditional/refuted），
-            # 不含 tag（tag 由工具内部设置）。直接用 outcome 映射 validation_result。
-            # store_final_verdict 为旧格式 fallback，保留兼容。
-            elif tool in ("mcp__workflow-tools__store_tracer_verdict",
-                           "mcp__workflow-tools__store_final_verdict"):
+            # store_final_verdict（secmate-all-lite 工作流，当前格式）
+            # 从源码论证：judgment=final_positive/final_negative/final_unresolved
+            # final_strength=confirmed/conditional/negative/unresolved
+            # tag 由工具内部设置（如 final_positive,final_confirmed），但 trace 中 tag 字段可能只含 judgment 值
+            elif tool == "mcp__workflow-tools__store_final_verdict":
+                judgment = str(inp.get("judgment", ""))
+                strength = str(inp.get("final_strength", ""))
+                if judgment == "final_positive":
+                    vr = "CONFIRMED"
+                elif judgment == "final_negative":
+                    vr = "FALSE_POSITIVE"
+                else:
+                    vr = None  # final_unresolved 或未知
+                finding_id = ""
+                try:
+                    result = json.loads(out_str)
+                    nested = result.get("result", result) if isinstance(result, dict) else result
+                    if isinstance(nested, str):
+                        nested = json.loads(nested)
+                    if isinstance(nested, dict):
+                        finding_id = str(nested.get("finding_id", ""))
+                except (TypeError, ValueError, json.JSONDecodeError):
+                    pass
+                finding_id = finding_id or f"secmate-final-{e.event_id}"
+                findings[finding_id] = {
+                    "finding_id": finding_id,
+                    "display_id": finding_id,
+                    "title": str(inp.get("vuln_type", "")),
+                    "description": inp.get("description", ""),
+                    "vuln_type": inp.get("vuln_type", ""),
+                    "severity": str(inp.get("severity", "") or strength),
+                    "source": str(inp.get("file_path", "")),
+                    "sink": str(inp.get("function_name", "")),
+                    "validation_result": vr,
+                    "level": "final_verdict",
+                    "platform": "secmate",
+                    "session_id": e.session_id,
+                }
+
+            # store_tracer_verdict（secmate-flash 旧工作流兼容）
+            # 从源码论证：outcome=confirmed/conditional/refuted
+            elif tool == "mcp__workflow-tools__store_tracer_verdict":
                 outcome = str(inp.get("outcome", ""))
                 if outcome in ("confirmed", "conditional"):
                     vr = "CONFIRMED"
@@ -627,6 +817,7 @@ class SecMateTraceParser(TraceParser):
                     "source": str(inp.get("file_path", "") or inp.get("primary_location", "")),
                     "sink": str(inp.get("function_name", "")),
                     "validation_result": vr,
+                    "level": "final_verdict",
                     "platform": "secmate",
                     "session_id": e.session_id,
                 }

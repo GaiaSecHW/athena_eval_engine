@@ -40,9 +40,19 @@ class CVulnVerifyTraceParser(TraceParser):
 
         c_vuln_verify 目录由多个原始平台任务共享。发现阶段以 case API 做正式
         归属，解析阶段用 trace 内的任务上下文将已下载目录收窄到同一任务。
+
+        支持两种目录结构：
+        - 旧：tasks/c_vuln_verify/*.jsonl（文件直接在目录下）
+        - 新：app/secflow-app-vuln-verify-v2/{task_id}/run/*.jsonl（文件在子目录）
         """
         uri = trace_source["source_uri"]
-        files = sorted(glob.glob(os.path.join(uri, "*.jsonl"))) if os.path.isdir(uri) else [uri]
+        if os.path.isdir(uri):
+            files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
+            if not files:
+                # 新目录结构：{task_id}/run/*.jsonl
+                files = sorted(glob.glob(os.path.join(uri, "*", "run", "*.jsonl")))
+        else:
+            files = [uri]
         source_task_id = trace_source.get("source_task_id")
         if not source_task_id:
             return files

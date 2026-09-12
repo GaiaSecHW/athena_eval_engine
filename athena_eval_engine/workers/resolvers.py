@@ -295,6 +295,10 @@ class KnowledgeResolverImpl:
             if is_mem_result:
                 out = e.output_json
                 out_str = out if isinstance(out, str) else (json.dumps(out, ensure_ascii=False) if out is not None else "")
+                # 截断输出：记忆交互跟问题挂钩，报告只需摘要不需全量 grep/bash 结果
+                _MAX_MEM_OUTPUT = 500
+                if len(out_str) > _MAX_MEM_OUTPUT:
+                    out_str = out_str[:_MAX_MEM_OUTPUT] + f"... (truncated, total {len(out_str)} chars)"
                 memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": out_str or "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
                 # 有非空输出 = 成功读取
                 if out_str and out_str.strip() not in ("", "[]", "{}", "null"):

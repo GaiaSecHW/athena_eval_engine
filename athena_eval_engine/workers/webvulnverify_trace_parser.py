@@ -93,6 +93,9 @@ class WebVulnVerifyTraceParser(TraceParser):
         # 如果是目录，读所有 .jsonl；如果是单文件，读它
         if os.path.isdir(uri):
             files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
+            if not files:
+                # poc-gen-verify 目录结构：workspaces/{ws}/.pi/sessions/*.jsonl
+                files = sorted(glob.glob(os.path.join(uri, "*", ".pi", "sessions", "*.jsonl")))
         else:
             files = [uri]
 

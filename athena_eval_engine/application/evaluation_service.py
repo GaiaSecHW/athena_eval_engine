@@ -159,6 +159,41 @@ def _fill_missing_source(case: dict) -> None:
 
 def create(req: CreateRequest):
     """Stage 0：建 evaluation + snapshot（冻结）。每步用独立连接避免远程防火墙重置。"""
+    # ===== 自动发现 trace =====
+    # 1. 挖掘 trace：自动判断 trace_kind（用户只选了 task_id，不选 trace_kind）
+    for e in req.entries:
+        if not e.get("trace_kind") and e.get("task_id") and e.get("project_id"):
+            try:
+                kind = ps.discover_mining_trace_kind(e["project_id"], e["task_id"])
+                if kind:
+                    e["trace_kind"] = kind
+                    log("CREATE", f"自动发现挖掘 trace_kind={kind} task={e['task_id']}")
+            except Exception as err:
+                log("CREATE", f"⚠ 自动发现挖掘 trace_kind 失败: {err}")
+
+    # 2. 验证 trace：自动扫描 app 目录，有数据就加入 entries
+    _existing_kinds = {e.get("trace_kind") for e in req.entries}
+    _project_id = req.entries[0].get("project_id") if req.entries else ""
+    if _project_id and not any(k in _existing_kinds for k in ("cvuln_verify", "webvulnverify")):
+        try:
+            verify_traces = ps.discover_verify_traces(_project_id)
+            for vt in verify_traces:
+                # 为每个验证 agent 创建 KG + NOGK 两个 entry
+                for cond in ("KG", "NOGK"):
+                    req.entries.append({
+                        "task_id": f"verify-{vt['agent_name']}",
+                        "condition": cond,
+                        "source_uri": vt["source_uri"],
+                        "trace_kind": vt["trace_kind"],
+                        "category": "verify",
+                        "project_id": _project_id,
+                        "benchmark_item_id": None,
+                        "benchmark_item_ids": [],
+                    })
+                log("CREATE", f"自动发现验证 trace: {vt['agent_name']} kind={vt['trace_kind']}")
+        except Exception as err:
+            log("CREATE", f"⚠ 自动发现验证 trace 失败: {err}")
+
     # 获取基线 case 详情（含漏洞描述）。数据源二选一：
     #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
     #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认 case（含漏洞与非漏洞两类）
@@ -873,11 +908,13 @@ def run(evaluation_id: str) -> dict:
         g_hits = diagnose(g_out["metric_results"], g_out["statistical_results"])
         g_report = assemble(evaluation_id, g_out["metric_results"], g_out["statistical_results"], g_hits,
                             pair_views=gvs)
-        # 找到这个 task_id 对应的 category
+        # 找到这个 task_id 对应的 category 和 agent_name
         _g_category = ""
+        _g_agent_name = ""
         for e in entries:
             if e.get("task_id") == tid:
                 _g_category = e.get("category", "")
+                _g_agent_name = e.get("agent_name", "")
                 break
         _g_kg_run = next((tr for tr in task_runs
                           if tr.task_id == tid and tr.condition == Condition.KG), None)
@@ -920,7 +957,9 @@ def run(evaluation_id: str) -> dict:
         _metric_groups.append({
             "task_id": tid,
             "category": _g_category,
-            "label": "漏洞验证" if _g_category == "verify" else "漏洞挖掘",
+            "label": f"漏洞验证-{_g_agent_name}" if _g_category == "verify" and _g_agent_name
+                     else ("漏洞验证" if _g_category == "verify" else "漏洞挖掘"),
+            "agent_name": _g_agent_name,
             "p0": g_report.p0, "p1": g_report.p1, "p2": g_report.p2,
             "diagnostic_hits": g_report.diagnostic_hits,
             "case_results": _g_case_results,
