@@ -1183,32 +1183,50 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "3. 与 No-KG（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
             )
 
-        # token 估算 + LLM 压缩：防止输入超限（替代截断，保留信息完整性）
+        # token 估算 + 聚合：防止输入超限（不截断，用聚合保留完整语义）
         _data_str = json.dumps(data, ensure_ascii=False)
         if len(_data_str) > 840000:  # ~280k tokens，400k 上下文的 70%
-            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，LLM 压缩中...")
-            # 1. LLM 压缩 mining_actions：用结构化摘要替代原始调用链
+            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，聚合 mining_actions...")
+            # 聚合 mining_actions：按工具类型分组统计，保留完整 action 文本但去重
             _actions = data.get("mining_actions", [])
-            _actions_str = json.dumps(_actions, ensure_ascii=False)
-            if len(_actions_str) > 250000:
-                _compress_prompt = [
-                    {"role": "system", "content": (
-                        "你是调用链压缩器。将漏洞挖掘的工具调用序列压缩成结构化摘要。\n"
-                        "保留关键信息：读取的文件、搜索的模式、执行的命令、发现的代码片段。\n"
-                        "合并同类操作（如多次 read 同一文件只保留一次）。\n"
-                        '只返回 JSON：{"files_read": ["文件1", ...], "patterns_searched": ["模式1", ...], '
-                        '"key_commands": ["命令摘要1", ...], "summary": "<=300字中文摘要，描述挖掘过程"}'
-                    )},
-                    {"role": "user", "content": _actions_str},
+            if _actions:
+                _by_tool: dict[str, list[str]] = {}
+                for a in _actions:
+                    t = a.get("tool", "other")
+                    act = a.get("action", "")
+                    if act and act not in _by_tool.setdefault(t, []):
+                        _by_tool[t].append(act)
+                data["mining_actions"] = [
+                    {"tool": t, "actions": acts, "count": len(acts)}
+                    for t, acts in _by_tool.items()
                 ]
-                try:
-                    _compressed = llm_mod.chat_json(_compress_prompt, temperature=0, max_tokens=8000)
-                    if isinstance(_compressed, dict) and _compressed.get("summary"):
-                        data["mining_actions"] = [_compressed]
-                        log("KG_ANALYSIS", f"mining_actions LLM 压缩: {len(_actions)} 条 → 1 条摘要")
-                except Exception as _e:
-                    log("KG_ANALYSIS", f"mining_actions 压缩失败，原样发送: {_e}")
-            log("KG_ANALYSIS", f"压缩后 {len(json.dumps(data, ensure_ascii=False))} chars")
+                log("KG_ANALYSIS", f"mining_actions 聚合: {len(_actions)} 条 → {len(data['mining_actions'])} 组")
+
+            # 聚合 knowledge_interactions：只保留 question（查询命令），不传 answer（完整输出）
+            _kis = data.get("knowledge_interactions", [])
+            if _kis:
+                data["knowledge_interactions"] = [
+                    {"tool": ki.get("tool", ""), "question": ki.get("question", "")}
+                    for ki in _kis
+                ]
+
+            _data_str = json.dumps(data, ensure_ascii=False)
+            log("KG_ANALYSIS", f"聚合后 {len(_data_str)} chars")
+
+            # 聚合后仍超限 → 跳过 LLM，规则降级
+            if len(_data_str) > 840000:
+                log("KG_ANALYSIS", f"聚合后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
+                results.append({
+                    "case_id": case_id,
+                    "kg_judgment": kg_judgment,
+                    "query_summary": "数据量过大，无法进行 AI 分析" if case_interactions else "无知识查询",
+                    "knowledge_summary": "",
+                    "impact": "NEUTRAL",
+                    "reason": f"KG 判定: {confusion}（挖掘链数据过大，LLM 跳过，规则生成）",
+                    "interactions": case_interactions,
+                    "memory_interactions": case_mem_interactions,
+                })
+                continue
 
         prompt = [
             {"role": "system", "content": (
@@ -1221,8 +1239,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "- kg_status.confusion: TP/FN/FP/TN\n"
                 "- kg_status.agent_validation: Agent 对此 finding 的判定（CONFIRMED=确认漏洞, FALSE_POSITIVE=判定非漏洞）\n"
                 "- matched_finding: Agent 提交的与基线匹配的 finding（FN 无匹配时为 null）\n"
-                "- mining_actions: 从 finding 提交点倒推的挖掘链\n"
-                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录\n"
+                "- mining_actions: 从 finding 提交点倒推的挖掘链。数据量大时已按工具类型聚合，每条含 actions 列表（去重后的完整操作）和 count（原始条数）\n"
+                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录。数据量大时仅保留 question（查询命令），省略 answer（知识返回内容），此时应从 mining_actions 中推断知识的作用\n"
                 "- nogk_confusion: No-KG 条件下的 confusion 结果\n\n"
                 "# impact 判定规则\n"
                 "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现/排除漏洞\n"
