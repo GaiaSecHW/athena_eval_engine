@@ -200,9 +200,10 @@ function renderReport(d){
     kgHtml+="</div>";
   }
 
-  // 基线漏洞 per-case 分析
+  // 基线漏洞 per-case 分析（仅当知识图谱或记忆已介入时才逐个展示）
+  var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
-  if(caseResults.length){
+  if(caseResults.length&&(kgActive||memActive)){
     kgHtml+="<div style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
     caseResults.forEach(function(c,idx){
       var conf=c.confusion||"NA";
