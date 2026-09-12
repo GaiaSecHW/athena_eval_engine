@@ -1268,16 +1268,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         prompt = [
             {"role": "system", "content": (
                 "你是知识图谱与记忆介入效果分析员。结论先行，然后按场景分析。\n\n"
-                "# 知识图谱与记忆的作用\n"
-                "知识图谱（KG）：提供项目代码结构、组件依赖、已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
-                "记忆（Memory）：存储历史挖掘经验，用于跨会话复用漏洞挖掘知识。\n"
-                "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n\n"
                 "# 数据说明\n"
                 "- kg_status.confusion: TP/FN/FP/TN\n"
                 "- kg_status.agent_validation: Agent 对此 finding 的判定（CONFIRMED=确认漏洞, FALSE_POSITIVE=判定非漏洞）\n"
                 "- matched_finding: Agent 提交的与基线匹配的 finding（FN 无匹配时为 null）\n"
-                "- mining_actions: 从 finding 提交点倒推的挖掘链。数据量大时已按工具类型聚合，每条含 actions 列表（去重后的完整操作）和 count（原始条数）\n"
-                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录。数据量大时仅保留 question（查询命令），省略 answer（知识返回内容），此时应从 mining_actions 中推断知识的作用\n"
+                "- mining_actions: 从 finding 提交点倒推的挖掘链。数据量大时已按 session 压缩，每条是一个 session 的摘要，含 mining_summary（挖掘过程）、knowledge_queries（知识/记忆问答）、key_actions（关键操作）\n"
+                "- knowledge_interactions: Agent 与知识图谱/记忆的交互记录\n"
                 "- nogk_confusion: No-KG 条件下的 confusion 结果\n\n"
                 "# impact 判定规则\n"
                 "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现/排除漏洞\n"
@@ -1286,7 +1282,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "# reason 写作要求（800字以内，结论先行）\n"
                 "第一句给出结论：知识与记忆是正向/负向/中性帮助。\n"
                 "然后按场景回答具体问题（见 user 消息）。\n"
-                "必须引用 knowledge_interactions、mining_actions 中的具体内容作为证据，不要泛泛而谈。\n\n"
+                "必须引用 mining_actions 的 session 摘要和 knowledge_interactions 中的具体内容作为证据，不要泛泛而谈。\n\n"
                 "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
