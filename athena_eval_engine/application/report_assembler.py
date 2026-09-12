@@ -574,10 +574,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     # session 压缩缓存：同一 session 压缩一次，跨 case 复用
     _session_compress_cache: dict[str, dict] = {}
 
-    # 有知识/记忆查询的 session_id 集合（用于判断 session 是否需要 LLM 压缩）
-    _kg_session_ids = {iv.get("session_id", "") for iv in interactions if iv.get("type") == "CALL"}
-    _mem_session_ids = {iv.get("session_id", "") for iv in memory_interactions if iv.get("type") == "CALL"} if memory_interactions else set()
-
     # 知识图谱交互：只有 athena CLI 命令才算（vuln_hunt_* 是内部黑板，不算知识图谱）
     # KnowledgeResolver 已经只捕获 athena 相关交互，这里不再按工具名过滤
     def _is_kg_interaction(iv):
@@ -1208,9 +1204,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         _compressed.append(_session_compress_cache[sid])
                         _cache_hits += 1
                         continue
-                    _has_kg_mem = sid in _kg_session_ids or sid in _mem_session_ids
-                    if _has_kg_mem:
-                        _sys_content = (
+                    _comp_prompt = [
+                        {"role": "system", "content": (
                             "你是漏洞挖掘过程分析员。将一个 session 内的工具调用序列压缩成挖掘过程摘要。\n\n"
                             "# 压缩目标\n"
                             "分析知识与记忆的介入对漏洞挖掘产生了什么影响。以下内容必须保留：\n"
@@ -1224,19 +1219,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             "- 记忆读取：命令中包含记忆目录路径（如 memengine、/app/memory）的 read/grep/cat 操作，或记忆检索 CLI 命令（如 mem recall），用于读取历史挖掘经验\n"
                             "其他 read/grep/bash 为普通文件操作。\n\n"
                             '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
-                        )
-                    else:
-                        _sys_content = (
-                            "你是漏洞挖掘过程分析员。将一个 session 内的工具调用序列压缩成挖掘过程摘要。\n\n"
-                            "# 压缩目标\n"
-                            "此 session 无知识与记忆查询。以下内容必须保留：\n"
-                            "1. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
-                            "2. 判定决策点：Agent 提交 finding（确认漏洞）、排除漏洞、验证结果的依据\n"
-                            "3. 与前后 session 的衔接：此 session 的操作结果如何导向下一步\n\n"
-                            '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述挖掘过程", "key_actions": ["关键操作1", ...]}'
-                        )
-                    _comp_prompt = [
-                        {"role": "system", "content": _sys_content},
+                        )},
                         {"role": "user", "content": json.dumps(acts, ensure_ascii=False)},
                     ]
                     try:
