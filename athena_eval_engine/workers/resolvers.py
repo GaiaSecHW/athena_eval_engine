@@ -255,6 +255,7 @@ class KnowledgeResolverImpl:
         interactions: list[dict] = []  # 原始介入事件
         memory_interactions: list[dict] = []  # 记忆交互事件（只读）
         mem_call_part_ids: set[str] = set()  # 记忆 CALL 的 part_id（用于 RESULT 配对）
+        mem_tool_names: set[str] = set()  # 记忆 TOOL_CALL 的工具名（用于 RESULT 配对）
         mem_success_count = 0
         for idx, e in enumerate(events):
             # text part 含 Reference/Athena 指引 = prompt 注入了知识库（KG2.0 配置存在）
@@ -281,9 +282,17 @@ class KnowledgeResolverImpl:
                 memory_interactions.append({"tool": e.tool_name or "", "type": "CALL", "command": cmd, "output": "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
                 if e.part_id:
                     mem_call_part_ids.add(e.part_id)
-            # 记忆 RESULT：与 CALL 配对（同 part_id 或同工具名紧随）
+                if e.tool_name:
+                    mem_tool_names.add(e.tool_name)
+            # 记忆 RESULT：与 CALL 配对（同工具名）
+            # TOOL_RESULT 不继承 is_memory_interaction 标记（避免重复统计），
+            # 通过 tool_name 在 mem_tool_names 中匹配识别记忆 RESULT
             # Turing trace 的 TOOL_CALL 含 output（call+result 合一），也要检查
-            if is_mem and (e.is_tool_result() or (e.is_tool_call() and e.output_json is not None)):
+            is_mem_result = (
+                (e.is_tool_result() and tool in mem_tool_names) or
+                (is_mem and e.is_tool_call() and e.output_json is not None)
+            )
+            if is_mem_result:
                 out = e.output_json
                 out_str = out if isinstance(out, str) else (json.dumps(out, ensure_ascii=False) if out is not None else "")
                 memory_interactions.append({"tool": e.tool_name or "", "type": "RESULT", "command": "", "output": out_str or "", "timestamp": e.timestamp_ms, "session_id": e.session_id})

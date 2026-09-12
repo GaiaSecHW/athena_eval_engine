@@ -212,8 +212,6 @@ class ArgoTraceParser(TraceParser):
                         if isinstance(c, dict) and c.get("type") == "tool_result":
                             tid = c.get("tool_use_id", "")
                             break
-                is_kg = tool_use_kg.get(tid, False) if (tool_use_kg and tid) else False
-                is_mem, is_mem_w = tool_use_mem.get(tid, (False, False)) if (tool_use_mem and tid) else (False, False)
                 tn = tool_use_names.get(tid, "") if (tool_use_names and tid) else ""
                 evs.append(RawEvent(
                     event_id=f"{eid}-res", trace_id=trace_id, session_id=session_id,
@@ -223,9 +221,6 @@ class ArgoTraceParser(TraceParser):
                     raw_type="toolUseResult", parse_status="OK",
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
-                    is_kg_interaction=is_kg,
-                    is_memory_interaction=is_mem,
-                    is_memory_write=is_mem_w,
                 ))
 
         elif t == "queue-operation" and d.get("operation") == "enqueue":

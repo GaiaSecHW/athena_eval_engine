@@ -228,10 +228,7 @@ class DataflowVulnScanTraceParser(TraceParser):
 
             # toolResult：toolCallId/toolName 在 message 层，content 为 text 片段
             if role == "toolResult":
-                tid = msg.get("toolCallId", "")
                 tool_name = msg.get("toolName", "")
-                is_kg = self._tool_kg.get(tid, False) if tid else False
-                is_mem, is_mem_w = self._tool_mem.get(tid, (False, False)) if tid else (False, False)
                 texts = [c.get("text", "") for c in content
                          if isinstance(c, dict) and isinstance(c.get("text"), str)]
                 evs.append(RawEvent(

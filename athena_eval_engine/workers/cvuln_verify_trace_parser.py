@@ -191,10 +191,7 @@ class CVulnVerifyTraceParser(TraceParser):
 
             # toolResult 消息：创建 TOOL_RESULT 事件
             if role == "toolResult":
-                tid = msg.get("toolCallId", "")
                 tool_name = msg.get("toolName", "")
-                is_kg = self._tool_kg.get(tid, False) if tid else False
-                is_mem, is_mem_w = self._tool_mem.get(tid, (False, False)) if tid else (False, False)
                 # 合并所有 text content 作为输出
                 result_text = ""
                 for c in content:
