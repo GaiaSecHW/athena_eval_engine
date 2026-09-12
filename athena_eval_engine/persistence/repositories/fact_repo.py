@@ -155,6 +155,63 @@ def insert_resource_fact(cur, f: ResourceFact) -> str:
     ), "IDEMPOTENT_REPLAY")
 
 
+def insert_extracted_findings(cur, task_run_id: str, evaluation_id: str, findings: list[dict]) -> None:
+    """持久化 parser.extract_findings 返回的 finding 列表。
+
+    每条 finding 一行，主键 (task_run_id, finding_id)。
+    断点续跑时可直接从 DB 读取，无需重新解析 trace。
+    """
+    for f in findings:
+        sql = """INSERT INTO extracted_finding
+            (finding_id, task_run_id, evaluation_id, platform, session_id, verify_session_id,
+             vuln_type, file, severity, validation_result, title, description, source, sink,
+             event_idx, finding_json)
+            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+        _upsert(cur, sql, (
+            str(f.get("finding_id", "")),
+            task_run_id,
+            evaluation_id,
+            str(f.get("platform", "")),
+            str(f.get("session_id", "")) or None,
+            str(f.get("_verify_session_id", "")) or None,
+            str(f.get("vuln_type", "")) or None,
+            str(f.get("file", f.get("source", ""))) or None,  # file 从 finding dict 取
+            str(f.get("severity", "")) or None,
+            str(f.get("validation_result", "")) or None,
+            str(f.get("title", ""))[:65535] or None,
+            str(f.get("description", ""))[:65535] or None,
+            str(f.get("source", "")) or None,
+            str(f.get("sink", "")) or None,
+            f.get("_event_idx"),
+            json.dumps(f, ensure_ascii=False, default=str),
+        ), "IDEMPOTENT_REPLAY")
+
+
+def insert_session_graph(cur, task_run_id: str, evaluation_id: str, graph: dict) -> str:
+    """持久化 parser.build_session_graph 返回的 session 关系图。
+
+    每个 task_run 一行，graph_json 存完整图结构。
+    断点续跑时可直接从 DB 读取，无需重新解析 trace。
+    """
+    # 序列化前把 set 转成 list（JSON 不支持 set）
+    def _serialize(obj):
+        if isinstance(obj, set):
+            return sorted(obj)
+        if isinstance(obj, dict):
+            return {k: _serialize(v) for k, v in obj.items()}
+        if isinstance(obj, (list, tuple)):
+            return [_serialize(x) for x in obj]
+        return obj
+    sql = """INSERT INTO session_graph
+        (task_run_id, evaluation_id, graph_json)
+        VALUES (%s,%s,%s)"""
+    return _upsert(cur, sql, (
+        task_run_id,
+        evaluation_id,
+        json.dumps(_serialize(graph), ensure_ascii=False, default=str),
+    ), "IDEMPOTENT_REPLAY")
+
+
 def insert_task_pair(cur, pair) -> str:
     sql = """INSERT INTO task_pair
         (task_pair_id, evaluation_id, task_id, benchmark_item_id, nogk_task_run_id, kg_task_run_id,

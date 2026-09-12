@@ -17,10 +17,11 @@ import glob
 from typing import Iterator
 from datetime import datetime
 from ..domain.raw_event import RawEvent
+from ..domain.resolvers import TraceParser
 from ..infrastructure.log_util import log
 
 
-class CVulnVerifyTraceParser:
+class CVulnVerifyTraceParser(TraceParser):
     """解析 CVulnVerify JSONL session 日志。"""
 
     def __init__(self, parser_version: str = "cvuln-verify-1.0"):
@@ -28,6 +29,7 @@ class CVulnVerifyTraceParser:
         self._last_tool_id = None
         self._last_tool_name = None
         self._tool_kg = {}
+        self._tool_mem = {}
         self._trace_metadata_cache: dict[str, tuple[str | None, str | None]] = {}
 
     _TASK_PATH_RE = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
@@ -108,8 +110,10 @@ class CVulnVerifyTraceParser:
 
         files = self._files(trace_source)
 
-        # 预收集所有 toolCall 的 is_kg 标记（按 id）
+        # 预收集所有 toolCall 的 is_kg 和 memory 标记（按 id）
         self._tool_kg = {}
+        self._tool_mem = {}
+        from ..domain.raw_event import detect_memory_flags
         for fpath in files:
             with open(fpath, "r", encoding="utf-8") as f:
                 for line in f:
@@ -127,9 +131,13 @@ class CVulnVerifyTraceParser:
                         for c in (msg.get("content", []) if isinstance(msg.get("content"), list) else []):
                             if isinstance(c, dict) and c.get("type") == "toolCall":
                                 tid = c.get("id", "")
-                                is_kg = self._is_kg_call(c.get("name", ""), c.get("arguments", {}))
+                                tool_name = c.get("name", "")
+                                args = c.get("arguments", {})
+                                is_kg = self._is_kg_call(tool_name, args)
+                                is_mem, is_mem_w = detect_memory_flags(tool_name, args)
                                 if tid:
                                     self._tool_kg[tid] = is_kg
+                                    self._tool_mem[tid] = (is_mem, is_mem_w)
 
         for fpath in files:
             sid = os.path.splitext(os.path.basename(fpath))[0]
@@ -154,6 +162,18 @@ class CVulnVerifyTraceParser:
         is_view = cmd.strip().startswith(("head", "cat ", "grep ", "ls "))
         return has_script and not is_view
 
+    @staticmethod
+    def _is_finding_tool(tool_name: str, args) -> bool:
+        """CVulnVerify 平台 finding 提交：write/bash 写 vuln_verify_final_verdict。"""
+        t = tool_name or ""
+        if t == "write" and isinstance(args, dict):
+            fp = str(args.get("file_path") or args.get("path") or "")
+            return "vuln_verify_final_verdict" in fp
+        if t in ("bash", "bash_tool", "shell") and isinstance(args, dict):
+            cmd = str(args.get("command", ""))
+            return "vuln_verify_final_verdict" in cmd
+        return False
+
     def _obj_to_events(self, d: dict, trace_id: str, session_id: str, line_no: int) -> list[RawEvent]:
         t = d.get("type", "")
         ts = self._parse_ts(d.get("timestamp", ""))
@@ -169,6 +189,45 @@ class CVulnVerifyTraceParser:
             if not isinstance(content, list):
                 return []
 
+            # toolResult 消息：创建 TOOL_RESULT 事件
+            if role == "toolResult":
+                tid = msg.get("toolCallId", "")
+                tool_name = msg.get("toolName", "")
+                is_kg = self._tool_kg.get(tid, False) if tid else False
+                is_mem, is_mem_w = self._tool_mem.get(tid, (False, False)) if tid else (False, False)
+                # 合并所有 text content 作为输出
+                result_text = ""
+                for c in content:
+                    if isinstance(c, dict) and c.get("type") == "text":
+                        result_text += c.get("text", "")
+                evs.append(RawEvent(
+                    event_id=f"{eid}-tr", trace_id=trace_id, session_id=session_id,
+                    event_type="TOOL_RESULT", timestamp_ms=ts,
+                    message_id=None, part_id=f"{eid}-tr",
+                    step_no=None, tool_name=tool_name,
+                    input_json=None, output_json=result_text or None,
+                    raw_type="toolResult", parse_status="OK",
+                    source_table="jsonl", source_row_id=f"{eid}-tr",
+                    parser_version=self.parser_version,
+                    is_kg_interaction=is_kg,
+                    is_memory_interaction=is_mem,
+                    is_memory_write=is_mem_w,
+                ))
+                usage = msg.get("usage", {})
+                if isinstance(usage, dict):
+                    evs.append(RawEvent(
+                        event_id=f"{eid}-u", trace_id=trace_id, session_id=session_id,
+                        event_type="STEP_FINISH", timestamp_ms=ts,
+                        message_id=None, part_id=f"{eid}-u",
+                        step_no=None, tool_name=None,
+                        input_json=usage, output_json=None,
+                        raw_type="usage", parse_status="OK",
+                        source_table="jsonl", source_row_id=f"{eid}-u",
+                        parser_version=self.parser_version,
+                    ))
+                return evs
+
+            # 非 toolResult：处理 toolCall / text / thinking
             for ci, c in enumerate(content):
                 if not isinstance(c, dict):
                     continue
@@ -182,6 +241,7 @@ class CVulnVerifyTraceParser:
                     is_kg = self._tool_kg.get(tid, False) if tid else self._is_kg_call(tool_name, args)
                     from ..domain.raw_event import detect_memory_flags
                     is_mem, is_mem_w = detect_memory_flags(tool_name, args)
+                    is_finding = self._is_finding_tool(tool_name, args)
                     evs.append(RawEvent(
                         event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                         event_type="TOOL_CALL", timestamp_ms=ts,
@@ -194,6 +254,7 @@ class CVulnVerifyTraceParser:
                         is_kg_interaction=is_kg,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
+                        is_finding_submission=is_finding,
                     ))
                 elif ct == "text":
                     evs.append(RawEvent(
@@ -284,6 +345,189 @@ class CVulnVerifyTraceParser:
         return sess
 
     def build_session_graph(self, events):
-        """CVulnVerify 通常单 session，使用基类通用实现。"""
-        from ..domain.resolvers import TraceParser
-        return TraceParser.build_session_graph(self, events)
+        """构建 CVulnVerify session 关系图。
+
+        CVulnVerify 的 session 结构：
+        - 每个 session = 一个漏洞验证 case（一个 JSONL 文件）
+        - verdict 通过 bash cat > heredoc 写 vuln_verify_final_verdict.json
+        - KG 查询：python3 athena.py ask '...'
+        - 记忆读取：cat/head memengine 路径
+        - session 间通过共享源码文件关联
+
+        在基类（共享文件/fact/athena 查询）基础上增加：
+        - case_id → session 映射（finding-session 关系）
+        - 记忆读取路径记录
+        - session_type = 'verify'
+        """
+        graph = super().build_session_graph(events)
+
+        finding_to_session = {}
+        for ev in events:
+            sid = ev.session_id
+            if not sid or sid not in graph.get('sessions', {}):
+                continue
+            sg = graph['sessions'][sid]
+
+            # 默认 session_type
+            if 'session_type' not in sg:
+                sg['session_type'] = 'verify'
+            if 'memory_reads' not in sg:
+                sg['memory_reads'] = []
+            if 'case_id' not in sg:
+                sg['case_id'] = ''
+
+            if not ev.is_tool_call():
+                continue
+            tool = ev.tool_name or ""
+            inp = ev.input_json or {}
+
+            # verdict 提交：提取 case_id
+            # 方式1: write 工具写 vuln_verify_final_verdict.json
+            if tool == "write":
+                fp = str(inp.get("file_path") or inp.get("path") or "")
+                if "vuln_verify_final_verdict" in fp:
+                    content = inp.get("content", "")
+                    if isinstance(content, str):
+                        try:
+                            vdata = json.loads(content)
+                            case_id = str(vdata.get("case_id", ""))
+                            if case_id:
+                                sg['case_id'] = case_id
+                                finding_to_session[case_id] = sid
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+            # 方式2: bash cat > heredoc 写 verdict JSON
+            elif tool in ("bash", "bash_tool", "shell"):
+                cmd = str(inp.get("command", ""))
+                if "vuln_verify_final_verdict" in cmd:
+                    vdata = self._extract_verdict_from_bash_cmd(cmd)
+                    if vdata:
+                        case_id = str(vdata.get("case_id", ""))
+                        if case_id:
+                            sg['case_id'] = case_id
+                            finding_to_session[case_id] = sid
+
+            # 记忆读取路径
+            if ev.is_memory_interaction and tool in ("bash", "bash_tool", "shell"):
+                cmd = str(inp.get("command", ""))
+                # 提取 memengine 路径
+                for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
+                    sg['memory_reads'].append(m.group(1))
+
+        graph['finding_to_session'] = finding_to_session
+        return graph
+
+    @staticmethod
+    def _extract_verdict_from_bash_cmd(cmd: str) -> dict | None:
+        """从 bash cat > heredoc 命令中提取 verdict JSON。
+
+        命令格式：
+            cat > /tmp/.../vuln_verify_final_verdict.json << 'JSONEOF'
+            { "case_id": "...", "verdict": "confirmed", ... }
+            JSONEOF
+        """
+        brace_idx = cmd.find("{")
+        if brace_idx == -1:
+            return None
+        decoder = json.JSONDecoder()
+        try:
+            obj, _end = decoder.raw_decode(cmd, brace_idx)
+            if isinstance(obj, dict) and "case_id" in obj:
+                return obj
+        except json.JSONDecodeError:
+            pass
+        return None
+
+    def _extract_action(self, ev):
+        """CVulnVerify 平台挖掘行为：write vuln_verify_final_verdict 为结论点。"""
+        tool = ev.tool_name or ""
+        ts = ev.timestamp_ms or 0
+        if tool == "write":
+            inp = ev.input_json or {}
+            fp = str(inp.get("file_path") or inp.get("path") or "")
+            if "vuln_verify_final_verdict" in fp:
+                return {"tool": "finding", "action": fp, "session_id": ev.session_id, "ts": ts}
+        return super()._extract_action(ev)
+
+    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
+        """提取 CVulnVerify 平台的 finding（verdict）。
+
+        两种提交方式：
+        1. write 工具写 vuln_verify_final_verdict.json
+        2. bash cat > heredoc 写 vuln_verify_final_verdict.json
+        """
+        from .parse_utils import attach_event_indices
+        findings: dict[str, dict] = {}
+
+        for _ei, e in enumerate(events):
+            if not e.is_tool_call():
+                continue
+            tool = e.tool_name or ""
+            inp = e.input_json or {}
+
+            # write 工具写 verdict JSON
+            if tool == "write":
+                fp = str(inp.get("file_path") or inp.get("path") or "")
+                if "vuln_verify_final_verdict" in fp:
+                    content = inp.get("content", "")
+                    if isinstance(content, str):
+                        try:
+                            vdata = json.loads(content)
+                            case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
+                            verdict = vdata.get("verdict", "")
+                            vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                            case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
+                            vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
+                            src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
+                            fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
+                            desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
+                            if not desc:
+                                desc = str(vdata.get("ruled_out_by", ""))
+                            findings[case_id] = {
+                                "finding_id": case_id,
+                                "display_id": case_id,
+                                "title": case_title if case_title else f"CVulnVerify {case_id}",
+                                "description": desc,
+                                "vuln_type": vt,
+                                "severity": str(vdata.get("severity", "")),
+                                "source": src,
+                                "sink": fn,
+                                "validation_result": vr,
+                                "platform": "cvuln-verify",
+                                "session_id": e.session_id,
+                            }
+                        except (json.JSONDecodeError, TypeError):
+                            pass
+
+            # bash cat > heredoc 写 verdict JSON
+            elif tool in ("bash", "bash_tool", "shell"):
+                cmd = str(inp.get("command", ""))
+                if "vuln_verify_final_verdict" in cmd:
+                    _vr_json = self._extract_verdict_from_bash_cmd(cmd)
+                    if _vr_json:
+                        case_id = str(_vr_json.get("case_id", "")) or f"cvv-{e.event_id}"
+                        verdict = _vr_json.get("verdict", "")
+                        vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
+                        case_title = str(_vr_json.get("case_title", "") or _vr_json.get("title", "") or "")
+                        vt = str(_vr_json.get("vuln_type", "") or _vr_json.get("vulnerability_type", "") or "")
+                        src = str(_vr_json.get("source_file", "") or _vr_json.get("source", "") or "")
+                        fn = str(_vr_json.get("function_name", "") or _vr_json.get("sink", "") or "")
+                        desc = str(_vr_json.get("summary", "") or _vr_json.get("description", "") or "")
+                        if not desc:
+                            desc = str(_vr_json.get("ruled_out_by", ""))
+                        findings[case_id] = {
+                            "finding_id": case_id,
+                            "display_id": case_id,
+                            "title": case_title if case_title else f"CVulnVerify {case_id}",
+                            "description": desc,
+                            "vuln_type": vt,
+                            "severity": str(_vr_json.get("severity", "")),
+                            "source": src,
+                            "sink": fn,
+                            "validation_result": vr,
+                            "platform": "cvuln-verify",
+                            "session_id": e.session_id,
+                        }
+
+        attach_event_indices(findings, events)
+        return list(findings.values())

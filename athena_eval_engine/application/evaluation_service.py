@@ -646,7 +646,7 @@ def run(evaluation_id: str) -> dict:
             bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
-                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events)
+                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser)
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
                 fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
@@ -660,14 +660,13 @@ def run(evaluation_id: str) -> dict:
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}")
             # finding_count 保持工具调用数（JSD 用），CONFIRMED/FP 数存 action_distribution
             # 所有平台统一：只计 validation_result=CONFIRMED 的 finding
-            from ..workers.ai_matcher import _extract_findings as _ef
-            _findings = _ef(events)
+            _findings = parser.extract_findings(events)
             _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
             _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
-            # WebVulnVerify: 验证接收总数 = Analyze 阶段的唯一 vulnerability_id 数
+            # WebVulnVerify: 验证接收总数 = vulnerability_analyze + vulnerability_verify 的唯一 vulnerability_id 数
             _analyze_vids = set()
             for _e in events:
-                if _e.is_tool_call() and (_e.tool_name or "") == "vulnerability_analyze":
+                if _e.is_tool_call() and (_e.tool_name or "") in ("vulnerability_analyze", "vulnerability_verify"):
                     _vid = str((_e.input_json or {}).get("vulnerability_id", ""))
                     if _vid and _vid != "?":
                         _analyze_vids.add(_vid)
@@ -679,7 +678,7 @@ def run(evaluation_id: str) -> dict:
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "events": events, "_task_id": tr.task_id}, parsed["src"]
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "findings": _findings, "events": events, "_task_id": tr.task_id, "parser": parser}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
         _local_paths = {}
@@ -715,6 +714,8 @@ def run(evaluation_id: str) -> dict:
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
                 fact_repo.insert_tool_action_fact(cur, f["tool"])
                 fact_repo.insert_resource_fact(cur, f["resource"])
+                fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, f.get("findings", []))
+                fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, f.get("session_graph", {}))
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
         _db_query(_insert_facts)
 
@@ -836,7 +837,7 @@ def run(evaluation_id: str) -> dict:
         _groups_item_pv[tid].append(pv)
     # 为每组计算指标
     _metric_groups: list[dict] = []
-    _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict]]] = {}
+    _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict], object]] = {}
     for tid, gvs in _groups_pv.items():
         if not gvs:
             continue
@@ -914,6 +915,7 @@ def run(evaluation_id: str) -> dict:
             list(_g_nogk_facts.get("case_results", [])),
             list(_g_kg_facts.get("events", [])),
             list(_g_knowledge.memory_interactions) if _g_knowledge and _g_knowledge.memory_interactions else [],
+            _g_kg_facts.get("parser"),
         )
         _metric_groups.append({
             "task_id": tid,
@@ -933,16 +935,20 @@ def run(evaluation_id: str) -> dict:
         cur.execute("INSERT IGNORE INTO evaluation_population_snapshot (population_snapshot_id, calculation_run_id, "
                     "population_type, population_entity_type, task_count, estimator_version, population_ids_uri, population_ids_hash) "
                     "VALUES (%s,%s,'primary_analysis','TASK_PAIR',%s,'1.0','uri','hash')", (pop_id, cr_id, len(pair_views)))
-        # 修复 metric_result 的 metric_id CHECK 约束（加 M11/M12）
+        # 修复 metric_result 的 metric_id CHECK 约束（加 M13/M14，删 M2/M3）
         try:
-            cur.execute("ALTER TABLE metric_result DROP CHECK metric_result_chk_1")
+            cur.execute("ALTER TABLE metric_result DROP CHECK metric_result_metric_id_chk")
         except Exception:
-            try: cur.execute("ALTER TABLE metric_result DROP CONSTRAINT metric_result_chk_1")
+            try: cur.execute("ALTER TABLE metric_result DROP CONSTRAINT metric_result_metric_id_chk")
             except Exception: pass
         try:
             cur.execute("ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN "
                         "('M1','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13','M14'))")
         except Exception: pass  # 可能已存在
+        # calculation_method 列从 VARCHAR(128) 改为 TEXT（method 字典含 KG/No-KG 绝对值，JSON 超长）
+        try:
+            cur.execute("ALTER TABLE metric_result MODIFY COLUMN calculation_method TEXT")
+        except Exception: pass  # 可能已是 TEXT
         for m in out["metric_results"]:
             fact_repo.insert_metric_result(cur, cr_id, pop_id, m, evaluation_id)
         for s in out["statistical_results"]:
@@ -981,11 +987,12 @@ def run(evaluation_id: str) -> dict:
             fut_group_pcka = {}
             for group in _metric_groups:
                 (_g_cases, _g_interactions, _g_session_graph,
-                 _g_nogk_cases, _g_events, _g_mem_interactions) = _group_kg_inputs[group["task_id"]]
+                 _g_nogk_cases, _g_events, _g_mem_interactions,
+                 _g_parser) = _group_kg_inputs[group["task_id"]]
                 fut_group_pcka[group["task_id"]] = llm_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions, group["category"])
+                    _g_mem_interactions, group["category"], _g_parser)
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:

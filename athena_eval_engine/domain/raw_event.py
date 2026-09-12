@@ -36,6 +36,7 @@ class RawEvent:
     is_kg_interaction: bool = False  # parser 标记：是否为知识图谱交互（Athena 检索/知识查询）
     is_memory_interaction: bool = False  # parser 标记：是否为记忆交互（memengine/argo.memory 读取/检索）
     is_memory_write: bool = False  # parser 标记：是否为记忆写入（mem save 等；不纳入访问统计）
+    is_finding_submission: bool = False  # parser 标记：是否为漏洞发现提交（各 parser 在 parse 时设置）
 
     def is_tool_call(self) -> bool:
         return self.event_type == "TOOL_CALL"
@@ -49,8 +50,8 @@ import re as _re
 
 # 记忆读取（CLI 命令）：argo.memory get/search/recall 等，总是算记忆交互
 _MEMORY_CLI_RE = _re.compile(
-    r"argo\.memory\s+(get|search|recall|list|query|find)"  # Argo: argo.memory get/search/recall
-    r"|mem\s+(recall|get|search|list|query|find)",  # memengine: mem recall/get/search
+    r"argo\.memory\s+(get|search|recall|list|query|find|suggestions)"  # Argo: argo.memory get/search/recall/suggestions
+    r"|mem\s+(recall|get|search|list|query|find|suggestions)",  # memengine: mem recall/get/search/suggestions
     _re.IGNORECASE,
 )
 # 记忆读取（路径引用）：memengine 或 /app/memory/ 目录
@@ -59,9 +60,9 @@ _MEMORY_PATH_RE = _re.compile(
     r"|[\\/]app[\\/]memory[\\/]",  # /app/memory/ 目录
     _re.IGNORECASE,
 )
-# 内容读取命令（cat/head/tail/grep 等；不含 ls/find/wc/stat 等纯列文件命令）
+# 内容读取命令（cat/head/tail/grep/rg 等；不含 ls/find/wc/stat 等纯列文件命令）
 _MEMORY_CONTENT_READ_RE = _re.compile(
-    r"\b(?:cat|head|tail|grep|sed|awk|less|more|for)\b",
+    r"\b(?:cat|head|tail|grep|sed|awk|less|more|for|rg)\b",
     _re.IGNORECASE,
 )
 # 记忆写入：不算记忆访问（用户口径：只看读取/检索）
@@ -69,7 +70,9 @@ _MEMORY_WRITE_RE = _re.compile(
     r"mem\s+(?:save|store|add|write|insert|update)"
     r"|argo\.memory\s+(?:save|store|add)"
     r"|>>?\s*[^\s|]*[\\/]memengine"  # 重定向写入 memengine 路径（cat > / echo >）
-    r"|mkdir\s+[^|]*[\\/]memengine",  # mkdir 创建 memengine 目录
+    r"|mkdir\s+[^|]*[\\/]memengine"  # mkdir 创建 memengine 目录
+    r"|>>?\s*[^\s|]*[\\/]app[\\/]memory"  # 重定向写入 /app/memory/ 路径（WebVulnVerify）
+    r"|mkdir\s+[^|]*[\\/]app[\\/]memory",  # mkdir 创建 /app/memory/ 目录
     _re.IGNORECASE,
 )
 

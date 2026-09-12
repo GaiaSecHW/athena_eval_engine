@@ -377,7 +377,7 @@ CREATE TABLE metric_result (
     reason_code           VARCHAR(64),
     calculation_status    VARCHAR(32) NOT NULL DEFAULT 'CALCULATED'
                           CHECK (calculation_status IN ('CALCULATED','NA','BLOCKED','ERROR')),
-    calculation_method    VARCHAR(128),
+    calculation_method    TEXT,
     details_json          JSON,
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     UNIQUE (calculation_run_id, metric_id, metric_version)
@@ -559,6 +559,36 @@ CREATE TABLE outbox_event (
     published_at    DATETIME(3)
 ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE extracted_finding (
+    finding_id          VARCHAR(256) NOT NULL,
+    task_run_id         VARCHAR(64) NOT NULL,
+    evaluation_id       VARCHAR(64) NOT NULL,
+    platform            VARCHAR(32) NOT NULL,
+    session_id          VARCHAR(128),
+    verify_session_id   VARCHAR(128),
+    vuln_type           VARCHAR(64),
+    file                TEXT,
+    severity            VARCHAR(32),
+    validation_result   VARCHAR(32),
+    title               TEXT,
+    description         TEXT,
+    source              TEXT,
+    sink                TEXT,
+    event_idx           INT,
+    finding_json        JSON,
+    created_at          DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    PRIMARY KEY (task_run_id, finding_id)
+) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE INDEX idx_ef_eval ON extracted_finding(evaluation_id);
+
+CREATE TABLE session_graph (
+    task_run_id         VARCHAR(64) PRIMARY KEY,
+    evaluation_id       VARCHAR(64) NOT NULL,
+    graph_json          JSON NOT NULL,
+    created_at          DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
+) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+CREATE INDEX idx_sg_eval ON session_graph(evaluation_id);
+
 -- ===== §7.27 显式 FOREIGN KEY =====
 
 ALTER TABLE evaluation_snapshot
@@ -708,6 +738,14 @@ ALTER TABLE evaluation_state_transition
 ALTER TABLE trace_artifact
     ADD CONSTRAINT fk_artifact_trace
     FOREIGN KEY (trace_id) REFERENCES trace_source(trace_id);
+
+ALTER TABLE extracted_finding
+    ADD CONSTRAINT fk_ef_trun
+    FOREIGN KEY (evaluation_id, task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
+
+ALTER TABLE session_graph
+    ADD CONSTRAINT fk_sg_trun
+    FOREIGN KEY (evaluation_id, task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
 
 ALTER TABLE evaluation
     ADD CONSTRAINT fk_eval_bset

@@ -21,6 +21,8 @@ import re
 import glob
 from typing import Iterator
 from ..domain.raw_event import RawEvent
+from ..domain.resolvers import TraceParser
+from .parse_utils import attach_event_indices, _extract_json_objects_from_text
 
 
 # Claude Code 工具名 → 小写
@@ -30,12 +32,16 @@ _TOOL_MAP = {
 }
 
 
-class ArgoTraceParser:
+class ArgoTraceParser(TraceParser):
     """解析 Argo（Claude Code CLI）JSONL session 日志。"""
 
     def __init__(self, parser_version: str = "argo-1.0"):
         self.parser_version = parser_version
-        self._last_tool_name = None
+
+    @staticmethod
+    def _is_finding_tool(tool_name: str) -> bool:
+        """Argo 平台 finding 提交工具。"""
+        return tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding")
 
     @staticmethod
     def _resolve_jsonl_files(uri: str) -> list[str]:
@@ -61,8 +67,11 @@ class ArgoTraceParser:
         # 如果是目录，读所有 .jsonl（含 argo/ 子目录）；如果是单文件，读它
         files = self._resolve_jsonl_files(uri)
 
-        # 先收集所有 tool_use 的 is_kg 标记（按 tool_use_id），用于 RESULT 继承
+        # 先收集所有 tool_use 的 is_kg/is_mem/tool_name 标记（按 tool_use_id），用于 RESULT 继承
         tool_use_kg = {}  # tool_use_id -> is_kg
+        tool_use_mem = {}  # tool_use_id -> (is_mem, is_mem_w)
+        tool_use_names = {}  # tool_use_id -> tool_name
+        from ..domain.raw_event import detect_memory_flags
         for fpath in files:
             with open(fpath, "r", encoding="utf-8") as f:
                 for line in f:
@@ -90,8 +99,11 @@ class ArgoTraceParser:
                                 elif tool_lower == "skill" and isinstance(c.get("input"), dict):
                                     if str(c.get("input", {}).get("name", "")).lower() == "athena-skill":
                                         is_kg = True
+                                is_mem, is_mem_w = detect_memory_flags(tool_lower, c.get("input"))
                                 if tid:
                                     tool_use_kg[tid] = is_kg
+                                    tool_use_mem[tid] = (is_mem, is_mem_w)
+                                    tool_use_names[tid] = tool_lower
 
         for fpath in files:
             sid = os.path.splitext(os.path.basename(fpath))[0]
@@ -104,10 +116,10 @@ class ArgoTraceParser:
                         d = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_use_kg):
+                    for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_use_kg, tool_use_mem, tool_use_names):
                         yield ev
 
-    def _obj_to_events(self, d: dict, trace_id: str, session_id: str, line_no: int, tool_use_kg: dict = None) -> list[RawEvent]:
+    def _obj_to_events(self, d: dict, trace_id: str, session_id: str, line_no: int, tool_use_kg: dict = None, tool_use_mem: dict = None, tool_use_names: dict = None) -> list[RawEvent]:
         """把一个 JSONL 行转成 RawEvent（可能多个）。"""
         t = d.get("type", "")
         ts = self._parse_ts(d.get("timestamp", ""))
@@ -135,6 +147,7 @@ class ArgoTraceParser:
                     # 记忆交互标记
                     from ..domain.raw_event import detect_memory_flags
                     is_mem, is_mem_w = detect_memory_flags(tool_lower, inp)
+                    is_finding = self._is_finding_tool(tool_lower)
                     evs.append(RawEvent(
                         event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                         event_type="TOOL_CALL", timestamp_ms=ts,
@@ -145,6 +158,7 @@ class ArgoTraceParser:
                         source_table="jsonl", source_row_id=f"{eid}-{ci}",
                         parser_version=self.parser_version,
                         is_kg_interaction=is_kg,
+                        is_finding_submission=is_finding,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
                     ))
@@ -199,8 +213,8 @@ class ArgoTraceParser:
                             tid = c.get("tool_use_id", "")
                             break
                 is_kg = tool_use_kg.get(tid, False) if (tool_use_kg and tid) else False
-                # tool_name 也从 tool_use_kg 取（如果有），否则用 _last_tool_name 兜底
-                tn = self._last_tool_name or ""
+                is_mem, is_mem_w = tool_use_mem.get(tid, (False, False)) if (tool_use_mem and tid) else (False, False)
+                tn = tool_use_names.get(tid, "") if (tool_use_names and tid) else ""
                 evs.append(RawEvent(
                     event_id=f"{eid}-res", trace_id=trace_id, session_id=session_id,
                     event_type="TOOL_RESULT", timestamp_ms=ts,
@@ -210,6 +224,8 @@ class ArgoTraceParser:
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
                     is_kg_interaction=is_kg,
+                    is_memory_interaction=is_mem,
+                    is_memory_write=is_mem_w,
                 ))
 
         elif t == "queue-operation" and d.get("operation") == "enqueue":
@@ -287,41 +303,74 @@ class ArgoTraceParser:
         """构建 session 关系图（Argo 特有逻辑）。
 
         Argo (Claude Code) 的 session 结构：
-        - 主 session：session/argo/*.jsonl
-        - 子 agent session：session/argo/subagents/*.jsonl
-        - 通过共享文件、fact ID、argo.memory 关联
+        - investigate session：挖掘代码，提交 finding（TEXT 事件 {"accepted": true, "data": {"findings": [...]}}）
+        - verify session：验证 finding，给出 verdict（SYSTEM_EVENT 含 finding metadata + TEXT 事件含 verdict）
+        - 通过共享文件、fact ID、finding 提交/验证关联
 
-        相比通用逻辑的改进：
-        - 匹配任意文件扩展名（不限 .c/.py）
-        - 从 ReportFindings 提取 finding ID
-        - 从 argo.memory get 提取 fact 关联
-        - 不硬编码排除文件列表
+        Session 关系：
+        - investigate → verify：通过 finding key (cwe, file, line_range) 匹配
+        - session ↔ session：通过共享文件/fact 关联
         """
         from collections import defaultdict as _dd
-        # 文件/fact 被 >此数量的 session 共享时不建边（防止常见文件产生噪声边）
         _MAX_SESSIONS_PER_LINK = 5
         graph = {
             'sessions': {},
             'file_to_sessions': _dd(set),
             'fact_to_sessions': _dd(set),
+            'finding_to_investigate': _dd(set),  # finding_key -> investigate session_ids
+            'finding_to_verify': _dd(set),        # finding_key -> verify session_ids
             'edges': _dd(set),
         }
+
         for ev in events:
             sid = ev.session_id
             if not sid:
                 continue
             if sid not in graph['sessions']:
-                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+                graph['sessions'][sid] = {
+                    'files': set(), 'facts': set(), 'athena_qs': [],
+                    'session_type': None,  # 'investigate' / 'verify'
+                    'finding_keys': set(),
+                }
             sg = graph['sessions'][sid]
 
+            # SYSTEM_EVENT: verify session system prompt，含 finding metadata
+            if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
+                content = str(ev.output_json)
+                if "## Finding to Verify" in content or "# Verify:" in content:
+                    sg['session_type'] = 'verify'
+                    meta = self._extract_finding_meta_from_sysprompt(content)
+                    if meta:
+                        key = self._finding_key(meta)
+                        if key and key != "(,,)":
+                            sg['finding_keys'].add(key)
+                            graph['finding_to_verify'][key].add(sid)
+                # fact 引用
+                for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
+                    if fid != 'f001':
+                        sg['facts'].add(fid)
+                        graph['fact_to_sessions'][fid].add(sid)
+                continue
+
+            # TEXT 事件: investigate finding 提交
+            if ev.event_type == "TEXT" and ev.output_json:
+                txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+                if '"accepted"' in txt:
+                    for payload in self._extract_accepted_payloads(txt):
+                        data = payload.get("data", payload)
+                        if not isinstance(data, dict):
+                            continue
+                        if "findings" in data:
+                            sg['session_type'] = 'investigate'
+                            for f in data.get("findings", []):
+                                if not isinstance(f, dict):
+                                    continue
+                                key = self._finding_key(f)
+                                if key and key != "(,,)":
+                                    sg['finding_keys'].add(key)
+                                    graph['finding_to_investigate'][key].add(sid)
+
             if not ev.is_tool_call():
-                # System events 可能有 fact 引用
-                if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
-                    for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
-                        # f001 通常是系统初始化 fact，几乎所有 session 都引用，不作为关联依据
-                        if fid != 'f001':
-                            sg['facts'].add(fid)
-                            graph['fact_to_sessions'][fid].add(sid)
                 continue
 
             tool = ev.tool_name or ""
@@ -332,7 +381,6 @@ class ArgoTraceParser:
                 # argo.memory get fXXX → fact 关联
                 if "argo.memory" in cmd and " get" in cmd:
                     for fid in re.findall(r'f\d{3,5}', cmd):
-                        # f001 通常是系统初始化 fact，几乎所有 session 都引用，不作为关联依据
                         if fid != 'f001':
                             sg['facts'].add(fid)
                             graph['fact_to_sessions'][fid].add(sid)
@@ -356,34 +404,24 @@ class ArgoTraceParser:
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-            elif tool in ("ReportFindings", "reportfindings"):
-                # Argo 提交 finding → fact ID
-                for f in (inp.get("findings") or []):
-                    fid = f.get("id") or f.get("finding_id", "")
-                    if fid:
-                        sg['facts'].add(fid)
-                        graph['fact_to_sessions'][fid].add(sid)
+        # 构建边
+        # 1. finding 提交→验证 关联（investigate ↔ verify）
+        for key, inv_sids in graph['finding_to_investigate'].items():
+            ver_sids = graph['finding_to_verify'].get(key, set())
+            for s1 in inv_sids:
+                for s2 in ver_sids:
+                    if s1 != s2:
+                        graph['edges'][s1].add(s2)
 
-            elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding"):
-                fid = str(inp.get("detection_id", ""))
-                if fid:
-                    sg['facts'].add(fid)
-                    graph['fact_to_sessions'][fid].add(sid)
-
-            elif tool in ("vulnerability_analyze", "vulnerability_verify"):
-                vid = str(inp.get("vulnerability_id", ""))
-                if vid:
-                    sg['facts'].add(vid)
-                    graph['fact_to_sessions'][vid].add(sid)
-
-        # 构建边：共享 fact 或文件的 session 互相关联
-        # 频率过滤：被 >_MAX_SESSIONS_PER_LINK 个 session 共享的项不建边（防止噪声）
+        # 2. 共享 fact 的 session 关联
         for fid, sids in graph['fact_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
                     for s2 in sids:
                         if s1 != s2:
                             graph['edges'][s1].add(s2)
+
+        # 3. 共享文件的 session 关联
         for fm, sids in graph['file_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
@@ -392,3 +430,293 @@ class ArgoTraceParser:
                             graph['edges'][s1].add(s2)
 
         return graph
+
+    def _extract_action(self, ev):
+        """Argo 平台挖掘行为：TEXT 事件含 accepted=true payload 为结论点。"""
+        if ev.event_type == "TEXT" and ev.output_json:
+            txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+            if '"accepted"' in txt and '"findings"' in txt:
+                return {"tool": "finding", "action": "accepted_payload",
+                        "session_id": ev.session_id, "ts": ev.timestamp_ms or 0}
+        return super()._extract_action(ev)
+
+    # ------------------------------------------------------------------
+    # finding 提取
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _finding_key(f: dict) -> str:
+        """从 (cwe, file, line_range) 生成唯一 key，用于分组同一 finding 的多次验证。
+
+        line_range 归一化：如果是嵌套列表 [[a,b],[c,d]]，取第一个子范围。
+        """
+        cwe = str(f.get("cwe", ""))
+        file_val = str(f.get("file", ""))
+        lr = f.get("line_range", "")
+        if isinstance(lr, list):
+            if lr and isinstance(lr[0], list):
+                # 嵌套列表 [[a,b],[c,d]] → 取第一个子范围
+                lr = f"{lr[0][0]}-{lr[0][-1]}" if lr[0] else ""
+            elif lr:
+                lr = f"{lr[0]}-{lr[-1]}"
+            else:
+                lr = ""
+        else:
+            lr = str(lr)
+        return f"({cwe},{file_val},{lr})"
+
+    @staticmethod
+    def _extract_file(value) -> str:
+        """从 source/sink 值提取文件路径（可能是 dict 或 str）。"""
+        if isinstance(value, dict):
+            return str(value.get("file", ""))
+        return str(value) if value else ""
+
+    @staticmethod
+    def _try_parse_json_lenient(text: str) -> dict | None:
+        """尝试解析 JSON，自动补全缺失的闭合花括号。
+
+        Agent 输出的 JSON 有时会少一个闭合 }（如 entry_reachability 对象未关闭），
+        导致 json.loads 失败。此方法检测花括号不匹配并自动补全。
+        """
+        text = text.strip()
+        try:
+            obj = json.loads(text)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            pass
+        # 统计未匹配的花括号
+        depth = 0
+        in_str = False
+        esc = False
+        for ch in text:
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+        if depth > 0:
+            fixed = text + '}' * depth
+            try:
+                obj = json.loads(fixed)
+                return obj if isinstance(obj, dict) else None
+            except json.JSONDecodeError:
+                pass
+        return None
+
+    @staticmethod
+    def _extract_accepted_payloads(text: str) -> list[dict]:
+        """从文本中提取 accepted=true 的 JSON payload。
+
+        两种策略：
+        1. ```json 代码块中的 JSON 对象（raw_decode + 容错补全）
+        2. 文本中直接出现的 {"accepted": ...} 对象（花括号匹配 + 容错补全）
+        """
+        results: list[dict] = []
+        # 策略 1: ```json 代码块
+        for obj in _extract_json_objects_from_text(text):
+            if obj.get("accepted") is True:
+                results.append(obj)
+        # 策略 1 补充: raw_decode 失败时，手动提取 ```json 块并容错解析
+        if not results:
+            marker = '```json'
+            search_start = 0
+            while True:
+                idx = text.find(marker, search_start)
+                if idx == -1:
+                    break
+                brace_idx = text.find('{', idx + len(marker))
+                if brace_idx == -1:
+                    search_start = idx + len(marker)
+                    continue
+                close_idx = text.find('```', brace_idx)
+                if close_idx < 0:
+                    close_idx = len(text)
+                json_str = text[brace_idx:close_idx]
+                obj = ArgoTraceParser._try_parse_json_lenient(json_str)
+                if obj and obj.get("accepted") is True:
+                    results.append(obj)
+                search_start = close_idx + 3
+        if results:
+            return results
+        # 策略 2: 直接在文本中搜索 "accepted" 并做花括号匹配
+        search_start = 0
+        while True:
+            idx = text.find('"accepted"', search_start)
+            if idx < 0:
+                break
+            brace_start = text.rfind('{', 0, idx + 1)
+            if brace_start < 0:
+                search_start = idx + 1
+                continue
+            depth = 0
+            in_string = False
+            escape = False
+            end_idx = -1
+            for j in range(brace_start, len(text)):
+                ch = text[j]
+                if escape:
+                    escape = False
+                    continue
+                if ch == '\\':
+                    escape = True
+                    continue
+                if ch == '"':
+                    in_string = not in_string
+                    continue
+                if in_string:
+                    continue
+                if ch == '{':
+                    depth += 1
+                elif ch == '}':
+                    depth -= 1
+                    if depth == 0:
+                        end_idx = j + 1
+                        break
+            if end_idx > 0:
+                try:
+                    payload = json.loads(text[brace_start:end_idx])
+                    if isinstance(payload, dict) and payload.get("accepted") is True:
+                        results.append(payload)
+                except json.JSONDecodeError:
+                    pass
+                search_start = end_idx
+            else:
+                # 花括号不匹配 — 尝试容错解析
+                close_idx = text.find('```', brace_start)
+                if close_idx < 0:
+                    close_idx = len(text)
+                json_str = text[brace_start:close_idx]
+                obj = ArgoTraceParser._try_parse_json_lenient(json_str)
+                if obj and obj.get("accepted") is True:
+                    results.append(obj)
+                search_start = close_idx
+        return results
+
+    @staticmethod
+    def _extract_finding_meta_from_sysprompt(content: str) -> dict | None:
+        """从 verify session 的 system prompt 中提取 finding metadata。
+
+        system prompt 格式：
+        # Verify: Finding Confirmation
+        ...
+        **Metadata:**
+        ```json
+        { "cwe": "...", "file": "...", "line_range": [...], ... }
+        ```
+        """
+        meta_idx = content.find("**Metadata:**")
+        if meta_idx < 0:
+            meta_idx = content.find("## Finding to Verify")
+        if meta_idx < 0:
+            return None
+        sub = content[meta_idx:]
+        for obj in _extract_json_objects_from_text(sub):
+            if "cwe" in obj or "file" in obj:
+                return obj
+        return None
+
+    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
+        """提取 Argo 平台的 finding。
+
+        数据源：
+        1. investigate session TEXT 事件 {"accepted": true, "data": {"findings": [...]}}
+           → finding 的诞生 session，包含完整漏洞信息（cwe, file, source, sink, severity, ...）
+        2. verify session SYSTEM_EVENT system prompt 包含 finding metadata（cwe, file, line_range）
+        3. verify session TEXT 事件 {"accepted": true, "data": {"verdict": "..."}}
+           → 验证结论
+
+        关联方式：
+        - finding 从 investigate session 提取，session_id = investigate session
+        - verify session 的 system prompt 包含 finding metadata (cwe, file, line_range)
+        - 用 (cwe, file, line_range) 匹配 verdict 到 finding
+        - 同一 finding 被多次验证时，取最后一个 verdict（last-wins）
+
+        过滤规则：
+        - 只保留 verdict ∈ {CONFIRMED, MANUAL_REVIEW, FALSE_POSITIVE} 的 finding
+        - DUPLICATE、NEEDS_REVIEW、未验证的 finding 不提取
+        """
+        # key -> finding dict
+        findings: dict[str, dict] = {}
+        # session_id -> [(verdict, event_idx)]
+        session_verdicts: dict[str, list[tuple[str, int]]] = {}
+        # session_id -> finding key（从 verify system prompt 提取）
+        session_finding_key: dict[str, str] = {}
+
+        for i, e in enumerate(events):
+            # SYSTEM_EVENT: verify session system prompt，含 finding metadata
+            if e.event_type == "SYSTEM_EVENT" and e.output_json:
+                content = str(e.output_json)
+                if "## Finding to Verify" in content or "# Verify:" in content:
+                    meta = self._extract_finding_meta_from_sysprompt(content)
+                    if meta:
+                        key = self._finding_key(meta)
+                        if key and key != "(,,)":
+                            session_finding_key[e.session_id] = key
+
+            # TEXT 事件: investigate findings 和 verify verdicts
+            if e.event_type == "TEXT" and e.output_json:
+                txt = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                for payload in self._extract_accepted_payloads(txt):
+                    data = payload.get("data", payload)
+                    if not isinstance(data, dict):
+                        continue
+                    # investigate session: data.findings[]
+                    if "findings" in data:
+                        for f in data.get("findings", []):
+                            if not isinstance(f, dict):
+                                continue
+                            key = self._finding_key(f)
+                            if not key or key == "(,,)":
+                                continue
+                            findings[key] = {
+                                "finding_id": key,
+                                "display_id": key,
+                                "title": str(f.get("description", ""))[:200],
+                                "description": str(f.get("description", "")),
+                                "vuln_type": str(f.get("cwe", "")),
+                                "file": str(f.get("file", "")),
+                                "severity": str(f.get("severity", "")),
+                                "source": self._extract_file(f.get("source")),
+                                "sink": self._extract_file(f.get("sink")),
+                                "validation_result": None,
+                                "platform": "argo",
+                                "session_id": e.session_id,
+                                "_event_idx": i,
+                            }
+                    # verify session: data.verdict
+                    if "verdict" in data:
+                        verdict = str(data.get("verdict", "")).upper()
+                        session_verdicts.setdefault(e.session_id, []).append((verdict, i))
+
+        # Phase 2: 关联 verdict 到 finding（跨 session 全局 last-wins）
+        # 同一 finding 可能被多个 verify session 验证，按 event_idx 全局排序取最后一个
+        verdicts_by_key: dict[str, list[tuple[str, int, str]]] = {}  # key -> [(verdict, event_idx, session_id)]
+        for sid, vlist in session_verdicts.items():
+            key = session_finding_key.get(sid)
+            if not key:
+                continue
+            verdicts_by_key.setdefault(key, []).extend([(v, i, sid) for v, i in vlist])
+        for key, vlist in verdicts_by_key.items():
+            vlist.sort(key=lambda v: v[1])  # 全局按 event_idx 排序
+            last_verdict, last_idx, last_sid = vlist[-1]
+            if key in findings:
+                findings[key]["validation_result"] = last_verdict
+                findings[key]["_verify_session_id"] = last_sid
+
+        # Phase 3: 过滤 — 只保留 CONFIRMED / MANUAL_REVIEW / FALSE_POSITIVE
+        result = [f for f in findings.values()
+                  if f.get("validation_result") in ("CONFIRMED", "MANUAL_REVIEW", "FALSE_POSITIVE")]
+
+        attach_event_indices({f["finding_id"]: f for f in result}, events)
+        return result

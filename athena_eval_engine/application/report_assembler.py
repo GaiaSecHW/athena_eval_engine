@@ -9,105 +9,10 @@ import re
 from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
-
-
-def _extract_json_objects_from_text(text: str) -> list[dict]:
-    """Extract JSON objects from text containing ```json blocks.
-
-    Uses json.JSONDecoder().raw_decode() to handle JSON values that
-    contain backticks (e.g., `` `memcpy_s` `` in string values), which
-    would break regex-based extraction that looks for closing ``` markers.
-    """
-    decoder = json.JSONDecoder()
-    results: list[dict] = []
-    search_start = 0
-    marker = '```json'
-    while True:
-        idx = text.find(marker, search_start)
-        if idx == -1:
-            break
-        brace_idx = text.find('{', idx + len(marker))
-        if brace_idx == -1:
-            break
-        try:
-            obj, end_pos = decoder.raw_decode(text, brace_idx)
-            if isinstance(obj, dict):
-                results.append(obj)
-            search_start = end_pos
-        except json.JSONDecodeError:
-            search_start = idx + len(marker)
-    return results
-
-
-def _extract_webvv_task_data(events: list) -> dict[str, dict]:
-    """从 WebVulnVerify trace 的 User message (task_data) 中提取 source/sink 等信息。
-
-    T002 的 User message 包含 T001 上报的 finding 数据，格式为：
-    <task_data>
-    VULNERABILITY INFORMATION:
-    - Vulnerability ID: 50318
-    - File URI: DPOrderFulfillmentService/.../FileBucketService.java
-    - URL: /rest/dp/order/fulfillment/v1/order/supplement
-    - Source: supplement() 方法接收...
-    - Sink: FileBucketService.getInputStream()...
-    </task_data>
-
-    返回 {vulnerability_id: {source, sink, file_uri, url}} 映射。
-    """
-    result_map: dict[str, dict] = {}
-    for e in events:
-        text = ""
-        if isinstance(e.input_json, str):
-            text = e.input_json
-        elif isinstance(e.output_json, str):
-            text = e.output_json
-        elif e.output_json is not None:
-            text = str(e.output_json)
-        elif e.input_json is not None:
-            text = str(e.input_json)
-
-        if not text or "task_data" not in text:
-            continue
-
-        vid_m = re.search(r'[Vv]ulnerability[_ ]?[Ii][Dd][:：]\s*(\S+)', text)
-        if not vid_m:
-            continue
-        vid = vid_m.group(1).strip()
-
-        def _extract_field(label: str) -> str:
-            m = re.search(rf'-\s*{label}[:：]\s*(.+?)(?=\n\s*-|\Z)', text, re.DOTALL)
-            return m.group(1).strip() if m else ""
-
-        result_map[vid] = {
-            "source": _extract_field("Source"),
-            "sink": _extract_field("Sink"),
-            "file_uri": _extract_field("File URI"),
-            "url": _extract_field("URL"),
-        }
-
-    return result_map
-
-
-def _extract_webvv_title(result_text: str) -> str:
-    """从 WebVulnVerify 的验证报告 (result 字段) 中提取具体标题。
-
-    优先提取"一句话结论"，其次提取元数据表中的"漏洞类型"。
-    如果都提取不到，返回空字符串（调用方回退到 category）。
-    """
-    if not result_text:
-        return ""
-
-    # 1. "一句话结论：xxx" → 取结论文本
-    m = re.search(r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)', result_text, re.DOTALL)
-    if m:
-        return m.group(1).strip()
-
-    # 2. 元数据表 "| 漏洞类型 | xxx |" → 取值
-    m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
-    if m:
-        return m.group(1).strip()
-
-    return ""
+from ..workers.parse_utils import _extract_json_objects_from_text
+from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser as _WebVVParser
+_extract_webvv_task_data = _WebVVParser._extract_webvv_task_data
+_extract_webvv_title = _WebVVParser._extract_webvv_title
 
 
 @dataclass
@@ -646,29 +551,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
-def _get_related_sessions(session_graph, start_session):
-    """BFS 遍历 session_graph edges，获取所有可达 session（含 start_session）。
-
-    session_graph 由 parser.build_session_graph(events) 构建，通过共享文件/fact ID
-    关联同一 trace 内的不同 session（含跨 JSONL 文件的子 agent session）。
-    """
-    if not start_session:
-        return set()
-    visited = {start_session}
-    if not session_graph:
-        return visited
-    queue = [start_session]
-    edges = session_graph.get('edges', {})
-    while queue:
-        sid = queue.pop(0)
-        for related in edges.get(sid, set()):
-            if related not in visited:
-                visited.add(related)
-                queue.append(related)
-    return visited
-
-
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category=""):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -1135,34 +1018,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             af["validation_result"] = vr
                             break
 
-    def _extract_action(ev):
-        """从单个 event 提取挖掘行为摘要。"""
-        inp = ev.input_json or {}
-        tool = ev.tool_name or ""
-        ts = ev.timestamp_ms or 0
-        if tool == "bash":
-            cmd = str(inp.get("command", ""))
-            if cmd and not cmd.strip().startswith(("head", "cat ", "ls ", "grep ")):
-                return {"tool": "bash", "action": cmd, "session_id": ev.session_id, "ts": ts}
-        elif tool == "read":
-            fp = str(inp.get("file_path", ""))
-            if fp:
-                return {"tool": "read", "action": fp, "session_id": ev.session_id, "ts": ts}
-        elif tool in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding", "ReportFindings", "reportfindings",
-                      "vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss", "mcp__findings-store__store_finding",
-                      "mcp__workflow-tools__store_tracer_verdict") or \
-             (tool and tool.startswith("mcp__workflow-tools__store_tiered_fing")):
-            title = str(inp.get("title", "") or inp.get("short_summary", "") or inp.get("vuln_type", ""))
-            return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
-        elif tool == "write":
-            fp = str(inp.get("file_path") or inp.get("path") or "")
-            if fp:
-                # CVulnVerify: write vuln_verify_final_verdict.json = 结论点
-                if "vuln_verify_final_verdict" in fp:
-                    return {"tool": "finding", "action": fp, "session_id": ev.session_id, "ts": ts}
-                return {"tool": "write", "action": fp, "session_id": ev.session_id, "ts": ts}
-        return None
-
     results = []
     for case in case_results:
         case_id = case.get("case_id", "")
@@ -1211,22 +1066,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             else:
                 finding_session = case.get("session_id", "")
                 finding_ts = case.get("finding_ts")
-            # BFS: 通过 session_graph 获取所有关联 session（含跨 JSONL 子 agent session）
-            related_sessions = _get_related_sessions(session_graph, finding_session)
-            mining_actions = []
-            if events:
-                for ev in events:
-                    if not hasattr(ev, "is_tool_call") or not ev.is_tool_call():
-                        continue
-                    if ev.session_id not in related_sessions:
-                        continue
-                    if finding_ts and (ev.timestamp_ms or 0) > finding_ts:
-                        continue  # 跳过 finding 提交之后的事件
-                    a = _extract_action(ev)
-                    if a:
-                        mining_actions.append(a)
-                # 跨 session 事件按时间戳排序
-                mining_actions.sort(key=lambda a: a.get("ts", 0))
+            # 反向追踪：通过 parser 的 session_graph BFS 获取跨 session 挖掘过程
+            finding_dict = {"session_id": finding_session, "timestamp": finding_ts}
+            if parser and events:
+                mining_actions = parser.trace_finding_process(events, session_graph, finding_dict)
+                related_sessions = parser._get_related_sessions(session_graph, finding_session)
+            else:
+                mining_actions = []
+                related_sessions = {finding_session} if finding_session else set()
             # 知识/记忆交互也扩展到关联 session
             case_interactions = [iv for iv in sampled_interactions
                                  if iv.get("session_id") in related_sessions]
