@@ -681,9 +681,9 @@ def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
 def discover_verify_traces(project_id: str) -> list[dict]:
     """自动发现验证 agent 的 trace。
 
-    扫描项目 app 目录，有 trace 数据就返回对应 entry：
-    - app/secflow-app-vuln-verify-v2/*/run/*.jsonl → cvuln_verify
-    - app/secflow-app-poc-gen-verify/workspaces/*/  → webvulnverify
+    按各适配器定义的绝对路径扫描：
+    - cvuln_verify:  /data/files/{project_id}/tasks/c_vuln_verify/*.jsonl
+    - webvulnverify: /data/files/{project_id}/tasks/{task_id}/session/WebVerify/*.jsonl
 
     返回: [{trace_kind, source_uri, agent_name}, ...]
     """
@@ -691,43 +691,34 @@ def discover_verify_traces(project_id: str) -> list[dict]:
     project_base = os.path.join(DATA_ROOT, project_id)
 
     if _K8S_MODE:
-        # CVulnVerify: app/secflow-app-vuln-verify-v2/*/run/*.jsonl
-        vv_base = os.path.join(project_base, "app", "secflow-app-vuln-verify-v2")
-        if os.path.isdir(vv_base):
-            jsonl_files = glob.glob(os.path.join(vv_base, "*", "run", "*.jsonl"))
-            if jsonl_files:
-                out.append({
-                    "trace_kind": "cvuln_verify",
-                    "source_uri": vv_base,
-                    "agent_name": "CVulnVerify",
-                })
-        # WebVulnVerify: app/secflow-app-poc-gen-verify/workspaces/*/
-        pg_base = os.path.join(project_base, "app", "secflow-app-poc-gen-verify", "workspaces")
-        if os.path.isdir(pg_base):
-            ws_dirs = [d for d in glob.glob(os.path.join(pg_base, "*")) if os.path.isdir(d)]
-            has_trace = False
-            for ws in ws_dirs:
-                # .pi/sessions/*.jsonl 或 poc_cli_*.jsonl
-                if glob.glob(os.path.join(ws, ".pi", "sessions", "*.jsonl")):
-                    has_trace = True
-                    break
-                if glob.glob(os.path.join(ws, "poc_cli_*.jsonl")):
-                    has_trace = True
-                    break
-            if has_trace:
-                out.append({
-                    "trace_kind": "webvulnverify",
-                    "source_uri": pg_base,
-                    "agent_name": "WebVulnVerify",
-                })
+        # CVulnVerify: tasks/c_vuln_verify/*.jsonl
+        vv_dir = os.path.join(project_base, "tasks", "c_vuln_verify")
+        if os.path.isdir(vv_dir) and glob.glob(os.path.join(vv_dir, "*.jsonl")):
+            out.append({
+                "trace_kind": "cvuln_verify",
+                "source_uri": vv_dir,
+                "agent_name": "CVulnVerify",
+            })
+        # WebVulnVerify: tasks/{task_id}/session/WebVerify/*.jsonl
+        tasks_dir = os.path.join(project_base, "tasks")
+        if os.path.isdir(tasks_dir):
+            for task_id in os.listdir(tasks_dir):
+                wv_dir = os.path.join(tasks_dir, task_id, "session", "WebVerify")
+                if os.path.isdir(wv_dir) and glob.glob(os.path.join(wv_dir, "*.jsonl")):
+                    out.append({
+                        "trace_kind": "webvulnverify",
+                        "source_uri": wv_dir,
+                        "agent_name": "WebVulnVerify",
+                    })
+                    break  # 一个项目只需一个 WebVulnVerify entry
     else:
         env = dict(os.environ, MSYS_NO_PATHCONV="1")
         pod = _get_sched_pod()
         remote_base = f"{DATA_ROOT}/{project_id}"
         # CVulnVerify
-        vv_remote = f"{remote_base}/app/secflow-app-vuln-verify-v2"
+        vv_remote = f"{remote_base}/tasks/c_vuln_verify"
         cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", vv_remote, "-name", "*.jsonl", "-path", "*/run/*",
+               "find", vv_remote, "-maxdepth", "1", "-name", "*.jsonl",
                "-print", "-quit"]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         if r.stdout and r.stdout.strip():
@@ -736,16 +727,18 @@ def discover_verify_traces(project_id: str) -> list[dict]:
                 "source_uri": vv_remote,
                 "agent_name": "CVulnVerify",
             })
-        # WebVulnVerify
-        pg_remote = f"{remote_base}/app/secflow-app-poc-gen-verify/workspaces"
+        # WebVulnVerify: 遍历 tasks/*/session/WebVerify/
         cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", pg_remote, "-name", "*.jsonl",
+               "find", f"{remote_base}/tasks", "-path", "*/session/WebVerify/*.jsonl",
                "-print", "-quit"]
         r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
         if r.stdout and r.stdout.strip():
+            # 从找到的文件路径提取 WebVerify 目录
+            found = r.stdout.strip().split("\n")[0]
+            wv_dir = os.path.dirname(found)
             out.append({
                 "trace_kind": "webvulnverify",
-                "source_uri": pg_remote,
+                "source_uri": wv_dir,
                 "agent_name": "WebVulnVerify",
             })
     return out

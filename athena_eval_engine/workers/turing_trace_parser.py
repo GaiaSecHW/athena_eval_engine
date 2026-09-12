@@ -1,5 +1,7 @@
 """TuringTraceParser — Turing opencode.db SQLite → Canonical RawEvent。
 
+Trace 路径：/data/files/{project_id}/tasks/{task_id}/tools/Turing-*/session/opencode/opencode.db
+
 基于 Turing agent 源代码全面分析重写，覆盖三个领域：
 1. 漏洞/非漏洞数据提交的所有通道
 2. 会话调用链关系（跨多个 session）

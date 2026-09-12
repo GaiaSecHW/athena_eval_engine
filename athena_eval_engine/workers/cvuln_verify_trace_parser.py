@@ -1,5 +1,7 @@
 """CVulnVerifyTraceParser — CVulnVerify JSONL session → Canonical RawEvent。
 
+Trace 路径：/data/files/{project_id}/tasks/c_vuln_verify/*.jsonl
+
 与 Argo（Claude Code JSONL）格式不同：
   - type: session / model_change / thinking_level_change / message
   - message.role: user / assistant / toolResult

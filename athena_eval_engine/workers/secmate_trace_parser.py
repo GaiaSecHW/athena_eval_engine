@@ -1,15 +1,21 @@
 """SecMate transcript JSONL -> Canonical RawEvent.
 
+Trace 路径：/data/files/{project_id}/tasks/{task_id}/tools/secmate-*/run/.worker-config/projects/*/
+
 SecMate uses the Claude SDK transcript envelope, but stores its actual agent
 transcripts beneath ``run/.worker-config/projects`` instead of Argo's
 ``session/argo`` directory.  ``hook-watch/sessions`` is intentionally not
 parsed: it records harness activity rather than the agent's execution trace.
+
+findings.db（SQLite）位于 ``run/`` 目录下，extract_findings() 直接读取
+findings.db 获取 final_verdict 级别的 finding，不从 JSONL event 流提取。
 """
 from __future__ import annotations
 
 import glob
 import json
 import os
+import sqlite3
 from datetime import datetime
 from typing import Iterator
 
@@ -106,6 +112,7 @@ class SecMateTraceParser(TraceParser):
 
     def __init__(self, parser_version: str = "secmate-1.0"):
         self.parser_version = parser_version
+        self._source_uri: str | None = None
 
     @staticmethod
     def _files(uri: str) -> list[str]:
@@ -271,6 +278,7 @@ class SecMateTraceParser(TraceParser):
 
     def parse(self, trace_source) -> Iterator[RawEvent]:
         uri = trace_source["source_uri"]
+        self._source_uri = uri
         trace_id = trace_source.get("trace_id", uri)
         files = self._files(uri)
         calls: dict[str, dict] = {}
@@ -603,225 +611,101 @@ class SecMateTraceParser(TraceParser):
             return {"tool": "finding", "action": title, "session_id": ev.session_id, "ts": ts}
         return super()._extract_action(ev)
 
+    def _find_findings_db(self) -> str | None:
+        """从 source_uri 定位 findings.db 路径。
+
+        SecMate 的 findings.db 位于 trace 目录的上级：
+        .../tasks/{task_id}/tools/secmate-*/run/findings.db
+        而 source_uri 指向 .../run/.worker-config/projects
+        """
+        if not self._source_uri:
+            return None
+        uri = self._source_uri.replace("\\", "/")
+        # 向上找到 run/ 目录
+        if "/.worker-config/projects" in uri:
+            run_dir = uri.split("/.worker-config/projects")[0]
+        elif "/run/" in uri:
+            run_dir = uri.split("/run/")[0] + "/run"
+        else:
+            # 尝试在 source_uri 同级或上级找
+            run_dir = uri
+        db_path = os.path.join(run_dir, "findings.db")
+        if os.path.isfile(db_path):
+            return db_path
+        # 也在 tools/secmate-*/run/ 下找
+        parent = os.path.dirname(run_dir)
+        for candidate in glob.glob(os.path.join(parent, "*", "run", "findings.db")):
+            if os.path.isfile(candidate):
+                return candidate
+        return None
+
     def extract_findings(self, events: list[RawEvent]) -> list[dict]:
         """提取 SecMate 平台的 finding。
 
-        从源码论证（findings_db/server.py + workflows/secmate-all-lite/tools_mcp.py）：
-        1. store_finding（findings-store MCP 或 workflow-tools alias）— 核心 finding 存储
-        2. store_finding_finalize_batch — 批量 finding 存储（findings 列表）
-        3. store_tiered_finding[_ext]（中间 finding，新格式）
-        4. store_final_verdict（最终裁决，secmate-all-lite 工作流）
-           judgment=final_positive/final_negative/final_unresolved
-           final_strength=confirmed/conditional/negative/unresolved
-        5. store_tracer_verdict（最终判定，secmate-flash 旧工作流兼容）
-           outcome=confirmed/conditional/refuted
+        直接读 findings.db（SQLite），与 SecMate 的 findings_sync.py 一致。
+        findings.db 位于 .../run/findings.db，包含所有 finding 的最终状态。
+
+        字段映射（findings.db → finding dict）：
+        - id → finding_id
+        - tag → 判断 CONFIRMED/FALSE_POSITIVE
+        - level → level
+        - vuln_type, file_path, line, function_name, description, score
+        - payload (JSON) → title, severity, judgment, final_strength
+        - source_session_id → session_id（关联原始 JSONL 文件）
         """
-        findings: dict[str, dict] = {}
+        db_path = self._find_findings_db()
+        if not db_path:
+            return []
 
-        for _ei, e in enumerate(events):
-            if not e.is_tool_call():
-                continue
-            tool = e.tool_name or ""
-            inp = e.input_json or {}
-            out_str = ""
-            if e.output_json is not None:
-                out_str = e.output_json if isinstance(e.output_json, str) else json.dumps(e.output_json, ensure_ascii=False)
+        findings: list[dict] = []
+        try:
+            uri = f"file:{db_path}?mode=ro"
+            with sqlite3.connect(uri, uri=True, timeout=5) as conn:
+                conn.row_factory = sqlite3.Row
+                rows = conn.execute(
+                    "SELECT id, tag, level, level_num, file_path, line, function_name, "
+                    "vuln_type, description, payload, evidence, status, score, "
+                    "source_task_id, source_persona, source_session_id "
+                    "FROM findings WHERE level = ? ORDER BY id ASC",
+                    ("final_verdict",),
+                ).fetchall()
+        except (sqlite3.OperationalError, sqlite3.DatabaseError):
+            return []
 
-            # store_finding
-            if tool in ("mcp__findings-store__store_finding", "mcp__workflow-tools__store_finding"):
-                level = str(inp.get("level", ""))
-                tag = str(inp.get("tag", ""))
-                if level == "review_verdict":
-                    vr = self._secmate_tag_to_vr(tag)
-                    parent_id = str(inp.get("parent_id", ""))
-                    if parent_id and parent_id in findings:
-                        findings[parent_id]["validation_result"] = vr
-                    else:
-                        fid = parent_id or f"secmate-verdict-{e.event_id}"
-                        findings[fid] = {
-                            "finding_id": fid,
-                            "display_id": fid,
-                            "title": str(inp.get("vuln_type", "")) or str(inp.get("description", "")),
-                            "description": str(inp.get("description", "")),
-                            "vuln_type": str(inp.get("vuln_type", "")),
-                            "severity": str(inp.get("score", "")),
-                            "source": str(inp.get("file_path", "")),
-                            "sink": str(inp.get("function_name", "")),
-                            "validation_result": vr,
-                            "level": level,
-                            "platform": "secmate",
-                            "session_id": e.session_id,
-                        }
-                else:
-                    finding_id = ""
-                    try:
-                        result = json.loads(out_str)
-                        nested = result.get("result", result) if isinstance(result, dict) else result
-                        if isinstance(nested, str):
-                            nested = json.loads(nested)
-                        if isinstance(nested, dict):
-                            finding_id = str(nested.get("finding_id", ""))
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        pass
-                    finding_id = finding_id or str(inp.get("finding_id", "")) or f"secmate-{e.event_id}"
-                    findings[finding_id] = {
-                        "finding_id": finding_id,
-                        "display_id": finding_id,
-                        "title": str(inp.get("title", "")) or str(inp.get("vuln_type", "")),
-                        "description": str(inp.get("description", "")),
-                        "vuln_type": str(inp.get("vuln_type", "")) or str(inp.get("category", "")),
-                        "severity": str(inp.get("severity", "")) or str(inp.get("score", "")),
-                        "source": str(inp.get("source", "") or inp.get("source_refs", "") or inp.get("file_path", "")),
-                        "sink": str(inp.get("sink", "") or inp.get("function_name", "")),
-                        "validation_result": None,
-                        "level": level,
-                        "platform": "secmate",
-                        "session_id": e.session_id,
-                    }
+        for row in rows:
+            row_dict = dict(row)
+            tag = str(row_dict.get("tag") or "")
+            tag_l = tag.lower()
+            # tag 格式：final_positive,final_confirmed 或 final_negative,...
+            if "final_positive" in tag_l:
+                vr = "CONFIRMED"
+            elif "final_negative" in tag_l:
+                vr = "FALSE_POSITIVE"
+            else:
+                vr = None
 
-            # store_finding_finalize_batch — 批量 finding 存储
-            # 从源码论证：findings_store 注册了 store_finding_finalize_batch，
-            # input 含 findings 列表，每项与 store_finding 字段相同
-            elif tool == "mcp__findings-store__store_finding_finalize_batch":
-                batch = inp.get("findings", [])
-                if not isinstance(batch, list):
-                    batch = []
-                for bi, bf in enumerate(batch):
-                    if not isinstance(bf, dict):
-                        continue
-                    b_level = str(bf.get("level", ""))
-                    b_tag = str(bf.get("tag", ""))
-                    b_fid = ""
-                    try:
-                        result = json.loads(out_str)
-                        nested = result.get("result", result) if isinstance(result, dict) else result
-                        if isinstance(nested, str):
-                            nested = json.loads(nested)
-                        if isinstance(nested, dict):
-                            items = nested.get("findings", nested.get("results", []))
-                            if isinstance(items, list) and bi < len(items) and isinstance(items[bi], dict):
-                                b_fid = str(items[bi].get("finding_id", ""))
-                    except (TypeError, ValueError, json.JSONDecodeError):
-                        pass
-                    b_fid = b_fid or str(bf.get("finding_id", "")) or f"secmate-batch-{e.event_id}-{bi}"
-                    findings[b_fid] = {
-                        "finding_id": b_fid,
-                        "display_id": b_fid,
-                        "title": str(bf.get("title", "")) or str(bf.get("vuln_type", "")),
-                        "description": str(bf.get("description", "")),
-                        "vuln_type": str(bf.get("vuln_type", "")) or str(bf.get("category", "")),
-                        "severity": str(bf.get("severity", "")) or str(bf.get("score", "")),
-                        "source": str(bf.get("source", "") or bf.get("source_refs", "") or bf.get("file_path", "")),
-                        "sink": str(bf.get("sink", "") or bf.get("function_name", "")),
-                        "validation_result": self._secmate_tag_to_vr(b_tag) if b_level == "review_verdict" else None,
-                        "level": b_level,
-                        "platform": "secmate",
-                        "session_id": e.session_id,
-                    }
+            # payload 是 JSON 字符串，含 title/severity/judgment/final_strength 等
+            payload = {}
+            try:
+                payload = json.loads(row_dict.get("payload") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                pass
 
-            # store_tiered_finding（新格式中间 finding）
-            elif tool.startswith("mcp__workflow-tools__store_tiered_fing"):
-                finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-                finding_id = finding_id or f"secmate-{e.event_id}"
-                findings[finding_id] = {
-                    "finding_id": finding_id,
-                    "display_id": finding_id,
-                    "title": str(inp.get("vuln_type", "")),
-                    "description": inp.get("description", ""),
-                    "vuln_type": inp.get("vuln_type", ""),
-                    "severity": inp.get("severity", "") or str(inp.get("score", "")),
-                    "source": str(inp.get("file_path", "")),
-                    "sink": str(inp.get("function_name", "")),
-                    "validation_result": None,
-                    "level": str(inp.get("level", "")),
-                    "platform": "secmate",
-                    "session_id": e.session_id,
-                }
+            finding_id = str(row_dict["id"])
+            findings.append({
+                "finding_id": finding_id,
+                "display_id": finding_id,
+                "title": str(payload.get("title") or row_dict.get("vuln_type") or ""),
+                "description": str(row_dict.get("description") or ""),
+                "vuln_type": str(row_dict.get("vuln_type") or ""),
+                "severity": str(payload.get("severity") or ""),
+                "source": str(row_dict.get("file_path") or payload.get("primary_location") or ""),
+                "sink": str(row_dict.get("function_name") or ""),
+                "validation_result": vr,
+                "level": "final_verdict",
+                "platform": "secmate",
+                "session_id": str(row_dict.get("source_session_id") or ""),
+            })
 
-            # store_final_verdict（secmate-all-lite 工作流，当前格式）
-            # 从源码论证：judgment=final_positive/final_negative/final_unresolved
-            # final_strength=confirmed/conditional/negative/unresolved
-            # tag 由工具内部设置（如 final_positive,final_confirmed），但 trace 中 tag 字段可能只含 judgment 值
-            elif tool == "mcp__workflow-tools__store_final_verdict":
-                judgment = str(inp.get("judgment", ""))
-                strength = str(inp.get("final_strength", ""))
-                if judgment == "final_positive":
-                    vr = "CONFIRMED"
-                elif judgment == "final_negative":
-                    vr = "FALSE_POSITIVE"
-                else:
-                    vr = None  # final_unresolved 或未知
-                finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-                finding_id = finding_id or f"secmate-final-{e.event_id}"
-                findings[finding_id] = {
-                    "finding_id": finding_id,
-                    "display_id": finding_id,
-                    "title": str(inp.get("vuln_type", "")),
-                    "description": inp.get("description", ""),
-                    "vuln_type": inp.get("vuln_type", ""),
-                    "severity": str(inp.get("severity", "") or strength),
-                    "source": str(inp.get("file_path", "")),
-                    "sink": str(inp.get("function_name", "")),
-                    "validation_result": vr,
-                    "level": "final_verdict",
-                    "platform": "secmate",
-                    "session_id": e.session_id,
-                }
-
-            # store_tracer_verdict（secmate-flash 旧工作流兼容）
-            # 从源码论证：outcome=confirmed/conditional/refuted
-            elif tool == "mcp__workflow-tools__store_tracer_verdict":
-                outcome = str(inp.get("outcome", ""))
-                if outcome in ("confirmed", "conditional"):
-                    vr = "CONFIRMED"
-                elif outcome == "refuted":
-                    vr = "FALSE_POSITIVE"
-                else:
-                    vr = None
-                finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
-                finding_id = finding_id or f"secmate-verdict-{e.event_id}"
-                findings[finding_id] = {
-                    "finding_id": finding_id,
-                    "display_id": finding_id,
-                    "title": str(inp.get("title", "")) or str(inp.get("vuln_type", "")),
-                    "description": inp.get("description", ""),
-                    "vuln_type": inp.get("vuln_type", ""),
-                    "severity": inp.get("severity", ""),
-                    "source": str(inp.get("file_path", "") or inp.get("primary_location", "")),
-                    "sink": str(inp.get("function_name", "")),
-                    "validation_result": vr,
-                    "level": "final_verdict",
-                    "platform": "secmate",
-                    "session_id": e.session_id,
-                }
-
-        attach_event_indices(findings, events)
-        return list(findings.values())
+        return findings
 

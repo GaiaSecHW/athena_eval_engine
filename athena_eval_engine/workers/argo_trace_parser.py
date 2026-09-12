@@ -1,5 +1,7 @@
 """ArgoTraceParser — Claude Code JSONL session 日志 → Canonical RawEvent。
 
+Trace 路径：/data/files/{project_id}/tasks/{task_id}/session/argo/
+
 与 TuringTraceParser（opencode.db SQLite）不同，Argo 用 Claude Code CLI 原生 JSONL 格式。
 每个 session 目录含多个 .jsonl 文件（每轮一个），每行一个 JSON 对象。
 

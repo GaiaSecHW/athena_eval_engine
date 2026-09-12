@@ -1,5 +1,7 @@
 """WebVulnVerifyTraceParser — WebVulnVerify JSONL session 日志 → Canonical RawEvent。
 
+Trace 路径：/data/files/{project_id}/tasks/{task_id}/session/WebVerify/*.jsonl
+
 WebVulnVerify 是 ai-analyzer Agent 的漏洞分析工具，trace 格式为 JSONL，每行一个 JSON 对象。
 与 Turing（SQLite）和 Argo（Claude Code JSONL）不同，WebVulnVerify 使用自定义 JSONL 格式。
 

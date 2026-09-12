@@ -1,5 +1,7 @@
 """DataflowVulnScanTraceParser — dataflow_vuln_scan pi-agent JSONL session → Canonical RawEvent。
 
+Trace 路径：/data/files/{project_id}/tasks/{task_id}/session/dataflow_vuln_scan/
+
 目录结构（新工具）：
   .../session/dataflow_vuln_scan/<dvs_run_id>/*.jsonl
   每个 jsonl 是一轮单函数分析（taint / vuln-judge / vuln-report），另有
