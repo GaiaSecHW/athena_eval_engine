@@ -24,14 +24,17 @@ import glob
 from typing import Iterator
 from datetime import datetime
 from ..domain.raw_event import RawEvent
+from ..domain.resolvers import TraceParser
+from .parse_utils import _extract_json_objects_from_text, attach_event_indices
 
 
-class DataflowVulnScanTraceParser:
+class DataflowVulnScanTraceParser(TraceParser):
     """解析 dataflow_vuln_scan JSONL session 日志。"""
 
     def __init__(self, parser_version: str = "dataflow-1.0"):
         self.parser_version = parser_version
         self._tool_kg = {}
+        self._tool_mem = {}
         self._seen_msg_ids: set[str] = set()
 
     def _list_files(self, uri: str) -> list[str]:
@@ -67,14 +70,6 @@ class DataflowVulnScanTraceParser:
         dvs_app = f"/data/files/{project_id}/app/secflow-app-dataflow-vuln-scan"
         return dvs_app if os.path.isdir(dvs_app) else None
 
-    def _find_task_id(self, uri: str) -> str:
-        """从 trace 目录路径提取 task_id。"""
-        parts = uri.replace("\\", "/").rstrip("/").split("/")
-        if "tasks" not in parts:
-            return ""
-        idx = parts.index("tasks")
-        return parts[idx + 1] if idx + 1 < len(parts) else ""
-
     def _parse_intake_events(self, uri: str, trace_id: str) -> list[RawEvent]:
         """从 DVS app 目录的 events.jsonl 提取 vuln_intake_result 事件。
 
@@ -83,9 +78,6 @@ class DataflowVulnScanTraceParser:
         """
         dvs_app = self._find_dvs_app_dir(uri)
         if not dvs_app:
-            return []
-        task_id = self._find_task_id(uri)
-        if not task_id:
             return []
 
         events_files = sorted(glob.glob(
@@ -105,8 +97,8 @@ class DataflowVulnScanTraceParser:
                         continue
                     if d.get("event_type") != "vuln_intake_result":
                         continue
-                    if d.get("parent_task_id") != task_id:
-                        continue
+                    # 不按 parent_task_id 过滤：同一 project 下多个 T001 任务
+                    # 各自触发 DVS 扫描并上报漏洞，T002 收到的是全部，parser 也应取全部。
                     payload = d.get("payload", {})
                     if payload.get("status") != "reported":
                         continue
@@ -154,9 +146,11 @@ class DataflowVulnScanTraceParser:
 
         files = self._list_files(uri)
 
-        # 预收集所有 toolCall 的 is_kg 标记（按 id，供 toolResult 继承）
+        # 预收集所有 toolCall 的 is_kg 和 memory 标记（按 id，供 toolResult 继承）
         self._tool_kg = {}
+        self._tool_mem = {}
         self._seen_msg_ids = set()
+        from ..domain.raw_event import detect_memory_flags
         for fpath in files:
             with open(fpath, "r", encoding="utf-8") as f:
                 for line in f:
@@ -175,8 +169,11 @@ class DataflowVulnScanTraceParser:
                             if isinstance(c, dict) and c.get("type") == "toolCall":
                                 tid = c.get("id", "")
                                 if tid:
-                                    self._tool_kg[tid] = self._is_kg_call(
-                                        c.get("name", ""), c.get("arguments", {}))
+                                    tool_name = c.get("name", "")
+                                    args = c.get("arguments", {})
+                                    self._tool_kg[tid] = self._is_kg_call(tool_name, args)
+                                    is_mem, is_mem_w = detect_memory_flags(tool_name, args)
+                                    self._tool_mem[tid] = (is_mem, is_mem_w)
 
         for fpath in files:
             sid = self._session_id(uri, fpath)
@@ -234,6 +231,7 @@ class DataflowVulnScanTraceParser:
                 tid = msg.get("toolCallId", "")
                 tool_name = msg.get("toolName", "")
                 is_kg = self._tool_kg.get(tid, False) if tid else False
+                is_mem, is_mem_w = self._tool_mem.get(tid, (False, False)) if tid else (False, False)
                 texts = [c.get("text", "") for c in content
                          if isinstance(c, dict) and isinstance(c.get("text"), str)]
                 evs.append(RawEvent(
@@ -246,6 +244,8 @@ class DataflowVulnScanTraceParser:
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
                     is_kg_interaction=is_kg,
+                    is_memory_interaction=is_mem,
+                    is_memory_write=is_mem_w,
                 ))
             else:
                 for ci, c in enumerate(content):
@@ -379,6 +379,159 @@ class DataflowVulnScanTraceParser:
         return sess
 
     def build_session_graph(self, events):
-        """DataflowVulnScan 使用基类通用实现。"""
-        from ..domain.resolvers import TraceParser
-        return TraceParser.build_session_graph(self, events)
+        """构建 DVS session 关系图。
+
+        在基类（共享文件/fact/athena 查询）基础上增加：
+        - session_type = 'scan'
+        - finding_to_session 映射（case_id → dvs-intake-result）
+        - dvs_run_id 标注（从 session_id 路径提取）
+        - intake session → 同 dvs_run_id 的分析 session 边
+        - 记忆读取路径
+        """
+        import re
+        graph = super().build_session_graph(events)
+        finding_to_session = {}
+
+        # 第一遍：标注 session_type、dvs_run_id，提取 intake case_id
+        for ev in events:
+            sid = ev.session_id
+            if not sid or sid not in graph.get('sessions', {}):
+                continue
+            sg = graph['sessions'][sid]
+            if 'session_type' not in sg:
+                sg['session_type'] = 'scan'
+            if 'memory_reads' not in sg:
+                sg['memory_reads'] = []
+
+            # 从 session_id 路径提取 dvs_run_id（如 dvs_xxx/d00-func-judge-00）
+            if 'dvs_run_id' not in sg:
+                parts = sid.split('/')
+                if parts and parts[0].startswith('dvs_'):
+                    sg['dvs_run_id'] = parts[0]
+                elif sid == 'dvs-intake-result':
+                    sg['dvs_run_id'] = ''
+
+            # intake events: 提取 case_id
+            if sid == 'dvs-intake-result' and ev.event_type == "TEXT" and ev.output_json:
+                text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+                if '"case_id"' in text:
+                    for data in _extract_json_objects_from_text(text):
+                        for f in (data.get("findings") or []):
+                            case_id = str(f.get("case_id", ""))
+                            if case_id:
+                                finding_to_session[case_id] = sid
+
+            # 记忆读取路径
+            if ev.is_tool_call() and ev.is_memory_interaction:
+                tool = ev.tool_name or ""
+                inp = ev.input_json or {}
+                if tool in ("bash", "bash_tool", "shell"):
+                    cmd = str(inp.get("command", ""))
+                    for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
+                        sg['memory_reads'].append(m.group(1))
+
+        # 第二遍：为 intake session 建边到同 dvs_run_id 的分析 session
+        intake_session = graph['sessions'].get('dvs-intake-result')
+        if intake_session:
+            # 收集所有有 case_id 的 dvs_run_id
+            intake_dvs_runs: set[str] = set()
+            for ev in events:
+                if ev.session_id == 'dvs-intake-result' and ev.event_id:
+                    # event_id 格式: intake-{dvs_name}-{line_no}
+                    parts = ev.event_id.split('-', 2)
+                    if len(parts) >= 2:
+                        intake_dvs_runs.add(parts[1])
+
+            # 为每个有 finding 的 dvs_run_id 创建边
+            for sid, sg in graph['sessions'].items():
+                dvs_run = sg.get('dvs_run_id', '')
+                if dvs_run and dvs_run in intake_dvs_runs:
+                    graph['edges']['dvs-intake-result'].add(sid)
+                    graph['edges'][sid].add('dvs-intake-result')
+
+        graph['finding_to_session'] = finding_to_session
+        return graph
+
+    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
+        """提取 DataflowVulnScan 平台的 finding。
+
+        两个数据源：
+        1. intake events（dvs-intake-result session）— 服务端自动提交到漏洞中心的记录
+        2. candidates JSON（vuln-judge 阶段）— 仅在无 intake events 时补充
+        """
+        findings: dict[str, dict] = {}
+        _dvs_counter = 0
+        _dvs_fn_lines_with_findings: set[str] = set()
+        _has_intake_events = any(
+            e.event_type == "TEXT" and e.session_id == "dvs-intake-result"
+            for e in events
+        )
+
+        for e in events:
+            if e.event_type != "TEXT" or not e.output_json:
+                continue
+            if _has_intake_events and e.session_id != "dvs-intake-result":
+                continue
+            text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+            if '"findings"' not in text:
+                continue
+            for data in _extract_json_objects_from_text(text):
+                for f in (data.get("findings") or []):
+                    _dvs_counter += 1
+                    title = str(f.get("title", ""))
+                    fn = str(f.get("function_name", ""))
+                    ln = str(f.get("line", ""))
+                    vt = str(f.get("vuln_type", ""))
+                    _dvs_fn_lines_with_findings.add(f"{fn}:{ln}")
+                    case_id = str(f.get("case_id", ""))
+                    fid = case_id if case_id else f"dvs-{_dvs_counter}"
+                    findings[fid] = {
+                        "finding_id": str(f.get("finding_id", fid)),
+                        "display_id": fid,
+                        "title": title,
+                        "description": str(f.get("summary", "")),
+                        "vuln_type": vt,
+                        "severity": str(f.get("severity", "")),
+                        "source": str(f.get("source_file", "")),
+                        "sink": fn,
+                        "validation_result": "CONFIRMED",
+                        "platform": "dataflow-vuln-scan",
+                        "session_id": e.session_id,
+                    }
+
+        # 补充: 从 vuln-judge 阶段的 candidates JSON 提取 confirmed 候选
+        if not _has_intake_events:
+            for e in events:
+                if e.event_type != "TEXT" or not e.output_json:
+                    continue
+                text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
+                if '"candidates"' not in text:
+                    continue
+                for data in _extract_json_objects_from_text(text):
+                    for f in (data.get("candidates") or []):
+                        if f.get("judgment") != "confirmed":
+                            continue
+                        fn = str(f.get("function_name", ""))
+                        ln = str(f.get("line", ""))
+                        if f"{fn}:{ln}" in _dvs_fn_lines_with_findings:
+                            continue
+                        _dvs_counter += 1
+                        vt = str(f.get("vuln_type", ""))
+                        fid = f"dvs-{_dvs_counter}"
+                        findings[fid] = {
+                            "finding_id": fid,
+                            "display_id": fid,
+                            "title": vt,
+                            "description": str(f.get("reason", "")),
+                            "vuln_type": vt,
+                            "severity": str(f.get("severity", "")),
+                            "source": str(f.get("source_evidence", "")),
+                            "sink": fn,
+                            "validation_result": "CONFIRMED",
+                            "platform": "dataflow-vuln-scan",
+                            "session_id": e.session_id,
+                        }
+
+        attach_event_indices(findings, events)
+        return list(findings.values())
+
