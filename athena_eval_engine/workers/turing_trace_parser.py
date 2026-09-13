@@ -168,6 +168,13 @@ class TuringTraceParser(TraceParser):
 
     def __init__(self, parser_version: str = "2.0"):
         self.parser_version = parser_version
+        # parse() 顺带缓存的 step/token 统计，供 load_session() 复用
+        self._cached_n_start = None
+        self._cached_n_finish = None
+        self._cached_ti = None
+        self._cached_to = None
+        self._cached_tr = None
+        self._cached_tcr = None
 
     @staticmethod
     def _connect(uri: str) -> sqlite3.Connection:
@@ -197,11 +204,41 @@ class TuringTraceParser(TraceParser):
         trace_id = trace_source["trace_id"]
         fallback_sid = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
 
+        # 初始化 step/token 缓存，与 load_session 逻辑一致
+        self._cached_n_start = 0
+        self._cached_n_finish = 0
+        self._cached_ti = self._cached_to = self._cached_tr = self._cached_tcr = 0
+
         conn = self._connect(uri)
         conn.row_factory = sqlite3.Row
         try:
             self._check_schema(conn)
             for row in conn.execute("SELECT * FROM part ORDER BY id"):
+                # 累计 step/token 统计（避免 load_session 二次全表扫描）
+                cols = row.keys() if hasattr(row, "keys") else []
+                t = str(row["type"] or "") if "type" in cols else ""
+                if not t:
+                    try:
+                        d = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
+                        if isinstance(d, dict):
+                            t = str(d.get("type") or "")
+                    except Exception:
+                        pass
+                if t == "step-start":
+                    self._cached_n_start += 1
+                elif t == "step-finish":
+                    self._cached_n_finish += 1
+                    try:
+                        d = json.loads(row["data"]) if isinstance(row["data"], str) else row["data"]
+                        if isinstance(d, dict):
+                            tk = d.get("tokens", {})
+                            self._cached_ti += tk.get("input", 0) or 0
+                            self._cached_to += tk.get("output", 0) or 0
+                            self._cached_tr += tk.get("reasoning", 0) or 0
+                            self._cached_tcr += (tk.get("cache", {}).get("read", 0) if isinstance(tk.get("cache"), dict) else 0) or 0
+                    except Exception:
+                        pass
+
                 row_sid = str(row["session_id"]) if "session_id" in row.keys() and row["session_id"] else fallback_sid
                 yield self._part_to_event(row, trace_id, row_sid)
         finally:
@@ -303,43 +340,59 @@ class TuringTraceParser(TraceParser):
     # ==================================================================
 
     def load_session(self, trace_source) -> dict:
-        """读 session 表（tokens / model / agent / time_created / time_updated）+ 计 step-start 数。"""
+        """读 session 表元数据 + 复用 parse() 缓存的 step/token 统计。
+
+        parse() 已在遍历 part 表时顺带累计了 step-start/step-finish 计数和
+        token 总量，此处直接复用，避免对 1.5GB+ 的 part 表做第二次全表扫描。
+        """
         uri = trace_source["source_uri"]
-        conn = sqlite3.connect(uri)
+        conn = self._connect(uri)
         conn.row_factory = sqlite3.Row
         try:
             self._check_schema(conn)
             row = conn.execute("SELECT * FROM session LIMIT 1").fetchone()
             sess = dict(row) if row else {}
-            n_start = n_finish = 0
-            ti = to = tr = tcr = 0
-            for r in conn.execute("SELECT * FROM part"):
-                cols = r.keys() if hasattr(r, "keys") else []
-                t = str(r["type"]) if "type" in cols else ""
-                d = None
-                try:
-                    d = json.loads(r["data"]) if isinstance(r["data"], str) else r["data"]
-                except Exception:
+
+            if self._cached_n_start is not None:
+                # parse() 已缓存 → 直接复用
+                sess["_step_start_count"] = self._cached_n_start
+                sess["_step_finish_count"] = self._cached_n_finish
+                if (not sess.get("tokens_input") and not sess.get("tokens_output")) and (self._cached_ti or self._cached_to):
+                    sess["tokens_input"] = self._cached_ti
+                    sess["tokens_output"] = self._cached_to
+                    sess["tokens_reasoning"] = self._cached_tr
+                    sess["cache_read_tokens"] = self._cached_tcr
+            else:
+                # 降级：parse() 未调用过，走原始全表扫描
+                n_start = n_finish = 0
+                ti = to = tr = tcr = 0
+                for r in conn.execute("SELECT * FROM part"):
+                    cols = r.keys() if hasattr(r, "keys") else []
+                    t = str(r["type"]) if "type" in cols else ""
                     d = None
-                if not t and isinstance(d, dict):
-                    t = str(d.get("type") or "")
-                if t == "step-start":
-                    n_start += 1
-                elif t == "step-finish":
-                    n_finish += 1
-                    if isinstance(d, dict):
-                        tk = d.get("tokens", {})
-                        ti += tk.get("input", 0) or 0
-                        to += tk.get("output", 0) or 0
-                        tr += tk.get("reasoning", 0) or 0
-                        tcr += (tk.get("cache", {}).get("read", 0) if isinstance(tk.get("cache"), dict) else 0) or 0
-            sess["_step_start_count"] = n_start
-            sess["_step_finish_count"] = n_finish
-            if (not sess.get("tokens_input") and not sess.get("tokens_output")) and (ti or to):
-                sess["tokens_input"] = ti
-                sess["tokens_output"] = to
-                sess["tokens_reasoning"] = tr
-                sess["cache_read_tokens"] = tcr
+                    try:
+                        d = json.loads(r["data"]) if isinstance(r["data"], str) else r["data"]
+                    except Exception:
+                        d = None
+                    if not t and isinstance(d, dict):
+                        t = str(d.get("type") or "")
+                    if t == "step-start":
+                        n_start += 1
+                    elif t == "step-finish":
+                        n_finish += 1
+                        if isinstance(d, dict):
+                            tk = d.get("tokens", {})
+                            ti += tk.get("input", 0) or 0
+                            to += tk.get("output", 0) or 0
+                            tr += tk.get("reasoning", 0) or 0
+                            tcr += (tk.get("cache", {}).get("read", 0) if isinstance(tk.get("cache"), dict) else 0) or 0
+                sess["_step_start_count"] = n_start
+                sess["_step_finish_count"] = n_finish
+                if (not sess.get("tokens_input") and not sess.get("tokens_output")) and (ti or to):
+                    sess["tokens_input"] = ti
+                    sess["tokens_output"] = to
+                    sess["tokens_reasoning"] = tr
+                    sess["cache_read_tokens"] = tcr
             return sess
         finally:
             conn.close()
