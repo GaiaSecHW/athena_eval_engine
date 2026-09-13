@@ -235,7 +235,7 @@ def chat(messages, **kwargs) -> str:
 
 
 def chat_json(messages, **kwargs) -> dict:
-    """chat 但要求 JSON 输出，自动解析。"""
+    """chat 但要求 JSON 输出，自动解析。JSON 解析失败时将错误反馈给 LLM 让其自我修正。"""
     if not is_enabled():
         raise RuntimeError("LLM 未启用（设置 EVAL_LLM_ENABLED=true 后才会发起请求）")
     msgs = list(messages)
@@ -244,27 +244,9 @@ def chat_json(messages, **kwargs) -> dict:
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
     for attempt in range(retries):
+        # ── LLM 调用（网络/超时错误走原重试逻辑）──
         try:
             raw = _chat_once(msgs, **{k: v for k, v in kwargs.items() if k != "retries"})
-            raw = raw.strip()
-            if raw.startswith("```"):
-                raw = raw.split("```")[1]
-                if raw.startswith("json"):
-                    raw = raw[4:]
-            try:
-                return json.loads(raw.strip())
-            except json.JSONDecodeError:
-                # 尝试提取 {...} 对象
-                start = raw.find("{")
-                end = raw.rfind("}")
-                if start >= 0 and end > start:
-                    return json.loads(raw[start:end + 1])
-                # 尝试提取 [...] 数组（布尔数组/索引对数组）
-                start = raw.find("[")
-                end = raw.rfind("]")
-                if start >= 0 and end > start:
-                    return json.loads(raw[start:end + 1])
-                raise RuntimeError(f"JSON 解析失败: {raw[:200]}")
         except Exception as e:
             last_err = str(e)[:300]
             err_lower = last_err.lower()
@@ -277,8 +259,48 @@ def chat_json(messages, **kwargs) -> dict:
             )):
                 log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
                 break
-            log("LLM", f"chat_json attempt {attempt+1}/{retries} failed: {last_err}")
+            log("LLM", f"chat_json attempt {attempt+1}/{retries} LLM error: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
+            continue
+        # ── JSON 解析（失败时将错误反馈给 LLM 让它重新生成）──
+        raw = raw.strip()
+        if raw.startswith("```"):
+            raw = raw.split("```")[1]
+            if raw.startswith("json"):
+                raw = raw[4:]
+        raw = raw.strip()
+        parsed = None
+        json_err = None
+        try:
+            parsed = json.loads(raw)
+        except json.JSONDecodeError as je:
+            json_err = je
+        if parsed is None:
+            # 尝试提取 {...} 对象
+            start = raw.find("{")
+            end = raw.rfind("}")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(raw[start:end + 1])
+                except json.JSONDecodeError as je:
+                    json_err = je
+        if parsed is None:
+            # 尝试提取 [...] 数组（布尔数组/索引对数组）
+            start = raw.find("[")
+            end = raw.rfind("]")
+            if start >= 0 and end > start:
+                try:
+                    parsed = json.loads(raw[start:end + 1])
+                except json.JSONDecodeError as je:
+                    json_err = je
+        if parsed is not None:
+            return parsed
+        # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
+        err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
+        log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail}, feeding back to LLM")
+        msgs.append({"role": "assistant", "content": raw})
+        msgs.append({"role": "user", "content": f"你返回的 JSON 有语法错误：{err_detail}。请修复并只返回完整正确的 JSON。"})
+        last_err = f"JSON 解析失败: {err_detail}"
     log("LLM", f"chat_json exhausted {retries} retries: {last_err}")
     raise RuntimeError(f"chat_json 失败（{retries} 次重试后）: {last_err}")
