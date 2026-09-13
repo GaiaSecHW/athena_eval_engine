@@ -254,8 +254,7 @@ class KnowledgeResolverImpl:
         text_access = False
         interactions: list[dict] = []  # 原始介入事件
         memory_interactions: list[dict] = []  # 记忆交互事件（只读）
-        mem_call_part_ids: set[str] = set()  # 记忆 CALL 的 part_id（用于 RESULT 配对）
-        mem_tool_names: set[str] = set()  # 记忆 TOOL_CALL 的工具名（用于 RESULT 配对）
+        mem_call_ids: set[str] = set()  # 记忆 CALL 的 call_id（用于 RESULT 精确配对）
         mem_success_count = 0
         for idx, e in enumerate(events):
             # text part 含 Reference/Athena 指引 = prompt 注入了知识库（KG2.0 配置存在）
@@ -280,16 +279,14 @@ class KnowledgeResolverImpl:
             if is_mem and e.is_tool_call():
                 cmd = path if path else (e.input_json if isinstance(e.input_json, str) else json.dumps(e.input_json, ensure_ascii=False) if e.input_json else "")
                 memory_interactions.append({"tool": e.tool_name or "", "type": "CALL", "command": cmd, "output": "", "timestamp": e.timestamp_ms, "session_id": e.session_id})
-                if e.part_id:
-                    mem_call_part_ids.add(e.part_id)
-                if e.tool_name:
-                    mem_tool_names.add(e.tool_name)
-            # 记忆 RESULT：与 CALL 配对（同工具名）
+                if e.call_id:
+                    mem_call_ids.add(e.call_id)
+            # 记忆 RESULT：与 CALL 精确配对（通过 call_id）
             # TOOL_RESULT 不继承 is_memory_interaction 标记（避免重复统计），
-            # 通过 tool_name 在 mem_tool_names 中匹配识别记忆 RESULT
+            # 通过 call_id 在 mem_call_ids 中匹配识别记忆 RESULT
             # Turing trace 的 TOOL_CALL 含 output（call+result 合一），也要检查
             is_mem_result = (
-                (e.is_tool_result() and tool in mem_tool_names) or
+                (e.is_tool_result() and e.call_id and e.call_id in mem_call_ids) or
                 (is_mem and e.is_tool_call() and e.output_json is not None)
             )
             if is_mem_result:

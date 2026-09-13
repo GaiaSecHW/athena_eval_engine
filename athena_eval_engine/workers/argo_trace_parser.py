@@ -163,6 +163,7 @@ class ArgoTraceParser(TraceParser):
                         is_finding_submission=is_finding,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
+                        call_id=tid,
                     ))
                 elif ct == "text":
                     evs.append(RawEvent(
@@ -223,6 +224,7 @@ class ArgoTraceParser(TraceParser):
                     raw_type="toolUseResult", parse_status="OK",
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
+                    call_id=tid,
                 ))
 
         elif t == "queue-operation" and d.get("operation") == "enqueue":

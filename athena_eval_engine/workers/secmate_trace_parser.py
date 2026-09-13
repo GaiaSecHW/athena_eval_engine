@@ -359,7 +359,8 @@ class SecMateTraceParser(TraceParser):
                                     is_kg_interaction=info.get("is_kg", False),
                                     is_memory_interaction=_is_mem,
                                     is_memory_write=_is_mem_w,
-                                    is_finding_submission=self._is_finding_tool(_mapped))
+                                    is_finding_submission=self._is_finding_tool(_mapped),
+                                    call_id=call_id)
                             elif part_type == "text":
                                 yield self._event(event_id, trace_id, session_id, "TEXT", timestamp, record, part.get("text"), "text")
                             elif part_type == "thinking":
@@ -388,7 +389,8 @@ class SecMateTraceParser(TraceParser):
                                 event_type="TOOL_RESULT", timestamp_ms=timestamp, message_id=record.get("uuid"),
                                 part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                 input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
-                                source_row_id=event_id, parser_version=self.parser_version)
+                                source_row_id=event_id, parser_version=self.parser_version,
+                                call_id=call_id)
                     elif self._is_user_record(record):
                         for result_index, (call_id, result) in enumerate(self._tool_results(record)):
                             if not result:
@@ -399,7 +401,8 @@ class SecMateTraceParser(TraceParser):
                                 event_type="TOOL_RESULT", timestamp_ms=timestamp, message_id=record.get("uuid"),
                                 part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                 input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
-                                source_row_id=event_id, parser_version=self.parser_version)
+                                source_row_id=event_id, parser_version=self.parser_version,
+                                call_id=call_id)
                     elif record.get("type") == "queue-operation" and record.get("operation") == "enqueue":
                         yield self._event(f"{base_id}-queue", trace_id, session_id, "SYSTEM_EVENT", timestamp,
                                           record, record.get("content"), "queue-enqueue")

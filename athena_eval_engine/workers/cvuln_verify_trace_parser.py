@@ -218,6 +218,7 @@ class CVulnVerifyTraceParser(TraceParser):
                     raw_type="toolResult", parse_status="OK",
                     source_table="jsonl", source_row_id=f"{eid}-tr",
                     parser_version=self.parser_version,
+                    call_id=getattr(self, "_last_tool_id", ""),
                 ))
                 usage = msg.get("usage", {})
                 if isinstance(usage, dict):
@@ -261,6 +262,7 @@ class CVulnVerifyTraceParser(TraceParser):
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
                         is_finding_submission=is_finding,
+                        call_id=tid,
                     ))
                 elif ct == "text":
                     evs.append(RawEvent(

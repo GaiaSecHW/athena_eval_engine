@@ -260,6 +260,7 @@ class WebVulnVerifyTraceParser(TraceParser):
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
                         is_finding_submission=is_finding,
+                        call_id=call_id,
                     ))
 
                 elif ptype == "tool_result" and role == "Tool":
@@ -278,7 +279,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
                         # KG/记忆标记不继承到 TOOL_RESULT——避免同一次交互计两次
-                        # resolver 通过 tool_name 匹配配对 CALL→RESULT
+                        # resolver 通过 call_id 精确配对 CALL→RESULT
+                        call_id=call_id,
                     ))
 
         return evs
