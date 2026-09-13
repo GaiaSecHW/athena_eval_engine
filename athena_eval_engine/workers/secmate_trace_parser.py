@@ -311,7 +311,7 @@ class SecMateTraceParser(TraceParser):
                             if call_id and result:
                                 results[call_id] = result
 
-        totals = {"input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cache_read_tokens": 0}
+        totals = {"tokens_input": 0, "tokens_output": 0, "tokens_reasoning": 0, "cache_read_tokens": 0}
         step_count = 0
         min_ts = max_ts = None
         for path in files:
@@ -369,9 +369,9 @@ class SecMateTraceParser(TraceParser):
                         if isinstance(usage, dict):
                             from ..domain.raw_event import usage_numbers
                             _ti, _to, _tr, _tcr = usage_numbers(usage)
-                            totals["input_tokens"] += _ti
-                            totals["output_tokens"] += _to
-                            totals["reasoning_tokens"] += _tr
+                            totals["tokens_input"] += _ti
+                            totals["tokens_output"] += _to
+                            totals["tokens_reasoning"] += _tr
                             totals["cache_read_tokens"] += _tcr
                             step_count += 1
                             yield RawEvent(event_id=f"{base_id}-usage", trace_id=trace_id, session_id=session_id,
@@ -430,7 +430,7 @@ class SecMateTraceParser(TraceParser):
         cached = getattr(self, "_session_cache", None)
         if cached and cached["uri"] == trace_source["source_uri"]:
             return {key: value for key, value in cached.items() if key != "uri"}
-        totals = {"input_tokens": 0, "output_tokens": 0, "reasoning_tokens": 0, "cache_read_tokens": 0}
+        totals = {"tokens_input": 0, "tokens_output": 0, "tokens_reasoning": 0, "cache_read_tokens": 0}
         step_count = 0
         min_ts = max_ts = None
         for path in self._files(trace_source["source_uri"]):
@@ -451,9 +451,9 @@ class SecMateTraceParser(TraceParser):
                         continue
                     from ..domain.raw_event import usage_numbers
                     _ti, _to, _tr, _tcr = usage_numbers(usage)
-                    totals["input_tokens"] += _ti
-                    totals["output_tokens"] += _to
-                    totals["reasoning_tokens"] += _tr
+                    totals["tokens_input"] += _ti
+                    totals["tokens_output"] += _to
+                    totals["tokens_reasoning"] += _tr
                     totals["cache_read_tokens"] += _tcr
                     step_count += 1
         return {**totals, "time_created": min_ts, "time_updated": max_ts,
