@@ -282,8 +282,6 @@ async function selEv(id){
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         try{const st=await jget(`/api/v1/evaluations/${id}`);
-          var pe=$("eval-progress");
-          if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
             // 优先固化 HTML（HEAD 探测）
             try{
@@ -296,7 +294,12 @@ async function selEv(id){
             const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);
           }
           else if(st.status==="FAILED"){selEv(id);}
-          else{setTimeout(poll,3000);}
+          else if(st.status!==s.status){selEv(id);}
+          else{
+            var pe=$("eval-progress");
+            if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
+            setTimeout(poll,3000);
+          }
         }catch(e){}};
       setTimeout(poll,3000);return;
     }

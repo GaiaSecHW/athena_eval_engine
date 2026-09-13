@@ -34,23 +34,37 @@ _cancel_events: dict[str, threading.Event] = {}
 _cancel_lock = threading.Lock()
 
 # 进度文本：AI 匹配等慢阶段向前端报告进度（内存字典，pod 重启后重跑无需持久化）
-_progress: dict[str, str] = {}
+# 两层：_progress_phase 存阶段级文本（解析/写入/配对等），_progress_tasks 存任务级文本（多 task_run 并行各自独立）
+_progress_phase: dict[str, str] = {}
+_progress_tasks: dict[str, dict[str, str]] = {}
 _progress_lock = threading.Lock()
 
 
 def set_progress(evaluation_id: str, text: str):
+    """设置阶段级进度（覆盖任务级进度）。"""
     with _progress_lock:
-        _progress[evaluation_id] = text
+        _progress_phase[evaluation_id] = text
+        _progress_tasks.pop(evaluation_id, None)
+
+
+def set_task_progress(evaluation_id: str, task_run_id: str, text: str):
+    """设置任务级进度（多任务并行时各自独立，互不覆盖）。"""
+    with _progress_lock:
+        _progress_tasks.setdefault(evaluation_id, {})[task_run_id] = text
 
 
 def get_progress(evaluation_id: str) -> str:
     with _progress_lock:
-        return _progress.get(evaluation_id, "")
+        tasks = _progress_tasks.get(evaluation_id, {})
+        if tasks:
+            return " | ".join(tasks.values())
+        return _progress_phase.get(evaluation_id, "")
 
 
 def clear_progress(evaluation_id: str):
     with _progress_lock:
-        _progress.pop(evaluation_id, None)
+        _progress_phase.pop(evaluation_id, None)
+        _progress_tasks.pop(evaluation_id, None)
 
 
 def set_cancel(evaluation_id: str):
@@ -745,7 +759,9 @@ def run(evaluation_id: str) -> dict:
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
                 fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser,
-                                                progress_cb=lambda text: set_progress(evaluation_id, text))
+                                                progress_cb=lambda text, tr=tr: set_task_progress(
+                                                    evaluation_id, tr.task_run_id,
+                                                    f"[{tr.condition.value}] {text}"))
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
                 fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
