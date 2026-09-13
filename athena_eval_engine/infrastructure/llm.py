@@ -148,6 +148,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         content_parts = []
         reasoning_parts = []
         finish_reason = None
+        _last_content_ts = None  # 最后一次收到实际内容（content/reasoning/finish_reason）的时间
         while True:
             line = resp.readline()
             if not line:
@@ -156,7 +157,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             if not line_str:
                 continue  # SSE 事件分隔空行
             if not line_str.startswith("data: "):
-                continue  # 非 data 行
+                continue  # 非 data 行（含 SSE keepalive 注释）
             data_str = line_str[6:]
             if data_str == "[DONE]":
                 break
@@ -169,6 +170,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 first_token = False
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
+                _last_content_ts = time.time()
                 log("LLM", f"first token received, stream timeout -> {STREAM_TIMEOUT}s")
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
@@ -180,18 +182,25 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                     _token_usage["call_count"] += 1
             choices = chunk.get("choices") or []
             if not choices:
+                # 无 choices 的 keepalive chunk 不重置内容计时器
+                if _last_content_ts and time.time() - _last_content_ts > STREAM_TIMEOUT:
+                    log("LLM", f"stream content stall ({STREAM_TIMEOUT}s no content), aborting")
+                    raise RuntimeError(f"LLM 流式断流（{STREAM_TIMEOUT}s 无实际内容，keepalive 不重置）")
                 continue
             delta = choices[0].get("delta") or {}
             if delta.get("content"):
                 content_parts.append(delta["content"])
+                _last_content_ts = time.time()
             # 兼容不同 reasoning 字段名：reasoning_content / reasoning / thinking
             rc = delta.get("reasoning_content") or delta.get("reasoning") or delta.get("thinking")
             if rc:
                 reasoning_parts.append(rc)
+                _last_content_ts = time.time()
             # 捕获 finish_reason（stop=正常，length=max_tokens 截断，content_filter=被过滤）
             fr = choices[0].get("finish_reason")
             if fr:
                 finish_reason = fr
+                _last_content_ts = time.time()
 
         content = "".join(content_parts)
         if not content and reasoning_parts:
