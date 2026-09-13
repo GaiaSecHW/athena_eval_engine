@@ -389,11 +389,13 @@ def _db_query(fn, _retries=5):
         conn = None
         try:
             conn = connect(autocommit=True)
+            log("DB", f"connect OK (attempt {attempt+1})")
             return fn(conn.cursor())
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
             last_err = e
+            _stage = "connect" if conn is None else "query"
             if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry...")
+                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]} at {_stage}, retry...")
                 import time; time.sleep(2 * (attempt + 1))  # 指数退避
                 continue
             raise
@@ -652,6 +654,7 @@ def run(evaluation_id: str) -> dict:
                     })()
         _db_query(_load_facts_from_db)
     else:
+        set_progress(evaluation_id, "解析 Trace: 准备中...")
         _set_status_short(evaluation_id, "PARSING")
         _check_cancel(evaluation_id, "PARSING")
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -796,9 +799,9 @@ def run(evaluation_id: str) -> dict:
         # 所有 trace 同时启动；LLM 并发由 llm.py 信号量控制（每评测最多 6 个）
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
+        set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
-        set_progress(evaluation_id, "漏洞匹配: 准备中...")
         log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
@@ -813,6 +816,9 @@ def run(evaluation_id: str) -> dict:
             cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", ("RESOLVING", evaluation_id))
             for tr in task_runs:
                 f = facts[tr.task_run_id]
+                _nf = len(f.get("findings", []))
+                _sg_size = len(json.dumps(f.get("session_graph", {}), ensure_ascii=False, default=str))
+                log("INSERT", f"{tr.task_run_id} findings={_nf} session_graph={_sg_size} bytes")
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
                 fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
                 fact_repo.insert_task_run(cur, tr)
@@ -820,15 +826,18 @@ def run(evaluation_id: str) -> dict:
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
                 fact_repo.insert_tool_action_fact(cur, f["tool"])
                 fact_repo.insert_resource_fact(cur, f["resource"])
+                log("INSERT", f"{tr.task_run_id} facts inserted, now findings({_nf})...")
                 fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, f.get("findings", []))
+                log("INSERT", f"{tr.task_run_id} findings done, now session_graph({_sg_size} bytes)...")
                 fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, f.get("session_graph", {}))
+                log("INSERT", f"{tr.task_run_id} session_graph done")
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
         _db_query(_insert_facts)
 
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
+    set_progress(evaluation_id, "任务配对...")
     _set_status_short(evaluation_id, "PAIRING")
     _check_cancel(evaluation_id, "PAIRING")
-    set_progress(evaluation_id, "任务配对...")
     pairs = TaskPairMatcherImpl().match(task_runs)
     log("EVAL", f"配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
@@ -917,9 +926,9 @@ def run(evaluation_id: str) -> dict:
                 fact_repo.insert_pair_derived_fact(cur, d)
     _db_query(_insert_pairs)
 
+    set_progress(evaluation_id, "计算指标...")
     _set_status_short(evaluation_id, "CALCULATING")
     _check_cancel(evaluation_id, "CALCULATING")
-    set_progress(evaluation_id, "计算指标...")
     log("EVAL", f"开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}")
     out = run_all_metrics(pair_views, confusion_pairs=item_pair_views or None,
                           kg_access=access, kg_valid=kg_valid,
@@ -1070,9 +1079,9 @@ def run(evaluation_id: str) -> dict:
     _db_query(_insert_metrics)
 
     # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
+    set_progress(evaluation_id, "报告生成: 诊断中...")
     _set_status_short(evaluation_id, "REPORTING")
     _check_cancel(evaluation_id, "REPORTING")
-    set_progress(evaluation_id, "报告生成: 诊断中...")
     log("EVAL", f"开始生成报告 + AI 分析...")
     hits = diagnose(out["metric_results"], out["statistical_results"])
     log("EVAL", f"诊断完成: {len(hits)} 条告警")

@@ -15,8 +15,9 @@ from datetime import datetime
 
 _ctx = threading.local()
 
-# 异常日志文件路径（k8s 中通过环境变量配置，默认 /app/logs/eval_errors.log）
-_ERROR_LOG_PATH = os.environ.get("EVAL_ERROR_LOG", "/app/logs/eval_errors.log")
+# 异常日志文件路径（k8s 中通过环境变量配置，默认 /data/logs/eval_errors.log）
+# /app 只读，用 /data/logs（PVC 挂载，可写）
+_ERROR_LOG_PATH = os.environ.get("EVAL_ERROR_LOG", "/data/logs/eval_errors.log")
 _error_log_lock = threading.Lock()
 
 
