@@ -238,7 +238,9 @@ function renderEvList(){
 }
 
 async function selEv(id){
-  activeId=id;await renderEvals();
+  activeId=id;
+  // 只在列表未加载时才拉全量，避免每次选择/状态变化都请求全部评测
+  if(window._evData){renderEvList();}else{await renderEvals();}
   try{const s=await jget(`/api/v1/evaluations/${id}`);
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
@@ -294,14 +296,18 @@ async function selEv(id){
             const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);
           }
           else if(st.status==="FAILED"){selEv(id);}
-          else if(st.status!==s.status){selEv(id);}
+          else if(st.status!==s.status){
+            // 更新缓存中的状态，避免 selEv 再拉全量列表
+            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;renderEvList();}}
+            selEv(id);
+          }
           else{
             var pe=$("eval-progress");
             if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
-            setTimeout(poll,3000);
+            setTimeout(poll,20000);
           }
         }catch(e){}};
-      setTimeout(poll,3000);return;
+      setTimeout(poll,20000);return;
     }
   }catch(e){}
   // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
@@ -1114,13 +1120,7 @@ async function runEval(){
   try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,entries:entries});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;go("evaluations");setTimeout(selEv,500,r.evaluation_id);
-    // 轮询状态
-    let pollCount=0;const pollEval=async()=>{pollCount++;if(pollCount>120)return;
-      try{const s=await jget(`/api/v1/evaluations/${eid}`);if(s.status==="COMPLETED"||s.status==="FAILED"){
-        $("run-st").textContent=s.status==="COMPLETED"?"✅ 评测完成":"⚠ 评测失败";
-        selEv(eid);
-      }else{setTimeout(pollEval,3000);}}catch(e){}};
-    setTimeout(pollEval,3000);
+    // selEv 内部已启动轮询，不再重复轮询
   }
   catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}}
 
