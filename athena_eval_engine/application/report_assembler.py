@@ -1200,43 +1200,51 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _by_session.setdefault(sid, []).append(a)
                 _compressed = []
                 _cache_hits = 0
+                _uncached = []
                 for sid, acts in _by_session.items():
                     if sid in _session_compress_cache:
                         _compressed.append(_session_compress_cache[sid])
                         _cache_hits += 1
-                        continue
-                    _comp_prompt = [
-                        {"role": "system", "content": (
-                            "你是漏洞挖掘过程分析员。将一个会话内的工具调用序列压缩成挖掘过程摘要。\n\n"
-                            "# 压缩目标\n"
-                            "分析知识与记忆的介入对漏洞挖掘产生了什么影响。以下内容必须保留：\n"
-                            "1. 知识/记忆查询的完整问答：Agent 查询了什么、检索了什么、得到了什么回答\n"
-                            "2. 知识/记忆回答对后续行为的影响：得到回答后 Agent 接下来做了什么（读了哪些新文件、搜索了什么新模式、提交了什么漏洞报告）\n"
-                            "3. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
-                            "4. 判定决策点：Agent 提交漏洞报告（确认漏洞）、排除漏洞、验证结果的依据\n\n"
-                            "# 知识与记忆的识别规则\n"
-                            "工具调用序列中，以下操作属于知识/记忆访问：\n"
-                            "- 知识查询：命令中包含知识库检索工具调用（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等\n"
-                            "- 记忆读取：命令中包含记忆目录路径（如 memengine、/app/memory）的 read/grep/cat 操作，或记忆检索 CLI 命令（如 mem recall），用于读取历史挖掘经验\n"
-                            "其他 read/grep/bash 为普通文件操作。\n\n"
-                            '只返回 JSON：{"session_id": "会话标识", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
-                        )},
-                        {"role": "user", "content": json.dumps(acts, ensure_ascii=False)},
-                    ]
-                    try:
-                        _r = llm_mod.chat_json(_comp_prompt, temperature=0, max_tokens=8000)
-                        if isinstance(_r, dict):
-                            _session_compress_cache[sid] = _r
-                            _compressed.append(_r)
-                        else:
+                    else:
+                        _uncached.append((sid, acts))
+                if _uncached:
+                    _sys_prompt = {"role": "system", "content": (
+                        "你是漏洞挖掘过程分析员。将一个会话内的工具调用序列压缩成挖掘过程摘要。\n\n"
+                        "# 压缩目标\n"
+                        "分析知识与记忆的介入对漏洞挖掘产生了什么影响。以下内容必须保留：\n"
+                        "1. 知识/记忆查询的完整问答：Agent 查询了什么、检索了什么、得到了什么回答\n"
+                        "2. 知识/记忆回答对后续行为的影响：得到回答后 Agent 接下来做了什么（读了哪些新文件、搜索了什么新模式、提交了什么漏洞报告）\n"
+                        "3. 漏洞接触链：Agent 从哪个入口开始、读了哪些关键文件、如何一步步接触到漏洞代码\n"
+                        "4. 判定决策点：Agent 提交漏洞报告（确认漏洞）、排除漏洞、验证结果的依据\n\n"
+                        "# 知识与记忆的识别规则\n"
+                        "工具调用序列中，以下操作属于知识/记忆访问：\n"
+                        "- 知识查询：命令中包含知识库检索工具调用（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等\n"
+                        "- 记忆读取：命令中包含记忆目录路径（如 memengine、/app/memory）的 read/grep/cat 操作，或记忆检索 CLI 命令（如 mem recall），用于读取历史挖掘经验\n"
+                        "其他 read/grep/bash 为普通文件操作。\n\n"
+                        '只返回 JSON：{"session_id": "会话标识", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
+                    )}
+                    def _compress_one(item):
+                        sid, acts = item
+                        try:
+                            _r = llm_mod.chat_json(
+                                [_sys_prompt, {"role": "user", "content": json.dumps(acts, ensure_ascii=False)}],
+                                temperature=0, max_tokens=8000)
+                            if isinstance(_r, dict):
+                                _session_compress_cache[sid] = _r
+                                return _r
                             _fallback = {"session_id": sid, "mining_summary": str(_r)[:500]}
                             _session_compress_cache[sid] = _fallback
-                            _compressed.append(_fallback)
-                    except Exception as _e:
-                        log("KG_ANALYSIS", f"session {sid} LLM 压缩失败: {_e}")
-                        _fallback = {"session_id": sid, "mining_summary": "压缩失败", "tool_count": len(acts)}
-                        _session_compress_cache[sid] = _fallback
-                        _compressed.append(_fallback)
+                            return _fallback
+                        except Exception as _e:
+                            log("KG_ANALYSIS", f"session {sid} LLM 压缩失败: {_e}")
+                            _fallback = {"session_id": sid, "mining_summary": "压缩失败", "tool_count": len(acts)}
+                            _session_compress_cache[sid] = _fallback
+                            return _fallback
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    with ThreadPoolExecutor(max_workers=8) as pool:
+                        futures = [pool.submit(_compress_one, item) for item in _uncached]
+                        for fut in as_completed(futures):
+                            _compressed.append(fut.result())
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
 
