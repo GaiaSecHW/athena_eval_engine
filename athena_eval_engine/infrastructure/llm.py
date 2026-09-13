@@ -286,7 +286,7 @@ def chat_json(messages, **kwargs) -> dict:
                 except json.JSONDecodeError as je:
                     json_err = je
         if parsed is None:
-            # 尝试提取 [...] 数组（布尔数组/索引对数组）
+            # 尝试提取 [...] 数组
             start = raw.find("[")
             end = raw.rfind("]")
             if start >= 0 and end > start:
@@ -294,8 +294,9 @@ def chat_json(messages, **kwargs) -> dict:
                     parsed = json.loads(raw[start:end + 1])
                 except json.JSONDecodeError as je:
                     json_err = je
-        if parsed is not None:
+        if parsed is not None and isinstance(parsed, dict):
             return parsed
+        # parsed 是 list 或 None → 视为解析失败，反馈给 LLM 重试
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
         err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
         log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail}, feeding back to LLM")
