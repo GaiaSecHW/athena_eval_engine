@@ -666,6 +666,54 @@ except OSError:
     pass  # 只读文件系统下跳过，首次写入时再创建
 
 
+def _compute_interaction_stats(interactions):
+    """从原始交互列表预计算统计量（与渲染器 _stats 函数逻辑一致）。"""
+    call_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "CALL")
+    result_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "RESULT")
+    no_response = max(0, call_count - result_count)
+    fail = no_response
+    blind = 0
+    success = 0
+    for iv in interactions:
+        if not isinstance(iv, dict) or iv.get("type") != "RESULT" or not iv.get("output"):
+            continue
+        out = str(iv.get("output", "")).lower()
+        if any(kw in out for kw in ("terminated", "timeout", "error", "404", "failed",
+                                     "exception", "unreachable", "connection refused")):
+            fail += 1
+        elif any(kw in out for kw in ("知识库暂无此类知识", "no memory", "not found", "empty")):
+            blind += 1
+        else:
+            success += 1
+    return {"call_count": call_count, "result_count": result_count,
+            "no_response": no_response, "fail": fail, "blind": blind, "success": success}
+
+
+def _strip_report_for_html(r):
+    """剥离报告中的大块原始交互数据，用预计算统计量替代，减小 HTML 体积。"""
+    # knowledge_interactions: 预计算统计量，清空原始 interactions
+    for ki in r.get("knowledge_interactions", []):
+        interactions = ki.get("interactions", [])
+        memory = ki.get("memory") or {}
+        mem_interactions = memory.get("interactions", []) if isinstance(memory, dict) else []
+        ki["kg_stats"] = _compute_interaction_stats(interactions)
+        ki["mem_stats"] = _compute_interaction_stats(mem_interactions)
+        ki["interactions"] = []
+        ki["memory"] = {"interactions": []}
+
+    # per_case_kg_analysis: 剥离 interactions 和 memory_interactions（原始事件太大）
+    report_obj = r.get("report") or r
+    for group in (report_obj.get("metric_groups") or []):
+        for pcKa in (group.get("per_case_kg_analysis") or []):
+            pcKa.pop("interactions", None)
+            pcKa.pop("memory_interactions", None)
+    for pcKa in (r.get("per_case_kg_analysis") or []):
+        pcKa.pop("interactions", None)
+        pcKa.pop("memory_interactions", None)
+
+    return r
+
+
 def render_static_report(evaluation_id: str) -> str:
     """固化报告为静态 HTML 文件。FINALIZE 阶段调用；返回文件路径。
 
@@ -674,6 +722,7 @@ def render_static_report(evaluation_id: str) -> str:
     """
     import json as _json
     r = _build_report(evaluation_id)
+    r = _strip_report_for_html(r)
     # 读取渲染器 JS（内联到 HTML，使报告自包含）
     renderer_path = os.path.join(
         os.path.dirname(os.path.dirname(os.path.dirname(__file__))),

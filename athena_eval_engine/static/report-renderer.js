@@ -134,9 +134,14 @@ function renderReport(d){
 
   // 分别提取知识图谱交互和记忆交互
   const kgAll=[],memAll=[];
+  var hasKgPre=false,hasMemPre=false;
+  var kgPre={callCount:0,resultCount:0,noResponse:0,fail:0,blind:0,success:0};
+  var memPre={callCount:0,resultCount:0,noResponse:0,fail:0,blind:0,success:0};
   kgData.forEach(k=>{
+    if(k.kg_stats){hasKgPre=true;var s=k.kg_stats;kgPre.callCount+=s.call_count||0;kgPre.resultCount+=s.result_count||0;kgPre.noResponse+=s.no_response||0;kgPre.fail+=s.fail||0;kgPre.blind+=s.blind||0;kgPre.success+=s.success||0;}
     (k.interactions||[]).forEach(i=>kgAll.push(i));
     const mem=k.memory||{};
+    if(k.mem_stats){hasMemPre=true;var s=k.mem_stats;memPre.callCount+=s.call_count||0;memPre.resultCount+=s.result_count||0;memPre.noResponse+=s.no_response||0;memPre.fail+=s.fail||0;memPre.blind+=s.blind||0;memPre.success+=s.success||0;}
     (mem.interactions||[]).forEach(i=>memAll.push(i));
   });
 
@@ -180,8 +185,8 @@ function renderReport(d){
     return html;
   }
 
-  const kgStats=_stats(kgAll);
-  const memStats=_stats(memAll);
+  const kgStats=hasKgPre?kgPre:_stats(kgAll);
+  const memStats=hasMemPre?memPre:_stats(memAll);
   const kgActive=(kgAccess!==null&&kgAccess>0)||kgStats.callCount>0;
   let kgHtml="";
   kgHtml+=_sectionHtml("知识图谱","🔍",kgStats,kgAccess,kgDelivery);
@@ -314,8 +319,8 @@ function renderReport(d){
   const m7v=p1.M7&&p1.M7.calculation_status==="CALCULATED"?p1.M7.estimate:null;
   const m8v=p2.M8&&p2.M8.calculation_status==="CALCULATED"?p2.M8.estimate:null;
   const m9v=p2.M9&&p2.M9.calculation_status==="CALCULATED"?p2.M9.estimate:null;
-  const hasAnyKgInteraction=(d.knowledge_interactions||[]).some(k=>(k.interactions||[]).some(iv=>iv.type==="CALL"));
-  const hasAnyMemInteraction=(d.knowledge_interactions||[]).some(k=>((k.memory||{}).interactions||[]).some(iv=>iv.type==="CALL"));
+  const hasAnyKgInteraction=(d.knowledge_interactions||[]).some(k=>(k.interactions||[]).some(iv=>iv.type==="CALL"))||(d.knowledge_interactions||[]).some(k=>k.kg_stats&&k.kg_stats.call_count>0);
+  const hasAnyMemInteraction=(d.knowledge_interactions||[]).some(k=>((k.memory||{}).interactions||[]).some(iv=>iv.type==="CALL"))||(d.knowledge_interactions||[]).some(k=>k.mem_stats&&k.mem_stats.call_count>0);
   const overallKgAccess=p1.M5&&p1.M5.calculation_status==="CALCULATED"?p1.M5.estimate:null;
   const overallMemAccess=p1.M11&&p1.M11.calculation_status==="CALCULATED"?p1.M11.estimate:null;
   const kgActiveSummary=(overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction;
@@ -384,9 +389,9 @@ function renderReport(d){
       const kgRecv=kgTool.analyze_received_count||(kgFound+kgFP);const nogkRecv=nogkTool.analyze_received_count||(nogkFound+nogkFP);
       const isVerify=label.includes("验证");
       const kgKi=(d.knowledge_interactions||[]).find(k=>k.task_run_id.includes("-"+tid+"-KG"))||{};
-      const kgKg=(kgKi.interactions||[]).filter(iv=>iv.type==="CALL").length;
+      const kgKg=kgKi.kg_stats?kgKi.kg_stats.call_count:(kgKi.interactions||[]).filter(iv=>iv.type==="CALL").length;
       const nogkKg=0;
-      const kgMem=((kgKi.memory||{}).interactions||[]).filter(iv=>iv.type==="CALL").length;
+      const kgMem=kgKi.mem_stats?kgKi.mem_stats.call_count:((kgKi.memory||{}).interactions||[]).filter(iv=>iv.type==="CALL").length;
       const nogkMem=0;
       const kgTokens=kgRes.tokens||0;const nogkTokens=nogkRes.tokens||0;
       const kgTools=kgTool.total_tools||0;const nogkTools=nogkTool.total_tools||0;
