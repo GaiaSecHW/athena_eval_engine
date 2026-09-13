@@ -411,7 +411,7 @@ function renderReport(d){
         <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr>
         <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
         <tr><td>记忆查询次数</td><td class="num">${kgMem}</td><td class="num">${nogkMem}</td></tr>
-        <tr><td>Token 消耗</td><td class="num">${kgTokens.toLocaleString()}</td><td class="num">${nogkTokens.toLocaleString()}</td></tr>
+        <tr><td>Token 消耗</td><td class="num">${fmtNum(kgTokens)}</td><td class="num">${fmtNum(nogkTokens)}</td></tr>
         <tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr>
         <tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr>
         <tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td><td class="num">${fmtDur(nogkDur)}</td></tr>
