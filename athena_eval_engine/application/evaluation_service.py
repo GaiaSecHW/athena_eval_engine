@@ -840,6 +840,11 @@ def run(evaluation_id: str) -> dict:
                 _ev_rs = len(json.dumps(getattr(f["resource"], "evidence", []), ensure_ascii=False, default=str))
                 log("INSERT", f"{tr.task_run_id} findings={_nf} sg={_sg_size}b ev:ocf={_ev_outcome}b kn={_ev_kn}b ta={_ev_ta}b rs={_ev_rs}b")
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
+                # vuln_type 列从 VARCHAR(64) 改为 TEXT（某些 finding 的 vuln_type 超长）
+                try:
+                    cur.execute("ALTER TABLE extracted_finding MODIFY COLUMN vuln_type TEXT")
+                except Exception:
+                    pass  # 可能已是 TEXT
                 fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
                 log("INSERT", f"{tr.task_run_id} trace_source OK")
                 fact_repo.insert_task_run(cur, tr)

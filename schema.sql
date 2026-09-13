@@ -566,7 +566,7 @@ CREATE TABLE extracted_finding (
     platform            VARCHAR(32) NOT NULL,
     session_id          VARCHAR(128),
     verify_session_id   VARCHAR(128),
-    vuln_type           VARCHAR(64),
+    vuln_type           TEXT,
     file                TEXT,
     severity            VARCHAR(32),
     validation_result   VARCHAR(32),
