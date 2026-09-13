@@ -666,22 +666,32 @@ except OSError:
     pass  # 只读文件系统下跳过，首次写入时再创建
 
 
-def _compute_interaction_stats(interactions):
-    """从原始交互列表预计算统计量（与渲染器 _stats 函数逻辑一致）。"""
+def _compute_interaction_stats(interactions, is_mem=False):
+    """从原始交互列表预计算统计量（与渲染器 _stats 函数逻辑一致）。
+
+    is_mem=True 时用本地文件读取的失败关键词（permission denied / no such file 等），
+    is_mem=False 时用远程 API 的失败关键词（404 / timeout / connection refused 等）。
+    """
     call_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "CALL")
     result_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "RESULT")
     no_response = max(0, call_count - result_count)
     fail = no_response
     blind = 0
     success = 0
+    if is_mem:
+        fail_kw = ("permission denied", "cannot access", "i/o error", "is a directory", "no space left")
+        blind_kw = ("no such file", "not found", "does not exist", "no data available")
+    else:
+        fail_kw = ("terminated", "timeout", "error", "404", "failed",
+                    "exception", "unreachable", "connection refused")
+        blind_kw = ("知识库暂无此类知识", "no memory", "not found", "empty")
     for iv in interactions:
         if not isinstance(iv, dict) or iv.get("type") != "RESULT" or not iv.get("output"):
             continue
         out = str(iv.get("output", "")).lower()
-        if any(kw in out for kw in ("terminated", "timeout", "error", "404", "failed",
-                                     "exception", "unreachable", "connection refused")):
+        if any(kw in out for kw in fail_kw):
             fail += 1
-        elif any(kw in out for kw in ("知识库暂无此类知识", "no memory", "not found", "empty")):
+        elif any(kw in out for kw in blind_kw):
             blind += 1
         else:
             success += 1
@@ -696,8 +706,8 @@ def _strip_report_for_html(r):
         interactions = ki.get("interactions", [])
         memory = ki.get("memory") or {}
         mem_interactions = memory.get("interactions", []) if isinstance(memory, dict) else []
-        ki["kg_stats"] = _compute_interaction_stats(interactions)
-        ki["mem_stats"] = _compute_interaction_stats(mem_interactions)
+        ki["kg_stats"] = _compute_interaction_stats(interactions, is_mem=False)
+        ki["mem_stats"] = _compute_interaction_stats(mem_interactions, is_mem=True)
         ki["interactions"] = []
         ki["memory"] = {"interactions": []}
 

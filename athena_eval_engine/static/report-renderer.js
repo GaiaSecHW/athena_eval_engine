@@ -146,17 +146,22 @@ function renderReport(d){
   });
 
   // 统计辅助函数：计算主动查询、返回结果、有效返回、返回失败、知识盲区
-  function _stats(arr){
+  // isMem=true 时用本地文件读取的失败关键词，isMem=false（默认）用远程 API 的失败关键词
+  function _stats(arr,isMem){
     const callCount=arr.filter(function(iv){return iv.type==="CALL";}).length;
     const resultCount=arr.filter(function(iv){return iv.type==="RESULT";}).length;
     const noResponse=Math.max(0,callCount-resultCount);
     var fail=0,blind=0,success=0;
+    var failKw=isMem?["permission denied","cannot access","i/o error","is a directory","no space left"]:
+      ["terminated","timeout","error","404","failed","exception","unreachable","connection refused"];
+    var blindKw=isMem?["no such file","not found","does not exist","no data available"]:
+      ["知识库暂无此类知识","no memory","not found","empty"];
     arr.forEach(function(iv){
       if(iv.type!=="RESULT"||!iv.output)return;
       var out=(iv.output||"").toLowerCase();
-      if(out.indexOf("terminated")>=0||out.indexOf("timeout")>=0||out.indexOf("error")>=0||out.indexOf("404")>=0||out.indexOf("failed")>=0||out.indexOf("exception")>=0||out.indexOf("unreachable")>=0||out.indexOf("connection refused")>=0){
+      if(failKw.some(function(k){return out.indexOf(k)>=0;})){
         fail++;
-      }else if(out.indexOf("知识库暂无此类知识")>=0||out.indexOf("no memory")>=0||out.indexOf("not found")>=0||out.indexOf("empty")>=0){
+      }else if(blindKw.some(function(k){return out.indexOf(k)>=0;})){
         blind++;
       }else{
         success++;
@@ -185,8 +190,8 @@ function renderReport(d){
     return html;
   }
 
-  const kgStats=hasKgPre?kgPre:_stats(kgAll);
-  const memStats=hasMemPre?memPre:_stats(memAll);
+  const kgStats=hasKgPre?kgPre:_stats(kgAll,false);
+  const memStats=hasMemPre?memPre:_stats(memAll,true);
   const kgActive=(kgAccess!==null&&kgAccess>0)||kgStats.callCount>0;
   let kgHtml="";
   kgHtml+=_sectionHtml("知识图谱","🔍",kgStats,kgAccess,kgDelivery);
