@@ -8,11 +8,12 @@ GET  /api/v1/evaluations/{id}/report → 报告
 from __future__ import annotations
 import json
 import os
-from concurrent.futures import ThreadPoolExecutor
+import threading
+from concurrent.futures import ThreadPoolExecutor, Future
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from ...application import evaluation_service as es
-from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
+from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, log_error
 from ...persistence.repositories import fact_repo
 from .web import router as web_router
 from .platform import router as platform_router
@@ -22,6 +23,28 @@ from .benchmark_system import vb as vbench_router, sys_r as sys_router
 _executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="eval")
 _TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED"}
 
+# 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
+_running_futures: dict[str, Future] = {}
+_running_lock = threading.Lock()
+
+
+def _submit_eval(evaluation_id: str, fn) -> Future:
+    """提交评测任务到线程池，保证一个 evaluation_id 只有一个在运行的线程。
+
+    - 如果该 evaluation_id 已有线程在跑（force retry 场景），先从映射中移除旧线程
+    - 旧线程物理上可能仍在运行，但不再被追踪；新线程的 DB 写入会覆盖旧线程的结果
+    - 线程结束（正常或异常）时自动从映射中移除
+    """
+    with _running_lock:
+        old = _running_futures.pop(evaluation_id, None)
+        if old is not None:
+            old.cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
+            log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
+        fut = _executor.submit(fn)
+        _running_futures[evaluation_id] = fut
+        fut.add_done_callback(lambda f, eid=evaluation_id: _running_futures.pop(eid, None))
+        return fut
+
 
 def _record_background_failure(evaluation_id: str, error: Exception, source: str) -> None:
     """Mark an in-progress evaluation failed without clobbering a final report.
@@ -30,6 +53,9 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
     transitioned the evaluation to a terminal state.  In that case the report
     is usable; overwriting the state with FAILED makes reopening it impossible.
     """
+    # 写异常日志文件（独立文件，只写异常）
+    log_error(evaluation_id, source, error)
+
     from ...infrastructure.database import connect
     err_msg = str(error)[:500]
     conn = None
@@ -94,7 +120,7 @@ def resume_stuck_evaluations():
                 log("STARTUP", f"发现 {len(stuck)} 个卡住的评测，准备续跑:")
                 for eid, status in stuck:
                     log("STARTUP", f"{eid} (was {status}) → 续跑")
-                    _executor.submit(_run_bg_resume, eid)
+                    _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
             else:
                 log("STARTUP", f"无卡住的评测")
         finally:
@@ -108,6 +134,8 @@ def _run_bg_resume(evaluation_id: str):
     set_eval_ctx(evaluation_id)
     try:
         es.run(evaluation_id)
+    except es.TaskCancelledError:
+        log("EVAL", f"{evaluation_id} 续跑被取消（被 force retry 替换）")
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -118,7 +146,17 @@ def _run_bg_resume(evaluation_id: str):
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    with _running_lock:
+        running = len(_running_futures)
+    return {"status": "ok", "running_tasks": running}
+
+
+@app.get("/api/v1/evaluations/running")
+def get_running():
+    """查看当前正在运行的评测任务（线程数 = 任务数）。"""
+    with _running_lock:
+        ids = list(_running_futures.keys())
+    return {"running_count": len(ids), "evaluation_ids": ids}
 
 
 @app.post("/api/v1/evaluations")
@@ -145,13 +183,15 @@ def create_evaluation(req: CreateRequest):
                 conn.close()
             try:
                 es.run(req.evaluation_id)
+            except es.TaskCancelledError:
+                log("EVAL", f"{req.evaluation_id} 被取消（force retry 替换）")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
             finally:
                 clear_eval_ctx()
-        _executor.submit(_run_bg)
+        _submit_eval(req.evaluation_id, _run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -364,7 +404,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             finally:
                 conn.close()
 
-        # Step 6: 提交到线程池
+        # Step 6: 通知旧线程取消（协作取消），提交新线程到线程池
+        es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
         def _run_bg():
             from ...infrastructure.database import connect as _connect
             set_eval_ctx(evaluation_id)
@@ -375,13 +416,15 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 conn.close()
             try:
                 es.run(evaluation_id)
+            except es.TaskCancelledError:
+                log("EVAL", f"{evaluation_id} retry 被取消（又被 force retry 替换）")
             except Exception as e:
                 import traceback
                 traceback.print_exc()
                 _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
             finally:
                 clear_eval_ctx()
-        _executor.submit(_run_bg)
+        _submit_eval(evaluation_id, _run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
         import traceback as _tb

@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import threading
 from dataclasses import dataclass, field
 from ..infrastructure.database import connect
 from ..persistence.repositories import fact_repo
@@ -27,6 +28,44 @@ from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel
 from ..orchestration.state_machine import PIPELINE, assert_transition
 from ..application import platform_service as ps
+
+# 协作取消：force retry 时设置 cancel event，run() 在阶段边界检查并退出
+_cancel_events: dict[str, threading.Event] = {}
+_cancel_lock = threading.Lock()
+
+
+def set_cancel(evaluation_id: str):
+    """标记一个评测任务为取消（force retry 时调用，通知旧线程退出）。"""
+    with _cancel_lock:
+        ev = _cancel_events.get(evaluation_id)
+        if ev is None:
+            ev = threading.Event()
+            _cancel_events[evaluation_id] = ev
+        ev.set()
+        log("CANCEL", f"{evaluation_id} 收到取消信号")
+
+
+def clear_cancel(evaluation_id: str):
+    """清除取消标记（新线程启动时调用）。"""
+    with _cancel_lock:
+        _cancel_events.pop(evaluation_id, None)
+
+
+def is_cancelled(evaluation_id: str) -> bool:
+    """检查评测任务是否被取消。"""
+    ev = _cancel_events.get(evaluation_id)
+    return ev is not None and ev.is_set()
+
+
+class TaskCancelledError(Exception):
+    """评测任务被取消（force retry 替换了旧线程）。"""
+    pass
+
+
+def _check_cancel(evaluation_id: str, phase: str):
+    """在阶段边界检查取消信号。"""
+    if is_cancelled(evaluation_id):
+        raise TaskCancelledError(f"{evaluation_id} 在 {phase} 阶段被取消（force retry）")
 
 LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tests", "fixtures", "fetched")
 
@@ -348,6 +387,7 @@ def _db_query(fn, _retries=5):
 def run(evaluation_id: str) -> dict:
     """跑完整管线。使用短连接：慢操作（trace 解析、LLM）期间不持有 MySQL 连接。"""
     set_eval_ctx(evaluation_id)
+    clear_cancel(evaluation_id)  # 新线程启动，清除可能的旧取消标记
 
     # 设置本评测的 LLM 并发上限（信号量，所有 LLM 调用共用）
     from ..infrastructure.llm import set_max_concurrency
@@ -594,6 +634,7 @@ def run(evaluation_id: str) -> dict:
         _db_query(_load_facts_from_db)
     else:
         _set_status_short(evaluation_id, "PARSING")
+        _check_cancel(evaluation_id, "PARSING")
         from concurrent.futures import ThreadPoolExecutor
 
         def _parse_trace(e):
@@ -729,6 +770,7 @@ def run(evaluation_id: str) -> dict:
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         _set_status_short(evaluation_id, "AI_MATCHING")
+        _check_cancel(evaluation_id, "AI_MATCHING")
         log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
@@ -756,6 +798,7 @@ def run(evaluation_id: str) -> dict:
 
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
     _set_status_short(evaluation_id, "PAIRING")
+    _check_cancel(evaluation_id, "PAIRING")
     pairs = TaskPairMatcherImpl().match(task_runs)
     log("EVAL", f"配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
@@ -845,6 +888,7 @@ def run(evaluation_id: str) -> dict:
     _db_query(_insert_pairs)
 
     _set_status_short(evaluation_id, "CALCULATING")
+    _check_cancel(evaluation_id, "CALCULATING")
     log("EVAL", f"开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}")
     out = run_all_metrics(pair_views, confusion_pairs=item_pair_views or None,
                           kg_access=access, kg_valid=kg_valid,
@@ -996,6 +1040,7 @@ def run(evaluation_id: str) -> dict:
 
     # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
     _set_status_short(evaluation_id, "REPORTING")
+    _check_cancel(evaluation_id, "REPORTING")
     log("EVAL", f"开始生成报告 + AI 分析...")
     hits = diagnose(out["metric_results"], out["statistical_results"])
     log("EVAL", f"诊断完成: {len(hits)} 条告警")
