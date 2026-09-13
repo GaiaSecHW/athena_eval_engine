@@ -403,13 +403,11 @@ def _db_query(fn, _retries=5):
         conn = None
         try:
             conn = connect(autocommit=True)
-            log("DB", f"connect OK (attempt {attempt+1})")
             return fn(conn.cursor())
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
             last_err = e
-            _stage = "connect" if conn is None else "query"
             if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]} at {_stage}, retry...")
+                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry...")
                 import time; time.sleep(2 * (attempt + 1))  # 指数退避
                 continue
             raise
@@ -832,13 +830,6 @@ def run(evaluation_id: str) -> dict:
             cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", ("RESOLVING", evaluation_id))
             for tr in task_runs:
                 f = facts[tr.task_run_id]
-                _nf = len(f.get("findings", []))
-                _sg_size = len(json.dumps(f.get("session_graph", {}), ensure_ascii=False, default=str))
-                _ev_outcome = len(json.dumps(getattr(f["outcome"], "evidence", []), ensure_ascii=False, default=str))
-                _ev_kn = len(json.dumps(getattr(f["knowledge"], "evidence", []), ensure_ascii=False, default=str))
-                _ev_ta = len(json.dumps(getattr(f["tool"], "evidence", []), ensure_ascii=False, default=str))
-                _ev_rs = len(json.dumps(getattr(f["resource"], "evidence", []), ensure_ascii=False, default=str))
-                log("INSERT", f"{tr.task_run_id} findings={_nf} sg={_sg_size}b ev:ocf={_ev_outcome}b kn={_ev_kn}b ta={_ev_ta}b rs={_ev_rs}b")
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
                 # vuln_type 列从 VARCHAR(64) 改为 TEXT（某些 finding 的 vuln_type 超长）
                 try:
@@ -846,21 +837,13 @@ def run(evaluation_id: str) -> dict:
                 except Exception:
                     pass  # 可能已是 TEXT
                 fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
-                log("INSERT", f"{tr.task_run_id} trace_source OK")
                 fact_repo.insert_task_run(cur, tr)
-                log("INSERT", f"{tr.task_run_id} task_run OK")
                 fact_repo.insert_outcome_fact(cur, f["outcome"])
-                log("INSERT", f"{tr.task_run_id} outcome_fact OK (ev={_ev_outcome}b)")
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
-                log("INSERT", f"{tr.task_run_id} knowledge_fact OK (ev={_ev_kn}b)")
                 fact_repo.insert_tool_action_fact(cur, f["tool"])
-                log("INSERT", f"{tr.task_run_id} tool_action_fact OK (ev={_ev_ta}b)")
                 fact_repo.insert_resource_fact(cur, f["resource"])
-                log("INSERT", f"{tr.task_run_id} resource_fact OK (ev={_ev_rs}b)")
                 fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, f.get("findings", []))
-                log("INSERT", f"{tr.task_run_id} findings({_nf}) OK")
                 fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, f.get("session_graph", {}))
-                log("INSERT", f"{tr.task_run_id} session_graph({_sg_size}b) OK")
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
         _db_query(_insert_facts)
 
