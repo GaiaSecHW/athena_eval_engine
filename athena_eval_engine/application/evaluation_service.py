@@ -33,6 +33,25 @@ from ..application import platform_service as ps
 _cancel_events: dict[str, threading.Event] = {}
 _cancel_lock = threading.Lock()
 
+# 进度文本：AI 匹配等慢阶段向前端报告进度（内存字典，pod 重启后重跑无需持久化）
+_progress: dict[str, str] = {}
+_progress_lock = threading.Lock()
+
+
+def set_progress(evaluation_id: str, text: str):
+    with _progress_lock:
+        _progress[evaluation_id] = text
+
+
+def get_progress(evaluation_id: str) -> str:
+    with _progress_lock:
+        return _progress.get(evaluation_id, "")
+
+
+def clear_progress(evaluation_id: str):
+    with _progress_lock:
+        _progress.pop(evaluation_id, None)
+
 
 def set_cancel(evaluation_id: str):
     """标记一个评测任务为取消（force retry 时调用，通知旧线程退出）。"""
@@ -635,7 +654,7 @@ def run(evaluation_id: str) -> dict:
     else:
         _set_status_short(evaluation_id, "PARSING")
         _check_cancel(evaluation_id, "PARSING")
-        from concurrent.futures import ThreadPoolExecutor
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         def _parse_trace(e):
             """Phase 1: 解析 trace → events + session（无 LLM，快）。"""
@@ -722,7 +741,8 @@ def run(evaluation_id: str) -> dict:
             bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
-                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser)
+                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser,
+                                                progress_cb=lambda text: set_progress(evaluation_id, text))
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
                 fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
@@ -763,14 +783,22 @@ def run(evaluation_id: str) -> dict:
             if key not in _local_paths:
                 _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
         # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
+        set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
-            parsed = list(pool.map(_parse_trace, entries))
+            _parse_futures = {pool.submit(_parse_trace, e): i for i, e in enumerate(entries)}
+            parsed = [None] * len(entries)
+            _parse_done = 0
+            for _fut in as_completed(_parse_futures):
+                parsed[_parse_futures[_fut]] = _fut.result()
+                _parse_done += 1
+                set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")
         # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
         # 所有 trace 同时启动；LLM 并发由 llm.py 信号量控制（每评测最多 6 个）
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
+        set_progress(evaluation_id, "漏洞匹配: 准备中...")
         log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
@@ -780,6 +808,7 @@ def run(evaluation_id: str) -> dict:
             facts[tr.task_run_id]["_source_uri"] = src
 
         # Phase 3: 写入 facts（单连接批量，重试整体幂等）
+        set_progress(evaluation_id, "写入事实数据...")
         def _insert_facts(cur):
             cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", ("RESOLVING", evaluation_id))
             for tr in task_runs:
@@ -799,6 +828,7 @@ def run(evaluation_id: str) -> dict:
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
     _set_status_short(evaluation_id, "PAIRING")
     _check_cancel(evaluation_id, "PAIRING")
+    set_progress(evaluation_id, "任务配对...")
     pairs = TaskPairMatcherImpl().match(task_runs)
     log("EVAL", f"配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
@@ -889,6 +919,7 @@ def run(evaluation_id: str) -> dict:
 
     _set_status_short(evaluation_id, "CALCULATING")
     _check_cancel(evaluation_id, "CALCULATING")
+    set_progress(evaluation_id, "计算指标...")
     log("EVAL", f"开始计算指标: {len(pair_views)} 个 pair_view, kg_access={access} kg_valid={kg_valid} kg_tool_calls={kg_tool_calls}/{total_tool_calls}")
     out = run_all_metrics(pair_views, confusion_pairs=item_pair_views or None,
                           kg_access=access, kg_valid=kg_valid,
@@ -1041,6 +1072,7 @@ def run(evaluation_id: str) -> dict:
     # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
     _set_status_short(evaluation_id, "REPORTING")
     _check_cancel(evaluation_id, "REPORTING")
+    set_progress(evaluation_id, "报告生成: 诊断中...")
     log("EVAL", f"开始生成报告 + AI 分析...")
     hits = diagnose(out["metric_results"], out["statistical_results"])
     log("EVAL", f"诊断完成: {len(hits)} 条告警")
@@ -1063,6 +1095,7 @@ def run(evaluation_id: str) -> dict:
         # 每个类别独立做逐漏洞 KG 归因，避免将挖掘与验证 trace 混入同一结论。
         from concurrent.futures import ThreadPoolExecutor as _TP
         log("EVAL", f"并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...")
+        set_progress(evaluation_id, "报告生成: AI 分析中...")
         with _TP(max_workers=3) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
                                         metric_groups=_metric_groups, tool_stats=tool_stats_list)
@@ -1082,6 +1115,7 @@ def run(evaluation_id: str) -> dict:
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
         log("EVAL", f"LLM 分析完成")
+        set_progress(evaluation_id, "报告生成: 组装报告中...")
     else:
         log("EVAL", f"LLM 未启用，跳过 AI 请求并使用规则化报告")
         for group in _metric_groups:
@@ -1157,7 +1191,8 @@ def get_status(evaluation_id: str) -> dict:
         cur.execute("SELECT COUNT(*) FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
         n_metrics = cur.fetchone()[0]
         return {"evaluation_id": evaluation_id, "status": r[0], "name": r[1], "metrics": n_metrics,
-                "error_message": r[2], "started_at": r[3].isoformat() if r[3] else None}
+                "error_message": r[2], "started_at": r[3].isoformat() if r[3] else None,
+                "progress": get_progress(evaluation_id)}
     finally:
         conn.close()
 

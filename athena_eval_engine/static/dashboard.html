@@ -277,10 +277,12 @@ async function selEv(id){
       stepsHtml+='</div>';
       // 运行中也可强制重跑（卡住时用户可手动重启）
       stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
-      $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span></div>'+stepsHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
+      var progressHtml=s.progress?'<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600">'+s.progress+'</div>':'';
+      $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         try{const st=await jget(`/api/v1/evaluations/${id}`);
+          if(st.progress){var pe=$("eval-progress");if(pe)pe.textContent=st.progress;}
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
             // 优先固化 HTML（HEAD 探测）
             try{

@@ -12,7 +12,6 @@ Agent 的 finding 结构：
 """
 from __future__ import annotations
 import json
-import re
 from ..domain.raw_event import RawEvent
 from ..domain.facts import OutcomeFact, Evidence
 from ..domain.task_run import TaskRun, BenchmarkItem
@@ -21,105 +20,28 @@ from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
 
 
-def _extract_mining_context(events: list[RawEvent], finding: dict,
-                            session_graph: dict = None, max_events: int = 40) -> dict:
-    """从 finding 提交前的事件中提取挖掘过程上下文。
-
-    收集 finding 提交前的 TOOL_CALL（read/grep/bash）和 REASONING 事件，
-    提取读取的文件、搜索的模式、代码片段和推理摘要。
-    不同平台描述同一漏洞的方式不同，但挖掘过程（读了哪些文件、分析了哪些函数）
-    能帮助 LLM 判断是否在调查同一个漏洞。
-    若提供 session_graph，通过 BFS 仅收集相关 session 的事件（原则7），
-    避免混入不相关 session 的噪声。
-    """
-    idx = finding.get("_event_idx", 0)
-    start = max(0, idx - max_events)
-    finding_session = finding.get("session_id", "")
-
-    # 若有 session_graph，通过 BFS 仅收集相关 session 的事件
-    related_sessions = None
-    if session_graph and finding_session:
-        from ..domain.resolvers import TraceParser
-        related_sessions = TraceParser._get_related_sessions(session_graph, finding_session)
-
-    files_read: list[str] = []
-    patterns_searched: list[str] = []
-    code_snippets: list[str] = []
-    reasoning_parts: list[str] = []
-
-    for e in events[start:idx]:
-        if related_sessions is not None and e.session_id not in related_sessions:
-            continue
-        if e.event_type == "TOOL_CALL":
-            tool = e.tool_name or ""
-            inp = e.input_json or {}
-            outp = e.output_json or ""
-            if tool in ("read", "cat", "view"):
-                path = inp.get("file_path") or inp.get("path") or ""
-                if path:
-                    files_read.append(path)
-                out_str = outp if isinstance(outp, str) else str(outp)
-                if out_str:
-                    code_snippets.append(out_str)
-            elif tool in ("grep", "rg", "search"):
-                pattern = inp.get("pattern") or inp.get("regex") or ""
-                if pattern:
-                    patterns_searched.append(pattern)
-            elif tool == "bash":
-                cmd = inp.get("command", "")
-                if cmd:
-                    code_snippets.append(f"$ {cmd}")
-        elif e.event_type == "REASONING":
-            text = e.output_json if isinstance(e.output_json, str) else str(e.output_json or "")
-            if text:
-                reasoning_parts.append(text)
-
-    return {
-        "files_read": list(dict.fromkeys(files_read)),
-        "patterns_searched": list(dict.fromkeys(patterns_searched)),
-        "code_snippets": code_snippets,
-        "reasoning": reasoning_parts,
-    }
-
-
 def _ev(e: RawEvent, fp=None):
     return Evidence(trace_id=e.trace_id, session_id=e.session_id, message_id=e.message_id,
                     part_id=e.part_id, tool_name=e.tool_name, event_timestamp=e.timestamp_ms, field_path=fp)
 
 
-def _sort_findings_by_relevance(findings: list[dict], benchmarks: list) -> list[dict]:
-    """按关键词相似度排序 findings，使最可能匹配基线的 finding 排在前面。
-
-    不截断：返回全部 findings，仅按相关性排序（优化"基线匹配即停"策略）。
-    """
-    if len(findings) <= 1:
-        return findings
-
-    # 提取基线关键词
-    baseline_keywords = set()
-    for b in benchmarks:
-        md = b.metadata or {}
-        for field in ("description", "vulnerability_type"):
-            text = md.get(field, "") or ""
-            baseline_keywords.update(w.lower() for w in re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text))
-
-    # 为每个 finding 计算与基线的相似度
-    def _score(f):
-        text = " ".join(str(f.get(k, "")) for k in ("title", "description", "vuln_type", "source", "sink"))
-        finding_words = set(w.lower() for w in re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{2,}', text))
-        return len(finding_words & baseline_keywords)
-
-    return sorted(findings, key=_score, reverse=True)
-
-
-def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent], parser=None) -> OutcomeFact:
+def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent], parser=None, progress_cb=None) -> OutcomeFact:
     """Stage 1B：AI 匹配 Agent findings → 基线漏洞列表 → outcome。
 
     基线可能有多个漏洞 case，Agent 也提交多个 finding。
     逐个对比基线 case 与 Agent finding，判断 Agent 是否找到了全部基线漏洞。
+
+    progress_cb: 可选回调 fn(text: str)，用于向前端报告匹配进度。
     """
     from ..domain.enums import Prediction, Confusion
     from ..workers.resolvers import OutcomeResolverImpl
+
+    def _progress(text):
+        if progress_cb:
+            try:
+                progress_cb(text)
+            except Exception:
+                pass
 
     # 无 benchmark → UNDETERMINED
     if not benchmarks:
@@ -173,16 +95,6 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             validation_result=None, resolver_status="NO_FINDING",
         ), case_results
 
-    # 按相关性排序（不截断，优化"基线匹配即停"策略）
-    active_findings = _sort_findings_by_relevance(active_findings, benchmarks)
-
-    # 构建 session_graph 用于跨 session 反向追踪（原则7）
-    _session_graph = parser.build_session_graph(events) if parser else None
-
-    # 为每个 finding 提取挖掘过程上下文（读了哪些文件、搜了什么、推理了什么）
-    for f in active_findings:
-        f["_mining_context"] = _extract_mining_context(events, f, _session_graph)
-
     # 构建基线和 finding 的精简描述
     baseline_list = []
     for b in benchmarks:
@@ -202,47 +114,18 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             "description": f.get("description") or "",
             "source": f.get("source", ""),
             "sink": f.get("sink", ""),
-            "mining_context": f.get("_mining_context", {}),
         })
-
-    # === 确定性匹配：finding_id == benchmark_item_id（仅 CVulnVerify 平台）===
-    # T002 的 finding_id 即漏洞中心 case_id，与 benchmark_item_id 同源
-    # 仅对 cvuln-verify 平台生效，不影响其他 agent 的 LLM 语义匹配
-    available_indices = list(range(len(active_findings)))
-    matches = []  # [(finding_idx, baseline_idx)]
-    matched_case_ids = set()
-
-    for bi, b in enumerate(benchmarks):
-        cid = b.benchmark_item_id or ""
-        if not cid:
-            continue
-        for fi in list(available_indices):
-            f = active_findings[fi]
-            # 仅 CVulnVerify 平台使用 case_id 确定性匹配
-            if f.get("platform") != "cvuln-verify":
-                continue
-            f_fid = str(f.get("finding_id", ""))
-            f_did = str(f.get("display_id", ""))
-            if f_fid == cid or f_did == cid:
-                matches.append((fi, bi))
-                matched_case_ids.add(cid)
-                available_indices.remove(fi)
-                log("AI_MATCH", f"DET_MATCHED case={cid} ← finding[{fi}] "
-                      f"id={f.get('display_id','')}")
-                break
-
-    det_matched = len(matched_case_ids)
-    if det_matched:
-        log("AI_MATCH", f"{task_run.condition.value} deterministic_match={det_matched} "
-              f"remaining_findings={len(available_indices)} "
-              f"unmatched_baselines={len(benchmarks)-det_matched}")
 
     # === 两阶段匹配：Phase 1 标题预筛选 → Phase 2 详细 1vs1 ===
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
     _PREFILTER_LIMIT = 100  # 预筛选 finding 数量上限，防止 token 超限
+    available_indices = list(range(len(active_findings)))
+    matches = []  # [(finding_idx, baseline_idx)]
+    matched_case_ids = set()
 
     # --- Phase 1: 标题预筛选（每基线 1 次 LLM，O(N) 调用）---
+    _progress(f"漏洞匹配 预筛选: 0/{len(benchmarks)} 基线完成")
     _prefilter_sys = (
         "下面是一些代码安全漏洞的标题。"
         "请从标题分析哪些漏洞描述跟基线的描述的是同一个漏洞。"
@@ -277,13 +160,10 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_llm_calls = 0
+    prefilter_done = 0
     with ThreadPoolExecutor(max_workers=8) as pre_pool:
         pre_futures = {}
         for bi in range(len(benchmarks)):
-            # 跳过已确定性匹配的 benchmark
-            if benchmarks[bi].benchmark_item_id in matched_case_ids:
-                prefilter_candidates[bi] = []
-                continue
             fut = pre_pool.submit(_prefilter_one, bi)
             pre_futures[fut] = bi
             prefilter_llm_calls += 1
@@ -296,6 +176,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 # 预筛选失败 → fallback 到全部 finding
                 prefilter_candidates[bi] = list(range(len(active_findings)))
                 log("AI_MATCH", f"{task_run.condition.value} prefilter FAILED (b{bi}): {e}, fallback all")
+            prefilter_done += 1
+            _progress(f"漏洞匹配 预筛选: {prefilter_done}/{len(benchmarks)} 基线完成")
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
     log("AI_MATCH", f"{task_run.condition.value} prefilter: {len(benchmarks)} baselines, "
@@ -304,6 +186,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
           f"was {len(benchmarks) * len(active_findings)} pairs)")
 
     # --- Phase 2: 详细 1vs1 对比（仅对预筛选候选）---
+    _progress(f"漏洞匹配 详细对比: 0/{len(benchmarks)} 基线完成 (已匹配 0)")
     _sys_prompt = (
         "# 角色\n"
         "你是漏洞匹配判定器。判断给定的漏洞报告和基线漏洞是否描述的是同一个漏洞。\n\n"
@@ -313,8 +196,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         "3. 函数名相同是强信号，但描述的漏洞行为也需吻合\n"
         "4. 漏洞类型可能用不同术语：如 '注入' 和 'SQL Injection' 是同一类型\n"
         "5. 仅漏洞类型相同但位置/函数不同的，不是同一个漏洞\n"
-        "6. 不看结论对错：即使漏洞报告和基线对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n"
-        "7. mining_context（读过的文件、搜索模式、推理摘要）作为辅助参考\n\n"
+        "6. 不看结论对错：即使漏洞报告和基线对该漏洞的结论不同（一个是漏洞、一个不是），只要描述的是同一个漏洞就返回 true\n\n"
         "# 输出格式\n"
         '只返回 JSON：{"is_same": true} 或 {"is_same": false}，不要任何额外文字。'
     )
@@ -341,15 +223,15 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     with ThreadPoolExecutor(max_workers=8) as pool:
         for bi, b in enumerate(benchmarks):
             cid = b.benchmark_item_id or ""
-            if cid in matched_case_ids:
-                continue  # 已确定性匹配，跳过
             if not available_indices:
+                _progress(f"漏洞匹配 详细对比: {len(benchmarks)}/{len(benchmarks)} 基线完成 (已匹配 {len(matched_case_ids)})")
                 break  # 候选池已空，剩余 baseline 都不会匹配
 
             # 只提交预筛选通过的候选 finding
             candidates = prefilter_candidates.get(bi, list(range(len(active_findings))))
             candidates = [fi for fi in candidates if fi in available_indices]
             if not candidates:
+                _progress(f"漏洞匹配 详细对比: {bi+1}/{len(benchmarks)} 基线完成 (已匹配 {len(matched_case_ids)})")
                 continue
 
             futures = {}
@@ -388,6 +270,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 md_desc = str((b.metadata or {}).get("vulnerability_type", ""))
                 log("AI_MATCH", f"UNMATCHED case={cid} label={b.expected_label.value if b.expected_label else 'NA'} "
                       f"vuln_type={md_desc}")
+            _progress(f"漏洞匹配 详细对比: {bi+1}/{len(benchmarks)} 基线完成 (已匹配 {len(matched_case_ids)})")
 
     log("AI_MATCH", f"{task_run.condition.value} baseline={len(benchmarks)} matched={len(matched_case_ids)} "
           f"prefilter_llm={prefilter_llm_calls} detail_llm={llm_call_count} "

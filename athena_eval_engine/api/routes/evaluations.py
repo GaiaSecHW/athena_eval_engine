@@ -142,6 +142,7 @@ def _run_bg_resume(evaluation_id: str):
         _record_background_failure(evaluation_id, e, "EVAL RESUME FAILED")
     finally:
         clear_eval_ctx()
+        es.clear_progress(evaluation_id)
 
 
 @app.get("/health")
@@ -191,6 +192,7 @@ def create_evaluation(req: CreateRequest):
                 _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
             finally:
                 clear_eval_ctx()
+                es.clear_progress(req.evaluation_id)
         _submit_eval(req.evaluation_id, _run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -424,6 +426,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
             finally:
                 clear_eval_ctx()
+                es.clear_progress(evaluation_id)
         _submit_eval(evaluation_id, _run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
