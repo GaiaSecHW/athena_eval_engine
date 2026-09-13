@@ -281,26 +281,26 @@ def chat_json(messages, **kwargs) -> dict:
         raw = raw.strip()
         parsed = None
         json_err = None
+        _decoder = json.JSONDecoder()
+        # raw_decode 只解析第一个完整 JSON 值，忽略尾部额外内容（不抛 "Extra data"）
         try:
-            parsed = json.loads(raw)
+            parsed, _end = _decoder.raw_decode(raw)
         except json.JSONDecodeError as je:
             json_err = je
         if parsed is None:
-            # 尝试提取 {...} 对象
+            # 开头有非 JSON 文字，从第一个 { 开始解析
             start = raw.find("{")
-            end = raw.rfind("}")
-            if start >= 0 and end > start:
+            if start >= 0:
                 try:
-                    parsed = json.loads(raw[start:end + 1])
+                    parsed, _end = _decoder.raw_decode(raw[start:])
                 except json.JSONDecodeError as je:
                     json_err = je
         if parsed is None:
-            # 尝试提取 [...] 数组
+            # 尝试从第一个 [ 解析数组
             start = raw.find("[")
-            end = raw.rfind("]")
-            if start >= 0 and end > start:
+            if start >= 0:
                 try:
-                    parsed = json.loads(raw[start:end + 1])
+                    parsed, _end = _decoder.raw_decode(raw[start:])
                 except json.JSONDecodeError as je:
                     json_err = je
         if parsed is not None and isinstance(parsed, dict):
