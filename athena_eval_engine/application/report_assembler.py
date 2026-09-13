@@ -32,6 +32,7 @@ class ReportModel:
     coverage: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     llm_token_usage: dict = field(default_factory=dict)
+    warnings: list = field(default_factory=list)
 
 
 def assemble(evaluation_id: str, metrics: list, stats: list,

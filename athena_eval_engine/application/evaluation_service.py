@@ -1111,11 +1111,12 @@ def run(evaluation_id: str) -> dict:
     _warnings = []
     # LLM 不可用
     if "LLM 不可用" in (report.narrative.get("conclusion") or "") or "LLM unavailable" in (report.narrative.get("summary") or ""):
-        _warnings.append("LLM_UNAVAILABLE")
+        _warnings.append("LLM 不可用：AI 分析部分或全部失败，报告结论可能不完整")
     # 指标 NA
     na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"]
     if na_metrics:
-        _warnings.append(f"NA_METRICS:{','.join(na_metrics)}")
+        _warnings.append(f"指标不可计算(NA)：{','.join(na_metrics)}，这些指标缺少必要数据")
+    report.warnings = _warnings
     final_status = "COMPLETED_WITH_WARNINGS" if _warnings else "COMPLETED"
     if _warnings:
         log("EVAL", f"评测完成（带警告）: {', '.join(_warnings)}")
@@ -1123,6 +1124,7 @@ def run(evaluation_id: str) -> dict:
         log("EVAL", f"评测完成")
 
     # ===== Phase 7: 写入报告 + 标记完成（短连接）=====
+    rj = render_json(report)  # rj 在写入 warnings 后重新序列化
     def _finalize(cur):
         cur.execute("INSERT IGNORE INTO evaluation_report (report_id, evaluation_id, calculation_run_id, snapshot_id, "
                     "report_version, report_config_json, status) VALUES (%s,%s,%s,%s,'1.0',%s,'READY')",
