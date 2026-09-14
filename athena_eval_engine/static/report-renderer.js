@@ -218,8 +218,8 @@ function renderReport(d){
   var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
   if(caseResults.length&&(kgActive||memActive)){
-    kgHtml+="<div style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
-    caseResults.forEach(function(c,idx){
+    function _renderCaseCard(c,idx){
+      var h="";
       var conf=c.confusion||"NA";
       var nogkConf=c.nogk_confusion||"NA";
       function confBadge(label,conf){
@@ -231,15 +231,15 @@ function renderReport(d){
         var correctness=isCorrect?"正确":"错误";
         return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+judgment+" ("+correctness+")</span>";
       }
-      kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
-      kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
-      kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
+      h+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
+      h+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
+      h+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
       var _exp=c.expected_label||"";
       var _expBadge=_exp==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:11px'>基线: 漏洞</span>":_exp==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:11px'>基线: 非漏洞</span>":"";
-      kgHtml+=_expBadge;
-      kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
-      kgHtml+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
-      kgHtml+="</div>";
+      h+=_expBadge;
+      h+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
+      h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
+      h+="</div>";
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
       // AI 分析结论放最前面
@@ -247,78 +247,90 @@ function renderReport(d){
         var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
         var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
         var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
-        kgHtml+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
-        kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
-        kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
-        if(pcKa.reason)kgHtml+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
-        kgHtml+="</div>";
+        h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
+        h+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
+        h+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
+        if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
+        h+="</div>";
       }
-      kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
       // 知识与记忆交互明细
       if(pcKa&&kgActive){
         // 知识图谱交互
         var ivs=pcKa.interactions||[];
         if(ivs.length){
-          kgHtml+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
-          kgHtml+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🔍 知识交互（"+ivs.length+" 条）</summary>";
+          h+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
+          h+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🔍 知识交互（"+ivs.length+" 条）</summary>";
           ivs.forEach(function(iv,i){
-            kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
+            h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
             var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
             if(iv.timestamp){var ts=new Date(iv.timestamp);src+=" · "+ts.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
+            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
             var rawQ=iv.command||iv.question||"";
             var rawA=iv.answer||"";
             if(qp){
-              kgHtml+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
+              h+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
             }
             if(op){
-              kgHtml+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
+              h+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
             }
             if(rawQ||rawA){
-              kgHtml+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
-              if(rawQ)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
-              if(rawA)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
-              kgHtml+="</details>";
+              h+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
+              if(rawQ)h+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
+              if(rawA)h+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
+              h+="</details>";
             }
-            kgHtml+="</div>";
+            h+="</div>";
           });
-          kgHtml+="</details>";
+          h+="</details>";
         }
         // 记忆交互
         var memIvs=pcKa.memory_interactions||[];
         if(memIvs.length){
-          kgHtml+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
-          kgHtml+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🧠 记忆交互（"+memIvs.length+" 条）</summary>";
+          h+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
+          h+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🧠 记忆交互（"+memIvs.length+" 条）</summary>";
           memIvs.forEach(function(iv,i){
-            kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
+            h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
             var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
             if(iv.timestamp){var ts=new Date(iv.timestamp);src+=" · "+ts.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
+            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
             var rawQ=iv.command||iv.question||"";
             var rawA=iv.answer||"";
             if(qp){
-              kgHtml+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
+              h+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
             }
             if(op){
-              kgHtml+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
+              h+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
             }
             if(rawQ||rawA){
-              kgHtml+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
-              if(rawQ)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
-              if(rawA)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
-              kgHtml+="</details>";
+              h+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
+              if(rawQ)h+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
+              if(rawA)h+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
+              h+="</details>";
             }
-            kgHtml+="</div>";
+            h+="</div>";
           });
-          kgHtml+="</details>";
+          h+="</details>";
         }
       }
-      kgHtml+="</div>";
-    });
+      h+="</div>";
+      return h;
+    }
+    // 按漏洞/非漏洞分组展示
+    var vulnCases=caseResults.filter(function(c){return c.expected_label==="VULNERABLE";});
+    var nonVulnCases=caseResults.filter(function(c){return c.expected_label==="NON_VULNERABLE";});
+    if(vulnCases.length){
+      kgHtml+="<div style='font-size:15px;margin:12px 0 8px;font-weight:600'>🔴 漏洞基线（<b>"+vulnCases.length+"</b> 个）</div>";
+      vulnCases.forEach(function(c,i){kgHtml+=_renderCaseCard(c,i);});
+    }
+    if(nonVulnCases.length){
+      kgHtml+="<div style='font-size:15px;margin:12px 0 8px;font-weight:600'>🟢 非漏洞基线（<b>"+nonVulnCases.length+"</b> 个）</div>";
+      nonVulnCases.forEach(function(c,i){kgHtml+=_renderCaseCard(c,i);});
+    }
   }
   return kgHtml;
   }
