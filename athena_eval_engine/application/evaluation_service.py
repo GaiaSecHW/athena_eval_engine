@@ -1114,15 +1114,22 @@ def run(evaluation_id: str) -> dict:
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
-        # 每个类别独立做逐漏洞 KG 归因，避免将挖掘与验证 trace 混入同一结论。
         from concurrent.futures import ThreadPoolExecutor as _TP
-        log("EVAL", f"并行调用 LLM 分析 (ai_narrative + 分类 per_case_kg)...")
+        # ── Phase 6a: 报告生成（叙述性结论 + 漏洞流转分析）──
+        log("EVAL", f"报告生成: ai_narrative + ai_vuln_analysis...")
         set_progress(evaluation_id, "报告生成: AI 分析中...")
-        with _TP(max_workers=3) as llm_pool:
+        with _TP(max_workers=2) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
                                         metric_groups=_metric_groups, tool_stats=tool_stats_list)
-
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
+            report.narrative = fut_narr.result()
+            report.vuln_analysis = fut_vuln.result()
+        log("EVAL", f"报告生成完成")
+
+        # ── Phase 6b: 知识与记忆介入分析（逐漏洞 KG 归因）──
+        log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
+        set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
+        with _TP(max_workers=2) as kg_pool:
             fut_group_pcka = {}
             for group in _metric_groups:
                 (_g_cases, _g_interactions, _g_session_graph,
@@ -1130,24 +1137,24 @@ def run(evaluation_id: str) -> dict:
                  _g_parser) = _group_kg_inputs[group["task_id"]]
                 _g_label = group.get("label", group["task_id"])
                 def _cb(done, total, _label=_g_label):
-                    set_task_progress(evaluation_id, _label, f"AI 分析 {done}/{total}")
-                fut_group_pcka[group["task_id"]] = llm_pool.submit(
+                    set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
+                fut_group_pcka[group["task_id"]] = kg_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
                     _g_mem_interactions, group["category"], _g_parser, _cb)
-            report.narrative = fut_narr.result()
-            report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
-        log("EVAL", f"LLM 分析完成")
-        set_progress(evaluation_id, "报告生成: 组装报告中...")
+        log("EVAL", f"知识与记忆介入分析完成")
+        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
     else:
         log("EVAL", f"LLM 未启用，跳过 AI 请求并使用规则化报告")
+        set_progress(evaluation_id, "知识与记忆介入分析: 规则化分析...")
         for group in _metric_groups:
             _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
             group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
                 group["case_results"], group["category"], _g_nogk_cases)
         report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
+        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
     # 保留全局字段以兼容既有消费者，同时标明来源类别，避免相同 case_id 混淆。
     for group in _metric_groups:
         for item in group["per_case_kg_analysis"]:
