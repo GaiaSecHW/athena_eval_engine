@@ -283,6 +283,7 @@ async function selEv(id){
       $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:14px;color:var(--sub);margin-top:4px">'+(s.name||'')+'</div><div style="font-size:12px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
+        if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
         try{const st=await jget(`/api/v1/evaluations/${id}`);
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
             // 优先固化 HTML（HEAD 探测）
@@ -353,6 +354,7 @@ function retryEval(eid){
           var pollCnt=0;
           var retryPoll=function(){
             pollCnt++;if(pollCnt>30)return;
+            if(activeId!==eid)return;  // 用户已切走，停止重跑轮询
             jget('/api/v1/evaluations/'+eid).then(function(s){
               if(s.status==='FAILED'){setTimeout(retryPoll,1000);}
               else{selEv(eid);}
