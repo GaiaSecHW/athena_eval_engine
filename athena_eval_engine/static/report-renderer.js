@@ -423,8 +423,27 @@ function renderReport(d){
       const baseline=cr.length||(d.baseline_count||0);
       const vulnN=cr.filter(c=>c.expected_label==="VULNERABLE").length;
       const nonVulnN=cr.filter(c=>c.expected_label==="NON_VULNERABLE").length;
+      const ac=group&&group.alert_center;
+      let acHtml="";
+      if(ac&&ac.total){
+        const c=ac.counts||{};
+        if(isVerify){
+          acHtml=`<div style="font-size:16px;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
+            告警中心收到漏洞数：<b style="font-size:18px">${ac.total}</b>
+            <span style="margin-left:16px;font-size:14px">
+              <span style="color:var(--green)">是漏洞 <b>${c.vulnerable||0}</b></span> ·
+              <span style="color:var(--red)">不是漏洞 <b>${c.not_vulnerable||0}</b></span> ·
+              <span style="color:var(--amber)">其他（研判中）<b>${c.pending||0}</b></span> ·
+              <span style="color:var(--gray)">无法判定 <b>${c.inconclusive||0}</b></span>
+            </span></div>`;
+        }else{
+          acHtml=`<div style="font-size:16px;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
+            告警中心收到漏洞数：<b style="font-size:18px">${ac.total}</b></div>`;
+        }
+      }
       return `<div class="card" style="margin-bottom:16px">
         <h3>📊 ${label} — 漏洞检测统计</h3>
+        ${acHtml}
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
         <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td><td class="num">${nogkRecv}</td></tr>

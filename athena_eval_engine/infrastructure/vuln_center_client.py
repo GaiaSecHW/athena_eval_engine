@@ -67,6 +67,98 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
     return accumulated
 
 
+def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
+                            page_size: int = 1000, max_pages: int = 100) -> list[dict]:
+    """分页拉取告警中心 case。
+
+    ``scope=alert_center`` + ``project_id`` + 可选 ``source_task_ids`` 做项目/任务级过滤。
+    返回全部提交的 case（不限 confirmation_status），含引擎判定字段：
+    - ``validation_result``: vulnerable / not_vulnerable / inconclusive / None
+    - ``current_stage``: receive / validation
+    - ``current_status``: pending / completed
+    - ``latest_engine_decision``: 引擎最新决策
+    - ``confirm_terminal_status``: 引擎处理终态
+    """
+    accumulated: list[dict] = []
+    total: int | None = None
+    for page in range(1, max_pages + 1):
+        params: dict[str, str | int] = {
+            "scope": "alert_center",
+            "project_id": project_id,
+            "sort_field": "created_at",
+            "sort_direction": "desc",
+            "include_decision_reason": "false",
+            "page": page,
+            "page_size": page_size,
+        }
+        if source_task_id:
+            params["source_task_ids"] = source_task_id
+        data = _get(VULN_CENTER_API_URL, params)
+        items = data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+        accumulated.extend(items)
+        if total is None:
+            total = data.get("total") if isinstance(data, dict) else None
+        if not items:
+            break
+        if total is not None and len(accumulated) >= total:
+            break
+        if total is None and len(items) < page_size:
+            break
+    return accumulated
+
+
+def get_alert_center_summary(project_id: str, source_task_id: str | None = None) -> dict:
+    """返回告警中心 case 摘要，用于指标计算和报告展示。
+
+    返回结构::
+
+        {
+            "total": N,                    # 告警中心收到漏洞总数
+            "cases": [...],               # 全部 case 原始数据
+            "by_verdict": {                # 按 validation_result 分类
+                "vulnerable": [...],      # 是漏洞
+                "not_vulnerable": [...],  # 不是漏洞
+                "inconclusive": [...],    # 无法判定
+                "pending": [...],         # 其他（研判中）— current_stage=receive 且无 validation_result
+            },
+            "counts": {
+                "vulnerable": N,
+                "not_vulnerable": N,
+                "inconclusive": N,
+                "pending": N,
+            }
+        }
+    """
+    cases = list_alert_center_cases(project_id, source_task_id)
+    by_verdict: dict[str, list[dict]] = {
+        "vulnerable": [],
+        "not_vulnerable": [],
+        "inconclusive": [],
+        "pending": [],
+    }
+    for c in cases:
+        vr = c.get("validation_result")
+        stage = c.get("current_stage")
+        if vr == "vulnerable":
+            by_verdict["vulnerable"].append(c)
+        elif vr == "not_vulnerable":
+            by_verdict["not_vulnerable"].append(c)
+        elif vr == "inconclusive":
+            by_verdict["inconclusive"].append(c)
+        elif not vr and stage == "receive":
+            by_verdict["pending"].append(c)
+        else:
+            # 其他未覆盖的情况归入 pending
+            by_verdict["pending"].append(c)
+    counts = {k: len(v) for k, v in by_verdict.items()}
+    return {
+        "total": len(cases),
+        "cases": cases,
+        "by_verdict": by_verdict,
+        "counts": counts,
+    }
+
+
 def search_vuln_cases(project_id: str, search_term: str, page_size: int = 20) -> list[dict]:
     """按 case ID 搜索漏洞中心 case，不走 scope=vuln_center。
 

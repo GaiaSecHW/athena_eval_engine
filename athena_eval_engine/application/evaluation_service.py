@@ -16,7 +16,7 @@ from ..workers.turing_trace_parser import TuringTraceParser
 from ..workers.resolvers import (
     OutcomeResolverImpl, KnowledgeResolverImpl, ToolActionResolverImpl, ResourceResolverImpl,
 )
-from ..workers.ai_matcher import ai_match_outcome
+from ..workers.ai_matcher import ai_match_outcome, match_alert_center_to_findings
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
@@ -332,6 +332,47 @@ def create(req: CreateRequest):
         _tb.print_exc()
         log("CREATE", f"case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE")
 
+    # 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
+    alert_center_data = {}
+    _ac_project = req.benchmark_set_id
+    _ac_task = effective_vc_task
+    if _ac_project and _ac_task:
+        try:
+            from ..infrastructure.vuln_center_client import get_alert_center_summary
+            log("CREATE", f"告警中心取数据: project={_ac_project} task={_ac_task}")
+            ac_summary = get_alert_center_summary(_ac_project, _ac_task)
+            ac_total = ac_summary.get("total", 0)
+            ac_counts = ac_summary.get("counts", {})
+            log("CREATE", f"告警中心返回 {ac_total} 条 case: "
+                f"是漏洞={ac_counts.get('vulnerable', 0)} "
+                f"不是漏洞={ac_counts.get('not_vulnerable', 0)} "
+                f"无法判定={ac_counts.get('inconclusive', 0)} "
+                f"研判中={ac_counts.get('pending', 0)}")
+            # 只保留指标计算和报告需要的字段
+            alert_center_data = {
+                "source_task_id": _ac_task,
+                "project_id": _ac_project,
+                "total": ac_total,
+                "counts": ac_counts,
+                "cases": [
+                    {
+                        "case_id": c.get("id") or c.get("case_id") or "",
+                        "title": c.get("title") or "",
+                        "summary": c.get("summary") or "",
+                        "validation_result": c.get("validation_result"),
+                        "current_stage": c.get("current_stage"),
+                        "current_status": c.get("current_status"),
+                    }
+                    for c in ac_summary.get("cases", [])
+                ],
+            }
+        except Exception as e:
+            import traceback as _tb
+            log("CREATE", f"⚠ 取告警中心数据失败: {e}")
+            _tb.print_exc()
+    else:
+        log("CREATE", f"⚠ 跳过告警中心数据获取: project={_ac_project} task={_ac_task}")
+
     # Step 1: benchmark_set
     conn = connect(autocommit=True)
     try:
@@ -378,7 +419,8 @@ def create(req: CreateRequest):
     # Step 4: evaluation_snapshot（独立连接）
     manifest = {"entries": req.entries, "manifest_hash": "mh",
                 "vbench_project_name": req.vbench_project_name,
-                "benchmark_source": req.benchmark_source}
+                "benchmark_source": req.benchmark_source,
+                "alert_center_data": alert_center_data}
     conn = connect(autocommit=True)
     try:
         conn.cursor().execute(
@@ -494,6 +536,18 @@ def run(evaluation_id: str) -> dict:
                 log("LOAD", f"漏洞中心校验失败（不影响评测）: {e}")
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
+
+    # 从 snapshot 加载告警中心数据（指标计算的权威数据来源）
+    _alert_center_data = cfg.get("manifest", {}).get("alert_center_data", {})
+    if _alert_center_data:
+        _ac_counts = _alert_center_data.get("counts", {})
+        log("EVAL", f"告警中心数据已加载: total={_alert_center_data.get('total', 0)} "
+              f"是漏洞={_ac_counts.get('vulnerable', 0)} "
+              f"不是漏洞={_ac_counts.get('not_vulnerable', 0)} "
+              f"无法判定={_ac_counts.get('inconclusive', 0)} "
+              f"研判中={_ac_counts.get('pending', 0)}")
+    else:
+        log("EVAL", "⚠ 告警中心数据为空，指标计算将回退到 parser 提取")
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
     # 重跑时清理旧 facts，确保用最新 benchmark_item 标签重新计算
@@ -747,22 +801,97 @@ def run(evaluation_id: str) -> dict:
             if not bench:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
             return {"tr": tr, "events": events, "session": session, "bench": bench, "src": src,
-                    "cond": cond, "parser": parser}
+                    "cond": cond, "parser": parser,
+                    "trace_kind": e.get("trace_kind"), "category": e.get("category", "")}
 
         def _resolve_trace(parsed):
-            """Phase 2: 漏洞匹配 + resolve（含 LLM，慢）。"""
+            """Phase 2: 漏洞匹配 + resolve（含 LLM，慢）。
+
+            三方匹配方案（finding 为锚点）：
+            1. parser 提取 trace findings
+            2. 告警中心 case ↔ finding AI 匹配（跟基线一样的方案，告警中心为锚点）
+            3. 匹配上的 finding 用告警中心 validation_result 更新 verdict
+            4. 未匹配上 finding 的告警中心 case 作为兜底 finding（直接参与 finding↔基线匹配）
+            5. ai_match_outcome 做 finding↔基线匹配 → TP/FP/FN/TN
+            """
             from concurrent.futures import ThreadPoolExecutor
             tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
             bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
+            trace_kind = parsed.get("trace_kind")
+            category = parsed.get("category", "")
+            is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
+
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
             with ThreadPoolExecutor(max_workers=4) as inner_pool:
-                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser,
-                                                progress_cb=lambda text, tr=tr: set_task_progress(
-                                                    evaluation_id, tr.task_run_id,
-                                                    f"[{tr.condition.value}] {text}"))
+                # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
                 fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
+
+                # 三方匹配（主线程跑，KN/TA/RS 在后台并行）
+                _findings_override = None
+                _ac_confirmed = 0
+                _ac_fp = 0
+                if _alert_center_data and _alert_center_data.get("cases"):
+                    _ac_cases = _alert_center_data["cases"]
+                    # Step 1: 提取 parser findings
+                    _parser_findings = parser.extract_findings(events)
+                    log("MATCH", f"{cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
+                          f"(is_verify={is_verify})")
+
+                    # Step 2: 告警中心 case ↔ finding AI 匹配（告警中心为锚点，跟基线一样）
+                    _matched, _unmatched_ac = match_alert_center_to_findings(
+                        _ac_cases, _parser_findings,
+                        progress_cb=lambda text: set_task_progress(
+                            evaluation_id, tr.task_run_id,
+                            f"[{tr.condition.value}] {text}"))
+
+                    # Step 3: 匹配上的 finding 用告警中心 validation_result 更新
+                    for fi, ai in _matched.items():
+                        ac = _ac_cases[ai]
+                        vr = ac.get("validation_result")
+                        if is_verify:
+                            # T002: validation_result 映射
+                            _parser_findings[fi]["validation_result"] = (
+                                "CONFIRMED" if vr == "vulnerable" else "FALSE_POSITIVE")
+                        else:
+                            # T001: 告警中心全部 = agent 认为是漏洞
+                            _parser_findings[fi]["validation_result"] = "CONFIRMED"
+                        log("MATCH", f"{cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')} "
+                              f"vr={vr} → {_parser_findings[fi]['validation_result']}")
+
+                    # Step 4: 未匹配上 finding 的告警中心 case 作为兜底 finding
+                    for ai in _unmatched_ac:
+                        ac = _ac_cases[ai]
+                        vr = ac.get("validation_result")
+                        if is_verify:
+                            finding_vr = "CONFIRMED" if vr == "vulnerable" else "FALSE_POSITIVE"
+                        else:
+                            finding_vr = "CONFIRMED"
+                        _parser_findings.append({
+                            "validation_result": finding_vr,
+                            "title": ac.get("title") or "",
+                            "vuln_type": "",
+                            "description": ac.get("summary") or "",
+                            "source": "",
+                            "sink": "",
+                            "display_id": ac.get("case_id", ""),
+                            "finding_id": ac.get("case_id", ""),
+                        })
+
+                    _findings_override = _parser_findings
+                    _ac_confirmed = sum(1 for f in _parser_findings if f.get("validation_result") == "CONFIRMED")
+                    _ac_fp = sum(1 for f in _parser_findings if f.get("validation_result") == "FALSE_POSITIVE")
+                    log("MATCH", f"{cond.value} 三方匹配完成: findings={len(_parser_findings)} "
+                          f"matched={len(_matched)} unmatched_ac={len(_unmatched_ac)} "
+                          f"confirmed={_ac_confirmed} fp={_ac_fp}")
+
+                # ai_match_outcome 依赖三方匹配结果，最后提交
+                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser,
+                                                progress_cb=lambda text, tr=tr: set_task_progress(
+                                                    evaluation_id, tr.task_run_id,
+                                                    f"[{tr.condition.value}] {text}"),
+                                                findings_override=_findings_override)
                 oc, case_results = fut_outcome.result()
                 kn = fut_kn.result()
                 ta = fut_ta.result()
@@ -772,26 +901,33 @@ def run(evaluation_id: str) -> dict:
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}")
             # finding_count 保持工具调用数（JSD 用），CONFIRMED/FP 数存 action_distribution
-            # 所有平台统一：只计 validation_result=CONFIRMED 的 finding
-            _findings = parser.extract_findings(events)
-            _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
-            _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
-            # WebVulnVerify: 验证接收总数 = vulnerability_analyze + vulnerability_verify 的唯一 vulnerability_id 数
-            _analyze_vids = set()
-            for _e in events:
-                if _e.is_tool_call() and (_e.tool_name or "") in ("vulnerability_analyze", "vulnerability_verify"):
-                    _vid = str((_e.input_json or {}).get("vulnerability_id", ""))
-                    if _vid and _vid != "?":
-                        _analyze_vids.add(_vid)
-            _analyze_count = len(_analyze_vids) if _analyze_vids else (_confirmed + _fp)
+            if _findings_override is not None:
+                _findings = _findings_override
+                _confirmed = _ac_confirmed
+                _fp = _ac_fp
+                _analyze_count = _alert_center_data.get("total", 0) if _alert_center_data else (_ac_confirmed + _ac_fp)
+            else:
+                _findings = parser.extract_findings(events)
+                _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
+                _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
+                # WebVulnVerify: 验证接收总数 = vulnerability_analyze + vulnerability_verify 的唯一 vulnerability_id 数
+                _analyze_vids = set()
+                for _e in events:
+                    if _e.is_tool_call() and (_e.tool_name or "") in ("vulnerability_analyze", "vulnerability_verify"):
+                        _vid = str((_e.input_json or {}).get("vulnerability_id", ""))
+                        if _vid and _vid != "?":
+                            _analyze_vids.add(_vid)
+                _analyze_count = len(_analyze_vids) if _analyze_vids else (_confirmed + _fp)
             log("MATCH", f"{cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}")
             ta.action_distribution["confirmed_finding_count"] = _confirmed
             ta.action_distribution["false_positive_finding_count"] = _fp
             ta.action_distribution["analyze_received_count"] = _analyze_count
+            ta.action_distribution["alert_center_total"] = _alert_center_data.get("total", 0) if _alert_center_data else 0
+            ta.action_distribution["alert_center_counts"] = _alert_center_data.get("counts", {}) if _alert_center_data else {}
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
-            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "findings": _findings, "events": events, "_task_id": tr.task_id, "parser": parser}, parsed["src"]
+            return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "findings": _findings, "events": events, "_task_id": tr.task_id, "parser": parser, "_is_verify": is_verify}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
         _local_paths = {}
@@ -1061,6 +1197,10 @@ def run(evaluation_id: str) -> dict:
             "diagnostic_hits": g_report.diagnostic_hits,
             "case_results": _g_case_results,
             "pair_count": len(gvs),
+            "alert_center": {
+                "total": _alert_center_data.get("total", 0) if _alert_center_data else 0,
+                "counts": _alert_center_data.get("counts", {}) if _alert_center_data else {},
+            } if _alert_center_data else None,
         })
 
     # ===== Phase 5: 写入指标（短连接）=====
