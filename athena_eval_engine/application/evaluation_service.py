@@ -1091,11 +1091,11 @@ def run(evaluation_id: str) -> dict:
             fact_repo.insert_statistical_result(cur, cr_id, pop_id, s, evaluation_id)
     _db_query(_insert_metrics)
 
-    # ===== Phase 6: 生成报告 + AI 分析（慢操作，无 DB 连接）=====
-    set_progress(evaluation_id, "报告生成: 诊断中...")
+    # ===== Phase 6: AI 分析 + 生成报告（慢操作，无 DB 连接）=====
+    set_progress(evaluation_id, "诊断中...")
     _set_status_short(evaluation_id, "REPORTING")
     _check_cancel(evaluation_id, "REPORTING")
-    log("EVAL", f"开始生成报告 + AI 分析...")
+    log("EVAL", f"开始 AI 分析 + 生成报告...")
     hits = diagnose(out["metric_results"], out["statistical_results"])
     log("EVAL", f"诊断完成: {len(hits)} 条告警")
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
@@ -1116,15 +1116,15 @@ def run(evaluation_id: str) -> dict:
     if _llm_enabled():
         from concurrent.futures import ThreadPoolExecutor as _TP
         # ── Phase 6a: 报告生成（叙述性结论 + 漏洞流转分析）──
-        log("EVAL", f"报告生成: ai_narrative + ai_vuln_analysis...")
-        set_progress(evaluation_id, "报告生成: AI 分析中...")
+        log("EVAL", f"AI 综合分析: ai_narrative + ai_vuln_analysis...")
+        set_progress(evaluation_id, "AI 综合分析中...")
         with _TP(max_workers=2) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
                                         metric_groups=_metric_groups, tool_stats=tool_stats_list)
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()
-        log("EVAL", f"报告生成完成")
+        log("EVAL", f"AI 综合分析完成")
 
         # ── Phase 6b: 知识与记忆介入分析（逐漏洞 KG 归因）──
         log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
