@@ -472,6 +472,42 @@ class ArgoTraceParser(TraceParser):
         return str(value) if value else ""
 
     @staticmethod
+    def _normalize_line_range(lr) -> tuple[int, int]:
+        """将 line_range 归一化为 (start, end) 元组。
+
+        接受: "351-431", [351, 431], [[351, 431]], None → (0, 0)
+        """
+        if not lr:
+            return (0, 0)
+        if isinstance(lr, str):
+            parts = lr.replace(" ", "").split("-")
+            try:
+                return (int(parts[0]), int(parts[-1]))
+            except (ValueError, IndexError):
+                return (0, 0)
+        if isinstance(lr, list):
+            if lr and isinstance(lr[0], list):
+                flat = [x for sub in lr for x in (sub if isinstance(sub, list) else [sub])]
+            else:
+                flat = lr
+            try:
+                return (int(flat[0]), int(flat[-1]))
+            except (ValueError, IndexError):
+                return (0, 0)
+        return (0, 0)
+
+    @staticmethod
+    def _lr_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
+        """两个 line_range 的距离：重叠则为 0，否则为间距。"""
+        if a == (0, 0) or b == (0, 0):
+            return 0  # 缺失 line_range 时不做距离惩罚
+        if a[1] < b[0]:
+            return b[0] - a[1]
+        if b[1] < a[0]:
+            return a[0] - b[1]
+        return 0  # 重叠
+
+    @staticmethod
     def _try_parse_json_lenient(text: str) -> dict | None:
         """尝试解析 JSON，自动补全缺失的闭合花括号。
 
@@ -515,91 +551,136 @@ class ArgoTraceParser(TraceParser):
 
     @staticmethod
     def _extract_accepted_payloads(text: str) -> list[dict]:
-        """从文本中提取 accepted=true 的 JSON payload。
+        """从文本中提取 JSON payload。
+
+        nazhua 平台的 validate_verify_payload 不要求 accepted: true，
+        没有 accepted 字段时直接用 payload 本身作为 data。
+        因此本方法只过滤 accepted:false，其余全部保留（含裸 payload）。
 
         两种策略：
         1. ```json 代码块中的 JSON 对象（raw_decode + 容错补全）
-        2. 文本中直接出现的 {"accepted": ...} 对象（花括号匹配 + 容错补全）
+        2. 文本中直接出现的 JSON 对象（花括号匹配 + 容错补全），
+           搜索关键词：accepted, verdict, findings
         """
         results: list[dict] = []
+        seen: set[str] = set()
+
+        def _add(obj: dict) -> None:
+            if obj.get("accepted") is False:
+                return
+            sig = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+            if sig not in seen:
+                seen.add(sig)
+                results.append(obj)
+
         # 策略 1: ```json 代码块
         for obj in _extract_json_objects_from_text(text):
-            if obj.get("accepted") is True:
-                results.append(obj)
+            _add(obj)
         # 策略 1 补充: raw_decode 失败时，手动提取 ```json 块并容错解析
-        if not results:
-            marker = '```json'
-            search_start = 0
-            while True:
-                idx = text.find(marker, search_start)
-                if idx == -1:
-                    break
-                brace_idx = text.find('{', idx + len(marker))
-                if brace_idx == -1:
-                    search_start = idx + len(marker)
-                    continue
-                close_idx = text.find('```', brace_idx)
-                if close_idx < 0:
-                    close_idx = len(text)
-                json_str = text[brace_idx:close_idx]
-                obj = ArgoTraceParser._try_parse_json_lenient(json_str)
-                if obj and obj.get("accepted") is True:
-                    results.append(obj)
-                search_start = close_idx + 3
-        if results:
-            return results
-        # 策略 2: 直接在文本中搜索 "accepted" 并做花括号匹配
+        marker = '```json'
         search_start = 0
         while True:
-            idx = text.find('"accepted"', search_start)
-            if idx < 0:
+            idx = text.find(marker, search_start)
+            if idx == -1:
                 break
-            brace_start = text.rfind('{', 0, idx + 1)
-            if brace_start < 0:
-                search_start = idx + 1
+            brace_idx = text.find('{', idx + len(marker))
+            if brace_idx == -1:
+                search_start = idx + len(marker)
                 continue
-            depth = 0
-            in_string = False
-            escape = False
-            end_idx = -1
-            for j in range(brace_start, len(text)):
-                ch = text[j]
-                if escape:
-                    escape = False
-                    continue
-                if ch == '\\':
-                    escape = True
-                    continue
-                if ch == '"':
-                    in_string = not in_string
-                    continue
-                if in_string:
-                    continue
-                if ch == '{':
-                    depth += 1
-                elif ch == '}':
-                    depth -= 1
-                    if depth == 0:
-                        end_idx = j + 1
+            close_idx = text.find('```', brace_idx)
+            if close_idx < 0:
+                close_idx = len(text)
+            json_str = text[brace_idx:close_idx]
+            obj = ArgoTraceParser._try_parse_json_lenient(json_str)
+            if obj:
+                _add(obj)
+            search_start = close_idx + 3
+        if results:
+            return results
+
+        # 策略 2: 直接在文本中搜索关键词并做花括号匹配
+        # 预计算所有顶层 { 的位置（depth=0），用于找到包含关键词的最外层对象
+        top_level_opens: list[int] = []
+        depth = 0
+        in_str = False
+        esc = False
+        for j, ch in enumerate(text):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                if depth == 0:
+                    top_level_opens.append(j)
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+
+        for keyword in ('"verdict"', '"findings"'):
+            search_start = 0
+            while True:
+                idx = text.find(keyword, search_start)
+                if idx < 0:
+                    break
+                # 找到关键词之前的最后一个顶层 {
+                brace_start = -1
+                for tb in top_level_opens:
+                    if tb <= idx:
+                        brace_start = tb
+                    else:
                         break
-            if end_idx > 0:
-                try:
-                    payload = json.loads(text[brace_start:end_idx])
-                    if isinstance(payload, dict) and payload.get("accepted") is True:
-                        results.append(payload)
-                except json.JSONDecodeError:
-                    pass
-                search_start = end_idx
-            else:
-                # 花括号不匹配 — 尝试容错解析
-                close_idx = text.find('```', brace_start)
-                if close_idx < 0:
-                    close_idx = len(text)
-                json_str = text[brace_start:close_idx]
-                obj = ArgoTraceParser._try_parse_json_lenient(json_str)
-                if obj and obj.get("accepted") is True:
-                    results.append(obj)
-                search_start = close_idx
+                if brace_start < 0:
+                    search_start = idx + 1
+                    continue
+                depth = 0
+                in_string = False
+                escape = False
+                end_idx = -1
+                for j in range(brace_start, len(text)):
+                    ch = text[j]
+                    if escape:
+                        escape = False
+                        continue
+                    if ch == '\\':
+                        escape = True
+                        continue
+                    if ch == '"':
+                        in_string = not in_string
+                        continue
+                    if in_string:
+                        continue
+                    if ch == '{':
+                        depth += 1
+                    elif ch == '}':
+                        depth -= 1
+                        if depth == 0:
+                            end_idx = j + 1
+                            break
+                if end_idx > 0:
+                    try:
+                        payload = json.loads(text[brace_start:end_idx])
+                        if isinstance(payload, dict):
+                            _add(payload)
+                    except json.JSONDecodeError:
+                        pass
+                    search_start = end_idx
+                else:
+                    close_idx = text.find('```', brace_start)
+                    if close_idx < 0:
+                        close_idx = len(text)
+                    json_str = text[brace_start:close_idx]
+                    obj = ArgoTraceParser._try_parse_json_lenient(json_str)
+                    if obj:
+                        _add(obj)
+                    search_start = close_idx
+
         return results
 
     @staticmethod
@@ -638,7 +719,10 @@ class ArgoTraceParser(TraceParser):
         关联方式：
         - finding 从 investigate session 提取，session_id = investigate session
         - verify session 的 system prompt 包含 finding metadata (cwe, file, line_range)
-        - 用 (cwe, file, line_range) 匹配 verdict 到 finding
+        - Pass 1: 精确匹配 (cwe, file, line_range)
+        - Pass 2: 精确匹配失败时，回退到 (cwe, file) 模糊匹配（line_range 最近），
+          因为 nazhua 用 original_finding_id 关联，不依赖 line_range，
+          verify session 的 line_range 可能与 investigate session 不同
         - 同一 finding 被多次验证时，取最后一个 verdict（last-wins）
 
         过滤规则：
@@ -651,6 +735,8 @@ class ArgoTraceParser(TraceParser):
         session_verdicts: dict[str, list[tuple[str, int]]] = {}
         # session_id -> finding key（从 verify system prompt 提取）
         session_finding_key: dict[str, str] = {}
+        # session_id -> (cwe, file, line_range_tuple) from verify system prompt
+        session_meta: dict[str, tuple[str, str, tuple[int, int]]] = {}
 
         for i, e in enumerate(events):
             # SYSTEM_EVENT: verify session system prompt，含 finding metadata
@@ -662,6 +748,11 @@ class ArgoTraceParser(TraceParser):
                         key = self._finding_key(meta)
                         if key and key != "(,,)":
                             session_finding_key[e.session_id] = key
+                        session_meta[e.session_id] = (
+                            str(meta.get("cwe", "")),
+                            str(meta.get("file", "")),
+                            self._normalize_line_range(meta.get("line_range")),
+                        )
 
             # TEXT 事件: investigate findings 和 verify verdicts
             if e.event_type == "TEXT" and e.output_json:
@@ -692,6 +783,7 @@ class ArgoTraceParser(TraceParser):
                                 "platform": "argo",
                                 "session_id": e.session_id,
                                 "_event_idx": i,
+                                "_line_range": self._normalize_line_range(f.get("line_range")),
                             }
                     # verify session: data.verdict
                     if "verdict" in data:
@@ -699,13 +791,43 @@ class ArgoTraceParser(TraceParser):
                         session_verdicts.setdefault(e.session_id, []).append((verdict, i))
 
         # Phase 2: 关联 verdict 到 finding（跨 session 全局 last-wins）
-        # 同一 finding 可能被多个 verify session 验证，按 event_idx 全局排序取最后一个
+        # Pass 1: 精确匹配 (cwe, file, line_range)
         verdicts_by_key: dict[str, list[tuple[str, int, str]]] = {}  # key -> [(verdict, event_idx, session_id)]
+        unmatched: list[tuple[str, int, str]] = []  # (verdict, event_idx, session_id)
         for sid, vlist in session_verdicts.items():
             key = session_finding_key.get(sid)
-            if not key:
+            if key and key in findings:
+                verdicts_by_key.setdefault(key, []).extend([(v, i, sid) for v, i in vlist])
+            else:
+                for v, i in vlist:
+                    unmatched.append((v, i, sid))
+
+        # Pass 2: 模糊匹配 (cwe, file) — verify session 的 line_range 可能与 investigate 不同
+        # nazhua 用 original_finding_id 关联，不依赖 line_range
+        # 同一 (cwe, file) 可能对应多个 finding，将 verdict 关联到所有候选，
+        # 由 last-wins（按 event_idx 排序取最后一个）决定最终 verdict
+        cwe_file_index: dict[str, list[str]] = {}
+        for fkey, f in findings.items():
+            cf = f"({f['vuln_type']},{f['file']})"
+            cwe_file_index.setdefault(cf, []).append(fkey)
+
+        for verdict, event_idx, sid in unmatched:
+            meta = session_meta.get(sid)
+            if not meta:
                 continue
-            verdicts_by_key.setdefault(key, []).extend([(v, i, sid) for v, i in vlist])
+            cwe, file_val, lr = meta
+            cf_key = f"({cwe},{file_val})"
+            candidates = cwe_file_index.get(cf_key, [])
+            if not candidates:
+                continue
+            if len(candidates) == 1:
+                matched_key = candidates[0]
+                verdicts_by_key.setdefault(matched_key, []).append((verdict, event_idx, sid))
+            else:
+                # 多个候选：关联到所有候选，由 last-wins 决定
+                for matched_key in candidates:
+                    verdicts_by_key.setdefault(matched_key, []).append((verdict, event_idx, sid))
+
         for key, vlist in verdicts_by_key.items():
             vlist.sort(key=lambda v: v[1])  # 全局按 event_idx 排序
             last_verdict, last_idx, last_sid = vlist[-1]
