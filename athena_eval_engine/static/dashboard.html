@@ -256,11 +256,11 @@ async function selEv(id){
     }
     // 运行中: 显示进度
     if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="PARSING"||s.status==="AI_MATCHING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
-      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"REPORTING",label:"生成报告"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"AI_MATCHING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"REPORTING":6,"FINALIZING":7};
+      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"},{key:"REPORTING",label:"生成报告"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"AI_MATCHING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"REPORTING":7,"FINALIZING":8};
       var curStep=phaseMap[s.status]||0;
       // 知识与记忆介入分析是 REPORTING 的子阶段，通过 progress 文本区分
-      if(s.status==="REPORTING"&&s.progress&&s.progress.indexOf("知识")>=0){curStep=7;}
+      if(s.status==="REPORTING"&&s.progress&&s.progress.indexOf("知识")>=0){curStep=6;}
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
       var stepsHtml='<div style="margin:24px 0">';
