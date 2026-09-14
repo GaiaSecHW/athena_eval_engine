@@ -437,14 +437,8 @@ class CVulnVerifyTraceParser(TraceParser):
         brace_idx = cmd.find("{")
         if brace_idx == -1:
             return None
-        decoder = json.JSONDecoder()
-        try:
-            obj, _end = decoder.raw_decode(cmd, brace_idx)
-            if isinstance(obj, dict) and "case_id" in obj:
-                return obj
-        except json.JSONDecodeError:
-            pass
-        return None
+        # 复用 _parse_verdict_json 的三级回退逻辑
+        return CVulnVerifyTraceParser._parse_verdict_json(cmd[brace_idx:])
 
     def _extract_action(self, ev):
         """CVulnVerify 平台挖掘行为：write vuln_verify_final_verdict 为结论点。"""
@@ -463,6 +457,9 @@ class CVulnVerifyTraceParser(TraceParser):
         两种提交方式：
         1. write 工具写 vuln_verify_final_verdict.json
         2. bash cat > heredoc 写 vuln_verify_final_verdict.json
+
+        agent 写的 verdict JSON 可能有语法错误（未终止字符串、缺少分隔符等），
+        json.loads 失败时依次回退 raw_decode → regex 提取 case_id/verdict。
         """
         from .parse_utils import attach_event_indices
         findings: dict[str, dict] = {}
@@ -479,63 +476,95 @@ class CVulnVerifyTraceParser(TraceParser):
                 if "vuln_verify_final_verdict" in fp:
                     content = inp.get("content", "")
                     if isinstance(content, str):
-                        try:
-                            vdata = json.loads(content)
-                            case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
-                            verdict = vdata.get("verdict", "")
-                            vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
-                            case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
-                            vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
-                            src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
-                            fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
-                            desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
-                            if not desc:
-                                desc = str(vdata.get("ruled_out_by", ""))
-                            findings[case_id] = {
-                                "finding_id": case_id,
-                                "display_id": case_id,
-                                "title": case_title if case_title else f"CVulnVerify {case_id}",
-                                "description": desc,
-                                "vuln_type": vt,
-                                "severity": str(vdata.get("severity", "")),
-                                "source": src,
-                                "sink": fn,
-                                "validation_result": vr,
-                                "platform": "cvuln-verify",
-                                "session_id": e.session_id,
-                            }
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                        vdata = self._parse_verdict_json(content)
+                        if vdata:
+                            f = self._build_finding(vdata, e)
+                            if f:
+                                findings[f["finding_id"]] = f
 
             # bash cat > heredoc 写 verdict JSON
             elif tool in ("bash", "bash_tool", "shell"):
                 cmd = str(inp.get("command", ""))
                 if "vuln_verify_final_verdict" in cmd:
-                    _vr_json = self._extract_verdict_from_bash_cmd(cmd)
-                    if _vr_json:
-                        case_id = str(_vr_json.get("case_id", "")) or f"cvv-{e.event_id}"
-                        verdict = _vr_json.get("verdict", "")
-                        vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else None)
-                        case_title = str(_vr_json.get("case_title", "") or _vr_json.get("title", "") or "")
-                        vt = str(_vr_json.get("vuln_type", "") or _vr_json.get("vulnerability_type", "") or "")
-                        src = str(_vr_json.get("source_file", "") or _vr_json.get("source", "") or "")
-                        fn = str(_vr_json.get("function_name", "") or _vr_json.get("sink", "") or "")
-                        desc = str(_vr_json.get("summary", "") or _vr_json.get("description", "") or "")
-                        if not desc:
-                            desc = str(_vr_json.get("ruled_out_by", ""))
-                        findings[case_id] = {
-                            "finding_id": case_id,
-                            "display_id": case_id,
-                            "title": case_title if case_title else f"CVulnVerify {case_id}",
-                            "description": desc,
-                            "vuln_type": vt,
-                            "severity": str(_vr_json.get("severity", "")),
-                            "source": src,
-                            "sink": fn,
-                            "validation_result": vr,
-                            "platform": "cvuln-verify",
-                            "session_id": e.session_id,
-                        }
+                    vdata = self._extract_verdict_from_bash_cmd(cmd)
+                    if vdata:
+                        f = self._build_finding(vdata, e)
+                        if f:
+                            findings[f["finding_id"]] = f
 
         attach_event_indices(findings, events)
         return list(findings.values())
+
+    @staticmethod
+    def _parse_verdict_json(content: str) -> dict | None:
+        """解析 verdict JSON，三级回退：json.loads → raw_decode → regex。"""
+        # 1. json.loads（严格）
+        try:
+            v = json.loads(content)
+            if isinstance(v, dict) and v.get("case_id"):
+                return v
+        except (json.JSONDecodeError, TypeError):
+            pass
+        # 2. raw_decode（容忍尾部多余内容）
+        brace = content.find("{")
+        if brace != -1:
+            try:
+                v, _ = json.JSONDecoder().raw_decode(content, brace)
+                if isinstance(v, dict) and v.get("case_id"):
+                    return v
+            except (json.JSONDecodeError, TypeError):
+                pass
+        # 3. regex 回退：提取 case_id + verdict（最小必要字段）
+        cid_m = re.search(r'"case_id"\s*:\s*"([^"]+)"', content)
+        v_m = re.search(r'"verdict"\s*:\s*"([^"]+)"', content)
+        if cid_m:
+            vdata = {"case_id": cid_m.group(1)}
+            if v_m:
+                vdata["verdict"] = v_m.group(1)
+            # 尝试提取其他字段
+            for field, pattern in [
+                ("case_title", r'"case_title"\s*:\s*"([^"]*)"'),
+                ("title", r'"title"\s*:\s*"([^"]*)"'),
+                ("vuln_type", r'"vuln_type"\s*:\s*"([^"]*)"'),
+                ("vulnerability_type", r'"vulnerability_type"\s*:\s*"([^"]*)"'),
+                ("source_file", r'"source_file"\s*:\s*"([^"]*)"'),
+                ("source", r'"source"\s*:\s*"([^"]*)"'),
+                ("function_name", r'"function_name"\s*:\s*"([^"]*)"'),
+                ("sink", r'"sink"\s*:\s*"([^"]*)"'),
+                ("severity", r'"severity"\s*:\s*"([^"]*)"'),
+                ("summary", r'"summary"\s*:\s*"([^"]*)"'),
+                ("description", r'"description"\s*:\s*"([^"]*)"'),
+                ("ruled_out_by", r'"ruled_out_by"\s*:\s*"([^"]*)"'),
+            ]:
+                m = re.search(pattern, content)
+                if m:
+                    vdata[field] = m.group(1)
+            return vdata
+        return None
+
+    @staticmethod
+    def _build_finding(vdata: dict, e) -> dict | None:
+        """从解析后的 verdict dict 构建 finding dict。"""
+        case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
+        verdict = vdata.get("verdict", "")
+        vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else "UNCERTAIN")
+        case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
+        vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
+        src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
+        fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
+        desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
+        if not desc:
+            desc = str(vdata.get("ruled_out_by", ""))
+        return {
+            "finding_id": case_id,
+            "display_id": case_id,
+            "title": case_title if case_title else f"CVulnVerify {case_id}",
+            "description": desc,
+            "vuln_type": vt,
+            "severity": str(vdata.get("severity", "")),
+            "source": src,
+            "sink": fn,
+            "validation_result": vr,
+            "platform": "cvuln-verify",
+            "session_id": e.session_id,
+        }
