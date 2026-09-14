@@ -1352,6 +1352,7 @@ def run(evaluation_id: str) -> dict:
         log("EVAL", f"评测完成")
 
     # ===== Phase 7: 写入报告 + 标记完成（短连接）=====
+    set_progress(evaluation_id, "生成报告中...")
     rj = render_json(report)  # rj 在写入 warnings 后重新序列化
     def _finalize(cur):
         cur.execute("INSERT IGNORE INTO evaluation_report (report_id, evaluation_id, calculation_run_id, snapshot_id, "

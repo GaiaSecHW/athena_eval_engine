@@ -248,7 +248,7 @@ async function selEv(id){
       var m1=name.match(/FAILED at (\w+):/)||[];
       var phase=m1[1]||"";
       var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
-      if(phase==="REPORTING"&&s.progress&&s.progress.indexOf("知识")>=0){phaseLabel="知识与记忆介入分析";}
+      if(phase==="REPORTING"&&!(s.progress&&s.progress.indexOf("生成报告")>=0)){phaseLabel="知识与记忆介入分析";}
       var errMsg=s.error_message||"无详细错误信息";
       $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p><button class="btn" style="margin-top:16px" id="retry-btn">重试</button></div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
@@ -260,7 +260,10 @@ async function selEv(id){
       var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"AI_MATCHING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"REPORTING":7,"FINALIZING":8};
       var curStep=phaseMap[s.status]||0;
       // 知识与记忆介入分析是 REPORTING 的子阶段，通过 progress 文本区分
-      if(s.status==="REPORTING"&&s.progress&&s.progress.indexOf("知识")>=0){curStep=6;}
+      if(s.status==="REPORTING"){
+        if(s.progress&&s.progress.indexOf("生成报告")>=0){curStep=7;}
+        else{curStep=6;}
+      }
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
       var stepsHtml='<div style="margin:24px 0">';
