@@ -29,22 +29,26 @@ function fmtNum(v){const a=Math.abs(v);
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M1:{n:"准确率变化(ΔBA)",short:"准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
-     range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无差异",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
-     interp:(v)=>v==null?"无基准，无法计算":v>0.05?`KG 准确率高出 ${(v*100).toFixed(1)}pp`:v<-0.05?`KG 准确率低 ${(-v*100).toFixed(1)}pp`:"准确率无明显差异",
-     formula:"BA_KG - BA_NoKG, BA=(TPR+TNR)/2, TPR=TP/(TP+FN), TNR=TN/(TN+FP)"},
-  M13:{n:"误报率变化(ΔFPR)",short:"Δ误报率",d:"KG vs No-KG 误报率差值。负值=KG 误报更少(好)，正值=更多。",u:"ratio",
-     range:[{v:-1,t:"KG 误报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 误报多",c:"red"}],
-     interp:(v)=>v==null?"无基准":v<0?`KG 误报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 误报增加 ${(v*100).toFixed(1)}pp`:"误报率无变化",
-     formula:"FPR_KG - FPR_NoKG, FPR=FP/(FP+TN)"},
-  M14:{n:"精确率变化(ΔPrecision)",short:"Δ精确率",d:"KG vs No-KG 精确率差值。正值=KG 报出的漏洞更准，负值=更差。",u:"ratio",
-     range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
-     interp:(v)=>v==null?"无基准":v>0?`KG 精确率高出 ${(v*100).toFixed(1)}pp`:v<0?`KG 精确率低 ${(-v*100).toFixed(1)}pp`:"精确率无明显差异",
-     formula:"Precision_KG - Precision_NoKG, Precision=TP/(TP+FP)"},
-  M4:{n:"漏报率变化(ΔFNR)",short:"漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
-     range:[{v:-1,t:"KG 漏报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 漏报多",c:"red"}],
-     interp:(v)=>v==null?"无基准":v<0?`KG 漏报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 漏报增加 ${(v*100).toFixed(1)}pp`:"漏报率无变化",
-     formula:"FNR_KG - FNR_NoKG, FNR=FN/(FN+TP)"},
+  M1:{n:"平衡准确率(BA)",short:"准确率",d:"BA=(TPR+TNR)/2。KG 和 No-KG 分别与基线对比。",u:"ratio",
+     range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"随机",c:"amber"},{v:1,t:"全对",c:"green"}],
+     interp:(v)=>v==null?"无基准，无法计算":v>=0.8?`准确率 ${(v*100).toFixed(1)}%`:v>=0.5?`准确率 ${(v*100).toFixed(1)}%`:`准确率 ${(v*100).toFixed(1)}%`,
+     formula:"BA=(TPR+TNR)/2, TPR=TP/(TP+FN), TNR=TN/(TN+FP)",
+     kgKey:"ba_kg",nogkKey:"ba_nogk"},
+  M13:{n:"误报率(FPR)",short:"误报率",d:"FPR=FP/(FP+TN)。KG 和 No-KG 分别与基线对比。",u:"ratio",
+     range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
+     interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
+     formula:"FPR=FP/(FP+TN)",
+     kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
+  M14:{n:"精确率(Precision)",short:"精确率",d:"Precision=TP/(TP+FP)。KG 和 No-KG 分别与基线对比。",u:"ratio",
+     range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:1,t:"全对",c:"green"}],
+     interp:(v)=>v==null?"无基准":v>=0.8?`精确率 ${(v*100).toFixed(1)}%`:`精确率 ${(v*100).toFixed(1)}%`,
+     formula:"Precision=TP/(TP+FP)",
+     kgKey:"precision_kg",nogkKey:"precision_nogk"},
+  M4:{n:"漏报率(FNR)",short:"漏报率",d:"FNR=FN/(FN+TP)。KG 和 No-KG 分别与基线对比。",u:"ratio",
+     range:[{v:0,t:"无漏报",c:"green"},{v:0.5,t:"部分漏报",c:"amber"},{v:1,t:"全漏报",c:"red"}],
+     interp:(v)=>v==null?"无基准":v===0?"无漏报":`漏报率 ${(v*100).toFixed(1)}%`,
+     formula:"FNR=FN/(FN+TP)",
+     kgKey:"fnr_kg",nogkKey:"fnr_nogk"},
   M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 极低`,
@@ -426,12 +430,23 @@ function renderReport(d){
     }
     function _metricCards(gp0,gp1,gp2,glabel,cat){
       const isVerify=cat==="verify";
+      // 从差值指标的 method 字典中提取绝对值，构造伪指标对象供 mCard 渲染
+      function _absMetric(metric,key){
+        if(!metric) return null;
+        if(metric.calculation_status!=="CALCULATED") return metric;
+        const method=metric.method||{};
+        const val=method[key];
+        if(val==null) return {calculation_status:"NO_DATA",reason_code:"NO_DATA",n:metric.n};
+        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{}};
+      }
       const groups=[
-        ["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
-          [["M1",gp0.M1],["M4",gp0.M4],["M13",gp0.M13],["M14",gp0.M14]]],
-        ["② 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
+        ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
+          [["M1",_absMetric(gp0.M1,"ba_kg")],["M4",_absMetric(gp0.M4,"fnr_kg")],["M13",_absMetric(gp0.M13,"fpr_kg")],["M14",_absMetric(gp0.M14,"precision_kg")]]],
+        ["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
+          [["M1",_absMetric(gp0.M1,"ba_nogk")],["M4",_absMetric(gp0.M4,"fnr_nogk")],["M13",_absMetric(gp0.M13,"fpr_nogk")],["M14",_absMetric(gp0.M14,"precision_nogk")]]],
+        ["③ 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
           isVerify?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
-        ...(!isVerify?[["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
+        ...(!isVerify?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
           [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]]:[])
       ];
       return `${groups.map(g=>`<div style="margin-bottom:14px">
