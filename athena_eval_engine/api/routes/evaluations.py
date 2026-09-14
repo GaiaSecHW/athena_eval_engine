@@ -406,6 +406,61 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             finally:
                 conn.close()
 
+        # Step 5b: 重新获取告警中心数据并更新 snapshot
+        _ac_pairs = []
+        _seen = set()
+        for e in entries:
+            _pid = e.get("project_id") or ""
+            _tid = e.get("task_id_actual") or effective_vc_task or ""
+            if _pid and _tid and (_pid, _tid) not in _seen:
+                _ac_pairs.append((_pid, _tid))
+                _seen.add((_pid, _tid))
+        if _ac_pairs:
+            try:
+                from ...infrastructure.vuln_center_client import get_alert_center_summary
+                _all_cases = []
+                _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
+                for _ac_proj, _ac_task in _ac_pairs:
+                    log("RETRY", f"告警中心取数据: project={_ac_proj} task={_ac_task}")
+                    ac_sum = get_alert_center_summary(_ac_proj, _ac_task)
+                    for k in _merged_counts:
+                        _merged_counts[k] += ac_sum.get("counts", {}).get(k, 0)
+                    _all_cases.extend({
+                        "case_id": c.get("id") or c.get("case_id") or "",
+                        "title": c.get("title") or "",
+                        "summary": c.get("summary") or "",
+                        "validation_result": c.get("validation_result"),
+                        "current_stage": c.get("current_stage"),
+                        "current_status": c.get("current_status"),
+                        "project_id": _ac_proj,
+                    } for c in ac_sum.get("cases", []))
+                _new_ac = {
+                    "source_task_ids": [t for _, t in _ac_pairs],
+                    "project_ids": [p for p, _ in _ac_pairs],
+                    "total": len(_all_cases),
+                    "counts": _merged_counts,
+                    "cases": _all_cases,
+                }
+                # 更新 snapshot 的 config_json
+                conn = connect(autocommit=True)
+                try:
+                    cur = conn.cursor()
+                    cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
+                    srow = cur.fetchone()
+                    if srow and srow[0]:
+                        import json as _j2
+                        cfg = _j2.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
+                        cfg.setdefault("manifest", {})["alert_center_data"] = _new_ac
+                        cur.execute("UPDATE evaluation_snapshot SET config_json=%s WHERE evaluation_id=%s",
+                                    (_j2.dumps(cfg, ensure_ascii=False), evaluation_id))
+                        log("RETRY", f"告警中心数据已更新 snapshot: total={len(_all_cases)}")
+                finally:
+                    conn.close()
+            except Exception as e:
+                import traceback as _tb
+                log("RETRY", f"告警中心数据获取失败: {e}")
+                _tb.print_exc()
+
         # Step 6: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
         def _run_bg():
