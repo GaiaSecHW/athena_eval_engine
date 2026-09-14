@@ -148,7 +148,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         content_parts = []
         reasoning_parts = []
         finish_reason = None
-        _last_content_ts = None  # 最后一次收到实际内容（content/reasoning/finish_reason）的时间
+        _last_content_ts = time.time()  # 从 Phase 2 开始计时，keepalive 不重置
         while True:
             line = resp.readline()
             if not line:
@@ -183,9 +183,11 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             choices = chunk.get("choices") or []
             if not choices:
                 # 无 choices 的 keepalive chunk 不重置内容计时器
-                if _last_content_ts and time.time() - _last_content_ts > STREAM_TIMEOUT:
-                    log("LLM", f"stream content stall ({STREAM_TIMEOUT}s no content), aborting")
-                    raise RuntimeError(f"LLM 流式断流（{STREAM_TIMEOUT}s 无实际内容，keepalive 不重置）")
+                _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
+                if time.time() - _last_content_ts > _timeout:
+                    _phase = "首 token" if first_token else "后续 token 断流"
+                    log("LLM", f"stream content stall ({_timeout}s no content, {_phase}), aborting")
+                    raise RuntimeError(f"LLM {_phase}超时（{_timeout}s 无实际内容，keepalive 不重置）")
                 continue
             delta = choices[0].get("delta") or {}
             if delta.get("content"):

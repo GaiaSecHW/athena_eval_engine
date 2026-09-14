@@ -437,6 +437,27 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
 @app.get("/api/v1/evaluations/{evaluation_id}")
 def get_status(evaluation_id: str):
+    # 死线程检测：状态是运行中但线程已不在 _running_futures → 线程静默死亡
+    _RUNNING = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    with _running_lock:
+        is_alive = evaluation_id in _running_futures
+    if not is_alive:
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+            row = cur.fetchone()
+            if row and row[0] in _RUNNING:
+                cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
+                            "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': thread died'), "
+                            "error_message=%s WHERE evaluation_id=%s",
+                            (row[0], f"评测线程静默死亡（状态卡在 {row[0]}，线程已不在运行池中）", evaluation_id))
+                log("WATCHDOG", f"{evaluation_id} 状态={row[0]} 但线程已死，标记 FAILED")
+        finally:
+            conn.close()
     r = es.get_status(evaluation_id)
     if "error" in r:
         raise HTTPException(status_code=404, detail=r["error"])
