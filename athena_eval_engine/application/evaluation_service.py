@@ -1128,10 +1128,13 @@ def run(evaluation_id: str) -> dict:
                 (_g_cases, _g_interactions, _g_session_graph,
                  _g_nogk_cases, _g_events, _g_mem_interactions,
                  _g_parser) = _group_kg_inputs[group["task_id"]]
+                _g_label = group.get("label", group["task_id"])
+                def _cb(done, total, _label=_g_label):
+                    set_task_progress(evaluation_id, _label, f"AI 分析 {done}/{total}")
                 fut_group_pcka[group["task_id"]] = llm_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions, group["category"], _g_parser)
+                    _g_mem_interactions, group["category"], _g_parser, _cb)
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()
             for group in _metric_groups:

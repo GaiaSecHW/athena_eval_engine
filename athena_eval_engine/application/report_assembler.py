@@ -552,7 +552,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -1023,12 +1023,15 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             break
 
     results = []
-    for case in case_results:
+    _total = len(case_results)
+    for _ci, case in enumerate(case_results):
         case_id = case.get("case_id", "")
         description = case.get("description", "")
         vuln_type = case.get("vulnerability_type", "")
         confusion = case.get("confusion", "NA")
         matched_fid = case.get("matched_finding_id", "")
+        if progress_cb:
+            progress_cb(_ci + 1, _total)
 
         # 提前计算 No-KG 的 confusion
         nogk_confusion = "NA"
