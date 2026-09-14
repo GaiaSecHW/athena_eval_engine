@@ -120,6 +120,9 @@ def resume_stuck_evaluations():
                 log("STARTUP", f"发现 {len(stuck)} 个卡住的评测，准备续跑:")
                 for eid, status in stuck:
                     log("STARTUP", f"{eid} (was {status}) → 续跑")
+                    # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
+                    cur.execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL WHERE evaluation_id=%s",
+                                (eid,))
                     _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
             else:
                 log("STARTUP", f"无卡住的评测")
@@ -130,8 +133,18 @@ def resume_stuck_evaluations():
 
 
 def _run_bg_resume(evaluation_id: str):
-    """续跑单个评测（与 _run_bg 相同，但不设 RUNNING——保留原状态给 run() 覆盖）。"""
+    """续跑单个评测。设 RUNNING 状态，确保 DB 反映实际运行状态。"""
     set_eval_ctx(evaluation_id)
+    from ...infrastructure.database import connect
+    try:
+        conn = connect(autocommit=True)
+        try:
+            conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s",
+                                  (evaluation_id,))
+        finally:
+            conn.close()
+    except Exception:
+        pass
     try:
         es.run(evaluation_id)
     except es.TaskCancelledError:
@@ -170,6 +183,14 @@ def create_evaluation(req: CreateRequest):
                                    benchmark_source=req.benchmark_source,
                                    vc_source_task_id=req.vc_source_task_id,
                                    entries=req.entries))
+        # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
+        from ...infrastructure.database import connect as _connect_create
+        _conn = _connect_create(autocommit=True)
+        try:
+            _conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3) WHERE evaluation_id=%s",
+                                   (req.evaluation_id,))
+        finally:
+            _conn.close()
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
             from ...infrastructure.database import connect
@@ -178,7 +199,7 @@ def create_evaluation(req: CreateRequest):
             conn = connect(autocommit=True)
             try:
                 cur = conn.cursor()
-                cur.execute("UPDATE evaluation SET evaluation_status='RUNNING' WHERE evaluation_id=%s",
+                cur.execute("UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3) WHERE evaluation_id=%s",
                             (req.evaluation_id,))
             finally:
                 conn.close()
@@ -463,12 +484,19 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
         # Step 6: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
+        # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
+        conn = connect(autocommit=True)
+        try:
+            conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s",
+                                  (evaluation_id,))
+        finally:
+            conn.close()
         def _run_bg():
             from ...infrastructure.database import connect as _connect
             set_eval_ctx(evaluation_id)
             conn = _connect(autocommit=True)
             try:
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL WHERE evaluation_id=%s", (evaluation_id,))
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s", (evaluation_id,))
             finally:
                 conn.close()
             try:
