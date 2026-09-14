@@ -333,28 +333,34 @@ def create(req: CreateRequest):
         log("CREATE", f"case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE")
 
     # 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
+    # 从 entries 提取所有 (project_id, source_task_id) 对，可能有多个项目
+    _ac_pairs: list[tuple[str, str]] = []
+    _seen_pairs: set[tuple[str, str]] = set()
+    for e in req.entries:
+        _pid = e.get("project_id") or ""
+        _tid = e.get("task_id_actual") or effective_vc_task or ""
+        if _pid and _tid and (_pid, _tid) not in _seen_pairs:
+            _ac_pairs.append((_pid, _tid))
+            _seen_pairs.add((_pid, _tid))
     alert_center_data = {}
-    _ac_project = req.benchmark_set_id
-    _ac_task = effective_vc_task
-    if _ac_project and _ac_task:
+    if _ac_pairs:
         try:
             from ..infrastructure.vuln_center_client import get_alert_center_summary
-            log("CREATE", f"告警中心取数据: project={_ac_project} task={_ac_task}")
-            ac_summary = get_alert_center_summary(_ac_project, _ac_task)
-            ac_total = ac_summary.get("total", 0)
-            ac_counts = ac_summary.get("counts", {})
-            log("CREATE", f"告警中心返回 {ac_total} 条 case: "
-                f"是漏洞={ac_counts.get('vulnerable', 0)} "
-                f"不是漏洞={ac_counts.get('not_vulnerable', 0)} "
-                f"无法判定={ac_counts.get('inconclusive', 0)} "
-                f"研判中={ac_counts.get('pending', 0)}")
-            # 只保留指标计算和报告需要的字段
-            alert_center_data = {
-                "source_task_id": _ac_task,
-                "project_id": _ac_project,
-                "total": ac_total,
-                "counts": ac_counts,
-                "cases": [
+            _all_cases: list[dict] = []
+            _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
+            for _ac_project, _ac_task in _ac_pairs:
+                log("CREATE", f"告警中心取数据: project={_ac_project} task={_ac_task}")
+                ac_summary = get_alert_center_summary(_ac_project, _ac_task)
+                ac_total = ac_summary.get("total", 0)
+                ac_counts = ac_summary.get("counts", {})
+                log("CREATE", f"告警中心返回 {ac_total} 条 case: "
+                    f"是漏洞={ac_counts.get('vulnerable', 0)} "
+                    f"不是漏洞={ac_counts.get('not_vulnerable', 0)} "
+                    f"无法判定={ac_counts.get('inconclusive', 0)} "
+                    f"研判中={ac_counts.get('pending', 0)}")
+                for k in _merged_counts:
+                    _merged_counts[k] += ac_counts.get(k, 0)
+                _all_cases.extend(
                     {
                         "case_id": c.get("id") or c.get("case_id") or "",
                         "title": c.get("title") or "",
@@ -362,16 +368,23 @@ def create(req: CreateRequest):
                         "validation_result": c.get("validation_result"),
                         "current_stage": c.get("current_stage"),
                         "current_status": c.get("current_status"),
+                        "project_id": _ac_project,
                     }
                     for c in ac_summary.get("cases", [])
-                ],
+                )
+            alert_center_data = {
+                "source_task_ids": [t for _, t in _ac_pairs],
+                "project_ids": [p for p, _ in _ac_pairs],
+                "total": len(_all_cases),
+                "counts": _merged_counts,
+                "cases": _all_cases,
             }
         except Exception as e:
             import traceback as _tb
             log("CREATE", f"⚠ 取告警中心数据失败: {e}")
             _tb.print_exc()
     else:
-        log("CREATE", f"⚠ 跳过告警中心数据获取: project={_ac_project} task={_ac_task}")
+        log("CREATE", "⚠ 跳过告警中心数据获取: entries 中无 project_id/task_id_actual")
 
     # Step 1: benchmark_set
     conn = connect(autocommit=True)
@@ -802,7 +815,8 @@ def run(evaluation_id: str) -> dict:
                 bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
             return {"tr": tr, "events": events, "session": session, "bench": bench, "src": src,
                     "cond": cond, "parser": parser,
-                    "trace_kind": e.get("trace_kind"), "category": e.get("category", "")}
+                    "trace_kind": e.get("trace_kind"), "category": e.get("category", ""),
+                    "project_id": e.get("project_id", "")}
 
         def _resolve_trace(parsed):
             """Phase 2: 漏洞匹配 + resolve（含 LLM，慢）。
@@ -819,6 +833,7 @@ def run(evaluation_id: str) -> dict:
             bench = parsed["bench"]; cond = parsed["cond"]; parser = parsed["parser"]
             trace_kind = parsed.get("trace_kind")
             category = parsed.get("category", "")
+            _trace_project_id = parsed.get("project_id", "")
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
 
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
@@ -834,6 +849,9 @@ def run(evaluation_id: str) -> dict:
                 _ac_fp = 0
                 if _alert_center_data and _alert_center_data.get("cases"):
                     _ac_cases = _alert_center_data["cases"]
+                    # 按项目过滤：只匹配当前 trace 所属项目的告警中心 case
+                    if _trace_project_id:
+                        _ac_cases = [c for c in _ac_cases if c.get("project_id") == _trace_project_id]
                     # Step 1: 提取 parser findings
                     _parser_findings = parser.extract_findings(events)
                     log("MATCH", f"{cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
@@ -905,7 +923,7 @@ def run(evaluation_id: str) -> dict:
                 _findings = _findings_override
                 _confirmed = _ac_confirmed
                 _fp = _ac_fp
-                _analyze_count = _alert_center_data.get("total", 0) if _alert_center_data else (_ac_confirmed + _ac_fp)
+                _analyze_count = len(_ac_cases) if _alert_center_data else (_ac_confirmed + _ac_fp)
             else:
                 _findings = parser.extract_findings(events)
                 _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
