@@ -119,7 +119,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     # === 两阶段匹配：Phase 1 标题预筛选 → Phase 2 详细 1vs1 ===
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
-    _PREFILTER_LIMIT = 100  # 预筛选 finding 数量上限，防止 token 超限
+    _PREFILTER_LIMIT = 50  # 预筛选 finding 数量上限，防止 token 超限
     available_indices = list(range(len(active_findings)))
     matches = []  # [(finding_idx, baseline_idx)]
     matched_case_ids = set()
@@ -127,24 +127,27 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     # --- Phase 1: 标题预筛选（每基线 1 次 LLM，O(N) 调用）---
     _progress(f"漏洞匹配 预筛选: 0/{len(benchmarks)} 基线完成")
     _prefilter_sys = (
-        "下面是一些代码安全漏洞的标题。"
-        "请从标题分析哪些漏洞描述跟基线的描述的是同一个漏洞。"
+        "下面是一些代码安全漏洞的标题和描述摘要。"
+        "请从标题和描述分析哪些漏洞跟基线描述的是同一个漏洞。"
         "将可能匹配的漏洞的 ID 原样返回，便于核对。"
         "只返回 JSON：{\"possible_ids\": [\"ID1\", \"ID2\"]}。"
         "无匹配返回空数组 []。"
     )
 
     def _prefilter_one(bi: int) -> tuple[int, list[int]]:
-        """预筛选：基线标题 + 漏洞报告标题列表 → 候选漏洞报告索引。"""
+        """预筛选：基线标题+描述摘要 + 漏洞报告标题+描述摘要 → 候选漏洞报告索引。"""
         bl = baseline_list[bi]
         baseline_title = bl.get("vulnerability_type", "")
+        baseline_desc = (bl.get("description") or "")[:200]
         # ID → finding_list 索引映射（用于核对返回的 ID）
         id_to_idx: dict[str, int] = {}
-        lines = [f"基线漏洞标题：{baseline_title}", "", "以下是要比较的漏洞标题："]
+        lines = [f"基线漏洞标题：{baseline_title}", f"基线漏洞描述：{baseline_desc}", "", "以下是要比较的漏洞："]
         for i, f in enumerate(active_findings[:_PREFILTER_LIMIT]):
             fid = f.get("display_id") or f.get("finding_id", "") or str(i)
             id_to_idx[fid] = i
-            lines.append(f"[{fid}] {finding_list[i].get('title', '')}")
+            _title = finding_list[i].get("title", "")
+            _desc = (finding_list[i].get("description") or "")[:200]
+            lines.append(f"[{fid}] {_title} {_desc}")
         user_msg = "\n".join(lines)
         prompt = [
             {"role": "system", "content": _prefilter_sys},
