@@ -292,7 +292,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             cid = b.benchmark_item_id or ""
             is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
             case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
-                                "matched": False, "matched_finding_id": None,
+                                "matched": False, "matched_finding_id": None, "finding_title": "",
                                 "confusion": "NA" if is_vuln else "TN",
                                 "session_id": "", "agent_validation": None})
         has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
@@ -507,16 +507,20 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         is_matched = cid in matched_case_ids
 
         matched_fid = None
+        finding_title = ""
         finding_session = ""
         matched_vr = None
         finding_ts = None
+        ac_case_id = ""
         if is_matched:
             for fi, ci in matches:
                 if ci == bi:
                     f = active_findings[fi]
                     matched_fid = f.get("display_id") or f.get("finding_id", "")
+                    finding_title = f.get("title") or f.get("vuln_type") or ""
                     finding_session = f.get("session_id", "")
                     matched_vr = f.get("validation_result")
+                    ac_case_id = f.get("ac_case_id") or ""
                     # finding 提交时间戳（用于 KG 分析倒推挖掘链）
                     _ei = f.get("_event_idx")
                     if _ei is not None and _ei < len(events):
@@ -538,7 +542,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             confusion = "NA" if is_vuln else "TN"
 
         case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
-                            "matched": is_matched, "matched_finding_id": matched_fid, "confusion": confusion,
+                            "matched": is_matched, "matched_finding_id": matched_fid, "finding_title": finding_title,
+                            "ac_case_id": ac_case_id, "confusion": confusion,
                             "session_id": finding_session, "agent_validation": matched_vr,
                             "finding_ts": finding_ts})
 

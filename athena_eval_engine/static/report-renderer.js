@@ -512,6 +512,36 @@ function renderReport(d){
   })()}
 
   ${(()=>{
+    const groups=r.metric_groups||[];
+    const rows=[];
+    let idx=1;
+    for(const g of groups){
+      const crs=Array.isArray(g.case_results)?g.case_results:[];
+      for(const c of crs){
+        const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
+        const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):"<span style='color:var(--gray)'>未匹配</span>";
+        const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):"<span style='color:var(--gray)'>未匹配</span>";
+        const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
+        const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
+        rows.push(`<tr>
+          <td class="num">${idx}</td>
+          <td>${baseTitle}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
+          <td>${kgTitle}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""}</td>
+          <td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>
+        </tr>`);
+        idx++;
+      }
+    }
+    if(!rows.length) return "";
+    return `<div class="card" style="margin-bottom:16px">
+      <h3>📋 基线与 Agent 发现漏洞匹配明细</h3>
+      <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th><th>No-KG-漏洞标题</th></tr>
+      ${rows.join("")}
+      </table>
+    </div>`;
+  })()}
+
+  ${(()=>{
     const tu=r.llm_token_usage||{};
     if(!tu.call_count) return "";
     return `<div class="card" style="margin-bottom:16px">

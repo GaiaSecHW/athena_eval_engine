@@ -868,6 +868,7 @@ def run(evaluation_id: str) -> dict:
                     for fi, ai in _matched.items():
                         ac = _ac_cases[ai]
                         vr = ac.get("validation_result")
+                        _parser_findings[fi]["ac_case_id"] = ac.get("case_id", "")
                         if is_verify:
                             # T002: validation_result 映射
                             _parser_findings[fi]["validation_result"] = (
@@ -895,6 +896,7 @@ def run(evaluation_id: str) -> dict:
                             "sink": "",
                             "display_id": ac.get("case_id", ""),
                             "finding_id": ac.get("case_id", ""),
+                            "ac_case_id": ac.get("case_id", ""),
                         })
 
                     _findings_override = _parser_findings
@@ -1191,6 +1193,8 @@ def run(evaluation_id: str) -> dict:
                 "source_function": _g_meta.get("source_function", ""),
                 "nogk_matched": _g_nogk_case.get("matched", False),
                 "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
+                "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
+                "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),
                 "nogk_session_id": _g_nogk_case.get("session_id", ""),
                 "kg_source_uri": _g_kg_facts.get("_source_uri", ""),
                 "nogk_source_uri": _g_nogk_facts.get("_source_uri", ""),
