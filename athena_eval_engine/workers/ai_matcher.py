@@ -136,9 +136,16 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
 
     def _prefilter_one(bi: int) -> tuple[int, list[int]]:
         """预筛选：基线标题+描述摘要 + 漏洞报告标题+描述摘要 → 候选漏洞报告索引。"""
+        def _abbrev(s: str, n: int = 200) -> str:
+            """取前 n/2 + ... + 后 n/2，不足 n 的全显示。"""
+            s = s or ""
+            if len(s) <= n:
+                return s
+            h = n // 2
+            return s[:h] + "..." + s[-h:]
         bl = baseline_list[bi]
         baseline_title = bl.get("vulnerability_type", "")
-        baseline_desc = (bl.get("description") or "")[:200]
+        baseline_desc = _abbrev(bl.get("description") or "")
         # ID → finding_list 索引映射（用于核对返回的 ID）
         id_to_idx: dict[str, int] = {}
         lines = [f"基线漏洞标题：{baseline_title}", f"基线漏洞描述：{baseline_desc}", "", "以下是要比较的漏洞："]
@@ -146,7 +153,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             fid = f.get("display_id") or f.get("finding_id", "") or str(i)
             id_to_idx[fid] = i
             _title = finding_list[i].get("title", "")
-            _desc = (finding_list[i].get("description") or "")[:200]
+            _desc = _abbrev(finding_list[i].get("description") or "")
             lines.append(f"[{fid}] {_title} {_desc}")
         user_msg = "\n".join(lines)
         prompt = [
