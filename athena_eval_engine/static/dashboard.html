@@ -238,13 +238,8 @@ async function selEv(id){
   try{const s=await jget(`/api/v1/evaluations/${id}`);
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
-      var name=s.name||"";
-      var m1=name.match(/FAILED at (\w+):/)||[];
-      var phase=m1[1]||"";
-      var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
-      if(phase==="REPORTING"&&!(s.progress&&s.progress.indexOf("生成报告")>=0)){phaseLabel="知识与记忆介入分析";}
       var errMsg=s.error_message||"无详细错误信息";
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
