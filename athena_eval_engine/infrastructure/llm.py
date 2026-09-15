@@ -3,7 +3,7 @@
 配置来自 config_loader。失败自动重试（最多 3 次）。
 SSE 流式读取：首 token 超时 2 分钟，后续 token 断流超时 10 分钟。
 429 限流：有限重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
-每个评测任务内 LLM 并发上限由信号量控制（默认 6）。
+LLM 全局并发上限由信号量控制（默认 50）。
 """
 from __future__ import annotations
 import json
@@ -28,8 +28,8 @@ STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 20
 
 # LLM 全局并发上限（信号量）
-# 3 个评测 × 每评测 8 并发 = 24
-_MAX_CONCURRENCY = 24
+# LLM 全局并发上限
+_MAX_CONCURRENCY = 50
 _llm_semaphore: threading.Semaphore | None = None
 
 # LLM token 用量累积器（线程安全，跨所有线程共享）
@@ -70,7 +70,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
 
     ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
-    LLM 并发受全局信号量控制（上限 24 = 3 评测 × 8 并发）。
+    LLM 并发受全局信号量控制（上限 50）。
     """
     base = api_base or DEFAULT_API_BASE
     parsed = urlparse(base)
@@ -105,7 +105,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "Accept": "text/event-stream",
     }
 
-    # 获取 LLM 并发槽位（全局信号量上限 24）
+    # 获取 LLM 并发槽位（全局信号量上限 50）
     if _llm_semaphore is not None:
         _llm_semaphore.acquire()
     conn = None

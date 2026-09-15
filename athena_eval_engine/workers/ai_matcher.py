@@ -134,7 +134,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
-    with ThreadPoolExecutor(max_workers=24) as pre_pool:
+    with ThreadPoolExecutor(max_workers=50) as pre_pool:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(_prefilter_one, ai)
@@ -183,7 +183,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     llm_call_count = 0
     # 告警中心 case 串行（一对一约束），每个 case 内候选 finding 并行
-    with ThreadPoolExecutor(max_workers=24) as pool:
+    with ThreadPoolExecutor(max_workers=50) as pool:
         for ai in range(len(alert_center_cases)):
             if not available_finding_indices:
                 break
@@ -385,7 +385,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_llm_calls = 0
     prefilter_done = 0
-    with ThreadPoolExecutor(max_workers=24) as pre_pool:
+    with ThreadPoolExecutor(max_workers=50) as pre_pool:
         pre_futures = {}
         for bi in range(len(benchmarks)):
             fut = pre_pool.submit(_prefilter_one, bi)
@@ -444,7 +444,7 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
     llm_call_count = 0
 
     # baseline 串行（finding 一对一约束），每个 baseline 内候选 finding 并行发送
-    with ThreadPoolExecutor(max_workers=24) as pool:
+    with ThreadPoolExecutor(max_workers=50) as pool:
         for bi, b in enumerate(benchmarks):
             cid = b.benchmark_item_id or ""
             if not available_indices:

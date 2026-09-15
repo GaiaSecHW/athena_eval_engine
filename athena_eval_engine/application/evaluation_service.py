@@ -489,9 +489,9 @@ def run(evaluation_id: str) -> dict:
     set_eval_ctx(evaluation_id)
     clear_cancel(evaluation_id)  # 新线程启动，清除可能的旧取消标记
 
-    # 设置全局 LLM 并发上限（3 评测 × 8 并发 = 24，仅首次调用生效）
+    # 设置全局 LLM 并发上限（仅首次调用生效）
     from ..infrastructure.llm import set_max_concurrency
-    set_max_concurrency(24)
+    set_max_concurrency(50)
 
     # ===== Phase 1: 读配置（短连接）=====
     def _load_config(cur):
@@ -849,7 +849,7 @@ def run(evaluation_id: str) -> dict:
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
 
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
-            with ThreadPoolExecutor(max_workers=24) as inner_pool:
+            with ThreadPoolExecutor(max_workers=50) as inner_pool:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
@@ -984,13 +984,13 @@ def run(evaluation_id: str) -> dict:
                 _parse_done += 1
                 set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")
         # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
-        # 所有 trace 同时启动；LLM 并发由 llm.py 全局信号量控制（上限 24）
+        # 所有 trace 同时启动；LLM 并发由 llm.py 全局信号量控制（上限 50）
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
-        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 24）")
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 50）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
         for tr, f, src in results:
