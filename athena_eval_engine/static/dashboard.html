@@ -356,7 +356,7 @@ function retryEval(eid){
     onConfirm:function(){
       var rep=$("rep");if(rep)rep.innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
       jget('/api/v1/evaluations/'+eid+'/report').then(function(){}).catch(function(){});
-      F('/api/v1/evaluations/'+eid+'/retry',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.status==='QUEUED'||d.status==='RUNNING'){
           var pollCnt=0;
           var retryPoll=function(){
