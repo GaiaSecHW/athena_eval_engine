@@ -276,7 +276,8 @@ function renderReport(d){
         if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
         h+="</div>";
       }
-      h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      var _hasNogk=r.has_nogk!==false;
+      h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+(_hasNogk?confBadge("No-KG",nogkConf):"")+"</div>";
       // 候选 finding（预筛选认为可能匹配但未最终匹配的 agent finding，以基线为中心）
       function _renderCands(label,cands){
         if(!cands||!cands.length) return "";
@@ -318,7 +319,7 @@ function renderReport(d){
         return hh;
       }
       if(!c.matched) h+=_renderCands("KG",c.candidate_findings);
-      if(!c.nogk_matched) h+=_renderCands("No-KG",c.nogk_candidate_findings);
+      if(_hasNogk&&!c.nogk_matched) h+=_renderCands("No-KG",c.nogk_candidate_findings);
       // 知识与记忆交互明细
       if(pcKa&&kgActive){
         // 知识图谱交互
@@ -434,7 +435,7 @@ function renderReport(d){
     ${(r.warnings&&r.warnings.length)?`<div style="background:rgba(251,191,36,.12);border:1px solid var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:14px"><b>告警：</b><ul style="margin:6px 0 0;padding-left:20px">${r.warnings.map(w=>`<li>${w}</li>`).join("")}</ul></div>`:""}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
       <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
-      <div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>
+      ${(r.has_nogk!==false)?`<div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>`:""}
       <div><span style="color:var(--gray)">基线来源：</span><b>${d.benchmark_source==='vuln_center'?'漏洞中心数据':(vbenchName||'无（无 GT 模式）')}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
       <div><span style="color:var(--gray)">运行时长：</span><b>${(d.started_at&&d.finished_at)?fmtDur(new Date(d.finished_at)-new Date(d.started_at)):'-'}</b> <span style="color:var(--gray);font-size:13px">（${(d.started_at||'').replace('T',' ').slice(0,19)} → ${(d.finished_at||'').replace('T',' ').slice(0,19)}）</span></div>
@@ -465,12 +466,13 @@ function renderReport(d){
     });
     function _statsTable(tid,label){
       const tools=d.tool_stats||[];const res=d.resource_stats||[];const oc=d.outcome_details||[];
+      const hasNogk=(r.has_nogk!==false);
       const kgTool=tools.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||tools.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkTool=tools.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||tools.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const nogkTool=hasNogk?(tools.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||tools.find(t=>t.task_run_id.includes("NOGK"))||{}):{};
       const kgRes=res.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||res.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkRes=res.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||res.find(t=>t.task_run_id.includes("NOGK"))||{};
+      const nogkRes=hasNogk?(res.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||res.find(t=>t.task_run_id.includes("NOGK"))||{}):{};
       const kgOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-KG"))||oc.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
-      const nogkOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{};
+      const nogkOc=hasNogk?(oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{}):{};
       const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
       const kgFP=kgTool.false_positive_count||0;const nogkFP=nogkTool.false_positive_count||0;
       const kgRecv=kgTool.analyze_received_count||(kgFound+kgFP);const nogkRecv=nogkTool.analyze_received_count||(nogkFound+nogkFP);
@@ -495,7 +497,7 @@ function renderReport(d){
         const kgAc=ac.kg||{};const nogkAc=ac.nogk||{};
         const kgT=kgAc.total||0;const nogkT=nogkAc.total||0;
         if(isVerify){
-          const kc=kgAc.counts||{};const nc=nogkAc.counts||{};
+          const kc=kgAc.counts||{};const nogkCounts=hasNogk?(nogkAc.counts||{}):{};
           const acRow=(label,c,t)=>t?`<td class="num"><b style="font-size:16px">${t}</b>
             <span style="font-size:12px;margin-left:8px">
               <span style="color:var(--green)">是漏洞 ${c.vulnerable||0}</span> ·
@@ -503,31 +505,32 @@ function renderReport(d){
               <span style="color:var(--amber)">研判中 ${c.pending||0}</span> ·
               <span style="color:var(--gray)">无法判定 ${c.inconclusive||0}</span>
             </span></td>`:'<td class="num">—</td>';
-          acHtml=`<table style="margin-bottom:12px"><tr><th>告警中心收到漏洞数</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
-            <tr><td></td>${acRow("",kc,kgT)}${acRow("",nc,nogkT)}</tr></table>`;
+          acHtml=`<table style="margin-bottom:12px"><tr><th>告警中心收到漏洞数</th><th>KG（开知识图谱与记忆）</th>${hasNogk?'<th>No-KG（对照）</th>':''}</tr>
+            <tr><td></td>${acRow("",kc,kgT)}${hasNogk?acRow("",nogkCounts,nogkT):''}</tr></table>`;
         }else{
           acHtml=`<div style="font-size:16px;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
-            告警中心收到漏洞数 — KG：<b style="font-size:18px">${kgT}</b>
-            <span style="margin-left:24px">No-KG：<b style="font-size:18px">${nogkT}</b></span></div>`;
+            告警中心收到漏洞数 — KG：<b style="font-size:18px">${kgT}</b>${hasNogk?`<span style="margin-left:24px">No-KG：<b style="font-size:18px">${nogkT}</b></span>`:''}</div>`;
         }
       }
+      const nogkTh=hasNogk?'<th>No-KG（对照）</th>':'';
+      const nc=v=>hasNogk?`<td class="num">${v}</td>`:'';
       return `<div class="card" style="margin-bottom:16px">
         <h3>📊 ${label} — 漏洞检测统计</h3>
         ${acHtml}
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
-        <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
-        ${ac?`<tr><td>告警中心收到漏洞数</td><td class="num">${(ac.kg&&ac.kg.total)||0}</td><td class="num">${(ac.nogk&&ac.nogk.total)||0}</td></tr>`:""}
-        <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td><td class="num">${nogkRecv}</td></tr>
-        <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
-        <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr>
-        <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td><td class="num">${nogkKg}</td></tr>
-        <tr><td>记忆查询次数</td><td class="num">${kgMem}</td><td class="num">${nogkMem}</td></tr>
-        <tr><td>Token 消耗</td><td class="num">${fmtNum(kgTokens)}</td><td class="num">${fmtNum(nogkTokens)}</td></tr>
-        <tr><td>工具调用次数</td><td class="num">${kgTools}</td><td class="num">${nogkTools}</td></tr>
-        <tr><td>执行步数</td><td class="num">${kgSteps}</td><td class="num">${nogkSteps}</td></tr>
-        <tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td><td class="num">${fmtDur(nogkDur)}</td></tr>
-        <tr><td>检测结果</td><td class="num">${kgOc.outcome||"N/A"}</td><td class="num">${nogkOc.outcome||"N/A"}</td></tr>
-        <tr><td>验证结果</td><td class="num">${kgOc.validation||"N/A"}</td><td class="num">${nogkOc.validation||"N/A"}</td></tr>
+        <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th>${nogkTh}</tr>
+        ${ac?`<tr><td>告警中心收到漏洞数</td><td class="num">${(ac.kg&&ac.kg.total)||0}</td>${nc((ac.nogk&&ac.nogk.total)||0)}</tr>`:""}
+        <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td>${nc(nogkRecv)}</tr>
+        <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td>${nc(nogkFound)}</tr>
+        <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td>${nc(nogkFP)}</tr>
+        <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td>${nc(nogkKg)}</tr>
+        <tr><td>记忆查询次数</td><td class="num">${kgMem}</td>${nc(nogkMem)}</tr>
+        <tr><td>Token 消耗</td><td class="num">${fmtNum(kgTokens)}</td>${nc(fmtNum(nogkTokens))}</tr>
+        <tr><td>工具调用次数</td><td class="num">${kgTools}</td>${nc(nogkTools)}</tr>
+        <tr><td>执行步数</td><td class="num">${kgSteps}</td>${nc(nogkSteps)}</tr>
+        <tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td>${nc(fmtDur(nogkDur))}</tr>
+        <tr><td>检测结果</td><td class="num">${kgOc.outcome||"N/A"}</td>${nc(nogkOc.outcome||"N/A")}</tr>
+        <tr><td>验证结果</td><td class="num">${kgOc.validation||"N/A"}</td>${nc(nogkOc.validation||"N/A")}</tr>
         </table></div>`;
     }
     function _metricCards(gp0,gp1,gp2,glabel,cat){
@@ -547,14 +550,15 @@ function renderReport(d){
         }
         return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm};
       }
+      const hasNogk=r.has_nogk!==false; // 默认 true（兼容旧报告）
       const groups=[
         ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
           [["M1",_absMetric(gp0.M1,"ba_kg","KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_kg","KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_kg","KG 条件下与基线对比的精确率")]]],
-        ["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
-          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]],
-        ["③ 作用机制","揭示行为变化的来源（知识访问/交付/记忆"+(isVerify?"":"/行为偏移")+"）",
-          isVerify?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
-        ...(!isVerify?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
+        ...(hasNogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
+          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]]:[]),
+        ["③ 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
+          (isVerify||!hasNogk)?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
+        ...(!isVerify&&hasNogk?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
           [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]]:[])
       ];
       return `${groups.map(g=>`<div style="margin-bottom:14px">
@@ -590,6 +594,7 @@ function renderReport(d){
 
   ${(()=>{
     const groups=r.metric_groups||[];
+    const _hasNogk=r.has_nogk!==false;
     const rows=[];
     let idx=1;
     for(const g of groups){
@@ -599,16 +604,20 @@ function renderReport(d){
         const kgCands=c.candidate_findings||[];
         const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
         const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+kgCandNote);
-        const nogkCands=c.nogk_candidate_findings||[];
-        const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
-        const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
         const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
-        const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
+        let nogkCell="";
+        if(_hasNogk){
+          const nogkCands=c.nogk_candidate_findings||[];
+          const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+          const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
+          const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
+          nogkCell=`<td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+        }
         rows.push(`<tr>
           <td class="num">${idx}</td>
           <td>${baseTitle}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
           <td>${kgTitle}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""}</td>
-          <td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>
+          ${nogkCell}
         </tr>`);
         idx++;
       }
@@ -616,7 +625,7 @@ function renderReport(d){
     if(!rows.length) return "";
     return `<div class="card" style="margin-bottom:16px">
       <h3>📋 基线与 Agent 发现漏洞匹配明细</h3>
-      <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th><th>No-KG-漏洞标题</th></tr>
+      <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th>${_hasNogk?'<th>No-KG-漏洞标题</th>':''}</tr>
       ${rows.join("")}
       </table>
     </div>`;

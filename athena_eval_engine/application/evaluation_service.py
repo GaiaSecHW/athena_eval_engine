@@ -246,12 +246,15 @@ def create(req: CreateRequest):
     # 2. 验证 trace：自动扫描 app 目录，有数据就加入 entries
     _existing_kinds = {e.get("trace_kind") for e in req.entries}
     _project_id = req.entries[0].get("project_id") if req.entries else ""
+    # 是否有 No-KG 条目（决定验证 trace 是否也创建 NOGK entry）
+    _has_nogk_entries = any(e.get("condition") == "NOGK" for e in req.entries)
     if _project_id and not any(k in _existing_kinds for k in ("cvuln_verify", "webvulnverify")):
         try:
             verify_traces = ps.discover_verify_traces(_project_id)
             for vt in verify_traces:
-                # 为每个验证 agent 创建 KG + NOGK 两个 entry
-                for cond in ("KG", "NOGK"):
+                # 有 No-KG 时为每个验证 agent 创建 KG + NOGK 两个 entry；仅 KG 时只创建 KG
+                _conds = ("KG", "NOGK") if _has_nogk_entries else ("KG",)
+                for cond in _conds:
                     req.entries.append({
                         "task_id": f"verify-{vt['agent_name']}",
                         "condition": cond,
@@ -262,7 +265,7 @@ def create(req: CreateRequest):
                         "benchmark_item_id": None,
                         "benchmark_item_ids": [],
                     })
-                log("CREATE", f"自动发现验证 trace: {vt['agent_name']} kind={vt['trace_kind']}")
+                log("CREATE", f"自动发现验证 trace: {vt['agent_name']} kind={vt['trace_kind']} conds={_conds}")
         except Exception as err:
             log("CREATE", f"⚠ 自动发现验证 trace 失败: {err}")
 
@@ -480,9 +483,9 @@ def run(evaluation_id: str) -> dict:
     set_eval_ctx(evaluation_id)
     clear_cancel(evaluation_id)  # 新线程启动，清除可能的旧取消标记
 
-    # 设置本评测的 LLM 并发上限（信号量，所有 LLM 调用共用）
+    # 设置全局 LLM 并发上限（3 评测 × 8 并发 = 24，仅首次调用生效）
     from ..infrastructure.llm import set_max_concurrency
-    set_max_concurrency(8)
+    set_max_concurrency(24)
 
     # ===== Phase 1: 读配置（短连接）=====
     def _load_config(cur):
@@ -840,7 +843,7 @@ def run(evaluation_id: str) -> dict:
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
 
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
-            with ThreadPoolExecutor(max_workers=4) as inner_pool:
+            with ThreadPoolExecutor(max_workers=24) as inner_pool:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
@@ -975,13 +978,13 @@ def run(evaluation_id: str) -> dict:
                 _parse_done += 1
                 set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")
         # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
-        # 所有 trace 同时启动；LLM 并发由 llm.py 信号量控制（每评测最多 6 个）
+        # 所有 trace 同时启动；LLM 并发由 llm.py 全局信号量控制（上限 24）
         # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
-        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 6）")
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 24）")
         with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
             results = list(pool.map(_resolve_trace, parsed))
         for tr, f, src in results:
@@ -1153,10 +1156,18 @@ def run(evaluation_id: str) -> dict:
     # ===== Phase 4b: 分组计算指标（挖掘/验证各自独立）=====
     # 按 task_id 分组 pair_views，每组独立算指标
     from collections import defaultdict as _dd2
-    # 建立 pair_view → task_id 的映射（pair_views 与 pairs 顺序一致）
+    # 建立 pair_view → task_id 的映射
     _pv_task_ids: list[str] = []
-    for pair in pairs:
-        _pv_task_ids.append(pair.task_id)
+    if has_nogk and valid_pairs:
+        for pair in valid_pairs:
+            _pv_task_ids.append(pair.task_id)
+    else:
+        # KG-only: pair_views 从 case_results 构造，按 KG task_run 展开
+        for tr in task_runs:
+            if tr.condition != Condition.KG:
+                continue
+            n_cases = len(facts.get(tr.task_run_id, {}).get("case_results", []))
+            _pv_task_ids.extend([tr.task_id] * n_cases)
     _groups_pv: dict[str, list[PairView]] = _dd2(list)
     for i, pv in enumerate(pair_views):
         tid = _pv_task_ids[i] if i < len(_pv_task_ids) else "T001"
@@ -1176,23 +1187,42 @@ def run(evaluation_id: str) -> dict:
         _g_kg_access_events = _g_kg_successful_reads = 0
         _g_kg_tool_calls = _g_total_tool_calls = 0
         _g_mem_read = _g_mem_success = 0
-        for pair in pairs:
-            if pair.task_id != tid:
-                continue
-            kg_f = facts[pair.kg_task_run_id]
-            kg_f_run = next(t for t in task_runs if t.task_run_id == pair.kg_task_run_id)
-            if kg_f_run and kg_f_run.condition == Condition.KG and kg_f_run.trace_valid and kg_f_run.runtime_valid:
-                _g_kg_valid += 1
-                kn = kg_f["knowledge"]
-                if kn.access: _g_access += 1
-                if kn.access and kn.delivery: _g_kg_delivery += 1
-                _g_kg_access_events += kn.access_event_count
-                _g_kg_successful_reads += kn.successful_read_count
-                _g_mem_read += getattr(kn, 'memory_access_event_count', 0)
-                _g_mem_success += getattr(kn, 'memory_successful_read_count', 0)
-                ta = kg_f["tool"]
-                _g_kg_tool_calls += ta.kg_count
-                _g_total_tool_calls += ta.total_tool_calls
+        if has_nogk and valid_pairs:
+            for pair in valid_pairs:
+                if pair.task_id != tid:
+                    continue
+                kg_f = facts[pair.kg_task_run_id]
+                kg_f_run = next(t for t in task_runs if t.task_run_id == pair.kg_task_run_id)
+                if kg_f_run and kg_f_run.condition == Condition.KG and kg_f_run.trace_valid and kg_f_run.runtime_valid:
+                    _g_kg_valid += 1
+                    kn = kg_f["knowledge"]
+                    if kn.access: _g_access += 1
+                    if kn.access and kn.delivery: _g_kg_delivery += 1
+                    _g_kg_access_events += kn.access_event_count
+                    _g_kg_successful_reads += kn.successful_read_count
+                    _g_mem_read += getattr(kn, 'memory_access_event_count', 0)
+                    _g_mem_success += getattr(kn, 'memory_successful_read_count', 0)
+                    ta = kg_f["tool"]
+                    _g_kg_tool_calls += ta.kg_count
+                    _g_total_tool_calls += ta.total_tool_calls
+        else:
+            # KG-only: 从 KG task_runs 累加
+            for tr in task_runs:
+                if tr.condition != Condition.KG or tr.task_id != tid:
+                    continue
+                kg_f = facts.get(tr.task_run_id, {})
+                if tr.trace_valid and tr.runtime_valid:
+                    _g_kg_valid += 1
+                    kn = kg_f["knowledge"]
+                    if kn.access: _g_access += 1
+                    if kn.access and kn.delivery: _g_kg_delivery += 1
+                    _g_kg_access_events += kn.access_event_count
+                    _g_kg_successful_reads += kn.successful_read_count
+                    _g_mem_read += getattr(kn, 'memory_access_event_count', 0)
+                    _g_mem_success += getattr(kn, 'memory_successful_read_count', 0)
+                    ta = kg_f["tool"]
+                    _g_kg_tool_calls += ta.kg_count
+                    _g_total_tool_calls += ta.total_tool_calls
         g_out = run_all_metrics(gvs, confusion_pairs=_groups_item_pv.get(tid) or None,
                                 kg_access=_g_access, kg_valid=_g_kg_valid,
                                   kg_delivery=_g_kg_delivery, access=_g_access,
@@ -1316,6 +1346,7 @@ def run(evaluation_id: str) -> dict:
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
                       pair_views=pair_views)
     report.metric_groups = _metric_groups
+    report.has_nogk = has_nogk
 
     # tool_stats_list 供 ai_narrative 引用漏洞流转数据
     tool_stats_list = [{"task_run_id": tr.task_run_id,
@@ -1335,7 +1366,7 @@ def run(evaluation_id: str) -> dict:
         set_progress(evaluation_id, "AI 综合分析中...")
         with _TP(max_workers=2) as llm_pool:
             fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
-                                        metric_groups=_metric_groups, tool_stats=tool_stats_list)
+                                        metric_groups=_metric_groups, tool_stats=tool_stats_list, has_nogk=has_nogk)
             fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
             report.narrative = fut_narr.result()
             report.vuln_analysis = fut_vuln.result()

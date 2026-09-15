@@ -33,6 +33,7 @@ class ReportModel:
     notes: list = field(default_factory=list)
     llm_token_usage: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
+    has_nogk: bool = True  # 是否有 No-KG 对照组（False=仅 KG 模式）
 
 
 def assemble(evaluation_id: str, metrics: list, stats: list,
@@ -105,7 +106,7 @@ def render_json(model: ReportModel) -> str:
     return json.dumps(model.__dict__, default=lambda o: o.__dict__, ensure_ascii=False, indent=2)
 
 
-def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None, tool_stats: list = None) -> dict:
+def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None, tool_stats: list = None, has_nogk: bool = True) -> dict:
     """Stage 3 AI narrative (LLM glm-5.2)."""
     m_by = {m.metric_id: m for m in metrics}
     s_by = {s.metric_id: s for s in stats if s.metric_id}
@@ -113,7 +114,10 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
 
     # 漏洞验证报告不包含成本效率(M8/M9/M10)和行为偏移(M7)
     all_verify = metric_groups and all(g.get("category") == "verify" for g in metric_groups)
-    if all_verify:
+    if not has_nogk:
+        # KG-only 模式：仅有 KG 组，无 No-KG 对照组，只计算绝对值指标
+        _metric_ids = ("M5", "M6", "M11", "M12")
+    elif all_verify:
         _metric_ids = ("M1", "M4", "M5", "M6", "M11", "M12", "M13", "M14")
     else:
         _metric_ids = ("M1", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M14")
@@ -136,7 +140,7 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
 
     # 构建分组指标数据（成本类 M8/M9/M10 按分组引用，漏洞验证分组跳过）
     group_cost_data = []
-    if metric_groups and not all_verify:
+    if metric_groups and not all_verify and has_nogk:
         for g in metric_groups:
             if g.get("category") == "verify":
                 continue
@@ -170,7 +174,30 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             finding_flow_data.append({"task_id": tid, **_by_task[tid]})
 
     # 根据报告类型构建 prompt
-    if all_verify:
+    if not has_nogk:
+        # KG-only 模式：无 No-KG 对照组，仅有 KG 绝对值指标
+        _metric_def = (
+            "# 指标定义\n"
+            "| ID | 名称 | 含义 | 单位 |\n"
+            "|----|------|------|------|\n"
+            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | ratio |\n"
+            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | ratio |\n"
+            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | ratio |\n"
+            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | ratio |\n\n"
+        )
+        _conclusion_schema = (
+            "# 输出 JSON Schema\n"
+            "{\n"
+            '  "summary": "总结论(≤300字)。本次评测仅有 KG 组（开启知识图谱与记忆），无 No-KG 对照组。回答：知识图谱与记忆的访问和交付情况如何？引用关键数值，用中文名称。",\n'
+            '  "conclusion": "分析结论(200-400字)。基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent对知识/记忆的依赖程度与知识质量。'
+            "指标不可计算时说明原因。"
+            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
+            '  "limitations": ["局限性。如：无 No-KG 对照组，无法计算准确率变化等差值指标；样本量不足等"],\n'
+            '  "evidence_refs": [{"source":"metric_result","metric_id":"M5","field":"estimate","value":0.42}]\n'
+            "}"
+        )
+        _cost_section = ""
+    elif all_verify:
         _metric_def = (
             "# 指标定义\n"
             "| ID | 名称 | 含义 | 方向 | 单位 |\n"
@@ -240,10 +267,13 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
             "# 角色\n"
             "你是知识图谱与记忆安全评测的分析报告撰写员。\n\n"
             "# 背景\n"
-            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
-            + (f"通过8项指标(M1-M6,M11,M12)量化知识图谱与记忆对 Agent 漏洞判定准确性和知识/记忆依赖的影响。\n\n"
-               if all_verify else
-               "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n")
+            + ("评测方法：本次评测仅有 KG 组（开启知识图谱与记忆），无 No-KG 对照组。"
+               "通过4项指标(M5,M6,M11,M12)量化Agent对知识图谱与记忆的访问和交付情况。\n\n"
+               if not has_nogk else
+               "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
+               + (f"通过8项指标(M1-M6,M11,M12)量化知识图谱与记忆对 Agent 漏洞判定准确性和知识/记忆依赖的影响。\n\n"
+                  if all_verify else
+                  "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"))
             +
             "# 知识图谱与记忆的使用方法\n"
             "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
@@ -281,7 +311,8 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
         result = llm_mod.chat_json(prompt, temperature=0)
         if not result.get("evidence_refs"):
             refs = []
-            for mid in ("M1", "M4", "M13", "M14"):
+            _ref_ids = ("M5", "M6", "M11", "M12") if not has_nogk else ("M1", "M4", "M13", "M14")
+            for mid in _ref_ids:
                 m = m_by.get(mid)
                 if m and m.estimate is not None:
                     refs.append({"source": "metric_result", "metric_id": mid, "field": "estimate", "value": m.estimate})
@@ -291,6 +322,15 @@ def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = N
         import traceback as _tb
         log("REPORT", f"ai_narrative LLM 失败，降级规则生成: {e}")
         _tb.print_exc()
+        if not has_nogk:
+            m5 = m_by.get("M5")
+            summary = f"KAR={m5.estimate:.3f}" if m5 and m5.estimate is not None else "KAR=NA"
+            return {
+                "summary": summary + "(LLM unavailable, rule-based)",
+                "conclusion": f"LLM 不可用，无法生成分析结论。错误：{e}",
+                "limitations": ["KG_ONLY", "LLM unavailable"],
+                "evidence_refs": [{"source": "metric_result", "metric_id": "M5", "field": "estimate", "value": m5.estimate if m5 else None}],
+            }
         m1 = m_by.get("M1")
         summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
         return {
