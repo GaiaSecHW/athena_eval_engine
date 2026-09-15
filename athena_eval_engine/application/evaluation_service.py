@@ -335,9 +335,11 @@ def create(req: CreateRequest):
         log("CREATE", f"case_details 构建完成: {len(case_details)} 条")
     except Exception as e:
         import traceback as _tb
-        log("CREATE", f"⚠ 取基线数据失败: {e}")
+        log("CREATE", f"取基线数据失败: {e}")
         _tb.print_exc()
-        log("CREATE", f"case_details 将为空 → metadata_json=NULL, expected_label 退化 VULNERABLE")
+    if not case_details:
+        raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
+                         "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
     # 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
     # 从 entries 提取所有 (project_id, source_task_id) 对，可能有多个项目
