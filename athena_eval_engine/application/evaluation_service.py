@@ -25,7 +25,7 @@ from ..domain.diagnostics import diagnose
 from .report_assembler import (assemble, render_json, ai_narrative, ai_vuln_analysis,
                                ai_per_case_kg_analysis, rule_based_per_case_kg_analysis)
 from ..domain.task_run import TaskRun, BenchmarkItem
-from ..domain.enums import Condition, ConditionSource, ExpectedLabel
+from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchStatus
 from ..orchestration.state_machine import PIPELINE, assert_transition
 from ..application import platform_service as ps
 
@@ -1018,92 +1018,124 @@ def run(evaluation_id: str) -> dict:
     _set_status_short(evaluation_id, "PAIRING")
     _check_cancel(evaluation_id, "PAIRING")
     pairs = TaskPairMatcherImpl().match(task_runs)
-    log("EVAL", f"配对完成: {len(pairs)} 对 (task_runs={len(task_runs)})")
+    has_nogk = any(tr.condition == Condition.NOGK for tr in task_runs)
+    valid_pairs = [p for p in pairs if p.pair_match_status == PairMatchStatus.VALID_PAIR]
+    log("EVAL", f"配对完成: {len(pairs)} 对 (valid={len(valid_pairs)}, has_nogk={has_nogk}, task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
     kg_access = kg_valid = kg_delivery = access = 0
     kg_access_events = kg_successful_reads = 0  # 交互级计数（M6 KDR 用）
     kg_tool_calls = total_tool_calls = 0  # 交互级计数（M5 KAR 用）
     mem_read_count = mem_successful_reads = 0  # 记忆计数（M11/M12 用）
-    for pair in pairs:
-        kg_f = facts[pair.kg_task_run_id]; nogk_f = facts[pair.nogk_task_run_id]
-        derived = PairDerivedFactComputer().compute(
-            pair, kg_f["outcome"], nogk_f["outcome"], kg_f["tool"], nogk_f["tool"],
-            kg_f["resource"], nogk_f["resource"])
-        kg_f_run = next(t for t in task_runs if t.task_run_id == pair.kg_task_run_id)
+
+    def _accumulate_kg_metrics(kg_f, kg_f_run):
+        """累加 KG 侧的知识/工具/记忆指标（KG-only 和配对模式共用）。"""
+        nonlocal kg_valid, access, kg_delivery, kg_access_events, kg_successful_reads
+        nonlocal mem_read_count, mem_successful_reads, kg_tool_calls, total_tool_calls
         if kg_f_run and kg_f_run.condition == Condition.KG and kg_f_run.trace_valid and kg_f_run.runtime_valid:
             kg_valid += 1
             kn = kg_f["knowledge"]
             if kn.access: access += 1
             if kn.access and kn.delivery: kg_delivery += 1
-            # 交互级累加：M6 KDR = 有效回复次数 / 总查询次数
             kg_access_events += kn.access_event_count
             kg_successful_reads += kn.successful_read_count
-            # 记忆累加（M11/M12）：只统计读取/检索
             mem_read_count += getattr(kn, 'memory_access_event_count', 0)
             mem_successful_reads += getattr(kn, 'memory_successful_read_count', 0)
-            # 交互级累加：M5 KAR = 知识查询次数 / 总工具调用次数
             ta = kg_f["tool"]
             kg_tool_calls += ta.kg_count
             total_tool_calls += ta.total_tool_calls
-        j = next((d.value_numeric for d in derived if d.derived_fact_type == "JSD"), None)
-        dt = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_TOKEN"), None)
-        ds = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_STEPS"), None)
-        dtm = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_TIME"), None)
-        bench = bench_by_task.get(pair.task_id) or [BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)]
-        bench_item = bench[0] if bench else BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)
-        # gt 取 VULNERABLE 优先：基线有漏洞项时，评测目标是发现漏洞
-        has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in bench)
-        pair_views.append(PairView(
-            kg_success=kg_f["outcome"].outcome.value == "SUCCESS",
-            nogk_success=nogk_f["outcome"].outcome.value == "SUCCESS",
-            gt="VULNERABLE" if has_vuln else (bench_item.expected_label.value if bench_item and bench_item.expected_label else "NA"),
-            kg_outcome=kg_f["outcome"].outcome.value, nogk_outcome=nogk_f["outcome"].outcome.value,
-            jsd=j, delta_token=dt, delta_steps=ds, delta_time=dtm))
+
+    if has_nogk and valid_pairs:
+        # 正常模式：KG + No-KG 配对
+        for pair in valid_pairs:
+            kg_f = facts[pair.kg_task_run_id]; nogk_f = facts[pair.nogk_task_run_id]
+            derived = PairDerivedFactComputer().compute(
+                pair, kg_f["outcome"], nogk_f["outcome"], kg_f["tool"], nogk_f["tool"],
+                kg_f["resource"], nogk_f["resource"])
+            kg_f_run = next(t for t in task_runs if t.task_run_id == pair.kg_task_run_id)
+            _accumulate_kg_metrics(kg_f, kg_f_run)
+            j = next((d.value_numeric for d in derived if d.derived_fact_type == "JSD"), None)
+            dt = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_TOKEN"), None)
+            ds = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_STEPS"), None)
+            dtm = next((d.value_numeric for d in derived if d.derived_fact_type == "DELTA_TIME"), None)
+            bench = bench_by_task.get(pair.task_id) or [BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)]
+            bench_item = bench[0] if bench else BenchmarkItem(pair.benchmark_item_id, "BS001", pair.task_id, None)
+            has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in bench)
+            pair_views.append(PairView(
+                kg_success=kg_f["outcome"].outcome.value == "SUCCESS",
+                nogk_success=nogk_f["outcome"].outcome.value == "SUCCESS",
+                gt="VULNERABLE" if has_vuln else (bench_item.expected_label.value if bench_item and bench_item.expected_label else "NA"),
+                kg_outcome=kg_f["outcome"].outcome.value, nogk_outcome=nogk_f["outcome"].outcome.value,
+                jsd=j, delta_token=dt, delta_steps=ds, delta_time=dtm))
+    else:
+        # KG-only 模式：无 No-KG，从 KG case_results 构造 PairViews
+        for tr in task_runs:
+            if tr.condition != Condition.KG:
+                continue
+            f = facts.get(tr.task_run_id, {})
+            _accumulate_kg_metrics(f, tr)
+            kg_cr = f.get("case_results", [])
+            bench = bench_by_task.get(tr.task_id, [])
+            has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in bench)
+            for kc in kg_cr:
+                kg_conf = kc.get("confusion", "")
+                kg_ok = kg_conf in ("TP", "FP")
+                pair_views.append(PairView(
+                    kg_success=kg_ok, nogk_success=False,
+                    gt=kc.get("expected_label", "VULNERABLE" if has_vuln else "NA"),
+                    kg_outcome="SUCCESS" if kg_ok else "FAIL",
+                    nogk_outcome="FAIL",
+                    jsd=None, delta_token=None, delta_steps=None, delta_time=None))
+        log("EVAL", f"KG-only 模式: 从 case_results 构造 {len(pair_views)} 个 pair_view")
 
     # 按 benchmark_item 展开 pair_views，供 M1-M4 混淆矩阵使用
-    # 任务级 pair 只有 1 个 gt，BA 会因缺正/负类而 NO_STRATUM；
-    # 展开后每条 case 独立，混淆矩阵可正确聚合。
     item_pair_views: list[PairView] = []
     _item_pv_task_ids: list[str] = []
-    for i, pair in enumerate(pairs):
-        pv = pair_views[i]
-        kg_cr = facts[pair.kg_task_run_id].get("case_results", [])
-        nogk_cr = facts[pair.nogk_task_run_id].get("case_results", [])
-        if not kg_cr or not nogk_cr:
-            continue
-        nogk_by_id = {c.get("case_id"): c for c in nogk_cr}
-        for kc in kg_cr:
-            nc = nogk_by_id.get(kc.get("case_id"))
-            if not nc:
+    if has_nogk and valid_pairs:
+        for i, pair in enumerate(valid_pairs):
+            pv = pair_views[i]
+            kg_cr = facts[pair.kg_task_run_id].get("case_results", [])
+            nogk_cr = facts[pair.nogk_task_run_id].get("case_results", [])
+            if not kg_cr or not nogk_cr:
                 continue
-            kg_conf = kc.get("confusion", "")
-            nogk_conf = nc.get("confusion", "")
-            kg_ok = kg_conf in ("TP", "FP")
-            nogk_ok = nogk_conf in ("TP", "FP")
-            item_pair_views.append(PairView(
-                kg_success=kg_ok, nogk_success=nogk_ok,
-                gt=kc.get("expected_label", "NA"),
-                kg_outcome="SUCCESS" if kg_ok else "FAIL",
-                nogk_outcome="SUCCESS" if nogk_ok else "FAIL",
-                jsd=pv.jsd, delta_token=pv.delta_token,
-                delta_steps=pv.delta_steps, delta_time=pv.delta_time))
-            _item_pv_task_ids.append(pair.task_id)
+            nogk_by_id = {c.get("case_id"): c for c in nogk_cr}
+            for kc in kg_cr:
+                nc = nogk_by_id.get(kc.get("case_id"))
+                if not nc:
+                    continue
+                kg_conf = kc.get("confusion", "")
+                nogk_conf = nc.get("confusion", "")
+                kg_ok = kg_conf in ("TP", "FP")
+                nogk_ok = nogk_conf in ("TP", "FP")
+                item_pair_views.append(PairView(
+                    kg_success=kg_ok, nogk_success=nogk_ok,
+                    gt=kc.get("expected_label", "NA"),
+                    kg_outcome="SUCCESS" if kg_ok else "FAIL",
+                    nogk_outcome="SUCCESS" if nogk_ok else "FAIL",
+                    jsd=pv.jsd, delta_token=pv.delta_token,
+                    delta_steps=pv.delta_steps, delta_time=pv.delta_time))
+                _item_pv_task_ids.append(pair.task_id)
+    else:
+        # KG-only: item_pair_views = pair_views（已从 case_results 构造）
+        item_pair_views = list(pair_views)
+        _item_pv_task_ids = [tr.task_id for tr in task_runs if tr.condition == Condition.KG
+                             for _ in range(len(facts.get(tr.task_run_id, {}).get("case_results", [])))]
     log("EVAL", f"item 级 pair_views: {len(item_pair_views)} 个 (任务级 {len(pair_views)})")
 
-    # 存配对数据（短连接）
-    pair_derived = []
-    for pair in pairs:
-        kg_f = facts[pair.kg_task_run_id]; nogk_f = facts[pair.nogk_task_run_id]
-        derived = PairDerivedFactComputer().compute(
-            pair, kg_f["outcome"], nogk_f["outcome"], kg_f["tool"], nogk_f["tool"],
-            kg_f["resource"], nogk_f["resource"])
-        pair_derived.append((pair, derived))
-    def _insert_pairs(cur):
-        for pair, derived in pair_derived:
-            fact_repo.insert_task_pair(cur, pair)
-            for d in derived:
-                fact_repo.insert_pair_derived_fact(cur, d)
-    _db_query(_insert_pairs)
+    # 存配对数据（短连接）— KG-only 模式跳过（无配对）
+    if has_nogk and valid_pairs:
+        pair_derived = []
+        for pair in valid_pairs:
+            kg_f = facts[pair.kg_task_run_id]; nogk_f = facts[pair.nogk_task_run_id]
+            derived = PairDerivedFactComputer().compute(
+                pair, kg_f["outcome"], nogk_f["outcome"], kg_f["tool"], nogk_f["tool"],
+                kg_f["resource"], nogk_f["resource"])
+            pair_derived.append((pair, derived))
+        def _insert_pairs(cur):
+            for pair, derived in pair_derived:
+                fact_repo.insert_task_pair(cur, pair)
+                for d in derived:
+                    fact_repo.insert_pair_derived_fact(cur, d)
+        _db_query(_insert_pairs)
 
     set_progress(evaluation_id, "计算指标...")
     _set_status_short(evaluation_id, "CALCULATING")

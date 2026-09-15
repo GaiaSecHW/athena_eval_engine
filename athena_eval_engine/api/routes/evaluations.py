@@ -42,7 +42,12 @@ def _submit_eval(evaluation_id: str, fn) -> Future:
             log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
         fut = _executor.submit(fn)
         _running_futures[evaluation_id] = fut
-        fut.add_done_callback(lambda f, eid=evaluation_id: _running_futures.pop(eid, None))
+        def _done_cb(f, eid=evaluation_id):
+            """只移除自己——旧线程的回调不能误删新线程的 future。"""
+            with _running_lock:
+                if _running_futures.get(eid) is f:
+                    _running_futures.pop(eid, None)
+        fut.add_done_callback(_done_cb)
         return fut
 
 
