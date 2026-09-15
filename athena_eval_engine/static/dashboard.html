@@ -8,13 +8,6 @@
 :root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--bd:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);font-size:18px;line-height:1.6;display:flex;height:100vh;overflow:hidden}
-nav{width:76px;background:#1a1d23;border-right:1px solid var(--bd);display:flex;flex-direction:column;padding:16px 10px;gap:8px;flex-shrink:0}
-nav .logo{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,var(--acc),#7c3aed);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;margin-bottom:18px;font-size:20px}
-nav a{width:56px;height:56px;border-radius:12px;display:flex;flex-direction:column;align-items:center;justify-content:center;cursor:pointer;color:#9ca3af;text-decoration:none;gap:4px;transition:.15s;position:relative;font-size:22px}
-nav a span{font-size:14px}
-nav a:hover{background:rgba(255,255,255,.1);color:#fff}
-nav a.active{background:rgba(37,99,235,.15);color:#60a5fa}
-nav a.active::before{content:"";position:absolute;left:-10px;top:14px;bottom:14px;width:3px;background:#60a5fa;border-radius:2px}
 .wrap{flex:1;display:flex;flex-direction:column;overflow:hidden}
 header{height:64px;border-bottom:1px solid var(--bd);display:flex;align-items:center;padding:0 28px;gap:14px;flex-shrink:0;background:#ffffff;border-bottom:1px solid var(--bd)}
 header .title{font-size:18px;font-weight:600}
@@ -23,8 +16,8 @@ header .sp{flex:1}
 header button{background:var(--acc);color:#fff;border:none;padding:10px 18px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500;transition:.15s}
 header button:hover{filter:brightness(1.1)}
 header button.ghost{background:#f3f4f6;border:1px solid var(--bd);color:var(--txt)}
-main{flex:1;overflow-y:auto;padding:28px}
-#view{height:100%}
+main{flex:1;overflow:hidden;padding:28px}
+#view{height:100%;display:flex;flex-direction:column}
 .empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--sub);text-align:center;gap:16px}
 .empty .ic{width:72px;height:72px;border-radius:18px;background:var(--p2);color:var(--sub);display:flex;align-items:center;justify-content:center;font-size:32px}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
@@ -39,6 +32,15 @@ main{flex:1;overflow-y:auto;padding:28px}
 .it.act{background:rgba(91,156,246,.12)}
 .it .n{font-size:17px;font-weight:500;margin-bottom:4px}
 .it .m{font-size:14px;color:var(--sub);display:flex;gap:8px;align-items:center}
+.ev-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+.ev-card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;gap:8px}
+.ev-card:hover{border-color:var(--acc);box-shadow:0 4px 16px rgba(0,0,0,.06);transform:translateY(-1px)}
+.ev-card .ev-name{font-size:16px;font-weight:600;line-height:1.4;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.ev-card .ev-meta{font-size:14px;color:var(--sub);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.ev-card .ev-actions{display:flex;gap:4px;margin-left:auto}
+.back-bar{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.back-bar .back-btn{background:var(--p2);border:1px solid var(--bd);border-radius:10px;padding:8px 16px;cursor:pointer;font-size:15px;color:var(--txt);display:flex;align-items:center;gap:6px;transition:.15s}
+.back-bar .back-btn:hover{background:var(--bd)}
 .bdg{font-size:14px;padding:2px 8px;border-radius:12px;font-weight:600}
 .b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
 .b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
@@ -121,15 +123,8 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 </style>
 </head>
 <body>
-<nav>
-  <div class="logo">知</div>
-  <a id="nav-evaluations" onclick="go('evaluations')" class="active">📊<span>评测</span></a>
-  <a id="nav-create" onclick="go('create')">➕<span>新建</span></a>
-  <a id="nav-system" onclick="go('system')">⚙️<span>系统</span></a>
-</nav>
 <div class="wrap">
   <header><div class="title" id="h-title">知识测评</div><div class="sub" id="h-sub"></div><div class="sp"></div>
-    <button class="ghost" onclick="go('create')">+ 新建评测</button>
     <button class="ghost" onclick="render()">刷新</button>
     <button class="ghost" id="theme-btn" onclick="toggleTheme()" style="font-size:18px;padding:8px 12px">🌙</button>
   </header>
@@ -137,7 +132,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 </div>
 <script>
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
-const U=(u)=>location.pathname.indexOf("/eval")===0&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?"/eval"+u:u;const F=(u,...a)=>fetch(U(u),...a);let view="evaluations";let activeId=null;
+const U=(u)=>location.pathname.indexOf("/eval")===0&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?"/eval"+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#9aa3b2","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#6b7280","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
@@ -153,7 +148,6 @@ applyTheme(localStorage.getItem("eval-theme")||"light");
 
 let w={proj:"",task:"",kg:"",nogk:"",biid:"BI-T001",tfid:"F-T001",eid:""};
 
-function go(v){view=v;document.querySelectorAll("nav a").forEach(a=>a.classList.remove("active"));document.getElementById("nav-"+v).classList.add("active");const t={evaluations:["评测","评测列表与报告"],create:["新建评测","从平台选 trace 跑一次评测"],system:["系统","数据库健康"]} ;document.getElementById("h-title").textContent=t[v][0];document.getElementById("h-sub").textContent=t[v][1];render();}
 function $(i){return document.getElementById(i);}
 function el(h){const d=document.createElement("div");d.innerHTML=h;return d.firstChild;}
 function fmtMtime(mt){if(!mt)return'-';const d=new Date(mt*1000+8*3600000);const p=n=>String(n).padStart(2,'0');return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes());}
@@ -163,37 +157,31 @@ async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Typ
 
 async function render(){
   const v=$("view");v.innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载中…</h3></div>';
-  try{await({evaluations:renderEvals,create:renderCreate,system:renderSystem}[view])();}
+  try{await renderEvals();}
   catch(e){v.innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>错误</h3><p>'+e+'</p></div>';}
 }
 
-// ===== ① 评测 =====
+// ===== 评测列表 =====
 async function renderEvals(){
   const d=await jget("/api/v1/evaluations?page_size=9999");const evs=d.evaluations||[];
-  let filter="all",q="";
   window._evData=evs;window._evPage=1;
-  $("view").innerHTML=`<div class="cols">
-    <div class="lst">
-      <div class="h">评测列表<span style="font-weight:400;background:var(--p2);padding:2px 8px;border-radius:12px;font-size:14px">${evs.length}</span></div>
-      <div style="padding:10px 12px;border-bottom:1px solid var(--bd)">
-        <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="margin-bottom:8px">
-        <div style="display:flex;gap:6px">
-          <button class="ef-btn active" onclick="setEvFilter('all',this)">全部</button>
-          <button class="ef-btn" onclick="setEvFilter('COMPLETED',this)">完成</button>
-          <button class="ef-btn" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
-          <button class="ef-btn" onclick="setEvFilter('FAILED',this)">失败</button>
-        </div>
-      </div>
-      <div class="b" id="ev-list-body"></div>
+  $("view").innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-shrink:0">
+    <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:300px">
+    <div style="display:flex;gap:6px">
+      <button class="ef-btn active" onclick="setEvFilter('all',this)">全部</button>
+      <button class="ef-btn" onclick="setEvFilter('COMPLETED',this)">完成</button>
+      <button class="ef-btn" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
+      <button class="ef-btn" onclick="setEvFilter('FAILED',this)">失败</button>
     </div>
-    <div class="rep" id="rep"><div class="empty"><div class="ic">📊</div><h3>选择左侧评测查看报告</h3></div></div>
-  </div>`;
+    <span style="margin-left:auto;font-size:14px;color:var(--sub)">共 ${evs.length} 条</span>
+  </div>
+  <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>`;
   renderEvList();
 }
 function setEvFilter(f,btn){window._evFilter=f;window._evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
 function filterEvals(){window._evQ=$("ev-search").value.toLowerCase();window._evPage=1;renderEvList();}
 function evPage(p){window._evPage=p;renderEvList();}
-const EV_PAGE_SIZE=10;
+const EV_PAGE_SIZE=12;
 function renderEvList(){
   const evs=window._evData||[];const f=window._evFilter||"all";const q=window._evQ||"";
   let filtered=evs;
@@ -210,28 +198,29 @@ function renderEvList(){
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
-    var btns=DEBUG?'<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
+    var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
       '</span>':'';
-    return '<div class="it '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
-      '<div class="n">'+(e.name||e.evaluation_id)+'</div>'+
-      '<div class="m"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+    return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
+      '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
+      '<div class="ev-meta"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '</div>';
-  }).join(""):'<div style="padding:24px;text-align:center;color:var(--sub);font-size:16px">无匹配评测</div>';
+  }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
   // 分页控件
   if(pages>1){
-    let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:10px 12px;border-top:1px solid var(--bd)">';
-    pgHtml+=`<button class="ef-btn" ${page<=1?'disabled':''} onclick="evPage(${page-1})" style="padding:4px 10px;font-size:14px">‹</button>`;
+    let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:16px 0 0;grid-column:1/-1">';
+    pgHtml+=`<button class="ef-btn" ${page<=1?'disabled':''} onclick="evPage(${page-1})" style="padding:6px 12px;font-size:14px">‹ 上一页</button>`;
     for(let i=1;i<=pages;i++){
       if(i===1||i===pages||(i>=page-1&&i<=page+1)){
-        pgHtml+=`<button class="ef-btn ${i===page?'active':''}" onclick="evPage(${i})" style="padding:4px 8px;font-size:14px;min-width:28px">${i}</button>`;
+        pgHtml+=`<button class="ef-btn ${i===page?'active':''}" onclick="evPage(${i})" style="padding:6px 10px;font-size:14px;min-width:32px">${i}</button>`;
       }else if(i===page-2||i===page+2){
         pgHtml+='<span style="color:var(--sub);font-size:14px">…</span>';
       }
     }
-    pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:4px 10px;font-size:14px">›</button>`;
-    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:4px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span>`;
+    pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:6px 12px;font-size:14px">下一页 ›</button>`;
+    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:8px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span>`;
     pgHtml+='</div>';
     html+=pgHtml;
   }
@@ -240,8 +229,6 @@ function renderEvList(){
 
 async function selEv(id){
   activeId=id;
-  // 只在列表未加载时才拉全量，避免每次选择/状态变化都请求全部评测
-  if(window._evData){renderEvList();}else{await renderEvals();}
   try{const s=await jget(`/api/v1/evaluations/${id}`);
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
@@ -251,7 +238,7 @@ async function selEv(id){
       var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
       if(phase==="REPORTING"&&!(s.progress&&s.progress.indexOf("生成报告")>=0)){phaseLabel="知识与记忆介入分析";}
       var errMsg=s.error_message||"无详细错误信息";
-      $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
@@ -287,7 +274,7 @@ async function selEv(id){
       // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
       if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
-      $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:14px;color:var(--sub);margin-top:4px">'+(s.name||'')+'</div><div style="font-size:12px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:14px;color:var(--sub);margin-top:4px">'+(s.name||'')+'</div><div style="font-size:12px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
@@ -305,8 +292,8 @@ async function selEv(id){
           }
           else if(st.status==="FAILED"){selEv(id);}
           else if(st.status!==s.status){
-            // 更新缓存中的状态，避免 selEv 再拉全量列表
-            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;renderEvList();}}
+            // 更新缓存中的状态
+            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;}}
             selEv(id);
           }
           else{
@@ -319,7 +306,7 @@ async function selEv(id){
     }
   }catch(e){}
   // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
-  $("rep").innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
   try{
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
@@ -329,15 +316,15 @@ async function selEv(id){
     }
   }catch(e){}
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
-  catch(e){$("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
+  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
 function loadIframeReport(id){
-  var rep=$("rep");
+  var rep=$("view");
   rep.style.overflow='hidden';
-  rep.innerHTML='<div style="position:relative;width:100%;height:100%"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>';
+  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="position:relative;width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>';
 }
 function toggleRepFullscreen(){
-  var el=$("rep");
+  var el=$("view");
   if(!document.fullscreenElement){
     el.requestFullscreen().then(function(){var btn=el.querySelector("button");if(btn)btn.textContent="⛶ 退出全屏";}).catch(function(){});
   }else{
@@ -345,7 +332,7 @@ function toggleRepFullscreen(){
   }
 }
 document.addEventListener("fullscreenchange",function(){
-  var btn=$("rep")&&$("rep").querySelector("button");
+  var btn=$("view")&&$("view").querySelector("button");
   if(btn)btn.textContent=document.fullscreenElement?"⛶ 退出全屏":"⛶ 全屏";
 });
 function retryEval(eid){
@@ -354,7 +341,7 @@ function retryEval(eid){
     risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
-      var rep=$("rep");if(rep)rep.innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
       jget('/api/v1/evaluations/'+eid+'/report').then(function(){}).catch(function(){});
       F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.status==='QUEUED'||d.status==='RUNNING'){
@@ -384,7 +371,7 @@ function deleteEval(eid,name){
   F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.status==='ok'){
       renderEvals();
-      $("rep").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p></div>';
+      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="renderEvals()">返回列表</button></div>';
     }else{
       alert('删除失败: '+JSON.stringify(d));
     }
@@ -489,7 +476,9 @@ function selectReportTab(button,paneId){
 }
 
 function renderReport(d){
-  $("rep").style.overflowY='auto';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
+  var rep=$("rep-content");
+  rep.style.overflowY='auto';
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
 
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
@@ -767,7 +756,7 @@ function renderReport(d){
   const kgInfo=entriesInfo.find(e=>e.condition==="KG")||{};
   const nogkInfo=entriesInfo.find(e=>e.condition==="NOGK")||{};
 
-  $("rep").innerHTML=`
+  rep.innerHTML=`
   <div style="margin-bottom:22px">
     <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
     <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
