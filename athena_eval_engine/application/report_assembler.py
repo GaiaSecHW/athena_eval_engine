@@ -1327,6 +1327,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 })
                 continue
 
+        _nogk_desc = ("7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
+                       if has_nogk else "\n")
         prompt = [
             {"role": "system", "content": (
                 "你是知识图谱与记忆介入效果分析员。结论先行，然后按场景分析。\n\n"
@@ -1340,17 +1342,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
                 "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录（含查询命令）\n"
                 "6. mining_actions：从漏洞提交点倒推的完整挖掘过程。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
-                + ("7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
-                   if has_nogk else "\n")
-                "# impact 判定规则\n"
-                "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
-                "- NEGATIVE（负向）：知识误导 Agent，导致漏报或误报\n"
-                "- NEUTRAL（中性）：知识未产生影响，或无知识交互\n\n"
-                "# reason 写作要求（800字以内，结论先行）\n"
-                "第一句给出结论：知识与记忆是正向/负向/中性帮助。\n"
-                "然后按场景回答具体问题（见 user 消息）。\n"
-                "必须从挖掘过程记录和知识查询记录中引用具体内容作为证据，不要泛泛而谈。\n\n"
-                "只返回 JSON。"
+                + _nogk_desc
+                + "# impact 判定规则\n"
+                + "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
+                + "- NEGATIVE（负向）：知识误导 Agent，导致漏报或误报\n"
+                + "- NEUTRAL（中性）：知识未产生影响，或无知识交互\n\n"
+                + "# reason 写作要求（800字以内，结论先行）\n"
+                + "第一句给出结论：知识与记忆是正向/负向/中性帮助。\n"
+                + "然后按场景回答具体问题（见 user 消息）。\n"
+                + "必须从挖掘过程记录和知识查询记录中引用具体内容作为证据，不要泛泛而谈。\n\n"
+                + "只返回 JSON。"
             )},
             {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + (
                 '\n\n' + _case_q +
