@@ -111,6 +111,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     first_token = True
     try:
         # ── Phase 1: 发请求，429 限流有限重试，拿到 200 响应头 ──
+        _req_ts = time.time()
         for _attempt in range(MAX_RATE_LIMIT_RETRIES):
             conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
             try:
@@ -171,7 +172,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
                 _last_content_ts = time.time()
-                log("LLM", f"first token received, stream timeout -> {STREAM_TIMEOUT}s")
+                log("LLM", f"first token in {time.time()-_req_ts:.1f}s, stream gap timeout -> {STREAM_TIMEOUT}s")
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
             if usage:
@@ -213,7 +214,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}")
 
         if content:
-            log("LLM", f"OK stream done content_len={len(content)}")
+            log("LLM", f"OK stream done content_len={len(content)} elapsed={time.time()-_req_ts:.1f}s")
             return content
         raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
     except (socket.timeout, TimeoutError) as e:
