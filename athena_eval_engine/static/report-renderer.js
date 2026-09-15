@@ -555,7 +555,7 @@ function renderReport(d){
         ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
           [["M1",_absMetric(gp0.M1,"ba_kg","KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_kg","KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_kg","KG 条件下与基线对比的精确率")]]],
         ...(hasNogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
-          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]]:[]),
+          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]]]:[]),
         ["③ 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
           (isVerify||!hasNogk)?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
         ...(!isVerify&&hasNogk?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
