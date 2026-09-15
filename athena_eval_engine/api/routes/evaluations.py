@@ -933,10 +933,24 @@ renderReport(window.__REPORT_DATA__);
     from datetime import datetime, timezone, timedelta
     _tz = timezone(timedelta(hours=8))
     _gen_time = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S")
+    # 计算总运行时长
+    _run_dur = "-"
+    if r.get("started_at") and r.get("finished_at"):
+        from datetime import datetime as _dt
+        _s = _dt.fromisoformat(r["started_at"])
+        _f = _dt.fromisoformat(r["finished_at"])
+        _dur_s = int((_f - _s).total_seconds())
+        if _dur_s >= 3600:
+            _run_dur = f"{_dur_s//3600}时 {(_dur_s%3600)//60}分"
+        elif _dur_s >= 60:
+            _run_dur = f"{_dur_s//60}分 {_dur_s%60}秒"
+        else:
+            _run_dur = f"{_dur_s}秒"
     html = (
         html
         .replace("__EVAL_ID__", evaluation_id)
         .replace("__GEN_TIME__", _gen_time)
+        .replace("__RUN_DUR__", _run_dur)
         .replace("__RENDERER_JS__", renderer_js)
         .replace("__REPORT_JSON__", data_str)
     )
