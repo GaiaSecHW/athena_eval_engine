@@ -1202,6 +1202,7 @@ def run(evaluation_id: str) -> dict:
                 "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
                 "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),
                 "nogk_session_id": _g_nogk_case.get("session_id", ""),
+                "nogk_candidate_findings": _g_nogk_case.get("candidate_findings", []),
                 "kg_source_uri": _g_kg_facts.get("_source_uri", ""),
                 "nogk_source_uri": _g_nogk_facts.get("_source_uri", ""),
             })

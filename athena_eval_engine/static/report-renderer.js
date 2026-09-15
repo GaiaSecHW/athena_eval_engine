@@ -121,6 +121,28 @@ function renderReport(d){
       rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
     }
     var formulaHtml=mi.formula?"<details style='margin-top:4px'><summary style='cursor:pointer;font-size:12px;color:var(--gray)'>计算公式</summary><div style='font-size:12px;color:var(--sub);font-family:monospace;background:var(--p2);padding:4px 6px;border-radius:4px;margin-top:4px'>"+mi.formula+"</div></details>":"";
+    // 混淆矩阵值：显示计算过程
+    if(m.cm){
+      var cmParts=[];
+      if(mid==="M1"){
+        cmParts.push("真正例="+m.cm.tp,"假负例="+m.cm.fn,"真负例="+m.cm.tn,"假正例="+m.cm.fp);
+        var tpr=m.cm.tp+m.cm.fn>0?(m.cm.tp/(m.cm.tp+m.cm.fn)*100).toFixed(1):"0.0";
+        var tnr=m.cm.tn+m.cm.fp>0?(m.cm.tn/(m.cm.tn+m.cm.fp)*100).toFixed(1):"0.0";
+        cmParts.push("→ 真正例率="+tpr+"%, 真负例率="+tnr+"%");
+      }else if(mid==="M4"){
+        cmParts.push("假负例="+m.cm.fn,"真正例="+m.cm.tp);
+        cmParts.push("→ "+m.cm.fn+"/("+(m.cm.fn+m.cm.tp)+")");
+      }else if(mid==="M13"){
+        cmParts.push("假正例="+m.cm.fp,"真负例="+m.cm.tn);
+        cmParts.push("→ "+m.cm.fp+"/("+(m.cm.fp+m.cm.tn)+")");
+      }else if(mid==="M14"){
+        cmParts.push("真正例="+m.cm.tp,"假正例="+m.cm.fp);
+        cmParts.push("→ "+m.cm.tp+"/("+(m.cm.tp+m.cm.fp)+")");
+      }
+      if(cmParts.length){
+        formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
+      }
+    }
     return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(m.d||mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
   }
 
@@ -255,6 +277,25 @@ function renderReport(d){
         h+="</div>";
       }
       h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+confBadge("No-KG",nogkConf)+"</div>";
+      // 候选 finding（预筛选认为可能匹配但未最终匹配的 agent finding，以基线为中心）
+      function _renderCands(label,cands){
+        if(!cands||!cands.length) return "";
+        var hh="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
+        hh+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>📋 "+label+" 候选 Finding（"+cands.length+" 条，预筛选匹配但未最终匹配）</summary>";
+        cands.forEach(function(cf,i){
+          var vrColor=cf.validation_result==="CONFIRMED"?"var(--green)":cf.validation_result==="FALSE_POSITIVE"?"var(--red)":"var(--gray)";
+          var vrText=cf.validation_result==="CONFIRMED"?"确认漏洞":cf.validation_result==="FALSE_POSITIVE"?"判为非漏洞":cf.validation_result||"未知";
+          hh+="<div style='margin-bottom:4px;padding:6px;background:var(--p2);border-radius:6px'>";
+          hh+="<div style='font-size:12px;color:"+vrColor+"'>["+(i+1)+"] "+vrText+"</div>";
+          hh+="<div style='font-size:12px;color:var(--txt);line-height:1.4'>"+(cf.title||"").replace(/</g,"&lt;")+"</div>";
+          hh+="<div style='font-size:11px;color:var(--gray);font-family:monospace'>"+(cf.finding_id||"").replace(/</g,"&lt;")+"</div>";
+          hh+="</div>";
+        });
+        hh+="</details>";
+        return hh;
+      }
+      if(!c.matched) h+=_renderCands("KG",c.candidate_findings);
+      if(!c.nogk_matched) h+=_renderCands("No-KG",c.nogk_candidate_findings);
       // 知识与记忆交互明细
       if(pcKa&&kgActive){
         // 知识图谱交互
@@ -474,7 +515,13 @@ function renderReport(d){
         const method=metric.method||{};
         const val=method[key];
         if(val==null) return {calculation_status:"NO_DATA",reason_code:"NO_DATA",n:metric.n};
-        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc};
+        var cm=null;
+        if(key.endsWith("_kg")){
+          if(method.tp_kg!=null){cm={tp:method.tp_kg,fp:method.fp_kg,fn:method.fn_kg,tn:method.tn_kg};}
+        }else{
+          if(method.tp_n!=null){cm={tp:method.tp_n,fp:method.fp_n,fn:method.fn_n,tn:method.tn_n};}
+        }
+        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm};
       }
       const groups=[
         ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
@@ -525,8 +572,12 @@ function renderReport(d){
       const crs=Array.isArray(g.case_results)?g.case_results:[];
       for(const c of crs){
         const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
-        const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):"<span style='color:var(--gray)'>未匹配</span>";
-        const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):"<span style='color:var(--gray)'>未匹配</span>";
+        const kgCands=c.candidate_findings||[];
+        const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+        const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+kgCandNote);
+        const nogkCands=c.nogk_candidate_findings||[];
+        const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+        const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
         const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
         const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
         rows.push(`<tr>

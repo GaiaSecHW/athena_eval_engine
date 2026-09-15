@@ -294,7 +294,8 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
             case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                                 "matched": False, "matched_finding_id": None, "finding_title": "",
                                 "confusion": "NA" if is_vuln else "TN",
-                                "session_id": "", "agent_validation": None})
+                                "session_id": "", "agent_validation": None,
+                                "candidate_findings": []})
         has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -541,11 +542,24 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
         else:
             confusion = "NA" if is_vuln else "TN"
 
+        # 收集该基线的预筛选候选 finding（以基线为中心展示 agent 提交内容）
+        candidates_info = []
+        for fi in prefilter_candidates.get(bi, []):
+            f = active_findings[fi]
+            candidates_info.append({
+                "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                "title": f.get("title") or f.get("vuln_type") or "",
+                "vuln_type": f.get("vuln_type", ""),
+                "validation_result": f.get("validation_result"),
+                "session_id": f.get("session_id", ""),
+            })
+
         case_results.append({"case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                             "matched": is_matched, "matched_finding_id": matched_fid, "finding_title": finding_title,
                             "ac_case_id": ac_case_id, "confusion": confusion,
                             "session_id": finding_session, "agent_validation": matched_vr,
-                            "finding_ts": finding_ts})
+                            "finding_ts": finding_ts,
+                            "candidate_findings": candidates_info})
 
     # 聚合 outcome：VULNERABLE 基线需 TP，NON_VULNERABLE 基线需 TN
     all_correct = all(c["confusion"] in ("TP", "TN") for c in case_results) if case_results else False
