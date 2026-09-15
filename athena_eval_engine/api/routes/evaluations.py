@@ -87,6 +87,8 @@ class CreateRequest(BaseModel):
     vbench_project_name: str | None = None
     benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
     vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id
+    vc_source_project_name: str | None = None  # 漏洞中心项目名
+    vc_source_task_name: str | None = None  # 漏洞中心任务名
     entries: list[dict]
 
 

@@ -36,11 +36,16 @@ def list_evaluations(page: int = 1, page_size: int = 20):
         for r in rows:
             kg_proj = kg_task = nogk_proj = nogk_task = ""
             bm_source = ""
+            vb_proj_name = ""
+            vc_proj_name = vc_task_name = ""
             if r[5]:
                 try:
                     cfg = json.loads(r[5])
                     manifest = cfg.get("manifest", {})
                     bm_source = manifest.get("benchmark_source", "vbench_zip")
+                    vb_proj_name = manifest.get("vbench_project_name") or ""
+                    vc_proj_name = manifest.get("vc_source_project_name") or ""
+                    vc_task_name = manifest.get("vc_source_task_name") or ""
                     for e in manifest.get("entries", []):
                         if e.get("condition") == "KG" and not kg_proj:
                             kg_proj = e.get("project_name") or e.get("project_id") or ""
@@ -54,7 +59,10 @@ def list_evaluations(page: int = 1, page_size: int = 20):
                           "benchmark_set_id": r[3], "created_at": str(r[4]),
                           "kg_project": kg_proj, "kg_task": kg_task,
                           "nogk_project": nogk_proj, "nogk_task": nogk_task,
-                          "benchmark_source": bm_source})
+                          "benchmark_source": bm_source,
+                          "vbench_project_name": vb_proj_name,
+                          "vc_project_name": vc_proj_name,
+                          "vc_task_name": vc_task_name})
         return {
             "evaluations": evals,
             "total": total,

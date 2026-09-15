@@ -433,6 +433,9 @@ def create(req: CreateRequest):
     manifest = {"entries": req.entries, "manifest_hash": "mh",
                 "vbench_project_name": req.vbench_project_name,
                 "benchmark_source": req.benchmark_source,
+                "vc_source_task_id": req.vc_source_task_id,
+                "vc_source_project_name": req.vc_source_project_name,
+                "vc_source_task_name": req.vc_source_task_name,
                 "alert_center_data": alert_center_data}
     conn = connect(autocommit=True)
     try:

@@ -210,7 +210,7 @@ function renderEvList(){
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">KG：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
         '<div><span style="color:var(--gray)">No-KG：</span><b>'+(e.nogk_project||'-')+'</b> / '+(e.nogk_task||'-')+'</div>'+
-        (e.benchmark_source==='vuln_center'?'<div><span style="color:var(--gray)">数据源：</span>漏洞中心</div>':'')+
+        '<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_project_name||'-')+' / '+(e.vc_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>'+
       '</div>'+
       '</div>';
   }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
@@ -917,7 +917,7 @@ let sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceK
 let _allVbProjs=[];let _vbCases=null;let _vcCases=null;let _vcKey="";let _vcTasks=null;
 let _allProjs=[];let _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
 async function renderCreate(){
-  $("view").innerHTML=`<div style="width:100%">
+  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="card" id="kg-col"></div>
@@ -1122,7 +1122,7 @@ async function runEval(){
   let tid2=1;
   if(sel.nogk.miningTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.miningTrace,trace_kind:sel.nogk.miningTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("nogk",sel.nogk.miningTrace,sel.nogk.miningTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
   if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("nogk",sel.nogk.verifyTrace,sel.nogk.verifyTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,entries:entries});
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,vc_source_project_name:sel.bsrc==='vuln_center'?(sel.vcProjName||undefined):undefined,vc_source_task_name:sel.bsrc==='vuln_center'?(sel.vcTaskName||undefined):undefined,entries:entries});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;renderEvals();setTimeout(selEv,500,r.evaluation_id);
     // selEv 内部已启动轮询，不再重复轮询
