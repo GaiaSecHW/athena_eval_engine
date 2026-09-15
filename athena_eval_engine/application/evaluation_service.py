@@ -145,6 +145,8 @@ class CreateRequest:
     vbench_project_name: str | None = None
     benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
     vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id（项目用 benchmark_set_id）
+    vc_source_project_name: str | None = None  # 漏洞中心项目名
+    vc_source_task_name: str | None = None  # 漏洞中心任务名
     entries: list = field(default_factory=list)  # [{task_id, condition, source_uri, benchmark_item_id}]
 
 
@@ -199,38 +201,40 @@ def _set_status_short(evaluation_id, status):
         conn.close()
 
 
-def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> tuple[str, str]:
-    """用 LLM 从漏洞描述中提取 source_file 和 source_function。
+def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> tuple[str, str, str]:
+    """用 LLM 从漏洞描述中提取 source_file、source_function 和 source_line（行号）。
 
     当结构化数据（V-Bench traces 或漏洞中心 subject.locator）无法提取时作为 fallback。
     """
     from ..infrastructure import llm as llm_mod
     if not description or not llm_mod.is_enabled():
-        return "", ""
+        return "", "", ""
     prompt = [
         {"role": "system", "content": (
-            "从漏洞描述中提取漏洞所在的源文件路径和函数/方法名。\n"
-            "只返回 JSON: {\"source_file\": \"文件路径\", \"source_function\": \"函数名\"}\n"
-            "如果无法确定，对应字段返回空字符串。不要输出其他内容。"
+            "从漏洞描述中提取漏洞所在的源文件路径、函数/方法名和行号。\n"
+            "只返回 JSON: {\"source_file\": \"文件路径\", \"source_function\": \"函数名\", \"source_line\": \"行号\"}\n"
+            "行号只填数字，如 872。如果无法确定，对应字段返回空字符串。不要输出其他内容。"
         )},
         {"role": "user", "content": f"漏洞类型: {vulnerability_type}\n漏洞描述: {description}"},
     ]
     try:
         result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
-        return result.get("source_file", ""), result.get("source_function", "")
+        return result.get("source_file", ""), result.get("source_function", ""), str(result.get("source_line", ""))
     except Exception as e:
-        log("CREATE", f"AI 提取 source_file/source_function 失败: {e}")
-        return "", ""
+        log("CREATE", f"AI 提取 source_file/source_function/source_line 失败: {e}")
+        return "", "", ""
 
 
 def _fill_missing_source(case: dict) -> None:
-    """如果 case 的 source_file 或 source_function 为空，用 AI 从 description 补提取。"""
-    if not case.get("source_file") or not case.get("source_function"):
-        sf, sfn = _ai_extract_source_info(case.get("description", ""), case.get("vulnerability_type", ""))
+    """如果 case 的 source_file、source_function 或 source_line 为空，用 AI 从 description 补提取。"""
+    if not case.get("source_file") or not case.get("source_function") or not case.get("source_line"):
+        sf, sfn, sln = _ai_extract_source_info(case.get("description", ""), case.get("vulnerability_type", ""))
         if not case.get("source_file"):
             case["source_file"] = sf
         if not case.get("source_function"):
             case["source_function"] = sfn
+        if not case.get("source_line"):
+            case["source_line"] = sln
 
 
 def create(req: CreateRequest):
@@ -311,6 +315,7 @@ def create(req: CreateRequest):
                         "expected_label": c.get("expected_label") or "VULNERABLE",
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
                     }
                     _fill_missing_source(case_details[cid])
         else:
@@ -330,6 +335,7 @@ def create(req: CreateRequest):
                         "target_finding_id": c.get("target_finding_id") or "",
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
                     }
                     _fill_missing_source(case_details[cid])
         log("CREATE", f"case_details 构建完成: {len(case_details)} 条")

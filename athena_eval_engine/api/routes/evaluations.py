@@ -110,12 +110,22 @@ def resume_stuck_evaluations():
 
     状态在 RUNNING_STATES 里的评测 = 后台线程已死（pod 重启），但 DB 里还显示运行中。
     重新提交到线程池，run() 会检查 facts 是否已存在自动跳过已完成的阶段。
+    CREATED 状态 = create() 未完成的半成品（无 snapshot），标记 FAILED 清理。
     """
     try:
         from ...infrastructure.database import connect
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
+            # CREATED = create() 半途失败（有 evaluation 行但无 snapshot），标记 FAILED
+            cur.execute("SELECT evaluation_id FROM evaluation WHERE evaluation_status='CREATED'")
+            created_rows = cur.fetchall()
+            for (eid,) in created_rows:
+                log("STARTUP", f"{eid} (was CREATED) → 标记 FAILED（create 未完成）")
+                cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
+                            "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
+                            ("create() 未完成（无 snapshot），评测创建失败", eid))
+            # RUNNING_STATES = 线程已死但 DB 还显示运行中，续跑
             stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
                             'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
                             'DIAGNOSING', 'REPORTING', 'FINALIZING')
@@ -189,6 +199,8 @@ def create_evaluation(req: CreateRequest):
                                    vbench_project_name=req.vbench_project_name,
                                    benchmark_source=req.benchmark_source,
                                    vc_source_task_id=req.vc_source_task_id,
+                                   vc_source_project_name=req.vc_source_project_name,
+                                   vc_source_task_name=req.vc_source_task_name,
                                    entries=req.entries))
         # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
         from ...infrastructure.database import connect as _connect_create
