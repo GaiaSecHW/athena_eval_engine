@@ -578,10 +578,12 @@ def _build_report(evaluation_id: str):
     try:
         cur = conn.cursor()
         # 评测元信息：名称、基线项目
-        cur.execute("SELECT evaluation_name, benchmark_set_id FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        cur.execute("SELECT evaluation_name, benchmark_set_id, started_at, finished_at FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         erow = cur.fetchone()
         if erow:
             r["evaluation_name"] = erow[0]
+            r["started_at"] = erow[2].isoformat() if erow[2] else None
+            r["finished_at"] = erow[3].isoformat() if erow[3] else None
         # 从 snapshot 的 config_json 提取 manifest 信息
         cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
         srow = cur.fetchone()
@@ -915,7 +917,7 @@ svg{display:block;margin:0 auto;max-width:100%}
 </style>
 </head>
 <body>
-<div style="background:#1a1d23;color:#9ca3af;font-size:13px;padding:5px 28px;text-align:right;font-family:'SF Mono',Consolas,monospace">报告生成时间：__GEN_TIME__</div>
+<div style="background:#1a1d23;color:#9ca3af;font-size:13px;padding:5px 28px;text-align:right;font-family:'SF Mono',Consolas,monospace">报告生成时间：__GEN_TIME__ · 运行时长：__RUN_DUR__</div>
 <div id="rep"></div>
 <script>
 __RENDERER_JS__

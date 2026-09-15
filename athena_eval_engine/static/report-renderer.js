@@ -414,6 +414,7 @@ function renderReport(d){
       <div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>
       <div><span style="color:var(--gray)">基线来源：</span><b>${d.benchmark_source==='vuln_center'?'漏洞中心数据':(vbenchName||'无（无 GT 模式）')}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
+      <div><span style="color:var(--gray)">运行时长：</span><b>${(d.started_at&&d.finished_at)?fmtDur(new Date(d.finished_at)-new Date(d.started_at)):'-'}</b> <span style="color:var(--gray);font-size:13px">（${(d.started_at||'').replace('T',' ').slice(0,19)} → ${(d.finished_at||'').replace('T',' ').slice(0,19)}）</span></div>
     </div>
   </div>
 
