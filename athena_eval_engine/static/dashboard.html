@@ -978,7 +978,7 @@ function filterSideList(side){
   if(!s.proj){
     if(!_allProjs)return;
     const f=_allProjs.filter(p=>(p.name+" "+p.id+" "+(p.department_name||"")+" "+(p.product_path||"")).toLowerCase().includes(q));
-    $(side+"-list").innerHTML=f.slice(0,50).map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l" title="${p.name}">${p.name}</span><span class="opt-mid" style="color:var(--sub)" title="${p.department_name||""}">${p.department_name||""}</span><span class="opt-right" style="color:var(--acc)" title="${p.product_path||""}">${p.product_path||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
+    $(side+"-list").innerHTML=f.map(p=>`<div class="opt" onclick="pick('${side}','proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l" title="${p.name}">${p.name}</span><span class="opt-mid" style="color:var(--sub)" title="${p.department_name||""}">${p.department_name||""}</span><span class="opt-right" style="color:var(--acc)" title="${p.product_path||""}">${p.product_path||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
   }else if(!s.task){
     if(!_sideData[side].tasks)return;
     const f=_sideData[side].tasks.filter(t=>((t.name||"")+" "+t.id+" "+(t.task_type||"")+" "+(t.test_target||"")+" "+(t.status||"")).toLowerCase().includes(q));
