@@ -910,7 +910,7 @@ let sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceK
 let _allVbProjs=[];let _vbCases=null;let _vcCases=null;let _vcKey="";let _vcTasks=null;
 let _allProjs=[];let _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
 async function renderCreate(){
-  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%">
+  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="card" id="kg-col"></div>
