@@ -78,16 +78,26 @@ def _get(url):
         return json.loads(r.read().decode("utf-8"))
 
 
-def get_projects():
-    d = _get(f"{PROJECT_API}/api/project")
-    items = d.get("projects", []) if isinstance(d, dict) else d
+def get_projects(page_size: int = 1000):
+    """获取全部项目（分页拉取，按更新时间倒序）。"""
+    all_items = []
+    page = 1
+    while True:
+        d = _get(f"{PROJECT_API}/api/project?pageNum={page}&pageSize={page_size}&sort_by=updated_at&sort_direction=desc")
+        items = d.get("projects", []) if isinstance(d, dict) else d
+        if not items:
+            break
+        all_items.extend(items)
+        if len(items) < page_size:
+            break
+        page += 1
     return [{"id": p["id"], "name": p.get("name"),
              "department_name": p.get("department_name"),
              "product_path": p.get("category_path") or p.get("category_node_name"),
              "category": p.get("category"),
              "k8s_namespace": p.get("k8s_namespace"),
              "owner_name": p.get("owner_name"),
-             "description": p.get("description")} for p in items]
+             "description": p.get("description")} for p in all_items]
 
 
 def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter: str | None = None):
