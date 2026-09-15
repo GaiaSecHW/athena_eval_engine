@@ -1206,7 +1206,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
             "mining_actions": mining_actions,
-            "nogk_confusion": nogk_confusion,
+            **({"nogk_confusion": nogk_confusion} if has_nogk else {}),
         }
 
         # 根据 confusion + agent_validation 构建场景特定的问题
@@ -1214,30 +1214,30 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             _case_q = (
                 "## 场景：Agent 找到并确认了漏洞\n"
                 "1. 为什么能挖到这个漏洞？Agent 的挖掘过程是如何一步步接触到漏洞代码的？\n"
-                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否引导到了漏洞所在区域？\n"
-                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否引导到了漏洞所在区域？"
+                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FN":
             # FN: Agent 找到了漏洞但判定为非漏洞
             _case_q = (
                 "## 场景：Agent 找到此漏洞但确认为非漏洞\n"
                 "1. 为什么 Agent 将此漏洞判定为非漏洞？判定依据是什么？\n"
-                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否影响了判定？\n"
-                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否影响了判定？"
+                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FP":
             _case_q = (
                 "## 场景：基线非漏洞但 Agent 报告为漏洞\n"
                 "1. 为什么误报？Agent 的挖掘过程如何接触到这个非漏洞区域？\n"
-                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否误导了 Agent？\n"
-                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否误导了 Agent？"
+                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         else:  # TN
             _case_q = (
                 "## 场景：基线非漏洞，Agent 正确排除或未报告\n"
                 "1. 为什么正确排除（或未报告）？Agent 是否接触过此区域？\n"
-                "2. 知识与记忆是正向/负向/中性？\n"
-                "3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？"
+                "2. 知识与记忆是正向/负向/中性？"
+                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
 
         # token 估算 + 按 session 分组压缩：防止输入超限（不截断，用 LLM 逐 session 压缩）

@@ -1027,6 +1027,10 @@ def run(evaluation_id: str) -> dict:
     pairs = TaskPairMatcherImpl().match(task_runs)
     has_nogk = any(tr.condition == Condition.NOGK for tr in task_runs)
     valid_pairs = [p for p in pairs if p.pair_match_status == PairMatchStatus.VALID_PAIR]
+    # 有 No-KG trace 但配对全部失败时，退化为 KG-only 模式（避免假 PairView 产生误导指标）
+    if has_nogk and not valid_pairs:
+        has_nogk = False
+        log("EVAL", f"⚠ 有 No-KG trace 但无有效配对，退化为 KG-only 模式")
     log("EVAL", f"配对完成: {len(pairs)} 对 (valid={len(valid_pairs)}, has_nogk={has_nogk}, task_runs={len(task_runs)})")
     pair_views: list[PairView] = []
     kg_access = kg_valid = kg_delivery = access = 0
@@ -1390,7 +1394,8 @@ def run(evaluation_id: str) -> dict:
                 fut_group_pcka[group["task_id"]] = kg_pool.submit(
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions, group["category"], _g_parser, _cb)
+                    _g_mem_interactions, group["category"], _g_parser, _cb,
+                    has_nogk=has_nogk)
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
         log("EVAL", f"知识与记忆介入分析完成")
