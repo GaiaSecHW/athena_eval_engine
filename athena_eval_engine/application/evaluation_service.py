@@ -278,163 +278,7 @@ def create(req: CreateRequest):
         except Exception as err:
             log("CREATE", f"⚠ 自动发现验证 trace 失败: {err}")
 
-    # 获取基线 case 详情（含漏洞描述）。数据源二选一：
-    #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
-    #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认 case（含漏洞与非漏洞两类）
-    case_details = {}
-    # 漏洞中心模式下，如果未指定 vc_source_task_id，用 entries 的 task_id_actual 补取
-    effective_vc_task = req.vc_source_task_id
-    if req.benchmark_source == "vuln_center" and not effective_vc_task:
-        for e in req.entries:
-            tid_actual = e.get("task_id_actual") or e.get("task_id")
-            if tid_actual:
-                effective_vc_task = tid_actual
-                break
-        if effective_vc_task:
-            log("CREATE", f"vc_source_task_id 未指定，使用 entries 的 task_id_actual={effective_vc_task} 过滤")
-    try:
-        if req.benchmark_source == "vuln_center":
-            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-            log("CREATE", f"漏洞中心取基线: project={req.benchmark_set_id} task={effective_vc_task}")
-            bm = get_vuln_center_benchmark(req.benchmark_set_id, effective_vc_task)
-            n_cases = len(bm.get("cases") or [])
-            log("CREATE", f"漏洞中心返回 {n_cases} 条 case")
-            # task_id_actual 不是有效的 source_task_id 时会返回 0 条。
-            # 不带 task 过滤重试，拿到整个项目的人工确认 case（含漏洞与非漏洞）。
-            if n_cases == 0 and effective_vc_task:
-                log("CREATE", f"task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试")
-                bm = get_vuln_center_benchmark(req.benchmark_set_id, None)
-                n_cases = len(bm.get("cases") or [])
-                log("CREATE", f"不带 task 过滤返回 {n_cases} 条 case")
-            for c in (bm.get("cases") or []):
-                cid = c.get("case_id") or c.get("id") or ""
-                if cid:
-                    case_details[cid] = {
-                        "description": c.get("description") or "",
-                        "vulnerability_type": c.get("vulnerability_type") or "",
-                        "target_finding_id": c.get("target_finding_id") or "",
-                        "expected_label": c.get("expected_label") or "VULNERABLE",
-                        "source_file": c.get("source_file") or "",
-                        "source_function": c.get("source_function") or "",
-                        "source_line": c.get("source_line") or "",
-                    }
-                    _fill_missing_source(case_details[cid])
-        else:
-            from ..infrastructure.vbench_client import get_benchmark
-            log("CREATE", f"V-Bench 取基线: set_id={req.benchmark_set_id}")
-            bm = get_benchmark(req.benchmark_set_id)
-            n_cases = len(bm.get("cases") or [])
-            log("CREATE", f"V-Bench 返回 {n_cases} 条 case")
-            for c in (bm.get("cases") or []):
-                cid = c.get("case_id") or c.get("id") or ""
-                if cid:
-                    findings = c.get("findings") or []
-                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
-                    case_details[cid] = {
-                        "description": desc,
-                        "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
-                        "target_finding_id": c.get("target_finding_id") or "",
-                        "source_file": c.get("source_file") or "",
-                        "source_function": c.get("source_function") or "",
-                        "source_line": c.get("source_line") or "",
-                    }
-                    _fill_missing_source(case_details[cid])
-        log("CREATE", f"case_details 构建完成: {len(case_details)} 条")
-    except Exception as e:
-        import traceback as _tb
-        log("CREATE", f"取基线数据失败: {e}")
-        _tb.print_exc()
-    if not case_details:
-        raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
-                         "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
-
-    # 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
-    # 从 entries 提取所有 (project_id, source_task_id) 对，可能有多个项目
-    _ac_pairs: list[tuple[str, str]] = []
-    _seen_pairs: set[tuple[str, str]] = set()
-    for e in req.entries:
-        _pid = e.get("project_id") or ""
-        _tid = e.get("task_id_actual") or effective_vc_task or ""
-        if _pid and _tid and (_pid, _tid) not in _seen_pairs:
-            _ac_pairs.append((_pid, _tid))
-            _seen_pairs.add((_pid, _tid))
-    alert_center_data = {}
-    if _ac_pairs:
-        try:
-            from ..infrastructure.vuln_center_client import get_alert_center_summary
-            _all_cases: list[dict] = []
-            _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
-            for _ac_project, _ac_task in _ac_pairs:
-                log("CREATE", f"告警中心取数据: project={_ac_project} task={_ac_task}")
-                ac_summary = get_alert_center_summary(_ac_project, _ac_task)
-                ac_total = ac_summary.get("total", 0)
-                ac_counts = ac_summary.get("counts", {})
-                log("CREATE", f"告警中心返回 {ac_total} 条 case: "
-                    f"是漏洞={ac_counts.get('vulnerable', 0)} "
-                    f"不是漏洞={ac_counts.get('not_vulnerable', 0)} "
-                    f"无法判定={ac_counts.get('inconclusive', 0)} "
-                    f"研判中={ac_counts.get('pending', 0)}")
-                for k in _merged_counts:
-                    _merged_counts[k] += ac_counts.get(k, 0)
-                _all_cases.extend(
-                    {
-                        "case_id": c.get("id") or c.get("case_id") or "",
-                        "title": c.get("title") or "",
-                        "summary": c.get("summary") or "",
-                        "validation_result": c.get("validation_result"),
-                        "current_stage": c.get("current_stage"),
-                        "current_status": c.get("current_status"),
-                        "project_id": _ac_project,
-                    }
-                    for c in ac_summary.get("cases", [])
-                )
-            alert_center_data = {
-                "source_task_ids": [t for _, t in _ac_pairs],
-                "project_ids": [p for p, _ in _ac_pairs],
-                "total": len(_all_cases),
-                "counts": _merged_counts,
-                "cases": _all_cases,
-            }
-        except Exception as e:
-            import traceback as _tb
-            log("CREATE", f"⚠ 取告警中心数据失败: {e}")
-            _tb.print_exc()
-    else:
-        log("CREATE", "⚠ 跳过告警中心数据获取: entries 中无 project_id/task_id_actual")
-
-    # Step 1: benchmark_set
-    conn = connect(autocommit=True)
-    try:
-        fact_repo.insert_benchmark_set(conn.cursor(), req.benchmark_set_id)
-    finally:
-        conn.close()
-
-    # Step 2: benchmark_items（含 case 描述存入 metadata_json）
-    # expected_label 优先取 case_details 里的（漏洞中心逐 case 标注），否则取 entry 级
-    # 漏洞中心模式下，只插入 case_details 里有的 case（过滤掉不属于当前任务的 case）
-    _filter_by_case_details = req.benchmark_source == "vuln_center" and case_details
-    for e in req.entries:
-        item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
-        if _filter_by_case_details:
-            _before = len(item_ids)
-            item_ids = [bid for bid in item_ids if bid in case_details]
-            if _before != len(item_ids):
-                log("CREATE", f"task={e.get('task_id','')} 过滤掉 {_before - len(item_ids)} 条不属于当前任务的 case，"
-                      f"剩余 {len(item_ids)} 条")
-        for bid in item_ids:
-            cd = case_details.get(bid) or {}
-            if not cd:
-                log("CREATE", f"⚠ benchmark_item {bid} 在 case_details 中未找到 → metadata 将为空")
-            conn = connect(autocommit=True)
-            try:
-                fact_repo.insert_benchmark_item(conn.cursor(), bid, req.benchmark_set_id,
-                                                e["task_id"], cd.get("expected_label") or e.get("expected_label", "VULNERABLE"),
-                                                cd.get("target_finding_id") or e.get("target_finding_id"),
-                                                cd)
-            finally:
-                conn.close()
-
-    # Step 3: evaluation
+    # Step 1: evaluation
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
     conn = connect(autocommit=True)
     try:
@@ -445,14 +289,15 @@ def create(req: CreateRequest):
     finally:
         conn.close()
 
-    # Step 4: evaluation_snapshot（独立连接）
+    # Step 2: evaluation_snapshot（独立连接）
+    # 基线数据、告警中心数据在 run() 的 INGESTING 阶段获取，create() 只冻结 entries + 配置
     manifest = {"entries": req.entries, "manifest_hash": "mh",
                 "vbench_project_name": req.vbench_project_name,
                 "benchmark_source": req.benchmark_source,
+                "benchmark_set_id": req.benchmark_set_id,
                 "vc_source_task_id": req.vc_source_task_id,
                 "vc_source_project_name": req.vc_source_project_name,
-                "vc_source_task_name": req.vc_source_task_name,
-                "alert_center_data": alert_center_data}
+                "vc_source_task_name": req.vc_source_task_name}
     conn = connect(autocommit=True)
     try:
         conn.cursor().execute(
@@ -499,6 +344,194 @@ def run(evaluation_id: str) -> dict:
     # 设置全局 LLM 并发上限（仅首次调用生效）
     from ..infrastructure.llm import set_max_concurrency
     set_max_concurrency(50)
+
+    # ===== Phase 0: INGESTING — 取基线 + 告警中心数据 + 写 benchmark_items =====
+    _set_status_short(evaluation_id, "INGESTING")
+    set_progress(evaluation_id, "获取基线数据...")
+
+    # 0a. 读 snapshot 配置 + benchmark_set_id（短连接）
+    def _read_ingest_config(cur):
+        cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"evaluation {evaluation_id} not found")
+        cfg = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        cur.execute("SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        eval_row = cur.fetchone()
+        benchmark_set_id = eval_row[0] if eval_row else "BS001"
+        return cfg, benchmark_set_id
+    _ingest_cfg, _ingest_bsid = _db_query(_read_ingest_config)
+    _ingest_manifest = _ingest_cfg.get("manifest", {})
+    _ingest_entries = _ingest_manifest.get("entries", [])
+    _bm_source = _ingest_manifest.get("benchmark_source", "vbench_zip")
+    _vc_task_id = _ingest_manifest.get("vc_source_task_id")
+
+    # 0b. 获取基线 case 详情（含漏洞描述）。数据源二选一：
+    #   vbench_zip   — 从 V-Bench benchmark.zip 读（测评集基线）
+    #   vuln_center  — 从漏洞中心 Chimera 直接读人工确认 case（含漏洞与非漏洞两类）
+    case_details = {}
+    if _bm_source == "vuln_center" and not _vc_task_id:
+        for e in _ingest_entries:
+            tid_actual = e.get("task_id_actual") or e.get("task_id")
+            if tid_actual:
+                _vc_task_id = tid_actual
+                break
+        if _vc_task_id:
+            log("INGEST", f"vc_source_task_id 未指定，使用 entries 的 task_id_actual={_vc_task_id} 过滤")
+    try:
+        if _bm_source == "vuln_center":
+            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
+            log("INGEST", f"漏洞中心取基线: project={_ingest_bsid} task={_vc_task_id}")
+            bm = get_vuln_center_benchmark(_ingest_bsid, _vc_task_id)
+            n_cases = len(bm.get("cases") or [])
+            log("INGEST", f"漏洞中心返回 {n_cases} 条 case")
+            if n_cases == 0 and _vc_task_id:
+                log("INGEST", f"task={_vc_task_id} 不是漏洞中心 source_task，不带 task 过滤重试")
+                bm = get_vuln_center_benchmark(_ingest_bsid, None)
+                n_cases = len(bm.get("cases") or [])
+                log("INGEST", f"不带 task 过滤返回 {n_cases} 条 case")
+            _total = len(bm.get("cases") or [])
+            _done = 0
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    case_details[cid] = {
+                        "description": c.get("description") or "",
+                        "vulnerability_type": c.get("vulnerability_type") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                        "expected_label": c.get("expected_label") or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                    }
+                    _fill_missing_source(case_details[cid])
+                _done += 1
+                if _done % 5 == 0 or _done == _total:
+                    set_progress(evaluation_id, f"获取基线数据: {_done}/{_total} 条 case")
+        else:
+            from ..infrastructure.vbench_client import get_benchmark
+            log("INGEST", f"V-Bench 取基线: set_id={_ingest_bsid}")
+            bm = get_benchmark(_ingest_bsid)
+            n_cases = len(bm.get("cases") or [])
+            log("INGEST", f"V-Bench 返回 {n_cases} 条 case")
+            _total = n_cases
+            _done = 0
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    findings = c.get("findings") or []
+                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
+                    case_details[cid] = {
+                        "description": desc,
+                        "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                    }
+                    _fill_missing_source(case_details[cid])
+                _done += 1
+                if _done % 5 == 0 or _done == _total:
+                    set_progress(evaluation_id, f"获取基线数据: {_done}/{_total} 条 case")
+        log("INGEST", f"case_details 构建完成: {len(case_details)} 条")
+    except Exception as e:
+        import traceback as _tb
+        log("INGEST", f"取基线数据失败: {e}")
+        _tb.print_exc()
+    if not case_details:
+        raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
+                         "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
+
+    # 0c. 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
+    _ac_pairs: list[tuple[str, str]] = []
+    _seen_pairs: set[tuple[str, str]] = set()
+    for e in _ingest_entries:
+        _pid = e.get("project_id") or ""
+        _tid = e.get("task_id_actual") or _vc_task_id or ""
+        if _pid and _tid and (_pid, _tid) not in _seen_pairs:
+            _ac_pairs.append((_pid, _tid))
+            _seen_pairs.add((_pid, _tid))
+    _alert_center_data = {}
+    if _ac_pairs:
+        try:
+            from ..infrastructure.vuln_center_client import get_alert_center_summary
+            _all_cases: list[dict] = []
+            _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
+            for _ac_project, _ac_task in _ac_pairs:
+                log("INGEST", f"告警中心取数据: project={_ac_project} task={_ac_task}")
+                ac_summary = get_alert_center_summary(_ac_project, _ac_task)
+                ac_total = ac_summary.get("total", 0)
+                ac_counts = ac_summary.get("counts", {})
+                log("INGEST", f"告警中心返回 {ac_total} 条 case: "
+                    f"是漏洞={ac_counts.get('vulnerable', 0)} "
+                    f"不是漏洞={ac_counts.get('not_vulnerable', 0)} "
+                    f"无法判定={ac_counts.get('inconclusive', 0)} "
+                    f"研判中={ac_counts.get('pending', 0)}")
+                for k in _merged_counts:
+                    _merged_counts[k] += ac_counts.get(k, 0)
+                _all_cases.extend(
+                    {
+                        "case_id": c.get("id") or c.get("case_id") or "",
+                        "title": c.get("title") or "",
+                        "summary": c.get("summary") or "",
+                        "validation_result": c.get("validation_result"),
+                        "current_stage": c.get("current_stage"),
+                        "current_status": c.get("current_status"),
+                        "project_id": _ac_project,
+                    }
+                    for c in ac_summary.get("cases", [])
+                )
+            _alert_center_data = {
+                "source_task_ids": [t for _, t in _ac_pairs],
+                "project_ids": [p for p, _ in _ac_pairs],
+                "total": len(_all_cases),
+                "counts": _merged_counts,
+                "cases": _all_cases,
+            }
+        except Exception as e:
+            import traceback as _tb
+            log("INGEST", f"⚠ 取告警中心数据失败: {e}")
+            _tb.print_exc()
+    else:
+        log("INGEST", "⚠ 跳过告警中心数据获取: entries 中无 project_id/task_id_actual")
+
+    # 0d. 写 benchmark_set + benchmark_items（短连接，幂等）
+    conn = connect(autocommit=True)
+    try:
+        fact_repo.insert_benchmark_set(conn.cursor(), _ingest_bsid)
+    finally:
+        conn.close()
+
+    _filter_by_case_details = _bm_source == "vuln_center" and case_details
+    for e in _ingest_entries:
+        item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
+        if _filter_by_case_details:
+            _before = len(item_ids)
+            item_ids = [bid for bid in item_ids if bid in case_details]
+            if _before != len(item_ids):
+                log("INGEST", f"task={e.get('task_id','')} 过滤掉 {_before - len(item_ids)} 条不属于当前任务的 case，"
+                      f"剩余 {len(item_ids)} 条")
+        for bid in item_ids:
+            cd = case_details.get(bid) or {}
+            if not cd:
+                log("INGEST", f"⚠ benchmark_item {bid} 在 case_details 中未找到 → metadata 将为空")
+            conn = connect(autocommit=True)
+            try:
+                fact_repo.insert_benchmark_item(conn.cursor(), bid, _ingest_bsid,
+                                                e["task_id"], cd.get("expected_label") or e.get("expected_label", "VULNERABLE"),
+                                                cd.get("target_finding_id") or e.get("target_finding_id"),
+                                                cd)
+            finally:
+                conn.close()
+
+    if _alert_center_data:
+        _ac_counts = _alert_center_data.get("counts", {})
+        log("INGEST", f"基线数据就绪: case_details={len(case_details)} "
+              f"告警中心={_alert_center_data.get('total', 0)} "
+              f"(是漏洞={_ac_counts.get('vulnerable', 0)} "
+              f"不是漏洞={_ac_counts.get('not_vulnerable', 0)})")
+    else:
+        log("INGEST", f"基线数据就绪: case_details={len(case_details)} 告警中心=0")
 
     # ===== Phase 1: 读配置（短连接）=====
     def _load_config(cur):
@@ -569,17 +602,7 @@ def run(evaluation_id: str) -> dict:
         return cfg, entries, bench_by_task
     cfg, entries, bench_by_task = _db_query(_load_config)
 
-    # 从 snapshot 加载告警中心数据（指标计算的权威数据来源）
-    _alert_center_data = cfg.get("manifest", {}).get("alert_center_data", {})
-    if _alert_center_data:
-        _ac_counts = _alert_center_data.get("counts", {})
-        log("EVAL", f"告警中心数据已加载: total={_alert_center_data.get('total', 0)} "
-              f"是漏洞={_ac_counts.get('vulnerable', 0)} "
-              f"不是漏洞={_ac_counts.get('not_vulnerable', 0)} "
-              f"无法判定={_ac_counts.get('inconclusive', 0)} "
-              f"研判中={_ac_counts.get('pending', 0)}")
-    else:
-        log("EVAL", "⚠ 告警中心数据为空，指标计算将回退到 parser 提取")
+    # 告警中心数据已在 Phase 0 (INGESTING) 获取，直接使用 _alert_center_data
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
     # 重跑时清理旧 facts，确保用最新 benchmark_item 标签重新计算
@@ -1104,7 +1127,9 @@ def run(evaluation_id: str) -> dict:
                     gt=kc.get("expected_label", "VULNERABLE" if has_vuln else "NA"),
                     kg_outcome="SUCCESS" if kg_ok else "FAIL",
                     nogk_outcome="FAIL",
-                    jsd=None, delta_token=None, delta_steps=None, delta_time=None))
+                    jsd=None, delta_token=None, delta_steps=None, delta_time=None,
+                    kg_confusion=kg_conf, nogk_confusion="",
+                    kg_mined=kc.get("mined", False), nogk_mined=False))
         log("EVAL", f"KG-only 模式: 从 case_results 构造 {len(pair_views)} 个 pair_view")
 
     # 按 benchmark_item 展开 pair_views，供 M1-M4 混淆矩阵使用
@@ -1132,7 +1157,9 @@ def run(evaluation_id: str) -> dict:
                     kg_outcome="SUCCESS" if kg_ok else "FAIL",
                     nogk_outcome="SUCCESS" if nogk_ok else "FAIL",
                     jsd=pv.jsd, delta_token=pv.delta_token,
-                    delta_steps=pv.delta_steps, delta_time=pv.delta_time))
+                    delta_steps=pv.delta_steps, delta_time=pv.delta_time,
+                    kg_confusion=kg_conf, nogk_confusion=nogk_conf,
+                    kg_mined=kc.get("mined", False), nogk_mined=nc.get("mined", False)))
                 _item_pv_task_ids.append(pair.task_id)
     else:
         # KG-only: item_pair_views = pair_views（已从 case_results 构造）

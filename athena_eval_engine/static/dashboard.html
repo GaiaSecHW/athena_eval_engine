@@ -46,7 +46,7 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
 .b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
-.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
@@ -244,14 +244,14 @@ async function selEv(id){
       return;
     }
     // 运行中: 显示进度
-    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="PARSING"||s.status==="AI_MATCHING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
-      var phases=[{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"},{key:"REPORTING",label:"生成报告"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"PARSING":1,"AI_MATCHING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"REPORTING":7,"FINALIZING":8};
+    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="INGESTING"||s.status==="PARSING"||s.status==="AI_MATCHING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
+      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"},{key:"REPORTING",label:"生成报告"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"INGESTING":1,"PARSING":2,"AI_MATCHING":3,"RESOLVING":4,"PAIRING":5,"CALCULATING":6,"REPORTING":8,"FINALIZING":9};
       var curStep=phaseMap[s.status]||0;
       // 知识与记忆介入分析是 REPORTING 的子阶段，通过 progress 文本区分
       if(s.status==="REPORTING"){
-        if(s.progress&&s.progress.indexOf("生成报告")>=0){curStep=7;}
-        else{curStep=6;}
+        if(s.progress&&s.progress.indexOf("生成报告")>=0){curStep=8;}
+        else{curStep=7;}
       }
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
@@ -415,7 +415,7 @@ const MI={
   M13:{n:"误报率变化(ΔFPR)",short:"Δ误报率",d:"KG vs No-KG 误报率差值。负值=KG 误报更少(好)，正值=更多。",u:"ratio",
      range:[{v:-1,t:"KG 误报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 误报多",c:"red"}],
      interp:(v)=>v==null?"无基准":v<0?`KG 误报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 误报增加 ${(v*100).toFixed(1)}pp`:"误报率无变化",
-     formula:"FPR_KG - FPR_NoKG, FPR=FP/(FP+TN)"},
+     formula:"FPR_KG - FPR_NoKG, FPR=(FP+FN)/(TP+FP+FN+TN)，仅统计agent挖掘过的sink"},
   M14:{n:"精确率变化(ΔPrecision)",short:"Δ精确率",d:"KG vs No-KG 精确率差值。正值=KG 报出的漏洞更准，负值=更差。",u:"ratio",
      range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
      interp:(v)=>v==null?"无基准":v>0?`KG 精确率高出 ${(v*100).toFixed(1)}pp`:v<0?`KG 精确率低 ${(-v*100).toFixed(1)}pp`:"精确率无明显差异",
