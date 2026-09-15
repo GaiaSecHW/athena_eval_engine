@@ -550,6 +550,9 @@ def ai_match_outcome(task_run: TaskRun, benchmarks: list, events: list[RawEvent]
                 "finding_id": f.get("display_id") or f.get("finding_id", ""),
                 "title": f.get("title") or f.get("vuln_type") or "",
                 "vuln_type": f.get("vuln_type", ""),
+                "description": f.get("description") or "",
+                "source": f.get("source") or "",
+                "sink": f.get("sink") or "",
                 "validation_result": f.get("validation_result"),
                 "session_id": f.get("session_id", ""),
             })

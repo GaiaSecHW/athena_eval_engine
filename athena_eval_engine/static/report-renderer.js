@@ -282,13 +282,36 @@ function renderReport(d){
         if(!cands||!cands.length) return "";
         var hh="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
         hh+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>📋 "+label+" 候选 Finding（"+cands.length+" 条，预筛选匹配但未最终匹配）</summary>";
+        // 基线漏洞信息（供人工对比）
+        var blType=c.vulnerability_type||"";
+        var blDesc=c.description||"";
+        var blFile=c.source_file||"";
+        var blFunc=c.source_function||"";
+        if(blType||blDesc||blFile||blFunc){
+          hh+="<div style='margin-bottom:8px;padding:8px;background:var(--p3);border-radius:6px;border-left:3px solid var(--acc)'>";
+          hh+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:4px'>基线漏洞（对比参考）</div>";
+          if(blType)hh+="<div style='font-size:12px;color:var(--txt)'><b>类型:</b> "+String(blType).replace(/</g,"&lt;")+"</div>";
+          if(blFile||blFunc)hh+="<div style='font-size:12px;color:var(--sub)'><b>位置:</b> "+String(blFunc?blFunc+" @ ":"").replace(/</g,"&lt;")+String(blFile).replace(/</g,"&lt;")+"</div>";
+          if(blDesc)hh+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px;max-height:120px;overflow-y:auto'>"+String(blDesc).replace(/</g,"&lt;")+"</div>";
+          hh+="</div>";
+        }
         cands.forEach(function(cf,i){
           var vrColor=cf.validation_result==="CONFIRMED"?"var(--green)":cf.validation_result==="FALSE_POSITIVE"?"var(--red)":"var(--gray)";
           var vrText=cf.validation_result==="CONFIRMED"?"确认漏洞":cf.validation_result==="FALSE_POSITIVE"?"判为非漏洞":cf.validation_result||"未知";
-          hh+="<div style='margin-bottom:4px;padding:6px;background:var(--p2);border-radius:6px'>";
-          hh+="<div style='font-size:12px;color:"+vrColor+"'>["+(i+1)+"] "+vrText+"</div>";
-          hh+="<div style='font-size:12px;color:var(--txt);line-height:1.4'>"+(cf.title||"").replace(/</g,"&lt;")+"</div>";
-          hh+="<div style='font-size:11px;color:var(--gray);font-family:monospace'>"+(cf.finding_id||"").replace(/</g,"&lt;")+"</div>";
+          hh+="<div style='margin-bottom:6px;padding:8px;background:var(--p2);border-radius:6px'>";
+          hh+="<div style='display:flex;justify-content:space-between;align-items:center;margin-bottom:4px'>";
+          hh+="<span style='font-size:12px;color:"+vrColor+"'>["+(i+1)+"] "+vrText+"</span>";
+          if(cf.vuln_type)hh+="<span style='font-size:11px;color:var(--sub)'>"+String(cf.vuln_type).replace(/</g,"&lt;")+"</span>";
+          hh+="</div>";
+          if(cf.title)hh+="<div style='font-size:12px;color:var(--txt);line-height:1.4;font-weight:600'>"+String(cf.title).replace(/</g,"&lt;")+"</div>";
+          if(cf.description)hh+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px;max-height:150px;overflow-y:auto'>"+String(cf.description).replace(/</g,"&lt;")+"</div>";
+          if(cf.source||cf.sink){
+            hh+="<div style='font-size:11px;color:var(--gray);margin-top:4px'>";
+            if(cf.source)hh+="入口: <code>"+String(cf.source).replace(/</g,"&lt;")+"</code> ";
+            if(cf.sink)hh+="出口: <code>"+String(cf.sink).replace(/</g,"&lt;")+"</code>";
+            hh+="</div>";
+          }
+          hh+="<div style='font-size:11px;color:var(--gray);font-family:monospace;margin-top:2px'>"+String(cf.finding_id||"").replace(/</g,"&lt;")+"</div>";
           hh+="</div>";
         });
         hh+="</details>";

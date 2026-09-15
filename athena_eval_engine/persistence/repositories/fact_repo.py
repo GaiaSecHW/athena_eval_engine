@@ -178,8 +178,8 @@ def insert_extracted_findings(cur, task_run_id: str, evaluation_id: str, finding
             str(f.get("file", f.get("source", ""))) or None,  # file 从 finding dict 取
             str(f.get("severity", "")) or None,
             str(f.get("validation_result") or "") or None,
-            str(f.get("title", ""))[:65535] or None,
-            str(f.get("description", ""))[:65535] or None,
+            str(f.get("title", ""))[:200000] or None,
+            str(f.get("description", ""))[:200000] or None,
             str(f.get("source", "")) or None,
             str(f.get("sink", "")) or None,
             f.get("_event_idx"),

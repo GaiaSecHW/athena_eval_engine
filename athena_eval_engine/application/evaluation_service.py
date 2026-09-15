@@ -996,11 +996,12 @@ def run(evaluation_id: str) -> dict:
             for tr in task_runs:
                 f = facts[tr.task_run_id]
                 cur.execute("SET FOREIGN_KEY_CHECKS=0")
-                # vuln_type 列从 VARCHAR(64) 改为 TEXT（某些 finding 的 vuln_type 超长）
-                try:
-                    cur.execute("ALTER TABLE extracted_finding MODIFY COLUMN vuln_type TEXT")
-                except Exception:
-                    pass  # 可能已是 TEXT
+                # vuln_type/title/description 列从 VARCHAR 改为 MEDIUMTEXT（超长 finding 数据）
+                for col in ("vuln_type", "title", "description"):
+                    try:
+                        cur.execute(f"ALTER TABLE extracted_finding MODIFY COLUMN {col} MEDIUMTEXT")
+                    except Exception:
+                        pass  # 可能已是 MEDIUMTEXT
                 fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
                 fact_repo.insert_task_run(cur, tr)
                 fact_repo.insert_outcome_fact(cur, f["outcome"])
