@@ -214,10 +214,11 @@ function renderReport(d){
     kgHtml+="</div>";
   }
 
-  // 基线漏洞 per-case 分析（仅当知识图谱或记忆已介入时才逐个展示）
+  // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
   var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
-  if(caseResults.length&&(kgActive||memActive)){
+  var hasAnyPcAnalysis=pcAnalysis.length>0;
+  if(caseResults.length&&(kgActive||memActive||hasAnyPcAnalysis)){
     function _renderCaseCard(c,idx){
       var h="";
       var conf=c.confusion||"NA";
@@ -240,10 +241,10 @@ function renderReport(d){
       h+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
       h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
       h+="</div>";
-      // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
+      // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
-      // AI 分析结论放最前面
-      if(pcKa&&kgActive&&(pcKa.reason||pcKa.query_summary)){
+      // AI 分析结论放最前面（只要有 pcKa 数据就显示，不依赖 kgActive）
+      if(pcKa&&(pcKa.reason||pcKa.query_summary)){
         var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
         var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
         var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
