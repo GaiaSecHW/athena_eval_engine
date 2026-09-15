@@ -48,7 +48,7 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
 .b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1100px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
 .card.f{grid-column:1/-1}
 .card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
@@ -1060,9 +1060,9 @@ async function renderRunConf(){
   <div style="display:none"><input id="eid" value="${genId()}"></div>
   ${srcToggle}
   ${bodyHtml}
-  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG + No-KG trace 已就绪</span><br>':((kgM||kgV)&&(nogkM||nogkV)&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（挖掘/验证需对应），请选同类型</span><br>':'请分别在左右两侧选完 KG 与 No-KG trace<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
+  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG trace 已就绪'+(nogkM||nogkV?' + No-KG trace 已就绪':'（仅 KG，无对照组）')+'</span><br>':((kgM||kgV)&&(nogkM||nogkV)&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（挖掘/验证需对应），请选同类型</span><br>':'请在左侧选完 KG trace'+(nogkM||nogkV?'，右侧选 No-KG trace':'')+'<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
   <div class="st" id="run-st"></div>
-  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完两侧 trace"}</button>`;
+  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完 KG trace"}</button>`;
   if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
   else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
 }

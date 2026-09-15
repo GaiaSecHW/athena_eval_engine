@@ -870,7 +870,7 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;backgroun
 .b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
 .b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px;max-width:1100px}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
 .card.f{grid-column:1/-1}
 .card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
@@ -920,7 +920,7 @@ svg{display:block;margin:0 auto;max-width:100%}
 .btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
-#rep{padding:28px;max-width:1200px;margin:0 auto}
+#rep{padding:28px}
 </style>
 </head>
 <body>
