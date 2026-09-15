@@ -425,20 +425,24 @@ function renderReport(d){
       const nonVulnN=cr.filter(c=>c.expected_label==="NON_VULNERABLE").length;
       const ac=group&&group.alert_center;
       let acHtml="";
-      if(ac&&ac.total){
-        const c=ac.counts||{};
+      if(ac){
+        const kgAc=ac.kg||{};const nogkAc=ac.nogk||{};
+        const kgT=kgAc.total||0;const nogkT=nogkAc.total||0;
         if(isVerify){
-          acHtml=`<div style="font-size:16px;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
-            告警中心收到漏洞数：<b style="font-size:18px">${ac.total}</b>
-            <span style="margin-left:16px;font-size:14px">
-              <span style="color:var(--green)">是漏洞 <b>${c.vulnerable||0}</b></span> ·
-              <span style="color:var(--red)">不是漏洞 <b>${c.not_vulnerable||0}</b></span> ·
-              <span style="color:var(--amber)">其他（研判中）<b>${c.pending||0}</b></span> ·
-              <span style="color:var(--gray)">无法判定 <b>${c.inconclusive||0}</b></span>
-            </span></div>`;
+          const kc=kgAc.counts||{};const nc=nogkAc.counts||{};
+          const acRow=(label,c,t)=>t?`<td class="num"><b style="font-size:16px">${t}</b>
+            <span style="font-size:12px;margin-left:8px">
+              <span style="color:var(--green)">是漏洞 ${c.vulnerable||0}</span> ·
+              <span style="color:var(--red)">不是漏洞 ${c.not_vulnerable||0}</span> ·
+              <span style="color:var(--amber)">研判中 ${c.pending||0}</span> ·
+              <span style="color:var(--gray)">无法判定 ${c.inconclusive||0}</span>
+            </span></td>`:'<td class="num">—</td>';
+          acHtml=`<table style="margin-bottom:12px"><tr><th>告警中心收到漏洞数</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
+            <tr><td></td>${acRow("",kc,kgT)}${acRow("",nc,nogkT)}</tr></table>`;
         }else{
           acHtml=`<div style="font-size:16px;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
-            告警中心收到漏洞数：<b style="font-size:18px">${ac.total}</b></div>`;
+            告警中心收到漏洞数 — KG：<b style="font-size:18px">${kgT}</b>
+            <span style="margin-left:24px">No-KG：<b style="font-size:18px">${nogkT}</b></span></div>`;
         }
       }
       return `<div class="card" style="margin-bottom:16px">
@@ -446,6 +450,7 @@ function renderReport(d){
         ${acHtml}
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th><th>No-KG（对照）</th></tr>
+        ${ac?`<tr><td>告警中心收到漏洞数</td><td class="num">${(ac.kg&&ac.kg.total)||0}</td><td class="num">${(ac.nogk&&ac.nogk.total)||0}</td></tr>`:""}
         <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td><td class="num">${nogkRecv}</td></tr>
         <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td><td class="num">${nogkFound}</td></tr>
         <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td><td class="num">${nogkFP}</td></tr>

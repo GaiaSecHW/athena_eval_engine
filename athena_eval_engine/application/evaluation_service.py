@@ -847,8 +847,9 @@ def run(evaluation_id: str) -> dict:
                 _findings_override = None
                 _ac_confirmed = 0
                 _ac_fp = 0
+                _ac_cases = []  # 按项目过滤后的告警中心 case
                 if _alert_center_data and _alert_center_data.get("cases"):
-                    _ac_cases = _alert_center_data["cases"]
+                    _ac_cases = list(_alert_center_data["cases"])
                     # 按项目过滤：只匹配当前 trace 所属项目的告警中心 case
                     if _trace_project_id:
                         _ac_cases = [c for c in _ac_cases if c.get("project_id") == _trace_project_id]
@@ -942,8 +943,13 @@ def run(evaluation_id: str) -> dict:
             ta.action_distribution["confirmed_finding_count"] = _confirmed
             ta.action_distribution["false_positive_finding_count"] = _fp
             ta.action_distribution["analyze_received_count"] = _analyze_count
-            ta.action_distribution["alert_center_total"] = _alert_center_data.get("total", 0) if _alert_center_data else 0
-            ta.action_distribution["alert_center_counts"] = _alert_center_data.get("counts", {}) if _alert_center_data else {}
+            ta.action_distribution["alert_center_total"] = len(_ac_cases) if _ac_cases else 0
+            ta.action_distribution["alert_center_counts"] = (
+                {"vulnerable": sum(1 for c in _ac_cases if c.get("validation_result") == "vulnerable"),
+                 "not_vulnerable": sum(1 for c in _ac_cases if c.get("validation_result") == "not_vulnerable"),
+                 "inconclusive": sum(1 for c in _ac_cases if c.get("validation_result") == "inconclusive"),
+                 "pending": sum(1 for c in _ac_cases if not c.get("validation_result"))}
+            ) if _ac_cases else {}
             oc.case_results = case_results
             # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
             session_graph = parser.build_session_graph(events)
@@ -1209,6 +1215,10 @@ def run(evaluation_id: str) -> dict:
             list(_g_knowledge.memory_interactions) if _g_knowledge and _g_knowledge.memory_interactions else [],
             _g_kg_facts.get("parser"),
         )
+        _g_kg_ta = _g_kg_facts.get("tool")
+        _g_nogk_ta = _g_nogk_facts.get("tool")
+        _g_kg_ad = _g_kg_ta.action_distribution if _g_kg_ta else {}
+        _g_nogk_ad = _g_nogk_ta.action_distribution if _g_nogk_ta else {}
         _metric_groups.append({
             "task_id": tid,
             "category": _g_category,
@@ -1220,8 +1230,14 @@ def run(evaluation_id: str) -> dict:
             "case_results": _g_case_results,
             "pair_count": len(gvs),
             "alert_center": {
-                "total": _alert_center_data.get("total", 0) if _alert_center_data else 0,
-                "counts": _alert_center_data.get("counts", {}) if _alert_center_data else {},
+                "kg": {
+                    "total": _g_kg_ad.get("alert_center_total", 0),
+                    "counts": _g_kg_ad.get("alert_center_counts", {}),
+                },
+                "nogk": {
+                    "total": _g_nogk_ad.get("alert_center_total", 0),
+                    "counts": _g_nogk_ad.get("alert_center_counts", {}),
+                },
             } if _alert_center_data else None,
         })
 
