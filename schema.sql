@@ -265,7 +265,8 @@ CREATE TABLE outcome_fact (
     validation_result     VARCHAR(64) CHECK (validation_result IN ('CONFIRMED','FALSE_POSITIVE','NA')),
     resolver_status       VARCHAR(32) NOT NULL CHECK (resolver_status IN
                           ('RESOLVED','NO_FINDING','NO_UPDATE','NO_GT','BENCHMARK_UNMATCHED','PARSE_ERROR',
-                           'AI_MATCHED','AI_MATCH_ERROR','AI_AMBIGUOUS','AI_PARTIAL_MATCH','AI_UNMATCHED','NO_VALIDATION')),
+                           'AI_MATCHED','AI_MATCH_ERROR','AI_AMBIGUOUS','AI_PARTIAL_MATCH','AI_UNMATCHED','NO_VALIDATION',
+                           'SINK_MATCHED','SINK_PARTIAL_MATCH','SINK_UNMATCHED')),
     resolver_version      VARCHAR(64) NOT NULL DEFAULT '1.0',
     evidence_json         JSON,
     created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
@@ -763,3 +764,10 @@ ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_st
 ALTER TABLE metric_result DROP CHECK metric_result_chk_1;
 ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN
     ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12'));
+
+-- Migration: add SINK_* to outcome_fact resolver_status CHECK (for existing deployments)
+ALTER TABLE outcome_fact DROP CHECK outcome_fact_chk_8;
+ALTER TABLE outcome_fact ADD CONSTRAINT outcome_fact_resolver_status_chk CHECK (resolver_status IN
+    ('RESOLVED','NO_FINDING','NO_UPDATE','NO_GT','BENCHMARK_UNMATCHED','PARSE_ERROR',
+     'AI_MATCHED','AI_MATCH_ERROR','AI_AMBIGUOUS','AI_PARTIAL_MATCH','AI_UNMATCHED','NO_VALIDATION',
+     'SINK_MATCHED','SINK_PARTIAL_MATCH','SINK_UNMATCHED'));

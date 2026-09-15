@@ -266,7 +266,7 @@ function renderReport(d){
       var _sinkLine=c.source_line||"";
       var _sinkFunc=c.source_function||"";
       if(_sinkFile){
-        var _basename=_sinkFile.split("/").pop();
+        var _basename=_sinkFile.split(/[\\/]/).pop();
         var _sinkLoc=_sinkLine||_sinkFunc;
         h+="<span style='font-size:12px;color:var(--sub)'>（"+_basename+(_sinkLoc?":"+_sinkLoc:"")+"）</span>";
       }
@@ -307,9 +307,10 @@ function renderReport(d){
           if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           if(_noFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_noFindReason).replace(/</g,"&lt;")+"</div>";
-          if(_ki){
-            var _kiImpact=_ki.impact==="positive"?"正向 ✅":_ki.impact==="negative"?"负向 ❌":"中性 ⏳";
-            var _kiImpactColor=_ki.impact==="positive"?"var(--green)":_ki.impact==="negative"?"var(--red)":"var(--gray)";
+          if(_ki&&typeof _ki==="object"){
+            var _kiI=String(_ki.impact||"").toLowerCase();
+            var _kiImpact=_kiI==="positive"?"正向 ✅":_kiI==="negative"?"负向 ❌":"中性 ⏳";
+            var _kiImpactColor=_kiI==="positive"?"var(--green)":_kiI==="negative"?"var(--red)":"var(--gray)";
             h+="<div style='margin-top:6px;padding:6px 8px;background:var(--p3);border-radius:6px;border-left:2px solid "+_kiImpactColor+"'>";
             h+="<div style='font-size:11px;font-weight:600;color:var(--purple);margin-bottom:4px'>🧠 知识/记忆介入</div>";
             if(_ki.query)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>问了什么:</b> "+String(_ki.query).replace(/</g,"&lt;")+"</div>";
@@ -327,9 +328,10 @@ function renderReport(d){
           if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
           if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
           if(_nogkNoFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_nogkNoFindReason).replace(/</g,"&lt;")+"</div>";
-          if(_nogkKi){
-            var _nkiImpact=_nogkKi.impact==="positive"?"正向 ✅":_nogkKi.impact==="negative"?"负向 ❌":"中性 ⏳";
-            var _nkiImpactColor=_nogkKi.impact==="positive"?"var(--green)":_nogkKi.impact==="negative"?"var(--red)":"var(--gray)";
+          if(_nogkKi&&typeof _nogkKi==="object"){
+            var _nkiI=String(_nogkKi.impact||"").toLowerCase();
+            var _nkiImpact=_nkiI==="positive"?"正向 ✅":_nkiI==="negative"?"负向 ❌":"中性 ⏳";
+            var _nkiImpactColor=_nkiI==="positive"?"var(--green)":_nkiI==="negative"?"var(--red)":"var(--gray)";
             h+="<div style='margin-top:6px;padding:6px 8px;background:var(--p3);border-radius:6px;border-left:2px solid "+_nkiImpactColor+"'>";
             h+="<div style='font-size:11px;font-weight:600;color:var(--purple);margin-bottom:4px'>🧠 知识/记忆介入</div>";
             if(_nogkKi.query)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>问了什么:</b> "+String(_nogkKi.query).replace(/</g,"&lt;")+"</div>";

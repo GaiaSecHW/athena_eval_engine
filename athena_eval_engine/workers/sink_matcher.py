@@ -65,8 +65,8 @@ def build_file_read_index(events: list) -> list[dict]:
             reads.append({
                 "file_path": fp,
                 "basename": _basename(fp),
-                "offset": int(offset) if offset is not None else None,
-                "limit": int(limit) if limit is not None else None,
+                "offset": int(offset) if offset is not None and str(offset).isdigit() else None,
+                "limit": int(limit) if limit is not None and str(limit).isdigit() else None,
                 "content": content,
                 "session_id": e.session_id,
                 "timestamp": e.timestamp_ms or 0,
@@ -137,12 +137,12 @@ def find_sink_sessions(file_reads: list[dict], source_file: str,
                 if r["offset"] <= target_line <= r["offset"] + r["limit"]:
                     matched_sessions.add(r["session_id"])
                     continue
-            # 检查行号是否在返回内容里
-            if str(target_line) in r["content"]:
+            # 检查行号是否在返回内容里（词边界匹配，避免 "5" 匹配 "15"/"50"）
+            if re.search(r'\b' + str(target_line) + r'\b', r["content"]):
                 matched_sessions.add(r["session_id"])
                 continue
-        # 检查方法名是否在返回内容里
-        if has_func and source_function in r["content"]:
+        # 检查方法名是否在返回内容里（词边界匹配，避免 "get" 匹配 "forget"）
+        if has_func and re.search(r'\b' + re.escape(source_function) + r'\b', r["content"]):
             matched_sessions.add(r["session_id"])
             continue
 
@@ -198,6 +198,8 @@ def collect_chain_actions(chain_sessions: set[str], events: list, parser) -> lis
 
     复用 parser._extract_action 提取工具行为摘要。
     """
+    if parser is None:
+        return []
     actions = []
     for ev in events:
         if not ev.is_tool_call():
@@ -245,8 +247,8 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list)
         response = result_by_call_id.get(e.call_id, "") if e.call_id else ""
         interactions.append({
             "tool": e.tool_name or "",
-            "query": query[:2000],  # 限制单条长度，但不截断成不完整句子
-            "response": response[:2000],
+            "query": query,
+            "response": response,
             "session_id": e.session_id,
             "timestamp": e.timestamp_ms or 0,
             "is_kg": e.is_kg_interaction,
@@ -428,7 +430,10 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                                 "matched": False, "matched_finding_id": None, "finding_title": "",
                                 "confusion": "NA" if is_vuln else "TN",
                                 "session_id": "", "agent_validation": None,
-                                "candidate_findings": []})
+                                "finding_ts": None,
+                                "candidate_findings": [],
+                                "sink_info": "", "sink_analysis": "", "no_finding_reason": "",
+                                "knowledge_intervention": None, "chain_actions": []})
         has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -540,8 +545,10 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": False, "matched_finding_id": None, "finding_title": "",
                 "confusion": confusion, "session_id": "", "agent_validation": None,
+                "finding_ts": None,
                 "candidate_findings": [],
-                "sink_info": "无 sink 信息",
+                "sink_info": "无 sink 信息", "sink_analysis": "", "no_finding_reason": "",
+                "knowledge_intervention": None, "chain_actions": [],
             })
             continue
 
@@ -552,8 +559,11 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": False, "matched_finding_id": None, "finding_title": "",
                 "confusion": confusion, "session_id": "", "agent_validation": None,
+                "finding_ts": None,
                 "candidate_findings": [],
                 "sink_info": f"未命中 (file={_basename((b.metadata or {}).get('source_file',''))})",
+                "sink_analysis": "", "no_finding_reason": "",
+                "knowledge_intervention": None, "chain_actions": [],
             })
             continue
 
@@ -616,6 +626,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_info": f"命中 ({len(sr['chains'])}链, reason={mining_reason[:50]})",
                 "sink_analysis": mining_reason,
                 "no_finding_reason": "",
+                "knowledge_intervention": None,
                 "chain_actions": chain_actions,
             })
         elif any_mining and not chain_findings:
@@ -652,6 +663,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_info": f"LLM判定非挖掘 ({len(sr['chains'])}链)",
                 "sink_analysis": "",
                 "no_finding_reason": "",
+                "knowledge_intervention": None,
                 "chain_actions": chain_actions,
             })
 
