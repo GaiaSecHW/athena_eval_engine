@@ -76,7 +76,7 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
         log(source, f"{evaluation_id} at {phase}: {err_msg}")
         cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
                     "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': ',%s), "
-                    "error_message=%s "
+                    "error_message=%s, finished_at=NOW(3) "
                     "WHERE evaluation_id=%s", (phase, err_msg, err_msg, evaluation_id))
     except Exception as db_error:
         log(source, f"记录失败状态失败: {db_error}")
@@ -543,7 +543,7 @@ def get_status(evaluation_id: str):
             if row and row[0] in _RUNNING:
                 cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
                             "evaluation_name=CONCAT(IFNULL(evaluation_name,''),' | FAILED at ',%s,': thread died'), "
-                            "error_message=%s WHERE evaluation_id=%s",
+                            "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
                             (row[0], f"评测线程静默死亡（状态卡在 {row[0]}，线程已不在运行池中）", evaluation_id))
                 log("WATCHDOG", f"{evaluation_id} 状态={row[0]} 但线程已死，标记 FAILED")
         finally:

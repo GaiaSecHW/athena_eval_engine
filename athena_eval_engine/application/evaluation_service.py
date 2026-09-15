@@ -149,8 +149,10 @@ class CreateRequest:
 
 
 def _set_status(cur, evaluation_id, status):
-    if status == "FAILED":
-        cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+    if status in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "CANCELLED"):
+        cur.execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
+    elif status == "FAILED":
+        cur.execute("UPDATE evaluation SET evaluation_status=%s, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
     else:
         cur.execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
 
@@ -160,8 +162,10 @@ def _set_status_short(evaluation_id, status):
     conn = connect(autocommit=True)
     try:
         try:
-            if status == "FAILED":
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+            if status in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "CANCELLED"):
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
+            elif status == "FAILED":
+                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
             else:
                 conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
         except Exception as e:
@@ -1232,7 +1236,7 @@ def run(evaluation_id: str) -> dict:
                                   seed=42)
         g_hits = diagnose(g_out["metric_results"], g_out["statistical_results"])
         g_report = assemble(evaluation_id, g_out["metric_results"], g_out["statistical_results"], g_hits,
-                            pair_views=gvs)
+                            pair_views=gvs, has_nogk=has_nogk)
         # 找到这个 task_id 对应的 category 和 agent_name
         _g_category = ""
         _g_agent_name = ""
@@ -1344,9 +1348,8 @@ def run(evaluation_id: str) -> dict:
     hits = diagnose(out["metric_results"], out["statistical_results"])
     log("EVAL", f"诊断完成: {len(hits)} 条告警")
     report = assemble(evaluation_id, out["metric_results"], out["statistical_results"], hits,
-                      pair_views=pair_views)
+                      pair_views=pair_views, has_nogk=has_nogk)
     report.metric_groups = _metric_groups
-    report.has_nogk = has_nogk
 
     # tool_stats_list 供 ai_narrative 引用漏洞流转数据
     tool_stats_list = [{"task_run_id": tr.task_run_id,

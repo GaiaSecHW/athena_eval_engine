@@ -38,7 +38,8 @@ class ReportModel:
 
 def assemble(evaluation_id: str, metrics: list, stats: list,
              diagnostic_hits: list, coverage: dict | None = None,
-             pair_views: list | None = None) -> ReportModel:
+             pair_views: list | None = None,
+             has_nogk: bool = True) -> ReportModel:
     m_by = {m.metric_id: m for m in metrics}
     s_by = {s.metric_id: s for s in stats if s.metric_id}
     joint = [s for s in stats if s.scope_type == "JOINT"]
@@ -62,7 +63,7 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
 
     raw = {"delta_fpr": None, "delta_tool_calls": None, "kg_query_count": None}
 
-    narrative = _build_narrative(metrics, stats, diagnostic_hits)
+    narrative = _build_narrative(metrics, stats, diagnostic_hits, has_nogk=has_nogk)
 
     return ReportModel(
         evaluation_id=evaluation_id, p0=p0, p1=p1, p2=p2,
@@ -73,10 +74,11 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
         ],
         narrative=narrative, coverage=coverage or {},
         notes=["Knowledge Utilization = Not Observable", "不输出总分", "Evidence Mode: SINGLE_PAIRED_RUN"],
+        has_nogk=has_nogk,
     )
 
 
-def _build_narrative(metrics, stats, hits) -> dict:
+def _build_narrative(metrics, stats, hits, *, has_nogk: bool = True) -> dict:
     m_by = {m.metric_id: m for m in metrics}
     s_by = {s.metric_id: s for s in stats if s.metric_id}
 
@@ -86,11 +88,19 @@ def _build_narrative(metrics, stats, hits) -> dict:
         val = getattr(s, field_name, None) if src == "statistical_result" else getattr(m, field_name, None)
         return {"source": src, "metric_id": mid, "field": field_name, "value": val} if val is not None else None
 
-    refs = [r for r in [_ref("M1", "estimate"), _ref("M1", "ci_lower"),
-                        _ref("M4", "estimate"), _ref("M13", "estimate"),
-                        _ref("M14", "estimate")] if r]
-    m1 = m_by.get("M1")
-    summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
+    if has_nogk:
+        refs = [r for r in [_ref("M1", "estimate"), _ref("M1", "ci_lower"),
+                            _ref("M4", "estimate"), _ref("M13", "estimate"),
+                            _ref("M14", "estimate")] if r]
+        m1 = m_by.get("M1")
+        summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
+    else:
+        # KG-only 模式：M1/M4/M13/M14 为差值指标，无 No-KG 对照组时值偏移，用 M5 替代
+        refs = [r for r in [_ref("M5", "estimate"), _ref("M5", "ci_lower"),
+                            _ref("M6", "estimate"), _ref("M11", "estimate"),
+                            _ref("M12", "estimate")] if r]
+        m5 = m_by.get("M5")
+        summary = f"KAR={m5.estimate:.3f}" if m5 and m5.estimate is not None else "KAR=NA"
     return {
         "summary": summary + "(rule-based v1)",
         "outcome_interpretation": summary,
@@ -592,7 +602,7 @@ def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
                 "interactions_analysis": []}
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -1330,7 +1340,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
                 "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录（含查询命令）\n"
                 "6. mining_actions：从漏洞提交点倒推的完整挖掘过程。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
-                "7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
+                + ("7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
+                   if has_nogk else "\n")
                 "# impact 判定规则\n"
                 "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
                 "- NEGATIVE（负向）：知识误导 Agent，导致漏报或误报\n"
