@@ -327,20 +327,8 @@ async function selEv(id){
 function loadIframeReport(id){
   var rep=$("view");
   rep.style.overflow='hidden';
-  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="position:relative;width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe><button onclick="toggleRepFullscreen()" style="position:absolute;top:8px;right:8px;z-index:10;border:1px solid var(--bd);background:var(--panel);border-radius:8px;padding:6px 10px;font-size:14px;color:var(--sub);cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,.08)">⛶ 全屏</button></div>';
+  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
 }
-function toggleRepFullscreen(){
-  var el=$("view");
-  if(!document.fullscreenElement){
-    el.requestFullscreen().then(function(){var btn=el.querySelector("button");if(btn)btn.textContent="⛶ 退出全屏";}).catch(function(){});
-  }else{
-    document.exitFullscreen().then(function(){var btn=el.querySelector("button");if(btn)btn.textContent="⛶ 全屏";}).catch(function(){});
-  }
-}
-document.addEventListener("fullscreenchange",function(){
-  var btn=$("view")&&$("view").querySelector("button");
-  if(btn)btn.textContent=document.fullscreenElement?"⛶ 退出全屏":"⛶ 全屏";
-});
 function retryEval(eid){
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
     desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
