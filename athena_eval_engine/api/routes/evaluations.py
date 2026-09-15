@@ -369,6 +369,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                                 "expected_label": c.get("expected_label") or "VULNERABLE",
                                 "source_file": c.get("source_file") or "",
                                 "source_function": c.get("source_function") or "",
+                                "source_line": c.get("source_line") or "",
                             }
                             es._fill_missing_source(case_details[cid])
                 else:
@@ -383,7 +384,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                                                 "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
                                                 "target_finding_id": c.get("target_finding_id") or "",
                                                 "source_file": c.get("source_file") or "",
-                                                "source_function": c.get("source_function") or ""}
+                                                "source_function": c.get("source_function") or "",
+                                                "source_line": c.get("source_line") or ""}
                             es._fill_missing_source(case_details[cid])
             except Exception:
                 pass
@@ -872,7 +874,7 @@ def render_static_report(evaluation_id: str) -> str:
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>__EVAL_ID__ 报告</title>
 <style>
-:root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--p3:#e8eaed;--bd:#e1e4e8;--border:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af}
+:root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--p3:#e8eaed;--bd:#e1e4e8;--border:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af;--purple:#7c3aed}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);font-size:18px;line-height:1.6}
 .bdg{font-size:14px;padding:2px 8px;border-radius:12px;font-weight:600}

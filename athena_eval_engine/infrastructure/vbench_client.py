@@ -94,12 +94,14 @@ def _extract_source_from_traces(cases: list) -> None:
     for c in cases:
         source_file = ""
         source_function = ""
+        source_line = ""
         for f in (c.get("findings") or []):
             for trace in (f.get("traces") or []):
                 for step in (trace.get("steps") or []):
                     if step.get("role") == "SINK":
                         source_file = step.get("path", "")
                         source_function = step.get("symbol", "")
+                        source_line = str(step.get("line", "") or step.get("line_number", "") or step.get("line_no", ""))
                         break
                 if source_file:
                     break
@@ -107,6 +109,7 @@ def _extract_source_from_traces(cases: list) -> None:
                 break
         c["source_file"] = source_file
         c["source_function"] = source_function
+        c["source_line"] = source_line
 
 
 def _read_benchmark_zip(zip_path: str) -> dict:

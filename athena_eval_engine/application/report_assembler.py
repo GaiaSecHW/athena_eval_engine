@@ -485,29 +485,51 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
         case_id = case.get("case_id", "")
         confusion = case.get("confusion", "NA")
 
-        # 提前计算 No-KG 的 confusion
+        # 提前计算 No-KG 的 confusion 和 sink 数据
         nogk_confusion = "NA"
+        _nogk_sink_info = ""
+        _nogk_sink_analysis = ""
+        _nogk_no_finding_reason = ""
+        _nogk_ki = None
         if nogk_case_results:
             for nc in nogk_case_results:
                 if nc.get("case_id") == case_id:
                     nogk_confusion = nc.get("confusion", "NA")
+                    _nogk_sink_info = nc.get("sink_info", "")
+                    _nogk_sink_analysis = nc.get("sink_analysis", "")
+                    _nogk_no_finding_reason = nc.get("no_finding_reason", "")
+                    _nogk_ki = nc.get("knowledge_intervention")
                     break
 
         # NON-VULNERABLE 基线，KG 和 NO-KG 都判非漏洞（TN）→ 不列出，不处理
         if confusion == "TN" and nogk_confusion == "TN":
             continue
 
+        _sink_analysis = case.get("sink_analysis", "")
+        _no_finding_reason = case.get("no_finding_reason", "")
+        _ki = case.get("knowledge_intervention")
+
         # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
         if confusion == "NA":
+            _sink_info = case.get("sink_info", "")
+            _na_reason = "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。"
+            if _sink_info:
+                _na_reason = f"Agent 未找到此漏洞（NA）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
             result.append({
                 "case_id": case_id,
                 "kg_judgment": "NOT_FOUND",
                 "query_summary": "无知识查询",
                 "knowledge_summary": "",
                 "impact": "NEUTRAL",
-                "reason": "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。",
+                "reason": _na_reason,
                 "interactions": [],
                 "memory_interactions": [],
+                "sink_analysis": _sink_analysis,
+                "no_finding_reason": _no_finding_reason,
+                "knowledge_intervention": _ki,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki,
             })
             continue
 
@@ -515,7 +537,7 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
         judgment = "VULNERABILITY" if confusion in ("TP", "FP") else "NON_VULNERABILITY"
         impact = "POSITIVE" if confusion == "TP" else "NEGATIVE" if confusion == "FP" else "NEUTRAL"
         if confusion == "FN":
-            reason = (f"Agent 找到此漏洞但判定为非漏洞（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
+            reason = (f"Agent 接触了漏洞代码但未提交 finding（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
                       f"源文件: {case.get('source_file', '未知')}。LLM 未启用，无法深入分析原因。")
         elif confusion == "TN":
             reason = f"Agent 正确判定为非漏洞（TN）。LLM 未启用，未生成深入分析。"
@@ -530,6 +552,12 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
             "reason": reason,
             "interactions": [],
             "memory_interactions": [],
+            "sink_analysis": _sink_analysis,
+            "no_finding_reason": _no_finding_reason,
+            "knowledge_intervention": _ki,
+            "nogk_sink_analysis": _nogk_sink_analysis,
+            "nogk_no_finding_reason": _nogk_no_finding_reason,
+            "nogk_knowledge_intervention": _nogk_ki,
         })
     return result
 
@@ -1083,62 +1111,92 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         if progress_cb:
             progress_cb(_ci + 1, _total)
 
-        # 提前计算 No-KG 的 confusion
+        # 提前计算 No-KG 的 confusion 和 sink 数据
         nogk_confusion = "NA"
+        _nogk_sink_info = ""
+        _nogk_sink_analysis = ""
+        _nogk_no_finding_reason = ""
+        _nogk_ki = None
         if nogk_case_results:
             for nc in nogk_case_results:
                 if nc.get("case_id") == case_id:
                     nogk_confusion = nc.get("confusion", "NA")
+                    _nogk_sink_info = nc.get("sink_info", "")
+                    _nogk_sink_analysis = nc.get("sink_analysis", "")
+                    _nogk_no_finding_reason = nc.get("no_finding_reason", "")
+                    _nogk_ki = nc.get("knowledge_intervention")
                     break
 
         # NON-VULNERABLE 基线，KG 和 NO-KG 都判非漏洞（TN）→ 不列出，不处理
         if confusion == "TN" and nogk_confusion == "TN":
             continue
 
-        # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
+        # NA = sink 未命中或无 sink 信息（VULNERABLE 基线），列出但不做 AI 分析
+        _sink_analysis = case.get("sink_analysis", "")
+        _no_finding_reason = case.get("no_finding_reason", "")
+        _ki = case.get("knowledge_intervention")
         if confusion == "NA":
+            _sink_info = case.get("sink_info", "")
+            _na_reason = "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。"
+            if _sink_info:
+                _na_reason = f"Agent 未找到此漏洞（NA）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
             results.append({
                 "case_id": case_id,
                 "kg_judgment": "NOT_FOUND",
                 "query_summary": "无知识查询",
                 "knowledge_summary": "",
                 "impact": "NEUTRAL",
-                "reason": "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。",
+                "reason": _na_reason,
                 "interactions": [],
                 "memory_interactions": [],
+                "sink_analysis": _sink_analysis,
+                "no_finding_reason": _no_finding_reason,
+                "knowledge_intervention": _ki,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki,
             })
             continue
 
-        # 从 finding 提交点（结论点）倒推挖掘链
+        # 优先使用 sink 匹配器收集的 chain_actions（覆盖 TP/FP/FN 场景）
+        mining_actions = case.get("chain_actions", [])
+
         finding_info = None
         if matched_fid:
             finding_info = finding_events.get(matched_fid)
 
-        if finding_info or case.get("session_id"):
-            # TP/FP: 从 finding 提交点倒推，挖掘链 = 关联 session 中提交之前的动作
-            # 优先用 finding_events 的 session_id/timestamp；Dataflow ID 不匹配时回退到 case_results
-            if finding_info:
-                finding_session = finding_info["session_id"]
-                finding_ts = finding_info["timestamp"]
+        related_sessions = set()  # 初始化，防止分支遗漏
+
+        if not mining_actions:
+            # 回退：sink 匹配无 chain_actions 时，从 finding 提交点倒推
+            if finding_info or case.get("session_id"):
+                if finding_info:
+                    finding_session = finding_info["session_id"]
+                    finding_ts = finding_info["timestamp"]
+                else:
+                    finding_session = case.get("session_id", "")
+                    finding_ts = case.get("finding_ts")
+                finding_dict = {"session_id": finding_session, "timestamp": finding_ts}
+                if parser and events:
+                    mining_actions = parser.trace_finding_process(events, session_graph, finding_dict)
+                    related_sessions = parser._get_related_sessions(session_graph, finding_session)
+                else:
+                    mining_actions = []
+                    related_sessions = {finding_session} if finding_session else set()
             else:
-                finding_session = case.get("session_id", "")
-                finding_ts = case.get("finding_ts")
-            # 反向追踪：通过 parser 的 session_graph BFS 获取跨 session 挖掘过程
-            finding_dict = {"session_id": finding_session, "timestamp": finding_ts}
-            if parser and events:
-                mining_actions = parser.trace_finding_process(events, session_graph, finding_dict)
-                related_sessions = parser._get_related_sessions(session_graph, finding_session)
-            else:
-                mining_actions = []
-                related_sessions = {finding_session} if finding_session else set()
-            # 知识/记忆交互也扩展到关联 session
+                related_sessions = set()
+
+        # 从 mining_actions 提取关联 session（覆盖所有场景：chain_actions 或 trace_finding_process）
+        if mining_actions and not related_sessions:
+            related_sessions = {a.get("session_id", "") for a in mining_actions if a.get("session_id")}
+
+        # 知识/记忆交互扩展到关联 session
+        if related_sessions:
             case_interactions = [iv for iv in sampled_interactions
                                  if iv.get("session_id") in related_sessions]
             case_mem_interactions = [iv for iv in sampled_mem_interactions
                                       if iv.get("session_id") in related_sessions]
         else:
-            # 回退：无 finding 信息时不过滤
-            mining_actions = []
             case_interactions = sampled_interactions if matched_fid else []
             case_mem_interactions = sampled_mem_interactions if matched_fid else []
 
@@ -1157,11 +1215,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "reason": "KG 与 No-KG 均确认此漏洞，知识图谱与记忆未产生差异化影响",
                 "interactions": case_interactions,
                 "memory_interactions": case_mem_interactions,
+                "sink_analysis": _sink_analysis,
+                "no_finding_reason": _no_finding_reason,
+                "knowledge_intervention": _ki,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki,
             })
             continue
 
-        # 无知识交互时的处理：直接判定，不调 LLM
-        if not case_interactions:
+        # 无知识交互时的处理：有 sink 分析数据时仍做 LLM 分析，否则直接判定
+        if not case_interactions and not mining_actions:
             impact = "NEUTRAL"
             reason = "无知识图谱与记忆介入，无法评估知识对漏洞排查的影响"
             results.append({
@@ -1173,6 +1237,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "reason": reason,
                 "interactions": [],
                 "memory_interactions": case_mem_interactions,
+                "sink_analysis": _sink_analysis,
+                "no_finding_reason": _no_finding_reason,
+                "knowledge_intervention": _ki,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki,
             })
             continue
 
@@ -1184,6 +1254,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "vulnerability_type": vuln_type,
                 "source_file": case.get("source_file", ""),
                 "source_function": case.get("source_function", ""),
+                "source_line": case.get("source_line", ""),
             },
             "kg_status": {
                 "confusion": confusion,
@@ -1206,7 +1277,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
             "mining_actions": mining_actions,
-            **({"nogk_confusion": nogk_confusion} if has_nogk else {}),
+            "sink_analysis": _sink_analysis,
+            "no_finding_reason": _no_finding_reason,
+            "knowledge_intervention": _ki,
+            **({"nogk_confusion": nogk_confusion,
+                "nogk_sink_info": _nogk_sink_info,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki} if has_nogk else {}),
         }
 
         # 根据 confusion + agent_validation 构建场景特定的问题
@@ -1218,11 +1296,20 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FN":
-            # FN: Agent 找到了漏洞但判定为非漏洞
+            # FN: sink 命中 + LLM 确认是挖掘过程，但 agent 没有生成 finding
+            _nf_reason = _no_finding_reason or "无 LLM 分析"
+            _ki_hint = ""
+            if _ki:
+                _ki_hint = (
+                    f"\n知识/记忆介入分析：查询了 {_ki.get('query', '未知')}，"
+                    f"得到回答 {_ki.get('response', '未知')}，"
+                    f"Agent 决策 {_ki.get('decision', '未知')}，"
+                    f"影响方向 {_ki.get('impact', '未知')}"
+                )
             _case_q = (
-                "## 场景：Agent 找到此漏洞但确认为非漏洞\n"
-                "1. 为什么 Agent 将此漏洞判定为非漏洞？判定依据是什么？\n"
-                "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否影响了判定？"
+                "## 场景：Agent 接触了漏洞代码但未提交 finding\n"
+                f"1. 为什么 Agent 没有为此漏洞生成 finding？Sink 分析结论：{_nf_reason}{_ki_hint}\n"
+                "2. Agent 的挖掘过程是否接触到了漏洞 sink 点？知识/记忆是否帮助或阻碍了这一过程？"
                 + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FP":
@@ -1324,10 +1411,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     "reason": f"KG 判定: {confusion}（挖掘链数据过大，LLM 跳过，规则生成）",
                     "interactions": case_interactions,
                     "memory_interactions": case_mem_interactions,
+                    "sink_analysis": _sink_analysis,
+                    "no_finding_reason": _no_finding_reason,
+                    "knowledge_intervention": _ki,
+                    "nogk_sink_analysis": _nogk_sink_analysis,
+                    "nogk_no_finding_reason": _nogk_no_finding_reason,
+                    "nogk_knowledge_intervention": _nogk_ki,
                 })
                 continue
 
-        _nogk_desc = ("7. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n\n"
+        _nogk_desc = ("10. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
+                       "11. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
+                       "12. nogk_knowledge_intervention：No-KG 条件下同 knowledge_intervention\n\n"
                        if has_nogk else "\n")
         prompt = [
             {"role": "system", "content": (
@@ -1336,12 +1431,15 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "JSON 中包含以下内容：\n"
                 "1. baseline_vulnerability：基线漏洞信息（漏洞描述、类型、源文件、源函数）\n"
                 "2. kg_status：启用知识图谱与记忆条件下的挖掘结果\n"
-                "   - confusion（判定结果）：TP=找到并确认了漏洞；FN=找到了但判定为非漏洞；FP=基线不是漏洞但报告为漏洞；TN=基线不是漏洞且正确排除\n"
+                "   - confusion（判定结果）：TP=找到并确认了漏洞；FN=接触了漏洞代码但未提交 finding；FP=基线不是漏洞但报告为漏洞；TN=基线不是漏洞且正确排除\n"
                 "   - agent_validation：Agent 自身的判定，CONFIRMED=确认是漏洞，FALSE_POSITIVE=判定不是漏洞\n"
                 "3. matched_finding：Agent 提交的漏洞报告中与基线匹配的那条（Agent 没找到时为 null）\n"
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
                 "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录（含查询命令）\n"
-                "6. mining_actions：从漏洞提交点倒推的完整挖掘过程。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
+                "6. mining_actions：完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
+                "7. sink_analysis：sink 点 LLM 链分析结论（判断 session 链是否是基线漏洞的挖掘过程）\n"
+                "8. no_finding_reason：当 agent 接触了漏洞代码但未提交 finding 时，LLM 分析的未提交原因\n"
+                "9. knowledge_intervention：当 agent 接触了漏洞代码但未提交 finding 时，知识/记忆介入的结构化分析（query=问了什么，response=回答了什么，decision=Agent 做了什么决策，impact=正向/负向/中性）。为 null 表示无知识介入\n"
                 + _nogk_desc
                 + "# impact 判定规则\n"
                 + "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
@@ -1368,6 +1466,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             result["case_id"] = case_id
             result["interactions"] = case_interactions
             result["memory_interactions"] = case_mem_interactions
+            result["sink_analysis"] = _sink_analysis
+            result["no_finding_reason"] = _no_finding_reason
+            result["knowledge_intervention"] = _ki
+            result["nogk_sink_analysis"] = _nogk_sink_analysis
+            result["nogk_no_finding_reason"] = _nogk_no_finding_reason
+            result["nogk_knowledge_intervention"] = _nogk_ki
             results.append(result)
         except Exception:
             results.append({
@@ -1379,6 +1483,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "reason": f"KG 判定: {confusion}（LLM 不可用，规则生成）",
                 "interactions": case_interactions,
                 "memory_interactions": case_mem_interactions,
+                "sink_analysis": _sink_analysis,
+                "no_finding_reason": _no_finding_reason,
+                "knowledge_intervention": _ki,
+                "nogk_sink_analysis": _nogk_sink_analysis,
+                "nogk_no_finding_reason": _nogk_no_finding_reason,
+                "nogk_knowledge_intervention": _nogk_ki,
             })
 
     return results

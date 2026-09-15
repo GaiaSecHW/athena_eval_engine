@@ -260,7 +260,16 @@ function renderReport(d){
       var _exp=c.expected_label||"";
       var _expBadge=_exp==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:11px'>基线: 漏洞</span>":_exp==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:11px'>基线: 非漏洞</span>":"";
       h+=_expBadge;
-      h+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
+      h+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||"漏洞")+"</span>";
+      // sink 点: (文件名:行号/方法名)
+      var _sinkFile=c.source_file||"";
+      var _sinkLine=c.source_line||"";
+      var _sinkFunc=c.source_function||"";
+      if(_sinkFile){
+        var _basename=_sinkFile.split("/").pop();
+        var _sinkLoc=_sinkLine||_sinkFunc;
+        h+="<span style='font-size:12px;color:var(--sub)'>（"+_basename+(_sinkLoc?":"+_sinkLoc:"")+"）</span>";
+      }
       h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
       h+="</div>";
       // per-case 知识介入分析
@@ -276,7 +285,63 @@ function renderReport(d){
         if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
         h+="</div>";
       }
+      // sink 匹配分析（KG + No-KG 上下并排）
       var _hasNogk=r.has_nogk!==false;
+      var _sinkInfo=c.sink_info||"";
+      var _sinkAnalysis=c.sink_analysis||"";
+      var _noFindReason=c.no_finding_reason||"";
+      var _ki=c.knowledge_intervention||null;
+      var _nogkSinkInfo=c.nogk_sink_info||"";
+      var _nogkSinkAnalysis=c.nogk_sink_analysis||"";
+      var _nogkNoFindReason=c.nogk_no_finding_reason||"";
+      var _nogkKi=c.nogk_knowledge_intervention||null;
+      var _hasKgSink=_sinkInfo||_sinkAnalysis||_noFindReason||_ki;
+      var _hasNogkSink=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis||_nogkNoFindReason||_nogkKi);
+      if(_hasKgSink||_hasNogkSink){
+        h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid var(--acc)'>";
+        h+="<div style='font-weight:600;font-size:13px;margin-bottom:6px'>🎯 Sink 匹配分析</div>";
+        // KG sink 分析
+        if(_hasKgSink){
+          h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
+          h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
+          if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
+          if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
+          if(_noFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_noFindReason).replace(/</g,"&lt;")+"</div>";
+          if(_ki){
+            var _kiImpact=_ki.impact==="positive"?"正向 ✅":_ki.impact==="negative"?"负向 ❌":"中性 ⏳";
+            var _kiImpactColor=_ki.impact==="positive"?"var(--green)":_ki.impact==="negative"?"var(--red)":"var(--gray)";
+            h+="<div style='margin-top:6px;padding:6px 8px;background:var(--p3);border-radius:6px;border-left:2px solid "+_kiImpactColor+"'>";
+            h+="<div style='font-size:11px;font-weight:600;color:var(--purple);margin-bottom:4px'>🧠 知识/记忆介入</div>";
+            if(_ki.query)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>问了什么:</b> "+String(_ki.query).replace(/</g,"&lt;")+"</div>";
+            if(_ki.response)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px;line-height:1.5'><b>回复了什么:</b> "+String(_ki.response).replace(/</g,"&lt;")+"</div>";
+            if(_ki.decision)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>Agent 决策:</b> "+String(_ki.decision).replace(/</g,"&lt;")+"</div>";
+            h+="<div style='font-size:12px;color:"+_kiImpactColor+"'><b>影响方向:</b> "+_kiImpact+"</div>";
+            h+="</div>";
+          }
+          h+="</div>";
+        }
+        // No-KG sink 分析
+        if(_hasNogkSink){
+          h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
+          h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
+          if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
+          if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
+          if(_nogkNoFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_nogkNoFindReason).replace(/</g,"&lt;")+"</div>";
+          if(_nogkKi){
+            var _nkiImpact=_nogkKi.impact==="positive"?"正向 ✅":_nogkKi.impact==="negative"?"负向 ❌":"中性 ⏳";
+            var _nkiImpactColor=_nogkKi.impact==="positive"?"var(--green)":_nogkKi.impact==="negative"?"var(--red)":"var(--gray)";
+            h+="<div style='margin-top:6px;padding:6px 8px;background:var(--p3);border-radius:6px;border-left:2px solid "+_nkiImpactColor+"'>";
+            h+="<div style='font-size:11px;font-weight:600;color:var(--purple);margin-bottom:4px'>🧠 知识/记忆介入</div>";
+            if(_nogkKi.query)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>问了什么:</b> "+String(_nogkKi.query).replace(/</g,"&lt;")+"</div>";
+            if(_nogkKi.response)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px;line-height:1.5'><b>回复了什么:</b> "+String(_nogkKi.response).replace(/</g,"&lt;")+"</div>";
+            if(_nogkKi.decision)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>Agent 决策:</b> "+String(_nogkKi.decision).replace(/</g,"&lt;")+"</div>";
+            h+="<div style='font-size:12px;color:"+_nkiImpactColor+"'><b>影响方向:</b> "+_nkiImpact+"</div>";
+            h+="</div>";
+          }
+          h+="</div>";
+        }
+        h+="</div>";
+      }
       h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+(_hasNogk?confBadge("No-KG",nogkConf):"")+"</div>";
       // 候选 finding（预筛选认为可能匹配但未最终匹配的 agent finding，以基线为中心）
       function _renderCands(label,cands){
@@ -288,11 +353,13 @@ function renderReport(d){
         var blDesc=c.description||"";
         var blFile=c.source_file||"";
         var blFunc=c.source_function||"";
-        if(blType||blDesc||blFile||blFunc){
+        var blLine=c.source_line||"";
+        var blLoc=blLine||blFunc;
+        if(blType||blDesc||blFile||blLoc){
           hh+="<div style='margin-bottom:8px;padding:8px;background:var(--p3);border-radius:6px;border-left:3px solid var(--acc)'>";
           hh+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:4px'>基线漏洞（对比参考）</div>";
           if(blType)hh+="<div style='font-size:12px;color:var(--txt)'><b>类型:</b> "+String(blType).replace(/</g,"&lt;")+"</div>";
-          if(blFile||blFunc)hh+="<div style='font-size:12px;color:var(--sub)'><b>位置:</b> "+String(blFunc?blFunc+" @ ":"").replace(/</g,"&lt;")+String(blFile).replace(/</g,"&lt;")+"</div>";
+          if(blFile||blLoc)hh+="<div style='font-size:12px;color:var(--sub)'><b>位置:</b> "+String(blLoc?blLoc+" @ ":"").replace(/</g,"&lt;")+String(blFile).replace(/</g,"&lt;")+"</div>";
           if(blDesc)hh+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px;max-height:120px;overflow-y:auto'>"+String(blDesc).replace(/</g,"&lt;")+"</div>";
           hh+="</div>";
         }

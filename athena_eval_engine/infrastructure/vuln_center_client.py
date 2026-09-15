@@ -287,6 +287,7 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
         "expected_label": expected_label,
         "source_file": locator,            # 基线漏洞所在文件路径
         "source_function": func_name,      # 基线漏洞所在函数名/方法名
+        "source_line": "",                 # 漏洞中心 API 无行号字段，由 _fill_missing_source 用 LLM 从描述提取
     }
 
 

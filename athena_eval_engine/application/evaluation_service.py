@@ -16,7 +16,8 @@ from ..workers.turing_trace_parser import TuringTraceParser
 from ..workers.resolvers import (
     OutcomeResolverImpl, KnowledgeResolverImpl, ToolActionResolverImpl, ResourceResolverImpl,
 )
-from ..workers.ai_matcher import ai_match_outcome, match_alert_center_to_findings
+from ..workers.ai_matcher import match_alert_center_to_findings
+from ..workers.sink_matcher import sink_match_baselines
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
@@ -844,7 +845,7 @@ def run(evaluation_id: str) -> dict:
             2. 告警中心 case ↔ finding AI 匹配（跟基线一样的方案，告警中心为锚点）
             3. 匹配上的 finding 用告警中心 validation_result 更新 verdict
             4. 未匹配上 finding 的告警中心 case 作为兜底 finding（直接参与 finding↔基线匹配）
-            5. ai_match_outcome 做 finding↔基线匹配 → TP/FP/FN/TN
+            5. sink_match_baselines 做 sink 点匹配 + session 链 LLM 分析 → TP/FP/FN/TN
             """
             from concurrent.futures import ThreadPoolExecutor
             tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
@@ -925,8 +926,8 @@ def run(evaluation_id: str) -> dict:
                           f"matched={len(_matched)} unmatched_ac={len(_unmatched_ac)} "
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
-                # ai_match_outcome 依赖三方匹配结果，最后提交
-                fut_outcome = inner_pool.submit(ai_match_outcome, tr, bench, events, parser,
+                # sink_match_baselines: sink 点匹配 + session 链 LLM 分析 → TP/FP/FN/TN
+                fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
                                                 progress_cb=lambda text, tr=tr: set_task_progress(
                                                     evaluation_id, tr.task_run_id,
                                                     f"[{tr.condition.value}] {text}"),
@@ -1279,12 +1280,17 @@ def run(evaluation_id: str) -> dict:
                 "vulnerability_type": _g_meta.get("vulnerability_type", ""),
                 "source_file": _g_meta.get("source_file", ""),
                 "source_function": _g_meta.get("source_function", ""),
+                "source_line": _g_meta.get("source_line", ""),
                 "nogk_matched": _g_nogk_case.get("matched", False),
                 "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
                 "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
                 "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),
                 "nogk_session_id": _g_nogk_case.get("session_id", ""),
                 "nogk_candidate_findings": _g_nogk_case.get("candidate_findings", []),
+                "nogk_sink_info": _g_nogk_case.get("sink_info", ""),
+                "nogk_sink_analysis": _g_nogk_case.get("sink_analysis", ""),
+                "nogk_no_finding_reason": _g_nogk_case.get("no_finding_reason", ""),
+                "nogk_knowledge_intervention": _g_nogk_case.get("knowledge_intervention"),
                 "kg_source_uri": _g_kg_facts.get("_source_uri", ""),
                 "nogk_source_uri": _g_nogk_facts.get("_source_uri", ""),
             })
