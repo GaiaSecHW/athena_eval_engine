@@ -136,6 +136,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
   <main><div id="view"></div></main>
 </div>
 <script>
+const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
 const U=(u)=>location.pathname.indexOf("/eval")===0&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?"/eval"+u:u;const F=(u,...a)=>fetch(U(u),...a);let view="evaluations";let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
@@ -209,10 +210,10 @@ function renderEvList(){
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
-    var btns='<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
+    var btns=DEBUG?'<span style="margin-left:auto;display:flex;gap:4px" onclick="event.stopPropagation()">'+
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
-      '</span>';
+      '</span>':'';
     return '<div class="it '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
       '<div class="n">'+(e.name||e.evaluation_id)+'</div>'+
       '<div class="m"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
@@ -250,7 +251,7 @@ async function selEv(id){
       var phaseLabel={"PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","CALCULATING":"计算指标","REPORTING":"生成报告","RUNNING":"准备阶段","UNKNOWN":"未知阶段"}[phase]||phase||"";
       if(phase==="REPORTING"&&!(s.progress&&s.progress.indexOf("生成报告")>=0)){phaseLabel="知识与记忆介入分析";}
       var errMsg=s.error_message||"无详细错误信息";
-      $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p><button class="btn" style="margin-top:16px" id="retry-btn">重试</button></div>';
+      $("rep").innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:15px;color:var(--amber);margin-bottom:8px">失败步骤：'+phaseLabel+'</p><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
@@ -283,8 +284,8 @@ async function selEv(id){
         stepsHtml+='</div></div>';
       });
       stepsHtml+='</div>';
-      // 运行中也可强制重跑（卡住时用户可手动重启）
-      stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
+      // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
+      if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
       $("rep").innerHTML='<div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:14px;color:var(--sub);margin-top:4px">'+(s.name||'')+'</div><div style="font-size:12px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
@@ -1138,8 +1139,8 @@ async function renderSystem(){let h=await jget("/api/v1/system/health");let s=aw
   $("view").innerHTML=`<div style="max-width:700px"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</span></div></div>
   <div class="card" style="margin-top:16px"><h3>表清单（${s.tables.length}）</h3><table><tr><th>表</th><th>行数</th></tr>${s.tables.map(t=>`<tr><td class="num">${t.table}</td><td>${t.rows}</td></tr>`).join("")}</table></div></div>`;}
 
-// iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard
-window.addEventListener("message",function(ev){
+// iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard（仅 debug 模式）
+if(DEBUG) window.addEventListener("message",function(ev){
   var d=ev.data||{};
   if(d.action==="retry"&&d.evaluation_id){retryEval(d.evaluation_id);}
   else if(d.action==="delete"&&d.evaluation_id){deleteEval(d.evaluation_id,d.evaluation_id);}
