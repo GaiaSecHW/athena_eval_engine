@@ -665,40 +665,53 @@ function renderReport(d){
   ${(()=>{
     const groups=r.metric_groups||[];
     const _hasNogk=r.has_nogk!==false;
-    const rows=[];
-    let idx=1;
-    for(const g of groups){
-      const crs=Array.isArray(g.case_results)?g.case_results:[];
-      for(const c of crs){
-        const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
-        const kgCands=c.candidate_findings||[];
-        const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
-        const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+kgCandNote);
-        const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
-        let nogkCell="";
-        if(_hasNogk){
-          const nogkCands=c.nogk_candidate_findings||[];
-          const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
-          const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
-          const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
-          nogkCell=`<td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+    function _buildMatchTable(groupList,title,icon){
+      const rows=[];let idx=1;
+      for(const g of groupList){
+        const crs=Array.isArray(g.case_results)?g.case_results:[];
+        for(const c of crs){
+          const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
+          const kgCands=c.candidate_findings||[];
+          const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+          const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+kgCandNote);
+          const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
+          let nogkCell="";
+          if(_hasNogk){
+            const nogkCands=c.nogk_candidate_findings||[];
+            const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+            const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
+            const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
+            nogkCell=`<td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+          }
+          rows.push(`<tr>
+            <td class="num">${idx}</td>
+            <td>${baseTitle}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
+            <td>${kgTitle}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""}</td>
+            ${nogkCell}
+          </tr>`);
+          idx++;
         }
-        rows.push(`<tr>
-          <td class="num">${idx}</td>
-          <td>${baseTitle}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
-          <td>${kgTitle}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""}</td>
-          ${nogkCell}
-        </tr>`);
-        idx++;
       }
+      if(!rows.length) return "";
+      return `<div class="card" style="margin-bottom:16px">
+        <h3>${icon} ${title}</h3>
+        <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th>${_hasNogk?'<th>No-KG-漏洞标题</th>':''}</tr>
+        ${rows.join("")}
+        </table>
+      </div>`;
     }
-    if(!rows.length) return "";
-    return `<div class="card" style="margin-bottom:16px">
-      <h3>📋 基线与 Agent 发现漏洞匹配明细</h3>
-      <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th>${_hasNogk?'<th>No-KG-漏洞标题</th>':''}</tr>
-      ${rows.join("")}
-      </table>
-    </div>`;
+    if(!groups.length) return "";
+    const miningGroups=groups.filter(g=>g.category!=="verify");
+    const verifyGroups=groups.filter(g=>g.category==="verify");
+    const hasCategory=groups.some(g=>g.category);
+    let html="";
+    if(!hasCategory){
+      html=_buildMatchTable(groups,"基线与 Agent 发现漏洞匹配明细","📋");
+    }else{
+      if(miningGroups.length) html+=_buildMatchTable(miningGroups,"漏洞挖掘 — 基线与 Agent 发现匹配明细","🔎");
+      if(verifyGroups.length) html+=_buildMatchTable(verifyGroups,"漏洞验证 — 基线与 Agent 验证匹配明细","✅");
+    }
+    return html;
   })()}
 
   ${(()=>{
