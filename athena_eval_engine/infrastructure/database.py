@@ -54,13 +54,17 @@ def _get_pool() -> PooledDB:
 def connect(autocommit: bool = True):
     """从连接池获取连接。
 
-    autocommit=True（默认）: 每条 SQL 自动提交（池已配置，无需额外操作）。
+    autocommit=True（默认）: 每条 SQL 自动提交。
     autocommit=False: 需调用方手动 conn.commit() / conn.rollback()。
     conn.close() 将连接归还池（不真正关闭）。
+
+    注意：连接池复用连接，上一次使用的 session 变量（如 autocommit）会残留。
+    因此每次取连接后必须显式 SET autocommit，确保状态正确。
     """
     conn = _get_pool().connection()
-    if not autocommit:
-        conn.cursor().execute("SET autocommit=0")
+    cur = conn.cursor()
+    cur.execute("SET autocommit=" + ("1" if autocommit else "0"))
+    cur.close()
     return conn
 
 
