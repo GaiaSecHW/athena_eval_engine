@@ -1543,6 +1543,16 @@ def run(evaluation_id: str) -> dict:
                       "resolver_status": facts[tr.task_run_id]["outcome"].resolver_status,
                       "validation": facts[tr.task_run_id]["outcome"].validation_result}
                      for tr in task_runs]
+    # 报告 JSON 瘦身：删除 renderer 不使用的大字段，避免 100MB+ HTML
+    _STRIP_FIELDS = ("chain_actions", "kg_source_uri", "nogk_source_uri",
+                      "nogk_session_id", "finding_ts")
+    for group in _metric_groups:
+        for cr in group.get("case_results", []):
+            for _f in _STRIP_FIELDS:
+                cr.pop(_f, None)
+            # sink_sessions 截断到前 20 个（renderer 只展示，不需要 1560 个）
+            if cr.get("sink_sessions") and len(cr["sink_sessions"]) > 20:
+                cr["sink_sessions"] = cr["sink_sessions"][:20]
     report.llm_token_usage = llm_mod.get_token_usage()
     log("EVAL", f"LLM token 用量: {report.llm_token_usage}")
     rj = render_json(report)
