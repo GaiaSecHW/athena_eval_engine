@@ -474,8 +474,6 @@ def run(evaluation_id: str) -> dict:
                         _fill_done[0] += 1
                         if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
                             set_progress(evaluation_id, f"补提取 source: {_fill_done[0]}/{len(_need_fill)}")
-        raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
-                         "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
     # 0c. 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
     _ac_pairs: list[tuple[str, str]] = []
