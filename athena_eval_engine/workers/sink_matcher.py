@@ -258,6 +258,120 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list)
     return interactions
 
 
+# per-session 压缩缓存（跨 baseline 复用，同 session 不重复压缩）
+_session_compress_cache: dict[str, dict] = {}
+
+
+def _compress_session_actions(session_id: str, actions: list[dict], llm_module) -> dict:
+    """用 LLM 将单个 session 的工具调用序列压缩成摘要。"""
+    if session_id in _session_compress_cache:
+        return _session_compress_cache[session_id]
+    raw_lines = []
+    for i, a in enumerate(actions):
+        tool = a.get("tool", "")
+        action = a.get("action", "")
+        raw_lines.append(f"[{i+1}] {tool}: {action}")
+    raw_text = "\n".join(raw_lines)
+    try:
+        result = llm_module.chat_json([
+            {"role": "system", "content": (
+                "你是漏洞挖掘过程分析员。将一个会话内的工具调用序列压缩成挖掘过程摘要。\n\n"
+                "# 压缩目标\n"
+                "保留以下信息：\n"
+                "1. 文件读取/搜索的关键路径和模式（哪些文件、搜索了什么）\n"
+                "2. 漏洞提交记录（finding 标题、类型、判定结果）\n"
+                "3. 知识/记忆查询的时机和后续行为变化\n"
+                "4. 工具调用的大致顺序和逻辑流向\n\n"
+                '只返回 JSON: {"session_id": "会话标识", "summary": "<=2000字中文，按时间线描述", '
+                '"key_files": ["关键文件列表"], "key_actions": ["关键操作列表"]}'
+            )},
+            {"role": "user", "content": raw_text},
+        ], temperature=0, max_tokens=4000)
+        if isinstance(result, dict):
+            _session_compress_cache[session_id] = result
+            return result
+        _fallback = {"session_id": session_id, "summary": str(result)[:2000]}
+        _session_compress_cache[session_id] = _fallback
+        return _fallback
+    except Exception as e:
+        log("SINK_MATCH", f"session {session_id[-8:]} 压缩失败: {e}")
+        _fallback = {"session_id": session_id, "summary": f"压缩失败（{len(actions)} 条行为）", "tool_count": len(actions)}
+        _session_compress_cache[session_id] = _fallback
+        return _fallback
+
+
+def _build_action_lines(chain_actions: list[dict], llm_module) -> list[str]:
+    """构建挖掘行为摘要。超限时压缩早期行为，保留近期行为原文。"""
+    # 先构建原始行
+    action_lines = []
+    for i, a in enumerate(chain_actions[:200]):
+        tool = a.get("tool", "")
+        action = a.get("action", "")
+        sid = a.get("session_id", "")[-8:]
+        action_lines.append(f"[{i+1}] {tool}: {action} (session:{sid})")
+    if len(chain_actions) > 200:
+        action_lines.append(f"... 还有 {len(chain_actions)-200} 条行为")
+
+    # 估算大小：512K token 上限 ≈ 1.5M chars，留余量取 800K chars
+    _raw_size = sum(len(line) for line in action_lines)
+    if _raw_size <= 800000:
+        return action_lines
+
+    # 超限 → 压缩早期行为，保留近期行为原文
+    # 策略：先保留最近 50 条原文，仍超限则全部压缩
+    _total = len(action_lines)
+    for _keep_recent in (50, 0):
+        _early_actions = chain_actions[:_total - _keep_recent] if _keep_recent > 0 else chain_actions[:200]
+        _recent = action_lines[_total - _keep_recent:] if _keep_recent > 0 else []
+
+        # 早期部分按 session 分组压缩
+        _by_session: dict[str, list] = {}
+        for a in _early_actions:
+            sid = a.get("session_id", "unknown")
+            _by_session.setdefault(sid, []).append(a)
+
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .evaluation_service import get_runtime_workers
+
+        _uncached = [(sid, acts) for sid, acts in _by_session.items() if sid not in _session_compress_cache]
+        if _uncached:
+            _workers = min(len(_uncached), get_runtime_workers().get("kg_analysis", 8))
+            with ThreadPoolExecutor(max_workers=_workers) as pool:
+                futures = {pool.submit(_compress_session_actions, sid, acts, llm_module): sid
+                           for sid, acts in _uncached}
+                for fut in as_completed(futures):
+                    try: fut.result()
+                    except Exception: pass
+
+        # 构建压缩后的行：早期摘要 + 近期原文
+        _result_lines = []
+        _seen_sids = set()
+        for a in _early_actions:
+            sid = a.get("session_id", "unknown")
+            if sid in _seen_sids:
+                continue
+            _seen_sids.add(sid)
+            cached = _session_compress_cache.get(sid)
+            if cached:
+                _result_lines.append(f"[session:{sid[-8:]}] {cached.get('summary', '')}")
+                _kf = cached.get("key_files", [])
+                if _kf:
+                    _result_lines.append(f"  关键文件: {', '.join(str(f) for f in _kf[:10])}")
+
+        if _keep_recent > 0:
+            _result_lines.append(f"--- 以下为最近 {_keep_recent} 条原始行为 ---")
+            _result_lines.extend(_recent)
+
+        _compressed_size = sum(len(line) for line in _result_lines)
+        log("SINK_MATCH", f"压缩早期行为: {len(_seen_sids)} session 摘要 + {_keep_recent} 条原文 ({_raw_size}→{_compressed_size} chars)")
+
+        if _compressed_size <= 800000:
+            return _result_lines
+
+    # 全部压缩后仍超限 → 返回摘要（已是最小形态）
+    return _result_lines
+
+
 def analyze_chain_llm(chain_actions: list[dict], chain_findings: list[dict],
                       baseline: dict, llm_module,
                       chain_knowledge_interactions: list[dict] | None = None) -> dict:
@@ -270,15 +384,8 @@ def analyze_chain_llm(chain_actions: list[dict], chain_findings: list[dict],
     返回: {"is_mining": bool, "reason": str, "no_finding_reason": str,
            "knowledge_intervention": {"query": ..., "response": ..., "decision": ..., "impact": ...} | None}
     """
-    # 格式化挖掘行为摘要
-    action_lines = []
-    for i, a in enumerate(chain_actions[:200]):
-        tool = a.get("tool", "")
-        action = a.get("action", "")
-        sid = a.get("session_id", "")[-8:]
-        action_lines.append(f"[{i+1}] {tool}: {action} (session:{sid})")
-    if len(chain_actions) > 200:
-        action_lines.append(f"... 还有 {len(chain_actions)-200} 条行为")
+    # 格式化挖掘行为摘要（超限时按 session 压缩，不截断）
+    action_lines = _build_action_lines(chain_actions, llm_module)
 
     # 格式化链上 finding
     finding_lines = []

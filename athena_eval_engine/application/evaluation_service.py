@@ -174,22 +174,21 @@ def _set_status(cur, evaluation_id, status):
 
 
 def _set_status_short(evaluation_id, status):
-    """短连接设状态，用于 run() 各阶段更新进度。"""
-    conn = connect(autocommit=True)
+    """短连接设状态，用于 run() 各阶段更新进度。走 _db_query 重试 2006/2013。"""
+    def _do(cur):
+        if status in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "CANCELLED"):
+            cur.execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
+        elif status == "FAILED":
+            cur.execute("UPDATE evaluation SET evaluation_status=%s, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
+        else:
+            cur.execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
     try:
-        try:
-            if status in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "CANCELLED"):
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
-            elif status == "FAILED":
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, finished_at=NOW(3) WHERE evaluation_id=%s", (status, evaluation_id))
-            else:
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, error_message=NULL WHERE evaluation_id=%s", (status, evaluation_id))
-        except Exception as e:
-            # CHECK 约束可能不含新状态（如 AI_MATCHING）→ 自动修复约束后重试
-            if "Check constraint" in str(e) or "3819" in str(e):
-                log("DB", f"CHECK 约束阻止设状态 {status}，自动修复...")
-                cur = conn.cursor()
-                # 1) DROP 所有可能的旧约束（忽略所有错误）
+        _db_query(_do)
+    except Exception as e:
+        # CHECK 约束可能不含新状态（如 AI_MATCHING）→ 自动修复约束后重试
+        if "Check constraint" in str(e) or "3819" in str(e):
+            log("DB", f"CHECK 约束阻止设状态 {status}，自动修复...")
+            def _fix_and_set(cur):
                 for stmt in (
                     "ALTER TABLE evaluation DROP CHECK evaluation_chk_1",
                     "ALTER TABLE evaluation DROP CONSTRAINT evaluation_chk_1",
@@ -198,7 +197,6 @@ def _set_status_short(evaluation_id, status):
                 ):
                     try: cur.execute(stmt)
                     except Exception: pass
-                # 2) ADD 新约束（可能已存在，忽略错误）
                 try:
                     cur.execute(
                         "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_status IN "
@@ -207,12 +205,15 @@ def _set_status_short(evaluation_id, status):
                         "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED','CANCEL_REQUESTED','CANCELLING','CANCELLED'))"
                     )
                 except Exception: pass
-                log("DB", f"CHECK 约束已修复，重试设状态 {status}")
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
-            else:
+                cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", (status, evaluation_id))
+            try:
+                _db_query(_fix_and_set)
+                log("DB", f"CHECK 约束已修复，重试设状态 {status} 成功")
+            except Exception as e2:
+                log("DB", f"CHECK 约束修复后仍失败: {e2}")
                 raise
-    finally:
-        conn.close()
+        else:
+            raise
 
 
 def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> tuple[str, str, str]:

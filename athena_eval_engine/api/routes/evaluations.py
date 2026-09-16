@@ -78,10 +78,8 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
 
     from ...infrastructure.database import connect
     err_msg = str(error)[:500]
-    conn = None
-    try:
-        conn = connect(autocommit=True)
-        cur = conn.cursor()
+
+    def _mark_failed_db(cur):
         cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         row = cur.fetchone()
         phase = row[0] if row else "UNKNOWN"
@@ -92,11 +90,11 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
         cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
                     "error_message=%s, finished_at=NOW(3) "
                     "WHERE evaluation_id=%s", (f"[{phase}] {err_msg}", evaluation_id))
+
+    try:
+        es._db_query(_mark_failed_db)
     except Exception as db_error:
         log(source, f"记录失败状态失败: {db_error}")
-    finally:
-        if conn:
-            conn.close()
 
 
 class CreateRequest(BaseModel):
