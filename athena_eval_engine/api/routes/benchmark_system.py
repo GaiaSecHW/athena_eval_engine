@@ -11,14 +11,13 @@ vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
 # 可持久化的配置 key 集合（用于 load 时过滤）
 _CONFIG_KEYS = {
     "llm_max_concurrency", "max_concurrent_evals",
-    "parse_workers", "kg_analysis_workers", "llm_enabled",
+    "parse_workers", "kg_analysis_workers",
 }
 
 
 class SystemConfigUpdate(BaseModel):
     llm_max_concurrency: int | None = Field(default=None, ge=1, le=200)
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
-    llm_enabled: bool | None = None
     parse_workers: int | None = Field(default=None, ge=1, le=50)
     kg_analysis_workers: int | None = Field(default=None, ge=1, le=50)
 
@@ -36,8 +35,6 @@ def _apply_config(key: str, value: str):
         set_runtime_workers(parse=int(value))
     elif key == "kg_analysis_workers":
         set_runtime_workers(kg_analysis=int(value))
-    elif key == "llm_enabled":
-        llm.set_runtime_config(llm_enabled=(value.lower() == "true"))
 
 
 def load_system_config():
@@ -107,11 +104,9 @@ def get_system_config():
     from ...infrastructure import llm
     from .evaluations import get_max_concurrent_evals
     from ...application.evaluation_service import get_runtime_workers
-    cfg = llm.get_runtime_config()
     return {
         "llm_max_concurrency": llm.get_max_concurrency(),
         "max_concurrent_evals": get_max_concurrent_evals(),
-        "llm_enabled": cfg.get("llm_enabled", True),
         "parse_workers": get_runtime_workers().get("parse", 4),
         "kg_analysis_workers": get_runtime_workers().get("kg_analysis", 8),
     }
@@ -132,10 +127,6 @@ def update_system_config(params: SystemConfigUpdate):
         set_max_concurrent_evals(params.max_concurrent_evals)
         _save_config("max_concurrent_evals", str(params.max_concurrent_evals))
         updated.append(f"max_concurrent_evals={params.max_concurrent_evals}")
-    if params.llm_enabled is not None:
-        llm.set_runtime_config(llm_enabled=params.llm_enabled)
-        _save_config("llm_enabled", str(params.llm_enabled))
-        updated.append(f"llm_enabled={params.llm_enabled}")
     if params.parse_workers is not None:
         set_runtime_workers(parse=params.parse_workers)
         _save_config("parse_workers", str(params.parse_workers))

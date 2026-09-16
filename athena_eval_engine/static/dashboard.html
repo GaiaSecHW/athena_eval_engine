@@ -1186,14 +1186,6 @@ async function renderSystem(){
         <input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
-        <label style="font-weight:600;font-size:14px">LLM 启用/禁用</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">禁用后所有 LLM 调用将报错（规则降级）</div>
-        <select id="cfg_llm_en" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-          <option value="true"${c.llm_enabled?' selected':''}>启用</option>
-          <option value="false"${!c.llm_enabled?' selected':''}>禁用</option>
-        </select>
-      </div>
-      <div>
         <label style="font-weight:600;font-size:14px">Trace 解析并发数</label>
         <div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div>
         <input id="cfg_parse_w" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
@@ -1218,7 +1210,6 @@ async function saveSystemConfig(){
   var v;
   v=parseInt($("cfg_llm_conc").value);if(!isNaN(v))body.llm_max_concurrency=v;
   v=parseInt($("cfg_max_evals").value);if(!isNaN(v))body.max_concurrent_evals=v;
-  body.llm_enabled=$("cfg_llm_en").value==="true";
   v=parseInt($("cfg_parse_w").value);if(!isNaN(v))body.parse_workers=v;
   v=parseInt($("cfg_kg_w").value);if(!isNaN(v))body.kg_analysis_workers=v;
   $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
