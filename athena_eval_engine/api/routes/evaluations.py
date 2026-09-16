@@ -477,10 +477,7 @@ def _build_report(evaluation_id: str):
         raise HTTPException(status_code=404, detail=r["error"])
     # 附加知识介入原始事件 + 评测元信息
     import json as _json
-    from ...infrastructure.database import connect
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
+    def _do(cur):
         # 评测元信息：名称、基线项目
         cur.execute("SELECT evaluation_name, benchmark_set_id, started_at, finished_at FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
         erow = cur.fetchone()
@@ -664,8 +661,7 @@ def _build_report(evaluation_id: str):
                       f"{len(_gc)} → {len(_grp['case_results'])} 条")
             _pcka = _grp.get("per_case_kg_analysis") or []
             _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _valid_case_ids]
-    finally:
-        conn.close()
+    es._db_query(_do)
     return r
 
 

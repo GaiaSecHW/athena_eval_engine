@@ -1001,11 +1001,14 @@ def run(evaluation_id: str) -> dict:
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
                 # sink_match_baselines: sink 点匹配 + session 链 LLM 分析 → TP/FP/FN/TN
-                fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
-                                                progress_cb=lambda text, tr=tr: set_task_progress(
-                                                    evaluation_id, tr.task_run_id,
-                                                    f"[{tr.condition.value}] {text}"),
-                                                findings_override=_findings_override)
+                try:
+                    fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
+                                                    progress_cb=lambda text, tr=tr: set_task_progress(
+                                                        evaluation_id, tr.task_run_id,
+                                                        f"[{tr.condition.value}] {text}"),
+                                                    findings_override=_findings_override)
+                except RuntimeError:
+                    raise RuntimeError("线程池已关闭（Pod 可能正在重启）")
                 oc, case_results = fut_outcome.result()
                 kn = fut_kn.result()
                 ta = fut_ta.result()

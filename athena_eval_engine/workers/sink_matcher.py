@@ -337,8 +337,12 @@ def _build_action_lines(chain_actions: list[dict], llm_module) -> list[str]:
         if _uncached:
             _workers = min(len(_uncached), get_runtime_workers().get("kg_analysis", 8))
             with ThreadPoolExecutor(max_workers=_workers) as pool:
-                futures = {pool.submit(_compress_session_actions, sid, acts, llm_module): sid
-                           for sid, acts in _uncached}
+                futures = {}
+                for sid, acts in _uncached:
+                    try:
+                        futures[pool.submit(_compress_session_actions, sid, acts, llm_module)] = sid
+                    except RuntimeError:
+                        break
                 for fut in as_completed(futures):
                     try: fut.result()
                     except Exception: pass
@@ -622,8 +626,12 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 chain_actions = collect_chain_actions(chain, events, parser)
                 chain_finds = collect_chain_findings(chain, active_findings)
                 chain_kis = collect_chain_knowledge_interactions(chain, events)
-                fut = pool.submit(analyze_chain_llm, chain_actions, chain_finds,
-                                  baseline_info, llm_mod, chain_kis)
+                try:
+                    fut = pool.submit(analyze_chain_llm, chain_actions, chain_finds,
+                                      baseline_info, llm_mod, chain_kis)
+                except RuntimeError:
+                    log("SINK_MATCH", f"线程池已关闭（Pod 可能正在重启），跳过剩余 {len(llm_tasks) - len(futures)} 条链分析")
+                    break
                 futures[fut] = (bi, ci)
 
             done = 0
