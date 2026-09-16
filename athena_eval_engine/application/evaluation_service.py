@@ -1041,29 +1041,38 @@ def run(evaluation_id: str) -> dict:
             facts[tr.task_run_id] = f
             facts[tr.task_run_id]["_source_uri"] = src
 
-        # Phase 3: 写入 facts（单连接批量，重试整体幂等）
+        # Phase 3: 写入 facts（每 task_run 一个短连接，避免长连接被防火墙断开）
         set_progress(evaluation_id, "写入事实数据...")
-        def _insert_facts(cur):
-            cur.execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s", ("RESOLVING", evaluation_id))
-            for tr in task_runs:
-                f = facts[tr.task_run_id]
-                cur.execute("SET FOREIGN_KEY_CHECKS=0")
-                # vuln_type/title/description 列从 VARCHAR 改为 MEDIUMTEXT（超长 finding 数据）
-                for col in ("vuln_type", "title", "description"):
-                    try:
-                        cur.execute(f"ALTER TABLE extracted_finding MODIFY COLUMN {col} MEDIUMTEXT")
-                    except Exception:
-                        pass  # 可能已是 MEDIUMTEXT
-                fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, f.get("_source_uri", ""))
+        _set_status_short(evaluation_id, "RESOLVING")
+        # ALTER TABLE 只需执行一次（独立短连接）
+        def _alter_tables(cur):
+            cur.execute("SET FOREIGN_KEY_CHECKS=0")
+            for col in ("vuln_type", "title", "description"):
+                try:
+                    cur.execute(f"ALTER TABLE extracted_finding MODIFY COLUMN {col} MEDIUMTEXT")
+                except Exception:
+                    pass  # 可能已是 MEDIUMTEXT
+            cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        _db_query(_alter_tables)
+        # 每个 task_run 独立短连接写入（幂等，断开可重试）
+        _total_tr = len(task_runs)
+        for _idx, tr in enumerate(task_runs):
+            f = facts[tr.task_run_id]
+            _src_uri = f.get("_source_uri", "")
+            _findings = f.get("findings", [])
+            _session_graph = f.get("session_graph", {})
+            def _insert_one(cur):
+                fact_repo.insert_trace_source(cur, tr.trace_id, evaluation_id, _src_uri)
                 fact_repo.insert_task_run(cur, tr)
                 fact_repo.insert_outcome_fact(cur, f["outcome"])
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
                 fact_repo.insert_tool_action_fact(cur, f["tool"])
                 fact_repo.insert_resource_fact(cur, f["resource"])
-                fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, f.get("findings", []))
-                fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, f.get("session_graph", {}))
-            cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        _db_query(_insert_facts)
+                fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, _findings)
+                fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, _session_graph)
+            _db_query(_insert_one)
+            if (_idx + 1) % 5 == 0 or (_idx + 1) == _total_tr:
+                set_progress(evaluation_id, f"写入事实数据: {_idx + 1}/{_total_tr}")
 
     # ===== Phase 4: 配对 + 计算指标（纯内存，无 DB）=====
     set_progress(evaluation_id, "任务配对...")
@@ -1190,12 +1199,12 @@ def run(evaluation_id: str) -> dict:
                 pair, kg_f["outcome"], nogk_f["outcome"], kg_f["tool"], nogk_f["tool"],
                 kg_f["resource"], nogk_f["resource"])
             pair_derived.append((pair, derived))
-        def _insert_pairs(cur):
-            for pair, derived in pair_derived:
-                fact_repo.insert_task_pair(cur, pair)
-                for d in derived:
+        for pair, derived in pair_derived:
+            def _insert_one_pair(cur, _pair=pair, _derived=derived):
+                fact_repo.insert_task_pair(cur, _pair)
+                for d in _derived:
                     fact_repo.insert_pair_derived_fact(cur, d)
-        _db_query(_insert_pairs)
+            _db_query(_insert_one_pair)
 
     set_progress(evaluation_id, "计算指标...")
     _set_status_short(evaluation_id, "CALCULATING")
