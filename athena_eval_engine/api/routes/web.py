@@ -4,6 +4,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from ...infrastructure.database import connect
+from ...application.evaluation_service import get_progress
 
 router = APIRouter()
 STATIC = Path(__file__).parent.parent.parent / "static"
@@ -62,7 +63,8 @@ def list_evaluations(page: int = 1, page_size: int = 20):
                           "benchmark_source": bm_source,
                           "vbench_project_name": vb_proj_name,
                           "vc_project_name": vc_proj_name,
-                          "vc_task_name": vc_task_name})
+                          "vc_task_name": vc_task_name,
+                          "progress": get_progress(r[0]) if r[2] not in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED") else ""})
         return {
             "evaluations": evals,
             "total": total,

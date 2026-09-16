@@ -235,7 +235,7 @@ function renderEvList(){
       '</span>':'';
     return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="Router.navigate(\'/evaluations/'+e.evaluation_id+'\')">'+
       '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
-      '<div class="ev-meta"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '<div class="ev-meta"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span>'+(e.progress?'<span style="font-size:12px;color:var(--acc);font-weight:600">'+e.progress+'</span>':'')+'<span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">KG：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
