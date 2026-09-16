@@ -30,12 +30,13 @@ def get_max_concurrent_evals() -> int:
 
 
 def set_max_concurrent_evals(n: int):
-    """设置最大并发评测数。重建线程池，已有任务在新池中继续执行。"""
+    """设置最大并发评测数。加锁重建线程池，避免并发 submit 撞上已关闭的 executor。"""
     global _executor, _max_concurrent_evals
     n = max(1, min(n, 10))
-    _max_concurrent_evals = n
-    _executor.shutdown(wait=False)
-    _executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="eval")
+    with _running_lock:
+        _max_concurrent_evals = n
+        _executor.shutdown(wait=False)
+        _executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="eval")
 
 # 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
 _running_futures: dict[str, Future] = {}
@@ -125,13 +126,12 @@ def resume_stuck_evaluations():
     重新提交到线程池，run() 会检查 facts 是否已存在自动跳过已完成的阶段。
     CREATED 状态 = create() 未完成的半成品（无 snapshot），标记 FAILED 清理。
     """
-    # 执行 schema 迁移（建表、加列、更新约束）
-    from ...infrastructure.migrations import run_migrations
-    run_migrations()
-    # 加载 DB 持久化的系统参数（LLM 并发量、任务并发数等）
-    from .benchmark_system import load_system_config
-    load_system_config()
+    # 执行 schema 迁移 + 加载系统参数 + 续跑卡住的评测
     try:
+        from ...infrastructure.migrations import run_migrations
+        run_migrations()
+        from .benchmark_system import load_system_config
+        load_system_config()
         from ...infrastructure.database import connect
         conn = connect(autocommit=True)
         try:
@@ -360,11 +360,12 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 cur.execute("DELETE FROM benchmark_item WHERE benchmark_set_id=%s", (bsid,))
             for t in tables:
                 if t in ("evaluation_population_snapshot", "evaluation_calculation_run"):
-                    cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}",))
+                    cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}%",))
                 else:
                     cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        except: pass
+        except Exception as e:
+            log("RETRY", f"清理数据异常: {e}")
         finally:
             conn.close()
 

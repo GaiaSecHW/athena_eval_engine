@@ -205,15 +205,17 @@ async function render(){
 async function renderEvals(){
   const d=await jget("/api/v1/evaluations?page_size=9999");const evs=d.evaluations||[];
   window._evData=evs;window._evPage=1;
+  var _f=window._evFilter||"all";var _q=window._evQ||"";
   $("view").innerHTML=`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px;flex-shrink:0">
-    <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:300px">
+    <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:300px" value="${_q}">
     <div style="display:flex;gap:6px">
-      <button class="ef-btn active" onclick="setEvFilter('all',this)">全部</button>
-      <button class="ef-btn" onclick="setEvFilter('COMPLETED',this)">完成</button>
-      <button class="ef-btn" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
-      <button class="ef-btn" onclick="setEvFilter('FAILED',this)">失败</button>
+      <button class="ef-btn${_f==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
+      <button class="ef-btn${_f==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
+      <button class="ef-btn${_f==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
+      <button class="ef-btn${_f==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
     </div>
     <span style="margin-left:auto;font-size:14px;color:var(--sub)">共 ${evs.length} 条</span>
+    <button class="ghost" style="font-size:14px;padding:6px 12px" onclick="renderEvals()">🔄 刷新</button>
   </div>
   <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>`;
   renderEvList();
@@ -337,7 +339,7 @@ async function selEv(id){
           else if(st.status==="FAILED"){selEv(id);}
           else if(st.status!==s.status){
             // 更新缓存中的状态
-            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;}}
+            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;ev.progress=st.progress;}}
             selEv(id);
           }
           else{
@@ -375,7 +377,6 @@ function retryEval(eid){
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
       var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
-      jget('/api/v1/evaluations/'+eid+'/report').then(function(){}).catch(function(){});
       F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.status==='QUEUED'||d.status==='RUNNING'){
           var pollCnt=0;
