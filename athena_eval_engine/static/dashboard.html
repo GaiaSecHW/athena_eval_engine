@@ -283,7 +283,7 @@ async function selEv(id){
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
       var errMsg=s.error_message||"无详细错误信息";
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
@@ -319,7 +319,7 @@ async function selEv(id){
       // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
       if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
@@ -351,7 +351,7 @@ async function selEv(id){
     }
   }catch(e){}
   // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
   try{
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
@@ -361,13 +361,13 @@ async function selEv(id){
     }
   }catch(e){}
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
-  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
+  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
 function loadIframeReport(id){
   var rep=$("view");
   if(!rep)return;
   rep.style.overflow='hidden';
-  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
+  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
 }
 function retryEval(eid){
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
@@ -376,7 +376,7 @@ function retryEval(eid){
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
       activeId=eid;
-      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
       F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.status==='QUEUED'||d.status==='RUNNING'){
           var pollCnt=0;
@@ -405,7 +405,7 @@ function deleteEval(eid,name){
   F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.status==='ok'){
       Router.navigate('/');
-      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="Router.navigate('/')">返回列表</button></div>';
+      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="Router.navigate(\'/\')">返回列表</button></div>';
     }else{
       alert('删除失败: '+JSON.stringify(d));
     }
@@ -510,7 +510,7 @@ function selectReportTab(button,paneId){
 }
 
 function renderReport(d){
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
   var rep=$("rep-content");
   if(!rep)return;
   rep.style.overflowY='auto';
@@ -920,7 +920,7 @@ async function renderCreate(){
   sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
   _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
   _vbCases=null;_vcCases=null;_vcTasks=null;_vcKey="";
-  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
+  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="card" id="kg-col"></div>
@@ -1136,7 +1136,7 @@ async function runEval(){
 async function renderSystem(){
   var c=null;
   try{c=await jget("/api/v1/system/config");}catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div class="card">加载失败</div>';return;}
-  var h=`<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="max-width:600px;flex:1;overflow-y:auto">
+  var h=`<div class="back-bar"><button class="back-btn" onclick="Router.navigate(\'/\')">← 返回列表</button></div><div style="max-width:600px;flex:1;overflow-y:auto">
     <div class="card"><h3>系统参数设置</h3>
     <div style="font-size:13px;color:var(--sub);margin-bottom:16px">修改后立即生效并持久化到数据库，Pod 重启后保留配置。</div>
     <div style="display:flex;flex-direction:column;gap:18px">

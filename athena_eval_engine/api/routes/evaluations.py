@@ -931,6 +931,6 @@ def get_pipeline(evaluation_id: str):
 def serve_spa(path: str):
     if path.startswith("api/") or path.startswith("reports/") or path == "health":
         raise HTTPException(404)
-    html_path = os.path.join(os.path.dirname(__file__), "..", "static", "dashboard.html")
+    html_path = os.path.join(os.path.dirname(__file__), "..", "..", "static", "dashboard.html")
     with open(html_path, "r", encoding="utf-8") as f:
         return HTMLResponse(f.read())
