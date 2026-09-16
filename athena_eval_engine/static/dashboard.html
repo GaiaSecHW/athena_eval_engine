@@ -255,27 +255,27 @@ async function selEv(id){
       }
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
-      var stepsHtml='<div style="margin:24px 0">';
-      stepsHtml+='<div style="height:5px;background:var(--p2);border-radius:5px;margin-bottom:20px;overflow:hidden"><div style="height:100%;width:'+progressPct+'%;background:linear-gradient(90deg,var(--acc),#7c3aed);transition:width .5s;border-radius:5px"></div></div>';
+      var stepsHtml='<div style="margin:12px 0">';
+      stepsHtml+='<div style="height:4px;background:var(--p2);border-radius:5px;margin-bottom:12px;overflow:hidden"><div style="height:100%;width:'+progressPct+'%;background:linear-gradient(90deg,var(--acc),#7c3aed);transition:width .5s;border-radius:5px"></div></div>';
       phases.forEach(function(p,i){
         var done=curStep>i+1;var active=curStep===i+1;var stepNum=i+1;
         var bg=done?"rgba(74,222,128,.12)":active?"rgba(124,58,237,.12)":"var(--p2)";
         var borderC=done?"rgba(74,222,128,.4)":active?"rgba(124,58,237,.4)":"transparent";
         var color=done?"var(--green)":active?"var(--acc)":"var(--gray)";
         var icon=done?"✅":(active?"⏳":"⏸");
-        stepsHtml+='<div style="display:flex;align-items:center;gap:14px;padding:10px;margin-bottom:8px;background:'+bg+';border:1px solid '+borderC+';border-radius:10px;transition:all .3s">';
-        stepsHtml+='<span style="font-size:18px;width:38px;height:38px;border-radius:50%;background:'+(done?"rgba(74,222,128,.2)":active?"rgba(124,58,237,.2)":"rgba(107,114,128,.1)")+';display:flex;align-items:center;justify-content:center;color:'+color+';font-size:16px">'+icon+'</span>';
-        stepsHtml+='<div><div style="font-size:16px;color:'+color+';font-weight:'+(active?'700':'400')+'">'+stepNum+'. '+p.label+(active?'…':'')+'</div>';
-        if(done){stepsHtml+='<div style="font-size:12px;color:var(--sub)">已完成</div>';}
-        else if(active){stepsHtml+='<div style="font-size:12px;color:var(--acc)">进行中</div>';}
-        else{stepsHtml+='<div style="font-size:12px;color:var(--gray)">等待中</div>';}
+        stepsHtml+='<div style="display:flex;align-items:center;gap:12px;padding:7px 10px;margin-bottom:5px;background:'+bg+';border:1px solid '+borderC+';border-radius:8px;transition:all .3s">';
+        stepsHtml+='<span style="width:30px;height:30px;border-radius:50%;background:'+(done?"rgba(74,222,128,.2)":active?"rgba(124,58,237,.2)":"rgba(107,114,128,.1)")+';display:flex;align-items:center;justify-content:center;color:'+color+';font-size:14px;flex-shrink:0">'+icon+'</span>';
+        stepsHtml+='<div><div style="font-size:14px;color:'+color+';font-weight:'+(active?'700':'400')+'">'+stepNum+'. '+p.label+(active?'…':'')+'</div>';
+        if(done){stepsHtml+='<div style="font-size:11px;color:var(--sub)">已完成</div>';}
+        else if(active){stepsHtml+='<div style="font-size:11px;color:var(--acc)">进行中</div>';}
+        else{stepsHtml+='<div style="font-size:11px;color:var(--gray)">等待中</div>';}
         stepsHtml+='</div></div>';
       });
       stepsHtml+='</div>';
       // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
       if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="padding:30px 20px"><div style="text-align:center;margin-bottom:10px"><span style="font-size:28px">⚙️</span> <span style="font-size:20px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:14px;color:var(--sub);margin-top:4px">'+(s.name||'')+'</div><div style="font-size:12px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:13px;color:var(--sub);margin-top:8px">'+s.status+' · '+progressPct+'%</div></div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
@@ -1119,7 +1119,7 @@ async function runEval(){
 
 // ===== ④ 系统 =====
 async function renderSystem(){let h=await jget("/api/v1/system/health");let s=await jget("/api/v1/system/schema");
-  $("view").innerHTML=`<div style="max-width:700px"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</span></div></div>
+  $("view").innerHTML=`<div style="max-width:700px;flex:1;overflow-y:auto"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</span></div></div>
   <div class="card" style="margin-top:16px"><h3>表清单（${s.tables.length}）</h3><table><tr><th>表</th><th>行数</th></tr>${s.tables.map(t=>`<tr><td class="num">${t.table}</td><td>${t.rows}</td></tr>`).join("")}</table></div></div>`;}
 
 // iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard（仅 debug 模式）
