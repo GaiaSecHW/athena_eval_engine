@@ -320,11 +320,13 @@ function renderReport(d){
       var _hasNogkSinkInfo=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis);
       var _hasKgFinding=!c.matched&&(_noFindReason||_ki||(pcKa&&(pcKa.reason||pcKa.query_summary)));
       var _hasNogkFinding=_hasNogk&&!c.nogk_matched&&(_nogkNoFindReason||_nogkKi);
-      // 🎯 Sink 匹配分析（sink 点是否被命中，不依赖 finding 匹配状态）
-      if(_hasKgSinkInfo||_hasNogkSinkInfo){
+      // 🎯 Sink 匹配分析（仅有 Finding 匹配分析时不显示，Finding 匹配不上才显示 Sink）
+      var _kgShowSink=_hasKgSinkInfo&&!_hasKgFinding;
+      var _nogkShowSink=_hasNogkSinkInfo&&!_hasNogkFinding;
+      if(_kgShowSink||_nogkShowSink){
         h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid var(--acc)'>";
         h+="<div style='font-weight:600;font-size:13px;margin-bottom:6px'>🎯 Sink 匹配分析</div>";
-        if(_hasKgSinkInfo){
+        if(_kgShowSink){
           h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
           if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
@@ -332,7 +334,7 @@ function renderReport(d){
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
-        if(_hasNogkSinkInfo){
+        if(_nogkShowSink){
           h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
           if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
