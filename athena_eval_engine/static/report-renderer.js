@@ -630,35 +630,69 @@ function renderReport(d){
     const _hasNogk=r.has_nogk!==false;
     function _buildMatchTable(groupList,title,icon){
       const rows=[];let idx=1;
+      let kgTP=0,kgFP=0,kgFN=0,kgTN=0,kgNA=0;
+      let nogkTP=0,nogkFP=0,nogkFN=0,nogkTN=0,nogkNA=0;
       for(const g of groupList){
         const crs=Array.isArray(g.case_results)?g.case_results:[];
         for(const c of crs){
           const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
+          const expLabel=c.expected_label||"";
+          const expBadge=expLabel==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:10px'>漏洞</span>":expLabel==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:10px'>非漏洞</span>":"";
+          // KG 列：匹配→finding标题；未匹配但挖掘→session_id；未挖掘→排除
           const kgCands=c.candidate_findings||[];
           const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
-          const kgTitle=c.matched?((c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+kgCandNote);
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
+          let kgCell;
+          if(c.matched){
+            kgCell=(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;");
+          }else if(c.mined){
+            kgCell=`<span style="color:var(--amber)">sink: ${(c.session_id||"").slice(0,8)}</span>`+kgCandNote;
+          }else{
+            kgCell=`<span style="color:var(--gray)">未挖掘</span>`;
+          }
+          // confusion badge
+          var kgConf=c.confusion||"NA";
+          var kgConfColor=kgConf==="TP"||kgConf==="TN"?"var(--green)":kgConf==="FP"||kgConf==="FN"?"var(--red)":"var(--gray)";
+          var kgConfBadge=`<span style="font-size:11px;font-weight:600;color:${kgConfColor}">${kgConf}</span>`;
+          // 统计
+          if(kgConf==="TP")kgTP++;else if(kgConf==="FP"&&c.mined)kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN"&&c.mined)kgTN++;else kgNA++;
+          // No-KG 列
           let nogkCell="";
           if(_hasNogk){
             const nogkCands=c.nogk_candidate_findings||[];
             const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
-            const nogkTitle=c.nogk_matched?((c.nogk_finding_title||"-").replace(/</g,"&lt;")):("<span style='color:var(--gray)'>未匹配</span>"+nogkCandNote);
             const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
-            nogkCell=`<td>${nogkTitle}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+            if(c.nogk_matched){
+              nogkCell=`<td>${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+            }else if(c.nogk_mined){
+              nogkCell=`<td><span style="color:var(--amber)">sink: ${(c.nogk_session_id||"").slice(0,8)}</span>${nogkCandNote}</td>`;
+            }else{
+              nogkCell=`<td><span style="color:var(--gray)">未挖掘</span></td>`;
+            }
+            var nogkConf=c.nogk_confusion||"NA";
+            var nogkConfColor=nogkConf==="TP"||nogkConf==="TN"?"var(--green)":nogkConf==="FP"||nogkConf==="FN"?"var(--red)":"var(--gray)";
+            if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP"&&c.nogk_mined)nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN"&&c.nogk_mined)nogkTN++;else nogkNA++;
+            nogkCell=nogkCell.replace(/<\/td>$/,` ${nogkConfColor?`<span style="font-size:11px;font-weight:600;color:${nogkConfColor}">${nogkConf}</span>`:""}</td>`);
           }
           rows.push(`<tr>
             <td class="num">${idx}</td>
-            <td>${baseTitle}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
-            <td>${kgTitle}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""}</td>
+            <td>${baseTitle} ${expBadge}${c.case_id?`<div style="font-size:12px;color:var(--gray)">${c.case_id.replace(/</g,"&lt;")}</div>`:""}</td>
+            <td>${kgCell}${kgAc?`<span style="font-size:12px;color:var(--acc)">${kgAc}</span>`:""} ${kgConfBadge}</td>
             ${nogkCell}
           </tr>`);
           idx++;
         }
       }
       if(!rows.length) return "";
+      const kgDenom=kgTP+kgFP+kgFN+kgTN;
+      const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
+      const summary=_hasNogk
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（TP=${kgTP} FP=${kgFP} FN=${kgFN} TN=${kgTN}${kgNA?` NA=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（TP=${nogkTP} FP=${nogkFP} FN=${nogkFN} TN=${nogkTN}${nogkNA?` NA=${nogkNA}`:""}）</span></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（TP=${kgTP} FP=${kgFP} FN=${kgFN} TN=${kgTN}${kgNA?` NA=${kgNA}`:""}）</div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
-        <table><tr><th>序号</th><th>基线-漏洞标题</th><th>KG-漏洞标题</th>${_hasNogk?'<th>No-KG-漏洞标题</th>':''}</tr>
+        ${summary}
+        <table><tr><th>序号</th><th>基线</th><th>KG 结果</th>${_hasNogk?'<th>No-KG 结果</th>':''}</tr>
         ${rows.join("")}
         </table>
       </div>`;
