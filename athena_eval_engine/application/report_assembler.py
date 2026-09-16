@@ -772,16 +772,15 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             af["validation_result"] = vr
                             break
 
-    results = []
+    results = [None] * len(case_results)
     _total = len(case_results)
+    _pending_llm = []  # (ci, prompt, case_id, kg_judgment, case_interactions, case_mem_interactions, _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki)
     for _ci, case in enumerate(case_results):
         case_id = case.get("case_id", "")
         description = case.get("description", "")
         vuln_type = case.get("vulnerability_type", "")
         confusion = case.get("confusion", "NA")
         matched_fid = case.get("matched_finding_id", "")
-        if progress_cb:
-            progress_cb(_ci + 1, _total)
 
         # 提前计算 No-KG 的 confusion 和 sink 数据
         nogk_confusion = "NA"
@@ -812,7 +811,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             _na_reason = "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。"
             if _sink_info:
                 _na_reason = f"Agent 未找到此漏洞（NA）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
-            results.append({
+            results[_ci] = {
                 "case_id": case_id,
                 "kg_judgment": "NOT_FOUND",
                 "query_summary": "无知识查询",
@@ -827,7 +826,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
-            })
+            }
             continue
 
         # 优先使用 sink 匹配器收集的 chain_actions（覆盖 TP/FP/FN 场景）
@@ -878,7 +877,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         # KG 与 No-KG 都确认是漏洞（都 TP）→ 不需要 AI 介入分析
         if confusion == "TP" and nogk_confusion == "TP":
-            results.append({
+            results[_ci] = {
                 "case_id": case_id,
                 "kg_judgment": kg_judgment,
                 "query_summary": "无知识查询" if not case_interactions else "有知识查询（双方均发现漏洞）",
@@ -893,14 +892,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
-            })
+            }
             continue
 
         # 无知识交互时的处理：有 sink 分析数据时仍做 LLM 分析，否则直接判定
         if not case_interactions and not mining_actions:
             impact = "NEUTRAL"
             reason = "无知识图谱与记忆介入，无法评估知识对漏洞排查的影响"
-            results.append({
+            results[_ci] = {
                 "case_id": case_id,
                 "kg_judgment": kg_judgment,
                 "query_summary": "无知识查询",
@@ -915,7 +914,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
-            })
+            }
             continue
 
         _agent_vr = case.get("agent_validation")
@@ -1075,7 +1074,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             # 压缩后仍超限 → 跳过 LLM，规则降级
             if len(_data_str) > 840000:
                 log("KG_ANALYSIS", f"压缩后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
-                results.append({
+                results[_ci] = {
                     "case_id": case_id,
                     "kg_judgment": kg_judgment,
                     "query_summary": "数据量过大，无法进行 AI 分析" if case_interactions else "无知识查询",
@@ -1090,7 +1089,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     "nogk_sink_analysis": _nogk_sink_analysis,
                     "nogk_no_finding_reason": _nogk_no_finding_reason,
                     "nogk_knowledge_intervention": _nogk_ki,
-                })
+                }
                 continue
 
         _nogk_desc = ("10. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
@@ -1134,34 +1133,67 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             )},
         ]
 
-        try:
-            result = llm_mod.chat_json(prompt, temperature=0)
-            result["case_id"] = case_id
-            result["interactions"] = case_interactions
-            result["memory_interactions"] = case_mem_interactions
-            result["sink_analysis"] = _sink_analysis
-            result["no_finding_reason"] = _no_finding_reason
-            result["knowledge_intervention"] = _ki
-            result["nogk_sink_analysis"] = _nogk_sink_analysis
-            result["nogk_no_finding_reason"] = _nogk_no_finding_reason
-            result["nogk_knowledge_intervention"] = _nogk_ki
-            results.append(result)
-        except Exception:
-            results.append({
-                "case_id": case_id,
-                "kg_judgment": kg_judgment,
-                "query_summary": "无相关知识查询" if not case_interactions else "LLM 分析失败",
-                "knowledge_summary": "",
-                "impact": "NEUTRAL",
-                "reason": f"KG 判定: {confusion}（LLM 不可用，规则生成）",
-                "interactions": case_interactions,
-                "memory_interactions": case_mem_interactions,
-                "sink_analysis": _sink_analysis,
-                "no_finding_reason": _no_finding_reason,
-                "knowledge_intervention": _ki,
-                "nogk_sink_analysis": _nogk_sink_analysis,
-                "nogk_no_finding_reason": _nogk_no_finding_reason,
-                "nogk_knowledge_intervention": _nogk_ki,
-            })
+        # 收集 LLM 任务，稍后并行执行
+        _pending_llm.append((_ci, prompt, case_id, kg_judgment, case_interactions,
+                             case_mem_interactions, _sink_analysis, _no_finding_reason,
+                             _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki))
 
-    return results
+    # 串行准备完成，报告 fast-path 完成数
+    _fast_done = _total - len(_pending_llm)
+    if progress_cb and _fast_done > 0:
+        progress_cb(_fast_done, _total)
+
+    # Phase 2: 并行执行 LLM 调用
+    if _pending_llm:
+        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from .evaluation_service import get_runtime_workers
+        _done_count = [0]
+        import threading as _th
+        _count_lock = _th.Lock()
+
+        def _run_llm(task):
+            _ci, prompt, case_id, kg_judgment, case_interactions, case_mem_interactions, \
+                _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, \
+                _nogk_no_finding_reason, _nogk_ki = task
+            try:
+                result = llm_mod.chat_json(prompt, temperature=0)
+                result["case_id"] = case_id
+                result["interactions"] = case_interactions
+                result["memory_interactions"] = case_mem_interactions
+                result["sink_analysis"] = _sink_analysis
+                result["no_finding_reason"] = _no_finding_reason
+                result["knowledge_intervention"] = _ki
+                result["nogk_sink_analysis"] = _nogk_sink_analysis
+                result["nogk_no_finding_reason"] = _nogk_no_finding_reason
+                result["nogk_knowledge_intervention"] = _nogk_ki
+                return _ci, result
+            except Exception:
+                return _ci, {
+                    "case_id": case_id,
+                    "kg_judgment": kg_judgment,
+                    "query_summary": "无相关知识查询" if not case_interactions else "LLM 分析失败",
+                    "knowledge_summary": "",
+                    "impact": "NEUTRAL",
+                    "reason": f"KG 判定: {kg_judgment}（LLM 不可用，规则生成）",
+                    "interactions": case_interactions,
+                    "memory_interactions": case_mem_interactions,
+                    "sink_analysis": _sink_analysis,
+                    "no_finding_reason": _no_finding_reason,
+                    "knowledge_intervention": _ki,
+                    "nogk_sink_analysis": _nogk_sink_analysis,
+                    "nogk_no_finding_reason": _nogk_no_finding_reason,
+                    "nogk_knowledge_intervention": _nogk_ki,
+                }
+
+        _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
+        with ThreadPoolExecutor(max_workers=_workers) as pool:
+            futures = [pool.submit(_run_llm, t) for t in _pending_llm]
+            for fut in as_completed(futures):
+                _ci, result = fut.result()
+                results[_ci] = result
+                with _count_lock:
+                    _done_count[0] += 1
+                    if progress_cb:
+                        progress_cb(_fast_done + _done_count[0], _total)
+
+    return [r for r in results if r is not None]

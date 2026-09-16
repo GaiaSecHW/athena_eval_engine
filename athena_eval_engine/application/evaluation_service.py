@@ -327,7 +327,7 @@ def create(req: CreateRequest):
     return req.evaluation_id
 
 
-def _db_query(fn, _retries=5):
+def _db_query(fn, _retries=8):
     """短连接执行 DB 操作。连接断开时重连重试。"""
     import pymysql
     last_err = None
@@ -339,8 +339,9 @@ def _db_query(fn, _retries=5):
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
             last_err = e
             if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry...")
-                import time; time.sleep(2 * (attempt + 1))  # 指数退避
+                _wait = min(2 * (attempt + 1), 30)  # 指数退避，上限 30s
+                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
+                import time; time.sleep(_wait)
                 continue
             raise
         finally:
@@ -442,7 +443,6 @@ def run(evaluation_id: str) -> dict:
                         "source_function": c.get("source_function") or "",
                         "source_line": c.get("source_line") or "",
                     }
-                    _fill_missing_source(case_details[cid])
                 _done += 1
                 if _done % 5 == 0 or _done == _total:
                     set_progress(evaluation_id, f"获取基线数据: {_done}/{_total} 条 case")
@@ -452,6 +452,28 @@ def run(evaluation_id: str) -> dict:
         log("INGEST", f"取基线数据失败: {e}")
         _tb.print_exc()
     if not case_details:
+        raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
+                         "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
+
+    # 并行补提取缺失的 source 信息（每个 case 可能调一次 LLM）
+    _need_fill = [cd for cd in case_details.values()
+                  if not cd.get("source_file") or not cd.get("source_function") or not cd.get("source_line")]
+    if _need_fill:
+        from ..infrastructure import llm as llm_mod
+        if llm_mod.is_enabled():
+            from concurrent.futures import ThreadPoolExecutor, as_completed
+            log("INGEST", f"并行补提取 source 信息: {len(_need_fill)} 条 case")
+            _fill_done = [0]
+            import threading as _th
+            _fill_lock = _th.Lock()
+            with ThreadPoolExecutor(max_workers=min(len(_need_fill), 8)) as pool:
+                futures = [pool.submit(_fill_missing_source, cd) for cd in _need_fill]
+                for fut in as_completed(futures):
+                    fut.result()
+                    with _fill_lock:
+                        _fill_done[0] += 1
+                        if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
+                            set_progress(evaluation_id, f"补提取 source: {_fill_done[0]}/{len(_need_fill)}")
         raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
