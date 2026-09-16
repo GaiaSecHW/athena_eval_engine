@@ -35,6 +35,8 @@ class PairView:
     nogk_confusion: str = ""
     kg_mined: bool = False   # agent 是否挖掘了此 sink
     nogk_mined: bool = False
+    kg_sink_hit: bool = False  # sink 是否被命中（chains 存在）
+    nogk_sink_hit: bool = False
 
 
 @dataclass
@@ -121,25 +123,25 @@ def _fnr(cm, kg=True) -> float:
 
 
 def _fpr(pairs: list[PairView], kg=True) -> float:
-    """FPR = (FP_mined + FN) / (TP + FP_mined + FN + TN_mined)。
-    分母=agent挖掘过的sink匹配基线项，分子=识别错误项(FP+FN)。
+    """FPR = (FP_sink + FN) / (TP + FP_sink + FN + TN_sink)。
+    分母=sink命中的基线项（chains存在），分子=识别错误项(FP+FN)。
     分母为 0 时返回 0。"""
-    tp = fp_mined = fn = tn_mined = 0
+    tp = fp_hit = fn = tn_hit = 0
     for p in pairs:
         conf = p.kg_confusion if kg else p.nogk_confusion
-        mined = p.kg_mined if kg else p.nogk_mined
+        sink_hit = p.kg_sink_hit if kg else p.nogk_sink_hit
         if conf == "TP":
             tp += 1
-        elif conf == "FP" and mined:
-            fp_mined += 1
+        elif conf == "FP" and sink_hit:
+            fp_hit += 1
         elif conf == "FN":
             fn += 1
-        elif conf == "TN" and mined:
-            tn_mined += 1
-    denom = tp + fp_mined + fn + tn_mined
+        elif conf == "TN" and sink_hit:
+            tn_hit += 1
+    denom = tp + fp_hit + fn + tn_hit
     if denom == 0:
         return 0.0
-    return (fp_mined + fn) / denom
+    return (fp_hit + fn) / denom
 
 
 def _precision(cm, kg=True) -> float:
@@ -234,18 +236,18 @@ def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[Stat
     status = CALCULATED if br.status == "CALCULATED" else NA
     fpr_kg = _fpr(pairs, True); fpr_nogk = _fpr(pairs, False)
     m13_est = est if status == CALCULATED else None
-    # 统计挖掘过的混淆矩阵（用于 method 字典展示）
+    # 统计sink命中的混淆矩阵（用于 method 字典展示）
     tp_kg = fp_kg = fn_kg = tn_kg = 0
     tp_n = fp_n = fn_n = tn_n = 0
     for p in pairs:
         if p.kg_confusion == "TP": tp_kg += 1
-        elif p.kg_confusion == "FP" and p.kg_mined: fp_kg += 1
+        elif p.kg_confusion == "FP" and p.kg_sink_hit: fp_kg += 1
         elif p.kg_confusion == "FN": fn_kg += 1
-        elif p.kg_confusion == "TN" and p.kg_mined: tn_kg += 1
+        elif p.kg_confusion == "TN" and p.kg_sink_hit: tn_kg += 1
         if p.nogk_confusion == "TP": tp_n += 1
-        elif p.nogk_confusion == "FP" and p.nogk_mined: fp_n += 1
+        elif p.nogk_confusion == "FP" and p.nogk_sink_hit: fp_n += 1
         elif p.nogk_confusion == "FN": fn_n += 1
-        elif p.nogk_confusion == "TN" and p.nogk_mined: tn_n += 1
+        elif p.nogk_confusion == "TN" and p.nogk_sink_hit: tn_n += 1
     return (MetricResult("M13", m13_est, "ratio", len(pairs), "primary_analysis",
                          calculation_status=status, reason_code=br.reason_code,
                          method={"uncertainty": test_name, "valid": br.valid,

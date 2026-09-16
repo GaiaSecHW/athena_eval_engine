@@ -34,10 +34,10 @@ const MI={
      interp:(v)=>v==null?"无基准，无法计算":v>=0.8?`准确率 ${(v*100).toFixed(1)}%`:v>=0.5?`准确率 ${(v*100).toFixed(1)}%`:`准确率 ${(v*100).toFixed(1)}%`,
      formula:"平衡准确率=(真正例率+真负例率)/2, 真正例率=真正例/(真正例+假负例), 真负例率=真负例/(真负例+假正例)",
      kgKey:"ba_kg",nogkKey:"ba_nogk"},
-  M13:{n:"误报率(FPR)",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计agent挖掘过的sink",u:"ratio",
+  M13:{n:"误报率(FPR)",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计sink命中的基线项",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
      interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
-     formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=agent挖掘过的sink匹配基线项",
+     formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=sink命中的基线项（finding匹配+sink发现）",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
   M14:{n:"精确率(Precision)",short:"精确率",d:"精确率=真正例/(真正例+假正例)",u:"ratio",
      range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:1,t:"全对",c:"green"}],
@@ -275,17 +275,6 @@ function renderReport(d){
       h+="</div>";
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
-      // AI 分析结论放最前面（只要有 pcKa 数据就显示，不依赖 kgActive）
-      if(pcKa&&(pcKa.reason||pcKa.query_summary)){
-        var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
-        var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
-        var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
-        h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
-        h+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
-        h+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
-        if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
-        h+="</div>";
-      }
       // sink 匹配分析（KG + No-KG 上下并排）
       var _hasNogk=r.has_nogk!==false;
       var _sinkInfo=c.sink_info||"";
@@ -298,13 +287,25 @@ function renderReport(d){
       var _nogkKi=c.nogk_knowledge_intervention||null;
       var _hasKgSink=_sinkInfo||_sinkAnalysis||_noFindReason||_ki;
       var _hasNogkSink=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis||_nogkNoFindReason||_nogkKi);
-      if(_hasKgSink||_hasNogkSink){
+      var _kgShowSink=!c.matched&&_hasKgSink;
+      var _nogkShowSink=_hasNogk&&!c.nogk_matched&&_hasNogkSink;
+      if(_kgShowSink||_nogkShowSink){
         h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid var(--acc)'>";
         h+="<div style='font-weight:600;font-size:13px;margin-bottom:6px'>🎯 Sink 匹配分析</div>";
         // KG sink 分析
-        if(_hasKgSink){
+        if(_kgShowSink){
           h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
+          if(pcKa&&(pcKa.reason||pcKa.query_summary)){
+            var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
+            var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
+            var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
+            h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p3);border-radius:6px'>";
+            h+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
+            h+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
+            if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
+            h+="</div>";
+          }
           if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           if(_noFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_noFindReason).replace(/</g,"&lt;")+"</div>";
@@ -323,7 +324,7 @@ function renderReport(d){
           h+="</div>";
         }
         // No-KG sink 分析
-        if(_hasNogkSink){
+        if(_nogkShowSink){
           h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
           if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
@@ -345,7 +346,9 @@ function renderReport(d){
         }
         h+="</div>";
       }
-      h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+(_hasNogk?confBadge("No-KG",nogkConf):"")+"</div>";
+      if(c.matched||(_hasNogk&&c.nogk_matched)){
+        h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+(c.matched?confBadge("KG",conf):"")+(_hasNogk&&c.nogk_matched?confBadge("No-KG",nogkConf):"")+"</div>";
+      }
       // 候选 finding（预筛选认为可能匹配但未最终匹配的 agent finding，以基线为中心）
       function _renderCands(label,cands){
         if(!cands||!cands.length) return "";
@@ -607,26 +610,6 @@ function renderReport(d){
     function _diagnostics(hits){
       return hits&&hits.length?`<div class="card" style="margin-bottom:16px"><h3>🔍 诊断发现</h3>${hits.map(x=>`<div class="diag"><span class="rid">${x.rule_id}</span> <span class="ob">${x.observed}</span><div class="ip">${x.interpretation}<br>建议：${x.suggestion}</div></div>`).join("")}</div>`:"";
     }
-    const tabs=mg.length>1?`<div role="tablist" aria-label="报告类别" style="display:grid;grid-template-columns:repeat(${mg.length},minmax(0,1fr));gap:12px;margin:0 0 20px">${mg.map((g,i)=>{const mining=g.category!=="verify";const icon=mining?'🔎':'✅';const desc=mining?'发现与提交潜在漏洞':'验证候选漏洞是否成立';return`<button class="btn" role="tab" data-report-tab-btn aria-selected="${i===0?'true':'false'}" style="text-align:left;display:flex;gap:10px;align-items:center;padding:13px 15px;border:1px solid ${i===0?'var(--acc)':'var(--bd)'};background:${i===0?'var(--acc)':'var(--panel)'};color:${i===0?'#fff':'var(--sub)'};${i===0?'box-shadow:0 8px 20px rgba(124,58,237,.28);transform:translateY(-2px)':''}" onclick="selectReportTab(this,'report-tab-${i}')"><span style="font-size:24px">${icon}</span><span><b style="display:block;font-size:16px">${g.label}</b><small style="display:block;margin-top:3px;opacity:.82">${desc}</small></span></button>`}).join("")}</div><div style="font-size:14px;color:var(--sub);margin:-8px 0 16px;padding:8px 10px;background:var(--p2);border-radius:8px">当前选中的类别决定下方全部统计、效果指标和诊断的范围。</div>`:"";
-    const panes=mg.map((g,i)=>`<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
-      <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
-      ${_statsTable(g.task_id,g.label)}
-      <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
-      ${_diagnostics(g.diagnostic_hits||h)}
-      <div class="card" style="margin-bottom:16px">
-        <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
-        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
-          ?buildKnowledgeHtml(g)
-          :mg.length===1
-            ?buildKnowledgeHtml(null)
-            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
-      </div>
-    </div>`).join("");
-    return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
-  })()}
-
-  ${(()=>{
-    const groups=r.metric_groups||[];
     const _hasNogk=r.has_nogk!==false;
     function _buildMatchTable(groupList,title,icon){
       const rows=[];let idx=1;
@@ -638,7 +621,6 @@ function renderReport(d){
           const baseTitle=(c.vulnerability_type||c.case_id||"-").replace(/</g,"&lt;");
           const expLabel=c.expected_label||"";
           const expBadge=expLabel==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:10px'>漏洞</span>":expLabel==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:10px'>非漏洞</span>":"";
-          // KG 列：匹配→finding标题；未匹配但挖掘→session_id；未挖掘→排除
           const kgCands=c.candidate_findings||[];
           const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
@@ -650,13 +632,10 @@ function renderReport(d){
           }else{
             kgCell=`<span style="color:var(--gray)">未挖掘</span>`;
           }
-          // confusion badge
           var kgConf=c.confusion||"NA";
           var kgConfColor=kgConf==="TP"||kgConf==="TN"?"var(--green)":kgConf==="FP"||kgConf==="FN"?"var(--red)":"var(--gray)";
           var kgConfBadge=`<span style="font-size:11px;font-weight:600;color:${kgConfColor}">${kgConf}</span>`;
-          // 统计
-          if(kgConf==="TP")kgTP++;else if(kgConf==="FP"&&c.mined)kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN"&&c.mined)kgTN++;else kgNA++;
-          // No-KG 列
+          if(kgConf==="TP")kgTP++;else if(kgConf==="FP"&&c.sink_hit)kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN"&&c.sink_hit)kgTN++;else kgNA++;
           let nogkCell="";
           if(_hasNogk){
             const nogkCands=c.nogk_candidate_findings||[];
@@ -671,7 +650,7 @@ function renderReport(d){
             }
             var nogkConf=c.nogk_confusion||"NA";
             var nogkConfColor=nogkConf==="TP"||nogkConf==="TN"?"var(--green)":nogkConf==="FP"||nogkConf==="FN"?"var(--red)":"var(--gray)";
-            if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP"&&c.nogk_mined)nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN"&&c.nogk_mined)nogkTN++;else nogkNA++;
+            if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP"&&c.nogk_sink_hit)nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN"&&c.nogk_sink_hit)nogkTN++;else nogkNA++;
             nogkCell=nogkCell.replace(/<\/td>$/,` ${nogkConfColor?`<span style="font-size:11px;font-weight:600;color:${nogkConfColor}">${nogkConf}</span>`:""}</td>`);
           }
           rows.push(`<tr>
@@ -697,18 +676,23 @@ function renderReport(d){
         </table>
       </div>`;
     }
-    if(!groups.length) return "";
-    const miningGroups=groups.filter(g=>g.category!=="verify");
-    const verifyGroups=groups.filter(g=>g.category==="verify");
-    const hasCategory=groups.some(g=>g.category);
-    let html="";
-    if(!hasCategory){
-      html=_buildMatchTable(groups,"基线与 Agent 发现漏洞匹配明细","📋");
-    }else{
-      if(miningGroups.length) html+=_buildMatchTable(miningGroups,"漏洞挖掘 — 基线与 Agent 发现匹配明细","🔎");
-      if(verifyGroups.length) html+=_buildMatchTable(verifyGroups,"漏洞验证 — 基线与 Agent 验证匹配明细","✅");
-    }
-    return html;
+    const tabs=mg.length>1?`<div role="tablist" aria-label="报告类别" style="display:grid;grid-template-columns:repeat(${mg.length},minmax(0,1fr));gap:12px;margin:0 0 20px">${mg.map((g,i)=>{const mining=g.category!=="verify";const icon=mining?'🔎':'✅';const desc=mining?'发现与提交潜在漏洞':'验证候选漏洞是否成立';return`<button class="btn" role="tab" data-report-tab-btn aria-selected="${i===0?'true':'false'}" style="text-align:left;display:flex;gap:10px;align-items:center;padding:13px 15px;border:1px solid ${i===0?'var(--acc)':'var(--bd)'};background:${i===0?'var(--acc)':'var(--panel)'};color:${i===0?'#fff':'var(--sub)'};${i===0?'box-shadow:0 8px 20px rgba(124,58,237,.28);transform:translateY(-2px)':''}" onclick="selectReportTab(this,'report-tab-${i}')"><span style="font-size:24px">${icon}</span><span><b style="display:block;font-size:16px">${g.label}</b><small style="display:block;margin-top:3px;opacity:.82">${desc}</small></span></button>`}).join("")}</div><div style="font-size:14px;color:var(--sub);margin:-8px 0 16px;padding:8px 10px;background:var(--p2);border-radius:8px">当前选中的类别决定下方全部统计、效果指标和诊断的范围。</div>`:"";
+    const panes=mg.map((g,i)=>`<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
+      <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
+      ${_statsTable(g.task_id,g.label)}
+      <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
+      ${_diagnostics(g.diagnostic_hits||h)}
+      <div class="card" style="margin-bottom:16px">
+        <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
+        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
+          ?buildKnowledgeHtml(g)
+          :mg.length===1
+            ?buildKnowledgeHtml(null)
+            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
+      </div>
+      ${_buildMatchTable([g],g.category==='verify'?"基线与 Agent 验证匹配明细":g.category==='mining'?"基线与 Agent 发现匹配明细":"基线与 Agent 发现漏洞匹配明细",g.category==='verify'?"✅":g.category==='mining'?"🔎":"📋")}
+    </div>`).join("");
+    return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
   })()}
 
   ${(()=>{

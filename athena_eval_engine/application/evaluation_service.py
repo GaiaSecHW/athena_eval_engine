@@ -1171,7 +1171,8 @@ def run(evaluation_id: str) -> dict:
                     nogk_outcome="FAIL",
                     jsd=None, delta_token=None, delta_steps=None, delta_time=None,
                     kg_confusion=kg_conf, nogk_confusion="",
-                    kg_mined=kc.get("mined", False), nogk_mined=False))
+                    kg_mined=kc.get("mined", False), nogk_mined=False,
+                    kg_sink_hit=kc.get("sink_hit", False), nogk_sink_hit=False))
         log("EVAL", f"KG-only 模式: 从 case_results 构造 {len(pair_views)} 个 pair_view")
 
     # 按 benchmark_item 展开 pair_views，供 M1-M4 混淆矩阵使用
@@ -1201,7 +1202,8 @@ def run(evaluation_id: str) -> dict:
                     jsd=pv.jsd, delta_token=pv.delta_token,
                     delta_steps=pv.delta_steps, delta_time=pv.delta_time,
                     kg_confusion=kg_conf, nogk_confusion=nogk_conf,
-                    kg_mined=kc.get("mined", False), nogk_mined=nc.get("mined", False)))
+                    kg_mined=kc.get("mined", False), nogk_mined=nc.get("mined", False),
+                    kg_sink_hit=kc.get("sink_hit", False), nogk_sink_hit=nc.get("sink_hit", False)))
                 _item_pv_task_ids.append(pair.task_id)
     else:
         # KG-only: item_pair_views = pair_views（已从 case_results 构造）
@@ -1352,6 +1354,7 @@ def run(evaluation_id: str) -> dict:
                 "source_line": _g_meta.get("source_line", ""),
                 "nogk_matched": _g_nogk_case.get("matched", False),
                 "nogk_mined": _g_nogk_case.get("mined", False),
+                "nogk_sink_hit": _g_nogk_case.get("sink_hit", False),
                 "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
                 "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
                 "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),

@@ -434,7 +434,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                                 "candidate_findings": [],
                                 "sink_info": "", "sink_analysis": "", "no_finding_reason": "",
                                 "knowledge_intervention": None, "chain_actions": [],
-                                "mined": False})
+                                "mined": False, "sink_hit": False})
         has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -550,7 +550,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "candidate_findings": [],
                 "sink_info": "无 sink 信息", "sink_analysis": "", "no_finding_reason": "",
                 "knowledge_intervention": None, "chain_actions": [],
-                "mined": False,
+                "mined": False, "sink_hit": False,
             })
             continue
 
@@ -566,7 +566,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_info": f"未命中 (file={_basename((b.metadata or {}).get('source_file',''))})",
                 "sink_analysis": "", "no_finding_reason": "",
                 "knowledge_intervention": None, "chain_actions": [],
-                "mined": False,
+                "mined": False, "sink_hit": False,
             })
             continue
 
@@ -631,7 +631,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "no_finding_reason": "",
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
-                "mined": True,
+                "mined": True, "sink_hit": True,
             })
         elif any_mining and not chain_findings:
             # LLM=是 + 无 finding → FN（挖了但没报）
@@ -649,7 +649,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "no_finding_reason": no_finding_reason,
                 "knowledge_intervention": knowledge_intervention,
                 "chain_actions": chain_actions,
-                "mined": True,
+                "mined": True, "sink_hit": True,
             })
         else:
             # LLM=不是 → 检查是否有 finding
@@ -670,7 +670,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "no_finding_reason": "",
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
-                "mined": False,
+                "mined": False, "sink_hit": True,
             })
 
         _progress(f"Sink 匹配: {bi+1}/{len(benchmarks)} 基线完成")
