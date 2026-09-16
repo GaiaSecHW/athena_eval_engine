@@ -404,15 +404,8 @@ class ArgoTraceParser(TraceParser):
                         graph['file_to_sessions'][basename].add(sid)
 
         # 构建边
-        # 1. finding 提交→验证 关联（investigate ↔ verify）
-        for key, inv_sids in graph['finding_to_investigate'].items():
-            ver_sids = graph['finding_to_verify'].get(key, set())
-            for s1 in inv_sids:
-                for s2 in ver_sids:
-                    if s1 != s2:
-                        graph['edges'][s1].add(s2)
-
-        # 2. 共享 fact 的 session 关联
+        # 不建 finding investigate↔verify 边：挖掘与验证是独立评测，无交叉分析场景。
+        # 1. 共享 fact 的 session 关联
         for fid, sids in graph['fact_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:
@@ -420,7 +413,7 @@ class ArgoTraceParser(TraceParser):
                         if s1 != s2:
                             graph['edges'][s1].add(s2)
 
-        # 3. 共享文件的 session 关联
+        # 2. 共享文件的 session 关联
         for fm, sids in graph['file_to_sessions'].items():
             if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
                 for s1 in sids:

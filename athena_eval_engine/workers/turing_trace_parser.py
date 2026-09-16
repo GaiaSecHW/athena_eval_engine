@@ -249,63 +249,19 @@ class TuringTraceParser(TraceParser):
     # ==================================================================
 
     def build_session_graph(self, events):
-        """Turing (opencode) 特有：在基类图基础上加三层关联。
+        """Turing (opencode) 特有：在基类图基础上加 parent_id 父子边 + agent 角色。
 
-        Trace 数据论证（3825 sessions, 45 findings 分析）：
-        - insert_finding 和 update_finding 对同一 finding_id **100% 在不同 session**
-          （insert 在 general agent session, update 在 web-validate agent session）
-        - 621 个 session 有 parent_id（子代理 spawn 关系）
-        - 基类只按共享文件/fact ID 建边，子代理 session 不读文件 → 图中断连
+        不建 finding_id 边（insert_finding session ↔ update_finding session）：
+        挖掘与验证是独立评测，无交叉分析场景。finding_id 边会把验证 session
+        拉入挖掘的 chain_actions，导致数据膨胀和 LLM 分析噪音。
 
         三层关联：
         1. parent_id 父子边（session 表）+ agent 角色标注
-        2. finding_id 关联：insert_finding session ↔ update_finding session
-           （trace 证明 100% 跨 session，是 finding 生命周期的主链路）
-        3. 基类共享文件/fact 边
+        2. 基类共享文件/fact 边
         """
         graph = super().build_session_graph(events)
 
-        # === Layer 1: finding_id 关联（从 events 提取）===
-        # insert_finding 的 session → finding_id
-        finding_to_insert_session: dict[str, str] = {}
-        # update_finding 的 session → finding_id
-        finding_to_validate_session: dict[str, str] = {}
-        for ev in events:
-            if not ev.is_tool_call():
-                continue
-            tool = ev.tool_name or ""
-            inp = ev.input_json or {}
-            if tool == "vuln_hunt_insert_finding":
-                fid = str(inp.get("finding_id", "")).strip()
-                if not fid:
-                    # HTTP 绕过已注入 input，MCP 工具从 output 提取
-                    out_str = ""
-                    if ev.output_json is not None:
-                        out_str = ev.output_json if isinstance(ev.output_json, str) else json.dumps(
-                            ev.output_json, ensure_ascii=False)
-                    m = re.search(r"id=([a-f0-9-]+)", out_str)
-                    if m:
-                        fid = m.group(1)
-                if fid:
-                    finding_to_insert_session[fid] = ev.session_id
-            elif tool == "vuln_hunt_update_finding":
-                fid = str(inp.get("finding_id", "")).strip()
-                if fid:
-                    finding_to_validate_session[fid] = ev.session_id
-
-        # 按 finding_id 关联 insert session ↔ validate session
-        for fid, insert_sid in finding_to_insert_session.items():
-            validate_sid = finding_to_validate_session.get(fid)
-            if not validate_sid or insert_sid == validate_sid:
-                continue
-            # 确保两个 session 都在图中
-            for sid in (insert_sid, validate_sid):
-                if sid not in graph['sessions']:
-                    graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
-            graph['edges'][insert_sid].add(validate_sid)
-            graph['edges'][validate_sid].add(insert_sid)
-
-        # === Layer 2: parent_id 父子边 + agent 角色标注（从 SQLite session 表）===
+        # === parent_id 父子边 + agent 角色标注（从 SQLite session 表）===
         uri = getattr(self, '_source_uri', None)
         if not uri:
             return graph

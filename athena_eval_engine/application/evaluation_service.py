@@ -1447,13 +1447,6 @@ def run(evaluation_id: str) -> dict:
         for item in group["per_case_kg_analysis"]:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
-        # chain_actions 截断到 200 条（LLM 只用前 200），保留全部 session_id 到 chain_sessions
-        # 避免同一链跨 case 重复导致 report JSON 超 max_allowed_packet
-        for cr in group.get("case_results", []):
-            ca = cr.get("chain_actions")
-            if isinstance(ca, list) and len(ca) > 200:
-                cr["chain_sessions"] = list({a.get("session_id", "") for a in ca if a.get("session_id")})
-                cr["chain_actions"] = ca[:200]
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
