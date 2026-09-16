@@ -44,7 +44,7 @@ bash port-forward.sh   # 另一终端运行
 3. **RESOLVING** — Facts 批量写入 MySQL（幂等，重复 key 跳过）。
 4. **PAIRING** — `TaskPairMatcherImpl` 按 `(evaluation_id, task_id)` 匹配 KG/No-KG 运行。`PairDerivedFactComputer` 计算 JSD、ΔToken、ΔSteps、ΔTime、PairTransition。
 5. **CALCULATING** — `run_all_metrics()` 计算 M1–M10，并行 bootstrap（numpy 释放 GIL）。统计检验：GT 分层 paired bootstrap（M1/M4）、paired bootstrap（M2/M3/M7/M8–M10）、Wilson CI（M5/M6）、McNemar（M2/M3 joint）、Wilcoxon（M8–M10）。
-6. **REPORTING** — `assemble()` 构建报告模型；`ai_narrative()`、`ai_per_case_kg_analysis()`、`ai_vuln_analysis()` 调用 LLM 生成叙述性结论。所有 LLM 调用在 LLM 不可用时有规则降级。
+6. **REPORTING** — `assemble()` 构建报告模型；`ai_per_case_kg_analysis()` 调用 LLM 生成逐漏洞 KG 归因分析。LLM 不可用时有规则降级。
 7. **FINALIZE** — 写入 `evaluation_report` 表，状态设为 COMPLETED。
 
 ### 状态机（`orchestration/state_machine.py`）

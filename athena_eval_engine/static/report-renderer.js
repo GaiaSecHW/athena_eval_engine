@@ -553,7 +553,6 @@ function renderReport(d){
         ${acHtml}
         <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th>${nogkTh}</tr>
-        ${ac?`<tr><td>告警中心收到漏洞数</td><td class="num">${(ac.kg&&ac.kg.total)||0}</td>${nc((ac.nogk&&ac.nogk.total)||0)}</tr>`:""}
         <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td>${nc(nogkRecv)}</tr>
         <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td>${nc(nogkFound)}</tr>
         <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td>${nc(nogkFP)}</tr>

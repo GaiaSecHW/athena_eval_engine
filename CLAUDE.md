@@ -54,7 +54,7 @@ The orchestrator runs synchronously inside a background thread (ThreadPoolExecut
 3. **RESOLVING** — Facts written to MySQL in a single batch (idempotent on duplicate keys).
 4. **PAIRING** — `TaskPairMatcherImpl` matches KG/No-KG task runs by `(evaluation_id, task_id)`. `PairDerivedFactComputer` computes JSD, ΔToken, ΔSteps, ΔTime, PairTransition.
 5. **CALCULATING** — `run_all_metrics()` computes M1–M10 with parallel bootstrap (numpy releases GIL). Statistical tests: GT-stratified paired bootstrap (M1/M4), paired bootstrap (M2/M3/M7/M8–M10), Wilson CI (M5/M6), McNemar (M2/M3 joint), Wilcoxon (M8–M10).
-6. **REPORTING** — `assemble()` builds report model; `ai_narrative()`, `ai_per_case_kg_analysis()`, `ai_vuln_analysis()` call LLM for narrative conclusions. All LLM calls have rule-based fallbacks if the LLM is unavailable.
+6. **REPORTING** — `assemble()` builds report model; `ai_per_case_kg_analysis()` calls LLM for per-case KG attribution analysis. Rule-based fallback if LLM unavailable.
 7. **FINALIZE** — Write report to `evaluation_report` table, set status to COMPLETED.
 
 ### State Machine (`orchestration/state_machine.py`)

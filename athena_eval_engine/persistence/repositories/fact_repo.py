@@ -26,6 +26,16 @@ def _evid(evs) -> str | None:
     return json.dumps([e.model_dump() for e in evs], ensure_ascii=False) if evs else None
 
 
+def _truncate_chain_actions(case: dict, limit: int = 200) -> dict:
+    """截断 case_result 中的 chain_actions 到 limit 条（LLM 只用前 200 条）。
+    同一条链的行为会跨 28+ case 重复，未截断时单 outcome_fact 可达 44MB。"""
+    ca = case.get("chain_actions")
+    if isinstance(ca, list) and len(ca) > limit:
+        case = dict(case)  # 不修改原对象
+        case["chain_actions"] = ca[:limit]
+    return case
+
+
 def _upsert(cur, sql, args, conflict_label: str) -> str:
     """Insert-If-Absent：主键冲突 → 返回 IDEMPOTENT_REPLAY（不 UPDATE）。"""
     try:
@@ -91,7 +101,10 @@ def insert_task_run(cur, tr) -> str:
 def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     import json as _json
     # evidence（原始事件列表）体积可达数十 MB，从不回读，不存入 DB 避免 max_allowed_packet 溢出
-    ev_data = {"case_results": getattr(f, "case_results", None) or []}
+    # chain_actions 截断到 200 条（LLM 分析只用前 200 条），避免同一条链 4728 行为 × 28 case = 44MB
+    _cr = getattr(f, "case_results", None) or []
+    _cr = [_truncate_chain_actions(c) for c in _cr]
+    ev_data = {"case_results": _cr}
     sql = """INSERT INTO outcome_fact
         (outcome_fact_id, task_run_id, evaluation_id, `condition`, condition_source, condition_conflict,
          benchmark_item_id, gt_label, prediction, outcome, confusion_label, target_finding_id,
