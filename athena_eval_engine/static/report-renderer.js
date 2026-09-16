@@ -306,7 +306,7 @@ function renderReport(d){
       h+="</div>";
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
-      // sink 匹配分析（KG + No-KG 上下并排）
+      // sink 匹配分析 + finding 匹配分析（分开渲染）
       var _hasNogk=r.has_nogk!==false;
       var _sinkInfo=c.sink_info||"";
       var _sinkAnalysis=c.sink_analysis||"";
@@ -316,15 +316,35 @@ function renderReport(d){
       var _nogkSinkAnalysis=c.nogk_sink_analysis||"";
       var _nogkNoFindReason=c.nogk_no_finding_reason||"";
       var _nogkKi=c.nogk_knowledge_intervention||null;
-      var _hasKgSink=_sinkInfo||_sinkAnalysis||_noFindReason||_ki;
-      var _hasNogkSink=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis||_nogkNoFindReason||_nogkKi);
-      var _kgShowSink=!c.matched&&_hasKgSink;
-      var _nogkShowSink=_hasNogk&&!c.nogk_matched&&_hasNogkSink;
-      if(_kgShowSink||_nogkShowSink){
+      var _hasKgSinkInfo=_sinkInfo||_sinkAnalysis;
+      var _hasNogkSinkInfo=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis);
+      var _hasKgFinding=!c.matched&&(_noFindReason||_ki||(pcKa&&(pcKa.reason||pcKa.query_summary)));
+      var _hasNogkFinding=_hasNogk&&!c.nogk_matched&&(_nogkNoFindReason||_nogkKi);
+      // 🎯 Sink 匹配分析（sink 点是否被命中，不依赖 finding 匹配状态）
+      if(_hasKgSinkInfo||_hasNogkSinkInfo){
         h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid var(--acc)'>";
         h+="<div style='font-weight:600;font-size:13px;margin-bottom:6px'>🎯 Sink 匹配分析</div>";
-        // KG sink 分析
-        if(_kgShowSink){
+        if(_hasKgSinkInfo){
+          h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
+          h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
+          if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
+          if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
+          h+="</div>";
+        }
+        if(_hasNogkSinkInfo){
+          h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
+          h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
+          if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
+          if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
+          h+="</div>";
+        }
+        h+="</div>";
+      }
+      // 🔍 Finding 匹配分析（finding 提交与判定，仅在未匹配时显示）
+      if(_hasKgFinding||_hasNogkFinding){
+        h+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px;border-left:3px solid var(--amber)'>";
+        h+="<div style='font-weight:600;font-size:13px;margin-bottom:6px'>🔍 Finding 匹配分析</div>";
+        if(_hasKgFinding){
           h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
           if(pcKa&&(pcKa.reason||pcKa.query_summary)){
@@ -337,8 +357,6 @@ function renderReport(d){
             if(pcKa.reason)h+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
             h+="</div>";
           }
-          if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           if(_noFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_noFindReason).replace(/</g,"&lt;")+"</div>";
           if(_ki&&typeof _ki==="object"){
             var _kiI=String(_ki.impact||"").toLowerCase();
@@ -354,12 +372,9 @@ function renderReport(d){
           }
           h+="</div>";
         }
-        // No-KG sink 分析
-        if(_nogkShowSink){
+        if(_hasNogkFinding){
           h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
-          if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
           if(_nogkNoFindReason)h+="<div style='font-size:12px;color:var(--amber);line-height:1.5'><b>未提交 finding 原因:</b> "+String(_nogkNoFindReason).replace(/</g,"&lt;")+"</div>";
           if(_nogkKi&&typeof _nogkKi==="object"){
             var _nkiI=String(_nogkKi.impact||"").toLowerCase();
