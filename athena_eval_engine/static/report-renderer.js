@@ -147,6 +147,34 @@ function renderReport(d){
         formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
       }
     }
+    // 原始计算值：从 method 字典提取分量
+    if(m.method){
+      var rvParts=[];
+      if(mid==="M5"&&m.method.kg_tool_calls!=null){
+        rvParts.push("知识查询次数="+m.method.kg_tool_calls,"总工具调用="+m.method.total_tool_calls);
+        rvParts.push("→ "+m.method.kg_tool_calls+"/"+m.method.total_tool_calls);
+      }else if(mid==="M6"&&m.method.successful_read_count!=null){
+        rvParts.push("有效回复="+m.method.successful_read_count,"总查询次数="+m.method.access_event_count);
+        rvParts.push("→ "+m.method.successful_read_count+"/"+m.method.access_event_count);
+      }else if(mid==="M11"&&m.method.mem_read_count!=null){
+        rvParts.push("记忆读取次数="+m.method.mem_read_count,"总工具调用="+m.method.total_tool_calls);
+        rvParts.push("→ "+m.method.mem_read_count+"/"+m.method.total_tool_calls);
+      }else if(mid==="M12"&&m.method.mem_successful_reads!=null){
+        rvParts.push("成功记忆读取="+m.method.mem_successful_reads,"记忆读取次数="+m.method.mem_read_events);
+        rvParts.push("→ "+m.method.mem_successful_reads+"/"+m.method.mem_read_events);
+      }else if(mid==="M7"&&m.n!=null){
+        rvParts.push("N="+m.n);
+        if(m.median!=null)rvParts.push("中位数="+fmt(m.median,m.unit));
+        if(m.q1!=null&&m.q3!=null)rvParts.push("IQR=["+fmt(m.q1,m.unit)+", "+fmt(m.q3,m.unit)+"]");
+      }else if((mid==="M8"||mid==="M9"||mid==="M10")&&m.n!=null){
+        rvParts.push("N="+m.n);
+        if(m.median!=null)rvParts.push("中位数="+fmt(m.median,m.unit));
+        if(m.q1!=null&&m.q3!=null)rvParts.push("IQR=["+fmt(m.q1,m.unit)+", "+fmt(m.q3,m.unit)+"]");
+      }
+      if(rvParts.length){
+        formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+rvParts.join("，")+"</div>";
+      }
+    }
     return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(m.d||mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
   }
 
@@ -610,9 +638,6 @@ function renderReport(d){
         </div>
       </div>`).join("")}`;
     }
-    function _diagnostics(hits){
-      return hits&&hits.length?`<div class="card" style="margin-bottom:16px"><h3>🔍 诊断发现</h3>${hits.map(x=>`<div class="diag"><span class="rid">${x.rule_id}</span> <span class="ob">${x.observed}</span><div class="ip">${x.interpretation}<br>建议：${x.suggestion}</div></div>`).join("")}</div>`:"";
-    }
     const _hasNogk=r.has_nogk!==false;
     function _buildMatchTable(groupList,title,icon){
       const rows=[];let idx=1;
@@ -690,7 +715,6 @@ function renderReport(d){
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
       ${_statsTable(g.task_id,g.label)}
       <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
-      ${_diagnostics(g.diagnostic_hits||h)}
       <div class="card" style="margin-bottom:16px">
         <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
         ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)

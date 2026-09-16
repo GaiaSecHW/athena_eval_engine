@@ -303,7 +303,8 @@ def calc_m5(kg_tool_calls: int, total_tool_calls: int, confidence=0.95) -> tuple
     lo, hi, st, rc = wilson(kg_tool_calls, total_tool_calls, confidence)
     kar = kg_tool_calls / total_tool_calls
     return (MetricResult("M5", kar, "ratio", total_tool_calls, "kg_enabled_valid",
-                         method={"uncertainty": "wilson"}),
+                         method={"uncertainty": "wilson",
+                                 "kg_tool_calls": kg_tool_calls, "total_tool_calls": total_tool_calls}),
             [StatisticalResult("M5", "wilson", ci_lower=lo, ci_upper=hi,
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
@@ -317,7 +318,8 @@ def calc_m11(mem_read_count: int, total_tool_calls: int, confidence=0.95) -> tup
     lo, hi, st, rc = wilson(mem_read_count, total_tool_calls, confidence)
     mar = mem_read_count / total_tool_calls
     return (MetricResult("M11", mar, "ratio", total_tool_calls, "kg_enabled_valid",
-                         method={"uncertainty": "wilson"}),
+                         method={"uncertainty": "wilson",
+                                 "mem_read_count": mem_read_count, "total_tool_calls": total_tool_calls}),
             [StatisticalResult("M11", "wilson", ci_lower=lo, ci_upper=hi,
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
@@ -330,7 +332,8 @@ def calc_m12(mem_successful_reads: int, mem_read_events: int, confidence=0.95) -
     lo, hi, st, rc = wilson(mem_successful_reads, mem_read_events, confidence)
     mdr = mem_successful_reads / mem_read_events
     return (MetricResult("M12", mdr, "ratio", mem_read_events, "kg_access_valid",
-                         method={"uncertainty": "wilson"}),
+                         method={"uncertainty": "wilson",
+                                 "mem_successful_reads": mem_successful_reads, "mem_read_events": mem_read_events}),
             [StatisticalResult("M12", "wilson", ci_lower=lo, ci_upper=hi,
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
@@ -347,7 +350,8 @@ def calc_m6(successful_read_count: int, access_event_count: int, confidence=0.95
     lo, hi, st, rc = wilson(capped_reads, access_event_count, confidence)
     kdr = capped_reads / access_event_count
     return (MetricResult("M6", kdr, "ratio", access_event_count, "access_valid",
-                         method={"uncertainty": "wilson"}),
+                         method={"uncertainty": "wilson",
+                                 "successful_read_count": capped_reads, "access_event_count": access_event_count}),
             [StatisticalResult("M6", "wilson", ci_lower=lo, ci_upper=hi,
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
