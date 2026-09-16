@@ -134,7 +134,8 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 </div>
 <script>
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
-const U=(u)=>location.pathname.indexOf("/eval")===0&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?"/eval"+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
+const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
+const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
@@ -161,7 +162,7 @@ async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Typ
 const Router={
   base:'',
   init(){
-    if(location.pathname.indexOf('/eval')===0)this.base='/eval';
+    this.base=_INGRESS;
     window.addEventListener('popstate',function(){Router.handle();});
     this.handle();
   },
@@ -277,10 +278,10 @@ async function selEv(id){
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
-    // 运行中: 显示进度
-    if(s.status==="RUNNING"||s.status==="CREATED"||s.status==="QUEUED"||s.status==="INGESTING"||s.status==="PARSING"||s.status==="AI_MATCHING"||s.status==="RESOLVING"||s.status==="PAIRING"||s.status==="CALCULATING"||s.status==="REPORTING"||s.status==="FINALIZING"){
+    // 运行中: 显示进度（非终态即运行中）
+    if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
       var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"},{key:"REPORTING",label:"生成报告"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"INGESTING":1,"PARSING":2,"AI_MATCHING":3,"RESOLVING":4,"PAIRING":5,"CALCULATING":6,"REPORTING":8,"FINALIZING":9};
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"AI_MATCHING":3,"RESOLVING":4,"PAIRING":5,"CALCULATING":6,"STATISTICAL_ANALYSIS":6,"DIAGNOSING":7,"REPORTING":8,"FINALIZING":9};
       var curStep=phaseMap[s.status]||0;
       // 知识与记忆介入分析是 REPORTING 的子阶段，通过 progress 文本区分
       if(s.status==="REPORTING"){
@@ -355,6 +356,7 @@ async function selEv(id){
 }
 function loadIframeReport(id){
   var rep=$("view");
+  if(!rep)return;
   rep.style.overflow='hidden';
   rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
 }
@@ -501,6 +503,7 @@ function selectReportTab(button,paneId){
 function renderReport(d){
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
   var rep=$("rep-content");
+  if(!rep)return;
   rep.style.overflowY='auto';
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
 
