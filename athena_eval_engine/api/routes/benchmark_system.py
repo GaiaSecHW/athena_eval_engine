@@ -1,33 +1,26 @@
 """System + V-Bench 路由。系统参数管理 + V-Bench 只读。"""
 from __future__ import annotations
 from fastapi import APIRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from ...infrastructure.database import connect
 from ...infrastructure.log_util import log
 
 sys_r = APIRouter(prefix="/api/v1/system", tags=["system"])
 vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
 
-# config_key → (apply_fn, serialize_fn) 映射
-# apply_fn: 把 DB 值应用到运行时
-# serialize_fn: 把 API 传入值序列化为 DB 字符串
+# 可持久化的配置 key 集合（用于 load 时过滤）
 _CONFIG_KEYS = {
-    "llm_max_concurrency":  ("int", 1, 200),
-    "max_concurrent_evals": ("int", 1, 10),
-    "parse_workers":        ("int", 1, 50),
-    "kg_analysis_workers":  ("int", 1, 50),
-    "llm_base_url":         ("str",),
-    "llm_enabled":          ("bool",),
+    "llm_max_concurrency", "max_concurrent_evals",
+    "parse_workers", "kg_analysis_workers", "llm_enabled",
 }
 
 
 class SystemConfigUpdate(BaseModel):
-    llm_max_concurrency: int | None = None
-    max_concurrent_evals: int | None = None
-    llm_base_url: str | None = None
+    llm_max_concurrency: int | None = Field(default=None, ge=1, le=200)
+    max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
     llm_enabled: bool | None = None
-    parse_workers: int | None = None
-    kg_analysis_workers: int | None = None
+    parse_workers: int | None = Field(default=None, ge=1, le=50)
+    kg_analysis_workers: int | None = Field(default=None, ge=1, le=50)
 
 
 def _apply_config(key: str, value: str):
@@ -43,25 +36,16 @@ def _apply_config(key: str, value: str):
         set_runtime_workers(parse=int(value))
     elif key == "kg_analysis_workers":
         set_runtime_workers(kg_analysis=int(value))
-    elif key == "llm_base_url":
-        llm.set_runtime_config(llm_base_url=value)
     elif key == "llm_enabled":
         llm.set_runtime_config(llm_enabled=(value.lower() == "true"))
 
 
 def load_system_config():
-    """启动时从 DB 加载系统参数。表不存在则自动建表，无数据时用默认值。"""
+    """启动时从 DB 加载系统参数（表由 migrations 创建，此处只读取）。"""
     try:
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
-            # 自动建表（IF NOT EXISTS）
-            cur.execute(
-                "CREATE TABLE IF NOT EXISTS system_config ("
-                "  config_key VARCHAR(64) PRIMARY KEY,"
-                "  config_value VARCHAR(512) NOT NULL,"
-                "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"
-                ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
             cur.execute("SELECT config_key, config_value FROM system_config")
             rows = cur.fetchall()
             for key, value in rows:
@@ -127,7 +111,6 @@ def get_system_config():
     return {
         "llm_max_concurrency": llm.get_max_concurrency(),
         "max_concurrent_evals": get_max_concurrent_evals(),
-        "llm_base_url": cfg.get("llm_base_url", ""),
         "llm_enabled": cfg.get("llm_enabled", True),
         "parse_workers": get_runtime_workers().get("parse", 4),
         "kg_analysis_workers": get_runtime_workers().get("kg_analysis", 8),
@@ -149,10 +132,6 @@ def update_system_config(params: SystemConfigUpdate):
         set_max_concurrent_evals(params.max_concurrent_evals)
         _save_config("max_concurrent_evals", str(params.max_concurrent_evals))
         updated.append(f"max_concurrent_evals={params.max_concurrent_evals}")
-    if params.llm_base_url is not None:
-        llm.set_runtime_config(llm_base_url=params.llm_base_url)
-        _save_config("llm_base_url", params.llm_base_url)
-        updated.append("llm_base_url")
     if params.llm_enabled is not None:
         llm.set_runtime_config(llm_enabled=params.llm_enabled)
         _save_config("llm_enabled", str(params.llm_enabled))

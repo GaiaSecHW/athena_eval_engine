@@ -1,9 +1,8 @@
 """Schema 迁移机制。
 
 启动时自动检查并应用未执行的迁移。每条迁移用唯一 ID 跟踪，
-已应用的跳过，失败的记录错误但不阻断启动。
-
-迁移 SQL 必须幂等（可重复执行不报错）或用 try/except 包裹。
+已应用的跳过。每条迁移在事务中执行，全部 SQL 成功（或幂等跳过）才提交并标记已应用。
+真实错误回滚事务、不标记已应用，下次启动重试。
 """
 from __future__ import annotations
 from .database import connect
@@ -56,11 +55,18 @@ MIGRATIONS = [
     },
 ]
 
+# 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
+_IDEMPOTENT_KEYWORDS = (
+    "duplicate", "already exists", "can't drop",
+    "unknown constraint", "check that does not exist",
+    "duplicate key name",
+)
+
 
 def run_migrations():
     """启动时执行未应用的 schema 迁移。"""
     try:
-        conn = connect(autocommit=True)
+        conn = connect(autocommit=False)
         try:
             cur = conn.cursor()
             # 创建迁移跟踪表
@@ -70,6 +76,7 @@ def run_migrations():
                 "  description VARCHAR(256) NOT NULL,"
                 "  applied_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
                 ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci")
+            conn.commit()
             # 查已应用的迁移
             cur.execute("SELECT migration_id FROM schema_migrations")
             applied = {row[0] for row in cur.fetchall()}
@@ -79,38 +86,43 @@ def run_migrations():
                 return
             log("MIGRATE", f"待执行 {len(pending)} 条迁移")
             for m in pending:
-                _run_one(cur, m)
+                _run_one(cur, conn, m)
         finally:
             conn.close()
     except Exception as e:
         log("MIGRATE", f"迁移机制异常（DB 可能未就绪）: {e}")
 
 
-def _run_one(cur, migration: dict):
-    """执行单条迁移。SQL 失败时记录错误但标记为已应用（避免反复重试）。"""
+def _run_one(cur, conn, migration: dict):
+    """执行单条迁移。在事务中执行，全部 SQL 成功或幂等跳过才提交并标记已应用。
+
+    真实错误回滚事务、不标记已应用，下次启动重试。
+    """
     mid = migration["id"]
     desc = migration["desc"]
-    errors = []
-    for sql in migration["sql"]:
-        try:
-            cur.execute(sql)
-        except Exception as e:
-            err = str(e)[:200]
-            # 常见可忽略错误：约束已存在、表已存在、列已存在
-            if any(kw in err.lower() for kw in (
-                "duplicate", "already exists", "can't drop",
-                "unknown constraint", "check that does not exist",
-            )):
-                pass  # 幂等：已应用过
-            else:
-                errors.append(err)
-                log("MIGRATE", f"[{mid}] SQL 错误: {err}")
-    # 标记为已应用（无论有无错误，避免反复重试同一条）
-    cur.execute(
-        "INSERT INTO schema_migrations (migration_id, description) VALUES (%s, %s) "
-        "ON DUPLICATE KEY UPDATE migration_id=migration_id",
-        (mid, desc))
-    if errors:
-        log("MIGRATE", f"[{mid}] {desc} — 完成（{len(errors)} 条 SQL 跳过）")
-    else:
+    real_errors = []
+    try:
+        for sql in migration["sql"]:
+            try:
+                cur.execute(sql)
+            except Exception as e:
+                err = str(e)[:200]
+                if any(kw in err.lower() for kw in _IDEMPOTENT_KEYWORDS):
+                    pass  # 幂等：已应用过，跳过
+                else:
+                    real_errors.append(err)
+                    log("MIGRATE", f"[{mid}] SQL 错误: {err}")
+        if real_errors:
+            conn.rollback()
+            log("MIGRATE", f"[{mid}] {desc} — 失败（回滚，{len(real_errors)} 条真实错误，下次重试）")
+            return
+        # 全部成功或幂等跳过 → 提交 + 标记已应用
+        cur.execute(
+            "INSERT INTO schema_migrations (migration_id, description) VALUES (%s, %s) "
+            "ON DUPLICATE KEY UPDATE migration_id=migration_id",
+            (mid, desc))
+        conn.commit()
         log("MIGRATE", f"[{mid}] {desc} — 完成")
+    except Exception as e:
+        conn.rollback()
+        log("MIGRATE", f"[{mid}] {desc} — 异常回滚: {e}")

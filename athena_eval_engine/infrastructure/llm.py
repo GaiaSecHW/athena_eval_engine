@@ -27,10 +27,9 @@ FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟（大 prompt 需要更
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 20
 
-# LLM 全局并发上限（信号量）
-# LLM 全局并发上限
+# LLM 全局并发上限（信号量，模块加载时即创建）
 _MAX_CONCURRENCY = 50
-_llm_semaphore: threading.Semaphore | None = None
+_llm_semaphore = threading.Semaphore(_MAX_CONCURRENCY)
 
 # LLM token 用量累积器（线程安全，跨所有线程共享）
 _token_lock = threading.Lock()
@@ -58,11 +57,18 @@ def is_enabled() -> bool:
 
 
 def set_max_concurrency(n: int):
-    """设置全局 LLM 并发上限。运行时可调用，替换信号量。"""
+    """设置全局 LLM 并发上限。运行时可调用，替换信号量。
+
+    替换前释放旧信号量的全部许可，避免等待中的线程被永久搁置。
+    """
     global _llm_semaphore, _MAX_CONCURRENCY
     n = max(1, min(n, 200))
+    old = _llm_semaphore
     _MAX_CONCURRENCY = n
     _llm_semaphore = threading.Semaphore(n)
+    if old is not None:
+        for _ in range(_MAX_CONCURRENCY):
+            old.release()
 
 
 def get_max_concurrency() -> int:
@@ -72,7 +78,6 @@ def get_max_concurrency() -> int:
 # 运行时可调配置
 _runtime_cfg = {
     "llm_enabled": LLM_ENABLED,
-    "llm_base_url": LLM_BASE_URL,
 }
 
 
@@ -127,9 +132,11 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "Accept": "text/event-stream",
     }
 
-    # 获取 LLM 并发槽位（全局信号量上限 50）
-    if _llm_semaphore is not None:
-        _llm_semaphore.acquire()
+    # 获取 LLM 并发槽位（全局信号量）
+    # 保存引用，确保 acquire/release 在同一个信号量对象上
+    _sem = _llm_semaphore
+    if _sem is not None:
+        _sem.acquire()
     conn = None
     first_token = True
     try:
@@ -247,8 +254,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     finally:
         if conn:
             conn.close()
-        if _llm_semaphore is not None:
-            _llm_semaphore.release()
+        if _sem is not None:
+            _sem.release()
 
 
 def chat(messages, **kwargs) -> str:

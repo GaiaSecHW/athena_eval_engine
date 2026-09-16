@@ -237,8 +237,8 @@ function renderEvList(){
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
-    var _phaseLabels={"CREATED":"创建中","QUEUED":"创建中","RUNNING":"创建中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCELLED":"已取消"};
-    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL','FAILED');
+    var _phaseLabels={"CREATED":"创建中","QUEUED":"创建中","RUNNING":"创建中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","STATISTICAL_ANALYSIS":"统计分析","DIAGNOSING":"诊断中","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
+    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
     // REPORTING 时通过 progress 文本区分"知识与记忆介入分析"和"生成报告"
     var phaseLabel=_phaseLabels[e.status]||e.status||'-';
@@ -1186,11 +1186,6 @@ async function renderSystem(){
         <input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
-        <label style="font-weight:600;font-size:14px">LLM 网关地址</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">OpenAI 兼容 API 的 Base URL</div>
-        <input id="cfg_llm_url" type="text" value="${c.llm_base_url}" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);font-family:monospace;font-size:13px">
-      </div>
-      <div>
         <label style="font-weight:600;font-size:14px">LLM 启用/禁用</label>
         <div style="font-size:12px;color:var(--sub);margin:4px 0">禁用后所有 LLM 调用将报错（规则降级）</div>
         <select id="cfg_llm_en" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
@@ -1219,16 +1214,13 @@ async function renderSystem(){
 }
 
 async function saveSystemConfig(){
-  var body={
-    llm_max_concurrency:parseInt($("cfg_llm_conc").value)||null,
-    max_concurrent_evals:parseInt($("cfg_max_evals").value)||null,
-    llm_base_url:$("cfg_llm_url").value.trim()||null,
-    llm_enabled:$("cfg_llm_en").value==="true",
-    parse_workers:parseInt($("cfg_parse_w").value)||null,
-    kg_analysis_workers:parseInt($("cfg_kg_w").value)||null
-  };
-  // 去掉 null 字段
-  for(var k in body){if(body[k]===null)delete body[k];}
+  var body={};
+  var v;
+  v=parseInt($("cfg_llm_conc").value);if(!isNaN(v))body.llm_max_concurrency=v;
+  v=parseInt($("cfg_max_evals").value);if(!isNaN(v))body.max_concurrent_evals=v;
+  body.llm_enabled=$("cfg_llm_en").value==="true";
+  v=parseInt($("cfg_parse_w").value);if(!isNaN(v))body.parse_workers=v;
+  v=parseInt($("cfg_kg_w").value);if(!isNaN(v))body.kg_analysis_workers=v;
   $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
   try{
     var r=await jput("/api/v1/system/config",body);
