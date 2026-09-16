@@ -183,7 +183,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     llm_call_count = 0
     # 告警中心 case 串行（一对一约束），每个 case 内候选 finding 并行
-    with ThreadPoolExecutor(max_workers=50) as pool:
+    pool = ThreadPoolExecutor(max_workers=50)
+    try:
         for ai in range(len(alert_center_cases)):
             if not available_finding_indices:
                 break
@@ -196,12 +197,18 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
             futures = {}
             for fi in candidates:
-                fut = pool.submit(_check_pair, ai, fi, {
-                    "title": ac_list[ai].get("title", ""),
-                    "summary": ac_list[ai].get("summary", ""),
-                }, finding_list[fi])
+                try:
+                    fut = pool.submit(_check_pair, ai, fi, {
+                        "title": ac_list[ai].get("title", ""),
+                        "summary": ac_list[ai].get("summary", ""),
+                    }, finding_list[fi])
+                except RuntimeError:
+                    log("AC_MATCH", f"线程池已关闭，跳过剩余候选 (ac{ai})")
+                    break
                 futures[fut] = fi
                 llm_call_count += 1
+            if not futures:
+                continue
 
             case_matched = False
             for fut in as_completed(futures):
@@ -229,6 +236,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             if not case_matched:
                 log("AC_MATCH", f"UNMATCHED ac_case[{ai}] id={ac_list[ai].get('case_id','')}")
             _progress(f"告警中心匹配 详细对比: {ai+1}/{len(alert_center_cases)} 完成 (已匹配 {len(matched_ac_ids)})")
+    finally:
+        pool.shutdown(wait=False)
 
     unmatched_ac_indices = set(range(len(alert_center_cases))) - {v for v in matched.values()}
     log("AC_MATCH", f"ac_cases={len(alert_center_cases)} matched={len(matched)} "

@@ -632,8 +632,10 @@ function renderReport(d){
             kgCell=(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;");
           }else if(c.mined){
             kgCell=`<span style="color:var(--amber)">sink: ${(c.session_id||"").slice(0,8)}</span>`+kgCandNote;
+          }else if(c.sink_hit){
+            kgCell=`<span style="color:var(--amber)">sink命中·非挖掘</span>`+kgCandNote;
           }else{
-            kgCell=`<span style="color:var(--gray)">未挖掘</span>`;
+            kgCell=`<span style="color:var(--gray)">sink未命中</span>`;
           }
           var kgConf=c.confusion||"NA";
           var kgConfColor=kgConf==="TP"||kgConf==="TN"?"var(--green)":kgConf==="FP"||kgConf==="FN"?"var(--red)":"var(--gray)";
@@ -648,8 +650,10 @@ function renderReport(d){
               nogkCell=`<td>${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
             }else if(c.nogk_mined){
               nogkCell=`<td><span style="color:var(--amber)">sink: ${(c.nogk_session_id||"").slice(0,8)}</span>${nogkCandNote}</td>`;
+            }else if(c.nogk_sink_hit){
+              nogkCell=`<td><span style="color:var(--amber)">sink命中·非挖掘</span>${nogkCandNote}</td>`;
             }else{
-              nogkCell=`<td><span style="color:var(--gray)">未挖掘</span></td>`;
+              nogkCell=`<td><span style="color:var(--gray)">sink未命中</span></td>`;
             }
             var nogkConf=c.nogk_confusion||"NA";
             var nogkConfColor=nogkConf==="TP"||nogkConf==="TN"?"var(--green)":nogkConf==="FP"||nogkConf==="FN"?"var(--red)":"var(--gray)";
@@ -669,8 +673,8 @@ function renderReport(d){
       const kgDenom=kgTP+kgFP+kgFN+kgTN;
       const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
       const summary=_hasNogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）</div>`;
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">分母=sink命中的case数（不含sink未命中的未判定）</div></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">分母=sink命中的case数（不含sink未命中的未判定）</div></div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
         ${summary}

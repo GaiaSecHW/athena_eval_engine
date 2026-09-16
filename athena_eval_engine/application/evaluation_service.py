@@ -1072,8 +1072,14 @@ def run(evaluation_id: str) -> dict:
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
         log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 50）")
-        with ThreadPoolExecutor(max_workers=max(1, len(parsed))) as pool:
-            results = list(pool.map(_resolve_trace, parsed))
+        _pool = ThreadPoolExecutor(max_workers=max(1, len(parsed)))
+        try:
+            results = list(_pool.map(_resolve_trace, parsed))
+        except Exception:
+            _pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            _pool.shutdown(wait=True)
         for tr, f, src in results:
             task_runs.append(tr)
             facts[tr.task_run_id] = f
