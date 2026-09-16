@@ -328,7 +328,7 @@ function renderReport(d){
           h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
           if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(c.sink_sessions&&c.sink_sessions.length)h+="<div style='font-size:12px;color:var(--acc);margin-bottom:3px'><b>session:</b> "+c.sink_sessions.map(function(s){return s.slice(0,8);}).join(', ')+"</div>";
+          if(c.sink_sessions&&c.sink_sessions.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🔗 证据 session</div>"+c.sink_sessions.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
@@ -336,7 +336,7 @@ function renderReport(d){
           h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
           if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(c.nogk_sink_sessions&&c.nogk_sink_sessions.length)h+="<div style='font-size:12px;color:var(--acc);margin-bottom:3px'><b>session:</b> "+c.nogk_sink_sessions.map(function(s){return s.slice(0,8);}).join(', ')+"</div>";
+          if(c.nogk_sink_sessions&&c.nogk_sink_sessions.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🔗 证据 session</div>"+c.nogk_sink_sessions.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
           if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
