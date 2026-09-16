@@ -1557,8 +1557,11 @@ def get_status(evaluation_id: str) -> dict:
             return {"error": "not found"}
         cur.execute("SELECT COUNT(*) FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
         n_metrics = cur.fetchone()[0]
+        # MySQL NOW(3) 返回 UTC，前端显示需转北京时间
+        from datetime import timedelta as _td
         return {"evaluation_id": evaluation_id, "status": r[0], "name": r[1], "metrics": n_metrics,
-                "error_message": r[2], "started_at": r[3].isoformat() if r[3] else None,
+                "error_message": r[2],
+                "started_at": (r[3] + _td(hours=8)).isoformat() if r[3] else None,
                 "progress": get_progress(evaluation_id)}
     finally:
         conn.close()

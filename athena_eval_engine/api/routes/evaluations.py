@@ -486,8 +486,10 @@ def _build_report(evaluation_id: str):
         erow = cur.fetchone()
         if erow:
             r["evaluation_name"] = erow[0]
-            r["started_at"] = erow[2].isoformat() if erow[2] else None
-            r["finished_at"] = erow[3].isoformat() if erow[3] else None
+            # MySQL NOW(3) 返回 UTC，前端显示需转北京时间
+            from datetime import timedelta as _td
+            r["started_at"] = (erow[2] + _td(hours=8)).isoformat() if erow[2] else None
+            r["finished_at"] = (erow[3] + _td(hours=8)).isoformat() if erow[3] else None
         # 从 snapshot 的 config_json 提取 manifest 信息
         cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
         srow = cur.fetchone()

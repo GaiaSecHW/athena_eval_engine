@@ -56,8 +56,10 @@ def list_evaluations(page: int = 1, page_size: int = 20):
                             nogk_task = e.get("task_name") or e.get("task_id_actual") or ""
                 except (json.JSONDecodeError, TypeError):
                     pass
+            from datetime import timedelta as _td
             evals.append({"evaluation_id": r[0], "name": r[1], "status": r[2],
-                          "benchmark_set_id": r[3], "created_at": str(r[4]),
+                          "benchmark_set_id": r[3],
+                          "created_at": str(r[4] + _td(hours=8)) if r[4] else "",
                           "kg_project": kg_proj, "kg_task": kg_task,
                           "nogk_project": nogk_proj, "nogk_task": nogk_task,
                           "benchmark_source": bm_source,
