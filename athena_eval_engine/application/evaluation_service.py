@@ -359,6 +359,39 @@ def run(evaluation_id: str) -> dict:
     from ..infrastructure.llm import set_max_concurrency
     set_max_concurrency(50)
 
+    # ===== 重跑前清空所有历史数据（DB + 静态报告文件）=====
+    def _clear_all_old_data(cur):
+        cur.execute("SET FOREIGN_KEY_CHECKS=0")
+        for tbl in ("statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+                     "outcome_fact", "tool_action_fact", "resource_fact",
+                     "knowledge_interaction_fact", "task_run", "trace_source",
+                     "finding_benchmark_match", "extracted_finding", "session_graph",
+                     "exclusion_record", "evaluation_report"):
+            cur.execute(f"DELETE FROM {tbl} WHERE evaluation_id=%s", (evaluation_id,))
+        # benchmark_item 按 benchmark_set_id 关联，不是 evaluation_id
+        cur.execute("SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        _bs_row = cur.fetchone()
+        if _bs_row and _bs_row[0]:
+            cur.execute("DELETE FROM benchmark_item WHERE benchmark_set_id=%s", (_bs_row[0],))
+        cur.execute("DELETE FROM evaluation_population_snapshot WHERE calculation_run_id LIKE %s",
+                    (f"CR-{evaluation_id}%",))
+        cur.execute("DELETE FROM evaluation_calculation_run WHERE calculation_run_id LIKE %s",
+                    (f"CR-{evaluation_id}%",))
+        cur.execute("SET FOREIGN_KEY_CHECKS=1")
+        log("RUN", f"清理旧数据（重跑）: evaluation_id={evaluation_id} 含 benchmark_item")
+    _db_query(_clear_all_old_data)
+    # 删除旧的静态报告 HTML 文件
+    import os as _os_clear
+    try:
+        _reports_dir = _os_clear.environ.get("EVAL_REPORTS_DIR") or _os_clear.path.join(
+            _os_clear.path.dirname(_os_clear.path.dirname(_os_clear.path.abspath(__file__))), "reports")
+        _html_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}.html")
+        if _os_clear.path.isfile(_html_path):
+            _os_clear.remove(_html_path)
+            log("RUN", f"删除旧静态报告: {_html_path}")
+    except Exception as _e:
+        log("RUN", f"删除旧静态报告失败（不影响重跑）: {_e}")
+
     # ===== Phase 0: INGESTING — 取基线 + 告警中心数据 + 写 benchmark_items =====
     _set_status_short(evaluation_id, "INGESTING")
     set_progress(evaluation_id, "获取基线数据...")
@@ -638,22 +671,6 @@ def run(evaluation_id: str) -> dict:
     # 告警中心数据已在 Phase 0 (INGESTING) 获取，直接使用 _alert_center_data
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
-    # 重跑时清理旧 facts，确保用最新 benchmark_item 标签重新计算
-    def _clear_old_facts(cur):
-        cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        for tbl in ("statistical_result", "metric_result", "pair_derived_fact", "task_pair",
-                     "outcome_fact", "tool_action_fact", "resource_fact",
-                     "knowledge_interaction_fact", "task_run", "trace_source",
-                     "evaluation_report"):
-            cur.execute(f"DELETE FROM {tbl} WHERE evaluation_id=%s", (evaluation_id,))
-        # population_snapshot / calculation_run 用 calculation_run_id 关联
-        cur.execute("DELETE FROM evaluation_population_snapshot WHERE calculation_run_id LIKE %s",
-                    (f"CR-{evaluation_id}%",))
-        cur.execute("DELETE FROM evaluation_calculation_run WHERE calculation_run_id LIKE %s",
-                    (f"CR-{evaluation_id}%",))
-        cur.execute("SET FOREIGN_KEY_CHECKS=1")
-        log("RUN", f"清理旧 facts（重跑）: evaluation_id={evaluation_id}")
-    _db_query(_clear_old_facts)
     facts_already_exist = False
 
     def _is_webvulnverify_trace(path):
@@ -1492,8 +1509,10 @@ def run(evaluation_id: str) -> dict:
 
     # 判断是否需要标记 COMPLETED_WITH_WARNINGS
     _warnings = []
-    # 指标 NA
-    na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"]
+    # 指标 NA（KG-only 模式下 M7-M10 是结构性不可计算，无对照组，不算告警）
+    _delta_metrics = {"M7", "M8", "M9", "M10"}
+    na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"
+                  and not (not has_nogk and m.metric_id in _delta_metrics)]
     if na_metrics:
         _warnings.append(f"指标不可计算(NA)：{','.join(na_metrics)}，这些指标缺少必要数据")
     report.warnings = _warnings
