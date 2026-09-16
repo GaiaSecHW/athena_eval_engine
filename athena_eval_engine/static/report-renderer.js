@@ -471,26 +471,6 @@ function renderReport(d){
   return kgHtml;
   }
 
-  // 自动生成通俗摘要
-  let summaryParts=[];
-  const m7v=p1.M7&&p1.M7.calculation_status==="CALCULATED"?p1.M7.estimate:null;
-  const m8v=p2.M8&&p2.M8.calculation_status==="CALCULATED"?p2.M8.estimate:null;
-  const m9v=p2.M9&&p2.M9.calculation_status==="CALCULATED"?p2.M9.estimate:null;
-  const hasAnyKgInteraction=(d.knowledge_interactions||[]).some(k=>(k.interactions||[]).some(iv=>iv.type==="CALL"))||(d.knowledge_interactions||[]).some(k=>k.kg_stats&&k.kg_stats.call_count>0);
-  const hasAnyMemInteraction=(d.knowledge_interactions||[]).some(k=>((k.memory||{}).interactions||[]).some(iv=>iv.type==="CALL"))||(d.knowledge_interactions||[]).some(k=>k.mem_stats&&k.mem_stats.call_count>0);
-  const overallKgAccess=p1.M5&&p1.M5.calculation_status==="CALCULATED"?p1.M5.estimate:null;
-  const overallMemAccess=p1.M11&&p1.M11.calculation_status==="CALCULATED"?p1.M11.estimate:null;
-  const kgActiveSummary=(overallKgAccess!==null&&overallKgAccess>0)||hasAnyKgInteraction;
-  const memActiveSummary=(overallMemAccess!==null&&overallMemAccess>0)||hasAnyMemInteraction;
-  if(kgActiveSummary&&memActiveSummary)summaryParts.push("知识图谱与记忆均已介入");
-  else if(kgActiveSummary)summaryParts.push("知识图谱已介入，记忆未介入");
-  else if(memActiveSummary)summaryParts.push("记忆已介入，知识图谱未介入");
-  else summaryParts.push("知识图谱与记忆均未介入");
-  if(m8v!==null)summaryParts.push(m8v<0?"KG 模式更省 token":"KG 模式更耗 token");
-  if(m9v!==null)summaryParts.push(m9v<0?"KG 步数更少":"KG 步数更多");
-  if(m7v!==null)summaryParts.push(m7v<0.1?"行为几乎无变化":"行为有明显变化");
-  if(rw.undetermined)summaryParts.push(`${rw.undetermined} 个任务结果待定`);
-
   // 评测元信息
   const evalName=d.evaluation_name||d.evaluation_id;
   const vbenchName=d.vbench_project_name||"";
@@ -512,23 +492,7 @@ function renderReport(d){
     </div>
   </div>
 
-  <!-- 1. AI 综合分析（合并摘要 + 漏洞对比 + 指标结论） -->
-  ${(()=>{
-    const nt=r.narrative||{};
-    const va=r.vuln_analysis||{};
-    // 总结论：优先 narrative.summary，fallback report.summary，再 fallback 规则摘要
-    const topSummary=nt.summary||r.summary||summaryParts.join("；")+"。";
-    // 详细分析：优先 narrative.conclusion，fallback 旧字段拼接
-    let concl=nt.conclusion||"";
-    if(!concl){const parts=[];if(nt.outcome_interpretation)parts.push("【准确性】"+nt.outcome_interpretation);if(nt.risk_interpretation)parts.push("【风险】"+nt.risk_interpretation);if(nt.mechanism_interpretation)parts.push("【行为/机制】"+nt.mechanism_interpretation);if(nt.cost_interpretation)parts.push("【成本】"+nt.cost_interpretation);if(nt.statistical_significance)parts.push("【统计显著性】"+nt.statistical_significance);if(nt.diagnostic_alerts)parts.push("【诊断告警】"+nt.diagnostic_alerts);concl=parts.join("\n\n");}
-    return`<div class="card" style="margin-bottom:16px;background:linear-gradient(135deg,var(--p2),var(--panel))">
-    <h3>📋 AI 综合分析</h3>
-    <div style="font-size:18px;font-weight:600;margin-bottom:14px;line-height:1.6">${topSummary.replace(/</g,"&lt;")}</div>
-    ${concl?`<div style="font-size:16px;line-height:1.8;white-space:pre-wrap;margin-bottom:10px">${concl.replace(/</g,"&lt;")}</div>`:""}
-    ${nt.limitations&&nt.limitations.length?`<div style="font-size:14px;color:var(--sub);margin-top:8px;padding-top:10px;border-top:1px solid var(--bd)"><b>局限性：</b>${nt.limitations.join("；")}</div>`:""}
-  </div>`})()}
-
-  <!-- 2. 按评测类别展示详情 -->
+  <!-- 1. 按评测类别展示详情 -->
   ${(()=>{
     const rawGroups=r.metric_groups||[];
     const mg=(rawGroups.length?rawGroups:[{task_id:"",label:"评测结果",p0,p1,p2,diagnostic_hits:h}]).slice().sort((a,b)=>{

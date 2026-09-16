@@ -90,8 +90,8 @@ def insert_task_run(cur, tr) -> str:
 
 def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     import json as _json
-    ev_data = {"evidence": [e.model_dump() if hasattr(e, "model_dump") else e.__dict__ for e in f.evidence],
-                "case_results": getattr(f, "case_results", None) or []}
+    # evidence（原始事件列表）体积可达数十 MB，从不回读，不存入 DB 避免 max_allowed_packet 溢出
+    ev_data = {"case_results": getattr(f, "case_results", None) or []}
     sql = """INSERT INTO outcome_fact
         (outcome_fact_id, task_run_id, evaluation_id, `condition`, condition_source, condition_conflict,
          benchmark_item_id, gt_label, prediction, outcome, confusion_label, target_finding_id,
@@ -109,9 +109,8 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
 
 def insert_knowledge_fact(cur, f: KnowledgeInteractionFact) -> str:
     import json as _json
-    # evidence_json 存 evidence 列表 + interactions + memory_interactions（报告生成时从 DB 读取）
-    ev_data = {"evidence": [e.model_dump() if hasattr(e, "model_dump") else e.__dict__ for e in f.evidence],
-               "interactions": f.interactions,
+    # evidence_json 存 interactions + memory_interactions（报告生成时从 DB 读取）；evidence 列表不回读，不存入
+    ev_data = {"interactions": f.interactions,
                "memory": {
                    "access": f.memory_access,
                    "access_event_count": f.memory_access_event_count,
@@ -137,7 +136,7 @@ def insert_tool_action_fact(cur, f: ToolActionFact) -> str:
     return _upsert(cur, sql, (
         f.tool_action_fact_id, f.task_run_id, f.evaluation_id, f.action_schema_version,
         f.kg_count, f.finding_count, f.code_count, f.shell_count, f.other_count, f.total_tool_calls,
-        json.dumps(f.action_distribution, ensure_ascii=False), _evid(f.evidence),
+        json.dumps(f.action_distribution, ensure_ascii=False), None,  # evidence 不回读，不存入
     ), "IDEMPOTENT_REPLAY")
 
 
@@ -151,7 +150,7 @@ def insert_resource_fact(cur, f: ResourceFact) -> str:
         f.resource_fact_id, f.task_run_id, f.evaluation_id, f.input_tokens, f.output_tokens,
         f.reasoning_tokens, f.cache_read_tokens, f.effective_tokens, f.token_schema_valid,
         f.token_schema_version, f.steps, f.step_source, f.step_integrity_warning, f.duration_ms,
-        f.time_valid, f.validity_status, _evid(f.evidence),
+        f.time_valid, f.validity_status, None,  # evidence 不回读，不存入
     ), "IDEMPOTENT_REPLAY")
 
 

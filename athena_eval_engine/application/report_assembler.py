@@ -23,12 +23,9 @@ class ReportModel:
     p2: dict = field(default_factory=dict)
     raw_stats: dict = field(default_factory=dict)
     diagnostic_hits: list = field(default_factory=list)
-    narrative: dict = field(default_factory=dict)
     kg_analysis: dict = field(default_factory=dict)
-    vuln_analysis: dict = field(default_factory=dict)
     per_case_kg_analysis: list = field(default_factory=list)
     metric_groups: list = field(default_factory=list)
-    summary: str = ""
     coverage: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     llm_token_usage: dict = field(default_factory=dict)
@@ -63,8 +60,6 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
 
     raw = {"delta_fpr": None, "delta_tool_calls": None, "kg_query_count": None}
 
-    narrative = _build_narrative(metrics, stats, diagnostic_hits, has_nogk=has_nogk)
-
     return ReportModel(
         evaluation_id=evaluation_id, p0=p0, p1=p1, p2=p2,
         raw_stats=raw, diagnostic_hits=[
@@ -72,283 +67,14 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
              "interpretation": h.interpretation, "suggestion": h.suggestion}
             for h in diagnostic_hits
         ],
-        narrative=narrative, coverage=coverage or {},
+        coverage=coverage or {},
         notes=["Knowledge Utilization = Not Observable", "不输出总分", "Evidence Mode: SINGLE_PAIRED_RUN"],
         has_nogk=has_nogk,
     )
 
 
-def _build_narrative(metrics, stats, hits, *, has_nogk: bool = True) -> dict:
-    m_by = {m.metric_id: m for m in metrics}
-    s_by = {s.metric_id: s for s in stats if s.metric_id}
-
-    def _ref(mid, field_name):
-        m = m_by.get(mid); s = s_by.get(mid)
-        src = "statistical_result" if field_name.startswith("ci") else "metric_result"
-        val = getattr(s, field_name, None) if src == "statistical_result" else getattr(m, field_name, None)
-        return {"source": src, "metric_id": mid, "field": field_name, "value": val} if val is not None else None
-
-    if has_nogk:
-        refs = [r for r in [_ref("M1", "estimate"), _ref("M1", "ci_lower"),
-                            _ref("M4", "estimate"), _ref("M13", "estimate"),
-                            _ref("M14", "estimate")] if r]
-        m1 = m_by.get("M1")
-        summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
-    else:
-        # KG-only 模式：M1/M4/M13/M14 为差值指标，无 No-KG 对照组时值偏移，用 M5 替代
-        refs = [r for r in [_ref("M5", "estimate"), _ref("M5", "ci_lower"),
-                            _ref("M6", "estimate"), _ref("M11", "estimate"),
-                            _ref("M12", "estimate")] if r]
-        m5 = m_by.get("M5")
-        summary = f"KAR={m5.estimate:.3f}" if m5 and m5.estimate is not None else "KAR=NA"
-    return {
-        "summary": summary + "(rule-based v1)",
-        "outcome_interpretation": summary,
-        "risk_interpretation": "; ".join(h.observed for h in hits) or "no significant regression risk",
-        "mechanism_interpretation": "; ".join(h.observed for h in hits if "JSD" in h.observed) or "no significant behavior shift",
-        "cost_interpretation": "; ".join(h.observed for h in hits if "Token" in h.observed) or "no significant cost change",
-        "limitations": ["SINGLE_PAIRED_RUN", "v1 rule-based narrative"],
-        "evidence_refs": refs,
-    }
-
-
 def render_json(model: ReportModel) -> str:
     return json.dumps(model.__dict__, default=lambda o: o.__dict__, ensure_ascii=False, indent=2)
-
-
-def ai_narrative(metrics: list, stats: list, hits: list, metric_groups: list = None, tool_stats: list = None, has_nogk: bool = True) -> dict:
-    """Stage 3 AI narrative (LLM glm-5.2)."""
-    m_by = {m.metric_id: m for m in metrics}
-    s_by = {s.metric_id: s for s in stats if s.metric_id}
-    joint = [s for s in stats if s.scope_type == "JOINT"]
-
-    # 漏洞验证报告不包含成本效率(M8/M9/M10)和行为偏移(M7)
-    all_verify = metric_groups and all(g.get("category") == "verify" for g in metric_groups)
-    if not has_nogk:
-        # KG-only 模式：仅有 KG 组，无 No-KG 对照组，只计算绝对值指标
-        _metric_ids = ("M5", "M6", "M11", "M12")
-    elif all_verify:
-        _metric_ids = ("M1", "M4", "M5", "M6", "M11", "M12", "M13", "M14")
-    else:
-        _metric_ids = ("M1", "M4", "M5", "M6", "M7", "M8", "M9", "M10", "M11", "M12", "M13", "M14")
-
-    metric_data = []
-    for mid in _metric_ids:
-        m = m_by.get(mid)
-        s = s_by.get(mid)
-        if m:
-            metric_data.append({
-                "metric_id": mid, "estimate": m.estimate, "unit": m.unit, "n": m.n,
-                "calculation_status": m.calculation_status,
-                "ci_lower": s.ci_lower if s else None, "ci_upper": s.ci_upper if s else None,
-                "p_value": s.p_value if s else None,
-            })
-    mc_data = {}
-    if joint:
-        mc = joint[0]
-        mc_data = {"statistic": mc.statistic, "p_value": mc.p_value, "status": mc.status}
-
-    # 构建分组指标数据（成本类 M8/M9/M10 按分组引用，漏洞验证分组跳过）
-    group_cost_data = []
-    if metric_groups and not all_verify and has_nogk:
-        for g in metric_groups:
-            if g.get("category") == "verify":
-                continue
-            tid = g.get("task_id", "")
-            label = g.get("label", "")
-            p2 = g.get("p2", {})
-            entry = {"task_id": tid, "label": label}
-            for mid in ("M8", "M9", "M10"):
-                m = p2.get(mid)
-                if m:
-                    entry[mid] = {"estimate": m.get("estimate"), "unit": m.get("unit"),
-                                  "calculation_status": m.get("calculation_status")}
-            group_cost_data.append(entry)
-
-    # 构建 finding 流转数据（T001 提交 → T002 接收 → T002 验证）
-    finding_flow_data = []
-    if tool_stats:
-        # 按 task_id 分组，每组内分 KG/NOGK
-        _by_task: dict[str, dict] = {}
-        for ts in tool_stats:
-            tid = ts.get("task_id", "unknown")
-            cond = "KG" if "NOGK" not in (ts.get("condition") or ts.get("task_run_id", "")) else "NOGK"
-            if tid not in _by_task:
-                _by_task[tid] = {}
-            _by_task[tid][cond] = {
-                "submitted": ts.get("analyze_received_count", 0),  # 入口：提交/接收的疑似漏洞数
-                "confirmed": ts.get("finding_count", 0),           # 出口：确认为漏洞的数
-                "false_positive": ts.get("false_positive_count", 0),
-            }
-        for tid in sorted(_by_task.keys()):
-            finding_flow_data.append({"task_id": tid, **_by_task[tid]})
-
-    # 根据报告类型构建 prompt
-    if not has_nogk:
-        # KG-only 模式：无 No-KG 对照组，仅有 KG 绝对值指标
-        _metric_def = (
-            "# 指标定义\n"
-            "| ID | 名称 | 含义 | 单位 |\n"
-            "|----|------|------|------|\n"
-            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | ratio |\n"
-            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | ratio |\n"
-            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | ratio |\n"
-            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | ratio |\n\n"
-        )
-        _conclusion_schema = (
-            "# 输出 JSON Schema\n"
-            "{\n"
-            '  "summary": "总结论(≤300字)。本次评测仅有 KG 组（开启知识图谱与记忆），无 No-KG 对照组。回答：知识图谱与记忆的访问和交付情况如何？引用关键数值，用中文名称。",\n'
-            '  "conclusion": "分析结论(200-400字)。基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent对知识/记忆的依赖程度与知识质量。'
-            "指标不可计算时说明原因。"
-            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
-            '  "limitations": ["局限性。如：无 No-KG 对照组，无法计算准确率变化等差值指标；样本量不足等"],\n'
-            '  "evidence_refs": [{"source":"metric_result","metric_id":"M5","field":"estimate","value":0.42}]\n'
-            "}"
-        )
-        _cost_section = ""
-    elif all_verify:
-        _metric_def = (
-            "# 指标定义\n"
-            "| ID | 名称 | 含义 | 方向 | 单位 |\n"
-            "|----|------|------|------|------|\n"
-            "| M1 | ΔBA 准确率变化 | KG与No-KG平衡准确率差值 | 正=KG更准 | ratio |\n"
-            "| M4 | ΔFNR 漏报率变化 | KG与No-KG漏报率差值 | 负=KG漏报更少 | ratio |\n"
-            "| M13 | ΔFPR 误报率变化 | KG与No-KG误报率差值 | 负=KG误报更少 | ratio |\n"
-            "| M14 | ΔPrecision 精确率变化 | KG与No-KG精确率差值 | 正=KG更准 | ratio |\n"
-            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | 衡量知识依赖 | ratio |\n"
-            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | 衡量知识质量 | ratio |\n"
-            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
-            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
-        )
-        _conclusion_schema = (
-            "# 输出 JSON Schema\n"
-            "{\n"
-            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
-            '  "conclusion": "分析结论(300-500字)。分两段写：'
-            "第一段【准确性】：基于准确率变化、漏报率变化、误报率变化、精确率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
-            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率，分析Agent行为模式变化与知识/记忆依赖。"
-            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
-            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
-            '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
-            '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
-            "}"
-        )
-        _cost_section = ""
-    else:
-        _metric_def = (
-            "# 指标定义\n"
-            "| ID | 名称 | 含义 | 方向 | 单位 |\n"
-            "|----|------|------|------|------|\n"
-            "| M1 | ΔBA 准确率变化 | KG与No-KG平衡准确率差值 | 正=KG更准 | ratio |\n"
-            "| M4 | ΔFNR 漏报率变化 | KG与No-KG漏报率差值 | 负=KG漏报更少 | ratio |\n"
-            "| M13 | ΔFPR 误报率变化 | KG与No-KG误报率差值 | 负=KG误报更少 | ratio |\n"
-            "| M14 | ΔPrecision 精确率变化 | KG与No-KG精确率差值 | 正=KG更准 | ratio |\n"
-            "| M5 | KAR 知识访问率 | 知识查询占工具调用比例 | 衡量知识依赖 | ratio |\n"
-            "| M6 | KDR 知识交付率 | 知识查询有效回复比例 | 衡量知识质量 | ratio |\n"
-            "| M7 | JSD 行为偏移 | KG与No-KG工具分布差异 | 0=相同 1=不同 | ratio |\n"
-            "| M8 | ΔToken | KG-No-KG token消耗 | 负=KG更省 | tokens |\n"
-            "| M9 | ΔSteps | KG-No-KG 推理步数 | 负=KG更少 | steps |\n"
-            "| M10 | ΔTime | KG-No-KG 运行时长 | 负=KG更快 | ms |\n"
-            "| M11 | MAR 记忆访问率 | 记忆读取占工具调用比例 | 衡量记忆依赖 | ratio |\n"
-            "| M12 | MDR 记忆交付率 | 记忆读取成功返回比例 | 衡量记忆质量 | ratio |\n\n"
-        )
-        _conclusion_schema = (
-            "# 输出 JSON Schema\n"
-            "{\n"
-            '  "summary": "总结论(≤300字)。回答：知识图谱与记忆是否有帮助？引用关键数值，用中文名称。",\n'
-            '  "conclusion": "分析结论(400-600字)。分三段写：'
-            "第一段【准确性】：基于准确率变化、漏报率变化、误报率变化、精确率变化，分析KG对漏洞判定准确性的净影响。指标不可计算时说明原因。"
-            "第二段【行为与知识】：基于知识访问率、知识交付率、记忆访问率、记忆交付率、行为偏移，分析Agent行为模式变化与知识/记忆依赖。"
-            "第三段【成本】：按分组分别引用token消耗、推理步数、运行时长的差值（如「漏洞挖掘：KG 多用 298M token；漏洞验证：KG 少用 4M token」），分析KG的资源代价。"
-            '最后附统计显著性：基于McNemar检验p值判断差异是否显著(p<0.05为显著)。若输入有诊断规则命中，在此一并说明。'
-            '若输入包含漏洞流转数据，在结论中引用：漏洞挖掘发现多少漏洞报告、上报多少为漏洞；漏洞验证接收多少漏洞报告、确认多少为漏洞。",\n'
-            '  "limitations": ["局限性。如样本量不足、指标不可计算、单次评测无法统计显著等"],\n'
-            '  "evidence_refs": [{"source":"metric_result","metric_id":"M1","field":"estimate","value":0.078}]\n'
-            "}"
-        )
-        _cost_section = (
-            "## 分组成本指标（M8/M9/M10 按分组拆分，引用成本数据时须按分组分别引用）\n"
-            + json.dumps(group_cost_data, ensure_ascii=False, indent=2) + "\n\n"
-        )
-
-    prompt = [
-        {"role": "system", "content": (
-            "# 角色\n"
-            "你是知识图谱与记忆安全评测的分析报告撰写员。\n\n"
-            "# 背景\n"
-            + ("评测方法：本次评测仅有 KG 组（开启知识图谱与记忆），无 No-KG 对照组。"
-               "通过4项指标(M5,M6,M11,M12)量化Agent对知识图谱与记忆的访问和交付情况。\n\n"
-               if not has_nogk else
-               "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，"
-               + (f"通过8项指标(M1-M6,M11,M12)量化知识图谱与记忆对 Agent 漏洞判定准确性和知识/记忆依赖的影响。\n\n"
-                  if all_verify else
-                  "通过12项指标(M1-M12)量化知识图谱与记忆对 Agent 漏洞判定准确性、行为模式、资源消耗三方面的影响。\n\n"))
-            +
-            "# 知识图谱与记忆的使用方法\n"
-            "知识图谱（KG）：Agent 通过代码知识查询工具查询知识图谱，获取项目代码结构、组件依赖、"
-            "已知漏洞模式等知识，用于引导漏洞挖掘方向。\n"
-            "记忆（Memory）：Agent 通过记忆引擎读取历史挖掘经验、写入新发现，"
-            "用于跨会话积累和复用漏洞挖掘知识。\n"
-            "在 KG 条件下，Agent 同时拥有知识图谱和记忆能力；在 No-KG 条件下，两者均不可用。\n"
-            "知识图谱与记忆对漏洞挖掘的影响可分为：正向（帮助发现漏洞）、负向（误导方向）、中性（无显著影响）。\n\n"
-            "# 任务\n"
-            "基于输入的指标数据、McNemar 检验结果、诊断规则，生成结构化结论 JSON。\n\n"
-            "# 约束\n"
-            "1. 所有数值必须引自输入数据，严禁编造或推断\n"
-            "2. conclusion 字段必填，不得留空。若某维度指标不可计算(calculation_status 非 CALCULATED)，须写明原因(如「准确率变化不可计算：基线全部为漏洞型，无对照样本」)\n"
-            "3. 分析中须用指标的中文名称，不要用 M1、M4 等代号。如「准确率变化=7.8%，KG 更准」「知识访问率=0，Agent 未访问知识平台」\n"
-            "4. 仅返回 JSON，无任何额外文字"
-        )},
-        {"role": "user", "content": (
-            _metric_def
-            + "# 输入数据\n"
-            "## 全局指标结果（所有分组的汇总中位数）\n"
-            + json.dumps(metric_data, ensure_ascii=False, indent=2) + "\n\n"
-            + _cost_section
-            + ("## 漏洞流转数据（入口=发现漏洞报告数，出口=上报漏洞数）\n"
-               + json.dumps(finding_flow_data, ensure_ascii=False, indent=2) + "\n\n"
-               if finding_flow_data else "")
-            + "## McNemar 联合检验（统计显著性）\n"
-            + json.dumps(mc_data, ensure_ascii=False, indent=2) + "\n\n"
-            "## 诊断命中规则（自动异常检测）\n"
-            + json.dumps([{"rule_id": h.rule_id, "observed": h.observed, "interpretation": h.interpretation} for h in hits], ensure_ascii=False, indent=2) + "\n\n"
-            + _conclusion_schema
-        )},
-    ]
-
-    try:
-        result = llm_mod.chat_json(prompt, temperature=0)
-        if not result.get("evidence_refs"):
-            refs = []
-            _ref_ids = ("M5", "M6", "M11", "M12") if not has_nogk else ("M1", "M4", "M13", "M14")
-            for mid in _ref_ids:
-                m = m_by.get(mid)
-                if m and m.estimate is not None:
-                    refs.append({"source": "metric_result", "metric_id": mid, "field": "estimate", "value": m.estimate})
-            result["evidence_refs"] = refs
-        return result
-    except Exception as e:
-        import traceback as _tb
-        log("REPORT", f"ai_narrative LLM 失败，降级规则生成: {e}")
-        _tb.print_exc()
-        if not has_nogk:
-            m5 = m_by.get("M5")
-            summary = f"KAR={m5.estimate:.3f}" if m5 and m5.estimate is not None else "KAR=NA"
-            return {
-                "summary": summary + "(LLM unavailable, rule-based)",
-                "conclusion": f"LLM 不可用，无法生成分析结论。错误：{e}",
-                "limitations": ["KG_ONLY", "LLM unavailable"],
-                "evidence_refs": [{"source": "metric_result", "metric_id": "M5", "field": "estimate", "value": m5.estimate if m5 else None}],
-            }
-        m1 = m_by.get("M1")
-        summary = f"BA={m1.estimate:.3f}" if m1 and m1.estimate is not None else "BA=NA"
-        return {
-            "summary": summary + "(LLM unavailable, rule-based)",
-            "conclusion": f"LLM 不可用，无法生成分析结论。错误：{e}",
-            "limitations": ["SINGLE_PAIRED_RUN", "LLM unavailable"],
-            "evidence_refs": [{"source": "metric_result", "metric_id": "M1", "field": "estimate", "value": m1.estimate if m1 else None}],
-        }
 
 
 def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_interactions_count):
@@ -421,60 +147,6 @@ def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_inte
         if m7.get("estimate") is not None:
             parts.append("行为偏移 " + str(round(m7["estimate"]*100, 1)) + "%")
         return "; ".join(parts) + "(LLM 不可用，规则生成)"
-
-
-def ai_vuln_analysis(facts: dict, bench_by_task: dict) -> dict:
-    """统计 KG vs No-KG 的 TP/FP/FN/TN（纯代码统计，不调 LLM）。
-
-    漏报原因分析由场景5（per_case_kg_analysis）在有知识交互数据时做，
-    这里只统计混淆矩阵数字。
-
-    数据隔离：按 task_id 分组统计，避免 T001（挖掘）和 T002（验证）的 case_results
-    混在一起导致每个基线漏洞被计数两次。
-    """
-    # 按 task_id 分组，每组内再分 KG/NO-KG
-    task_stats: dict[str, dict] = {}
-    for tr_id, f in facts.items():
-        cr = f.get("case_results", [])
-        is_nogk = "NOGK" in tr_id
-        tid = f.get("_task_id", "") or "unknown"
-        if tid not in task_stats:
-            task_stats[tid] = {"kg": [], "nogk": []}
-        if is_nogk:
-            task_stats[tid]["nogk"].extend(cr)
-        else:
-            task_stats[tid]["kg"].extend(cr)
-
-    # 每个 task 独立统计
-    per_task: dict[str, dict] = {}
-    all_kg_tp = all_kg_fp = all_kg_fn = all_kg_tn = all_kg_na = 0
-    all_nogk_tp = all_nogk_fp = all_nogk_fn = all_nogk_tn = all_nogk_na = 0
-    for tid, stats in task_stats.items():
-        kg_cases = stats["kg"]
-        nogk_cases = stats["nogk"]
-        kg_tp = sum(1 for c in kg_cases if c.get("confusion") == "TP")
-        kg_fp = sum(1 for c in kg_cases if c.get("confusion") == "FP")
-        kg_fn = sum(1 for c in kg_cases if c.get("confusion") == "FN")
-        kg_tn = sum(1 for c in kg_cases if c.get("confusion") == "TN")
-        kg_na = sum(1 for c in kg_cases if c.get("confusion") == "NA")
-        nogk_tp = sum(1 for c in nogk_cases if c.get("confusion") == "TP")
-        nogk_fp = sum(1 for c in nogk_cases if c.get("confusion") == "FP")
-        nogk_fn = sum(1 for c in nogk_cases if c.get("confusion") == "FN")
-        nogk_tn = sum(1 for c in nogk_cases if c.get("confusion") == "TN")
-        nogk_na = sum(1 for c in nogk_cases if c.get("confusion") == "NA")
-        per_task[tid] = {
-            "kg_tp": kg_tp, "kg_fp": kg_fp, "kg_fn": kg_fn, "kg_tn": kg_tn, "kg_na": kg_na,
-            "nogk_tp": nogk_tp, "nogk_fp": nogk_fp, "nogk_fn": nogk_fn, "nogk_tn": nogk_tn, "nogk_na": nogk_na,
-        }
-        all_kg_tp += kg_tp; all_kg_fp += kg_fp; all_kg_fn += kg_fn; all_kg_tn += kg_tn; all_kg_na += kg_na
-        all_nogk_tp += nogk_tp; all_nogk_fp += nogk_fp; all_nogk_fn += nogk_fn; all_nogk_tn += nogk_tn; all_nogk_na += nogk_na
-
-    return {
-        "kg_tp": all_kg_tp, "kg_fp": all_kg_fp, "kg_fn": all_kg_fn, "kg_tn": all_kg_tn, "kg_na": all_kg_na,
-        "nogk_tp": all_nogk_tp, "nogk_fp": all_nogk_fp, "nogk_fn": all_nogk_fn, "nogk_tn": all_nogk_tn, "nogk_na": all_nogk_na,
-        "tp": all_kg_tp, "fp": all_kg_fp, "fn": all_kg_fn, "tn": all_kg_tn,  # 兼容旧前端
-        "per_task": per_task,
-    }
 
 
 def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = "",

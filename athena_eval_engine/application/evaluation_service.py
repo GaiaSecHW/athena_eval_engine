@@ -23,7 +23,7 @@ from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
 from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
-from .report_assembler import (assemble, render_json, ai_narrative, ai_vuln_analysis,
+from .report_assembler import (assemble, render_json,
                                ai_per_case_kg_analysis, rule_based_per_case_kg_analysis)
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchStatus
@@ -1409,31 +1409,10 @@ def run(evaluation_id: str) -> dict:
                       pair_views=pair_views, has_nogk=has_nogk)
     report.metric_groups = _metric_groups
 
-    # tool_stats_list 供 ai_narrative 引用漏洞流转数据
-    tool_stats_list = [{"task_run_id": tr.task_run_id,
-                        "task_id": tr.task_id,
-                        "condition": tr.condition,
-                        "finding_count": facts[tr.task_run_id]["tool"].action_distribution.get("confirmed_finding_count", 0),
-                        "false_positive_count": facts[tr.task_run_id]["tool"].action_distribution.get("false_positive_finding_count", 0),
-                        "analyze_received_count": facts[tr.task_run_id]["tool"].action_distribution.get("analyze_received_count", 0),
-                        "total_tools": facts[tr.task_run_id]["tool"].total_tool_calls}
-                       for tr in task_runs]
-
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
         from concurrent.futures import ThreadPoolExecutor as _TP
-        # ── Phase 6a: 报告生成（叙述性结论 + 漏洞流转分析）──
-        log("EVAL", f"AI 综合分析: ai_narrative + ai_vuln_analysis...")
-        set_progress(evaluation_id, "AI 综合分析中...")
-        with _TP(max_workers=2) as llm_pool:
-            fut_narr = llm_pool.submit(ai_narrative, out["metric_results"], out["statistical_results"], hits,
-                                        metric_groups=_metric_groups, tool_stats=tool_stats_list, has_nogk=has_nogk)
-            fut_vuln = llm_pool.submit(ai_vuln_analysis, facts, bench_by_task)
-            report.narrative = fut_narr.result()
-            report.vuln_analysis = fut_vuln.result()
-        log("EVAL", f"AI 综合分析完成")
-
-        # ── Phase 6b: 知识与记忆介入分析（逐漏洞 KG 归因）──
+        # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
         log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
         set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
         with _TP(max_workers=2) as kg_pool:
@@ -1461,15 +1440,12 @@ def run(evaluation_id: str) -> dict:
             _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
             group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
                 group["case_results"], group["category"], _g_nogk_cases)
-        report.vuln_analysis = ai_vuln_analysis(facts, bench_by_task)
         set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
-    # 保留全局字段以兼容既有消费者，同时标明来源类别，避免相同 case_id 混淆。
+    # per_case_kg_analysis 已在 metric_groups 中，顶层不再重复（避免 report JSON 体积翻倍导致 max_allowed_packet 溢出）
     for group in _metric_groups:
         for item in group["per_case_kg_analysis"]:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
-    report.per_case_kg_analysis = [item for group in _metric_groups
-                                   for item in group["per_case_kg_analysis"]]
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
@@ -1483,9 +1459,6 @@ def run(evaluation_id: str) -> dict:
 
     # 判断是否需要标记 COMPLETED_WITH_WARNINGS
     _warnings = []
-    # LLM 不可用
-    if "LLM 不可用" in (report.narrative.get("conclusion") or "") or "LLM unavailable" in (report.narrative.get("summary") or ""):
-        _warnings.append("LLM 不可用：AI 分析部分或全部失败，报告结论可能不完整")
     # 指标 NA
     na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"]
     if na_metrics:
