@@ -361,7 +361,10 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         # Step 3: 重置状态
         conn = connect(autocommit=True)
         try:
-            conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s",
+            # 清理旧代码残留的 " | FAILED at ..." 名称后缀
+            conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, "
+                                "evaluation_name=SUBSTRING_INDEX(IFNULL(evaluation_name,''),' |',1) "
+                                "WHERE evaluation_id=%s",
                                 ("CREATED", evaluation_id))
         finally:
             conn.close()
