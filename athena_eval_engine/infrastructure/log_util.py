@@ -68,3 +68,25 @@ def log_error(evaluation_id: str, source: str, error: Exception):
         pass  # 写日志失败不能影响主流程
     # 同时输出到控制台
     print(line, flush=True)
+
+
+def log_to_file(tag: str, msg: str, *, eval_id: str = ""):
+    """将警告/重试信息写入异常日志文件（无 traceback，单行）。
+
+    用于 DB RETRY 等需要持久化但非致命的警告信息。
+    """
+    ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+    eid = eval_id or get_eval_ctx()
+    parts = [f"[{ts}]", f"[{tag}]"]
+    if eid:
+        parts.append(f"[{eid}]")
+    parts.append(msg)
+    line = " ".join(parts) + "\n"
+    try:
+        with _error_log_lock:
+            os.makedirs(os.path.dirname(_ERROR_LOG_PATH), exist_ok=True)
+            with open(_ERROR_LOG_PATH, "a", encoding="utf-8") as f:
+                f.write(line)
+    except Exception:
+        pass
+    print(line, end="", flush=True)

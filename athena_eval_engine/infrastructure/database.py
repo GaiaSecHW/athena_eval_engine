@@ -68,6 +68,45 @@ def connect(autocommit: bool = True):
     return conn
 
 
+def direct_connect(autocommit: bool = True):
+    """创建直连（绕过连接池），用于大 INSERT 等场景。
+
+    长时间 LLM 操作后连接池中的空闲连接可能已被网络层关闭，
+    但 ping 检测（小包）无法发现半断连，导致大 INSERT 失败。
+    直连每次创建新 TCP 连接，避免复用 stale 连接。
+    conn.close() 真正关闭连接（不归还池）。
+    """
+    from ..config_loader import DB_HOST, DB_PORT, DB_USER, DB_PASSWORD, DB_DATABASE, DB_SSL_DISABLED
+    conn = pymysql.connect(
+        host=DB_HOST, port=DB_PORT, user=DB_USER, password=DB_PASSWORD,
+        database=DB_DATABASE, charset="utf8mb4", autocommit=autocommit,
+        connect_timeout=30, read_timeout=600, write_timeout=600,
+        ssl_disabled=DB_SSL_DISABLED,
+    )
+    return conn
+
+
+def drain_idle_connections():
+    """排空连接池中的空闲连接。
+
+    在长时间无 DB 操作（如 LLM 调用）前调用，
+    防止空闲连接被网络层关闭后仍被池复用。
+    """
+    global _pool
+    if _pool is None:
+        return
+    # PooledDB 内部用 _idle_cache 列表缓存空闲 SteadyDBConnection
+    idle = getattr(_pool, '_idle_cache', None)
+    if idle is None:
+        return
+    while idle:
+        try:
+            conn = idle.pop(0)
+            conn._close()
+        except Exception:
+            pass
+
+
 def ensure_schema():
     """Create tables from schema.sql (idempotent)."""
     import re

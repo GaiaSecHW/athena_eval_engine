@@ -91,8 +91,19 @@ def insert_task_run(cur, tr) -> str:
 
 def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     import json as _json
-    # evidence（原始事件列表）体积可达数十 MB，从不回读，不存入 DB 避免 max_allowed_packet 溢出
-    ev_data = {"case_results": getattr(f, "case_results", None) or []}
+    import os as _os
+    # case_results 体积可达数十 MB，存文件避免 max_allowed_packet 溢出
+    case_results = getattr(f, "case_results", None) or []
+    ev_data = {"case_results": case_results}
+    ev_json = _json.dumps(ev_data, ensure_ascii=False)
+    # 超过 1MB 存文件，DB 只存 URI
+    if len(ev_json) > 1024 * 1024:
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os.makedirs(_reports_dir, exist_ok=True)
+        _cr_path = _os.path.join(_reports_dir, f"{f.evaluation_id}_{f.task_run_id}_cr.json")
+        with open(_cr_path, "w", encoding="utf-8") as _f:
+            _f.write(ev_json)
+        ev_data = {"case_results_uri": _cr_path}
     sql = """INSERT INTO outcome_fact
         (outcome_fact_id, task_run_id, evaluation_id, `condition`, condition_source, condition_conflict,
          benchmark_item_id, gt_label, prediction, outcome, confusion_label, target_finding_id,

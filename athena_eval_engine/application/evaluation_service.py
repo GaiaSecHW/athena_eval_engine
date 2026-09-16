@@ -329,8 +329,13 @@ def create(req: CreateRequest):
 
 
 def _db_query(fn, _retries=8):
-    """从连接池取连接执行 DB 操作。ping 检测 + 断连重试双重保障。"""
+    """从连接池取连接执行 DB 操作。ping 检测 + 断连重试双重保障。
+
+    2006/2013 时强制关闭底层连接（pymysql._force_close 不设 _closed，
+    导致 DBUtils 认为连接仍可用并放回池中，重试取到同一个坏连接）。
+    """
     import pymysql
+    from ..infrastructure.log_util import log_to_file
     last_err = None
     for attempt in range(_retries):
         conn = None
@@ -339,9 +344,23 @@ def _db_query(fn, _retries=8):
             return fn(conn.cursor())
         except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
             last_err = e
+            # 强制关闭底层 pymysql 连接，防止池复用坏连接
+            if conn:
+                try:
+                    inner = getattr(conn, '_con', None)
+                    if inner is not None and not getattr(inner, '_closed', True):
+                        inner.close()
+                except Exception:
+                    pass
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                conn = None
             if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
                 _wait = min(2 * (attempt + 1), 30)  # 指数退避，上限 30s
                 log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
+                log_to_file("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]} {e}, retry in {_wait}s...")
                 import time; time.sleep(_wait)
                 continue
             raise
@@ -777,7 +796,13 @@ def run(evaluation_id: str) -> dict:
             for r in cur.fetchall():
                 from ..domain.enums import Outcome, Prediction, Confusion
                 _ev = json.loads(r[9]) if r[9] and isinstance(r[9], str) else (r[9] or {})
-                _cr = _ev.get("case_results", []) if isinstance(_ev, dict) else []
+                # case_results 存文件时从文件读
+                _cr_uri = _ev.get("case_results_uri") if isinstance(_ev, dict) else None
+                if _cr_uri and os.path.isfile(_cr_uri):
+                    with open(_cr_uri, "r", encoding="utf-8") as _f:
+                        _cr = json.loads(_f.read()).get("case_results", [])
+                else:
+                    _cr = _ev.get("case_results", []) if isinstance(_ev, dict) else []
                 _oc = type('OC', (), {
                     'task_run_id': r[0], 'outcome_fact_id': f"ocf-{r[0]}",
                     'outcome': Outcome(r[1]) if r[1] else Outcome.UNDETERMINED,
@@ -1460,6 +1485,10 @@ def run(evaluation_id: str) -> dict:
     _db_query(_insert_metrics)
 
     # ===== Phase 6: AI 分析 + 生成报告（慢操作，无 DB 连接）=====
+    # 排空连接池空闲连接：LLM 调用期间空闲连接会被网络层关闭，
+    # 但 ping 检测（小包）无法发现半断连，导致后续大 INSERT 失败
+    from ..infrastructure.database import drain_idle_connections
+    drain_idle_connections()
     set_progress(evaluation_id, "诊断中...")
     _set_status_short(evaluation_id, "REPORTING")
     _check_cancel(evaluation_id, "REPORTING")
@@ -1533,13 +1562,23 @@ def run(evaluation_id: str) -> dict:
     else:
         log("EVAL", f"评测完成")
 
-    # ===== Phase 7: 写入报告 + 标记完成（短连接）=====
+    # ===== Phase 7: 写入报告 JSON 文件 + 标记完成 =====
+    # 报告 JSON 存文件（PVC），不存 DB — 避免 26MB INSERT 导致 BrokenPipe/max_allowed_packet
     set_progress(evaluation_id, "生成报告中...")
     rj = render_json(report)  # rj 在写入 warnings 后重新序列化
+    log("EVAL", f"报告 JSON 大小: {len(rj):,} 字节")
+    import os as _os
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _os.makedirs(_reports_dir, exist_ok=True)
+    _json_path = _os.path.join(_reports_dir, f"{evaluation_id}.json")
+    with open(_json_path, "w", encoding="utf-8") as _f:
+        _f.write(rj)
+    log("EVAL", f"报告 JSON 已写入文件: {_json_path}")
+    # DB 只存状态（小 SQL，不走连接池）
     def _finalize(cur):
         cur.execute("INSERT IGNORE INTO evaluation_report (report_id, evaluation_id, calculation_run_id, snapshot_id, "
-                    "report_version, report_config_json, status) VALUES (%s,%s,%s,%s,'1.0',%s,'READY')",
-                    (f"rp-{evaluation_id}", evaluation_id, cr_id, f"snap-{evaluation_id}", rj))
+                    "report_version, json_uri, status) VALUES (%s,%s,%s,%s,'1.0',%s,'READY')",
+                    (f"rp-{evaluation_id}", evaluation_id, cr_id, f"snap-{evaluation_id}", _json_path))
         _set_status(cur, evaluation_id, final_status)
     _db_query(_finalize)
 
@@ -1578,6 +1617,15 @@ def get_status(evaluation_id: str) -> dict:
 
 
 def get_report(evaluation_id: str) -> dict:
+    # 优先从文件读取（新方式），回退到 DB report_config_json（旧数据兼容）
+    import os as _os
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _json_path = _os.path.join(_reports_dir, f"{evaluation_id}.json")
+    if _os.path.isfile(_json_path):
+        with open(_json_path, "r", encoding="utf-8") as _f:
+            return {"evaluation_id": evaluation_id, "status": "READY",
+                    "report": json.loads(_f.read())}
+    # 回退：从 DB 读旧数据
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()

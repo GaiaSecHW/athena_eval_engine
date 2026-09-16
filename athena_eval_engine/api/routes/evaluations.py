@@ -533,7 +533,7 @@ def _build_report(evaluation_id: str):
                     "WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)", (evaluation_id,))
         import json as _j
         raw_rows = cur.fetchall()
-        # 关联 outcome 的 case_results（从 evidence_json 里取，KG 和 No-KG 分别取）
+        # 关联 outcome 的 case_results（从 evidence_json 或文件读取，KG 和 No-KG 分别取）
         def _load_case_results_from_outcome(suffix):
             """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'"""
             cur.execute("SELECT evidence_json FROM outcome_fact WHERE evaluation_id=%s AND task_run_id LIKE %s",
@@ -543,6 +543,12 @@ def _build_report(evaluation_id: str):
                 ev = _j.loads(row[0]) if isinstance(row[0], str) else row[0]
                 if not isinstance(ev, dict):
                     return []
+                # case_results 存文件时从文件读
+                cr_uri = ev.get("case_results_uri")
+                if cr_uri and os.path.isfile(cr_uri):
+                    with open(cr_uri, "r", encoding="utf-8") as _f:
+                        _file_data = _j.loads(_f.read())
+                        return _file_data.get("case_results") or []
                 return ev.get("case_results") or []
             return []
 
