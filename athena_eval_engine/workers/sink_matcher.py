@@ -739,6 +739,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
                 "mined": True, "sink_hit": True,
+                "sink_sessions": sorted(mining_chain) if mining_chain else [],
             })
         elif any_mining and not chain_findings:
             # LLM=是 + 无 finding → FN（挖了但没报）
@@ -757,6 +758,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": knowledge_intervention,
                 "chain_actions": chain_actions,
                 "mined": True, "sink_hit": True,
+                "sink_sessions": sorted(mining_chain) if mining_chain else [],
             })
         else:
             # LLM=不是 → 检查是否有 finding
@@ -778,6 +780,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
                 "mined": False, "sink_hit": True,
+                "sink_sessions": sorted(sr["chains"][0]) if sr["chains"] else [],
             })
 
         _progress(f"Sink 匹配: {bi+1}/{len(benchmarks)} 基线完成")

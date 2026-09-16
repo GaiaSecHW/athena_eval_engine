@@ -1383,6 +1383,7 @@ def run(evaluation_id: str) -> dict:
                 "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
                 "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),
                 "nogk_session_id": _g_nogk_case.get("session_id", ""),
+                "nogk_sink_sessions": _g_nogk_case.get("sink_sessions", []),
                 "nogk_candidate_findings": _g_nogk_case.get("candidate_findings", []),
                 "nogk_sink_info": _g_nogk_case.get("sink_info", ""),
                 "nogk_sink_analysis": _g_nogk_case.get("sink_analysis", ""),

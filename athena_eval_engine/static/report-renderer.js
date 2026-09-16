@@ -628,12 +628,13 @@ function renderReport(d){
           const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
           let kgCell;
+          const _kgSessInfo=(c.sink_sessions&&c.sink_sessions.length)?`<div style="font-size:11px;color:var(--acc)">session: ${c.sink_sessions.map(s=>s.slice(0,8)).join(', ')}</div>`:"";
           if(c.matched){
-            kgCell=(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;");
+            kgCell=`<span style="color:var(--green)">✓命中</span> ${(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")}`+(_kgSessInfo||kgCandNote);
           }else if(c.mined){
-            kgCell=`<span style="color:var(--amber)">sink: ${(c.session_id||"").slice(0,8)}</span>`+kgCandNote;
+            kgCell=`<span style="color:var(--amber)">sink命中·挖掘无报</span>`+kgCandNote+_kgSessInfo;
           }else if(c.sink_hit){
-            kgCell=`<span style="color:var(--amber)">sink命中·非挖掘</span>`+kgCandNote;
+            kgCell=`<span style="color:var(--amber)">sink命中·非挖掘</span>`+kgCandNote+_kgSessInfo;
           }else{
             kgCell=`<span style="color:var(--gray)">sink未命中</span>`;
           }
@@ -646,12 +647,13 @@ function renderReport(d){
             const nogkCands=c.nogk_candidate_findings||[];
             const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
             const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
+            const _nogkSessInfo=(c.nogk_sink_sessions&&c.nogk_sink_sessions.length)?`<div style="font-size:11px;color:var(--acc)">session: ${c.nogk_sink_sessions.map(s=>s.slice(0,8)).join(', ')}</div>`:"";
             if(c.nogk_matched){
-              nogkCell=`<td>${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}</td>`;
+              nogkCell=`<td><span style="color:var(--green)">✓命中</span> ${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}${_nogkSessInfo||nogkCandNote}</td>`;
             }else if(c.nogk_mined){
-              nogkCell=`<td><span style="color:var(--amber)">sink: ${(c.nogk_session_id||"").slice(0,8)}</span>${nogkCandNote}</td>`;
+              nogkCell=`<td><span style="color:var(--amber)">sink命中·挖掘无报</span>${nogkCandNote}${_nogkSessInfo}</td>`;
             }else if(c.nogk_sink_hit){
-              nogkCell=`<td><span style="color:var(--amber)">sink命中·非挖掘</span>${nogkCandNote}</td>`;
+              nogkCell=`<td><span style="color:var(--amber)">sink命中·非挖掘</span>${nogkCandNote}${_nogkSessInfo}</td>`;
             }else{
               nogkCell=`<td><span style="color:var(--gray)">sink未命中</span></td>`;
             }
@@ -673,8 +675,8 @@ function renderReport(d){
       const kgDenom=kgTP+kgFP+kgFN+kgTN;
       const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
       const summary=_hasNogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">分母=sink命中的case数（不含sink未命中的未判定）</div></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">分母=sink命中的case数（不含sink未命中的未判定）</div></div>`;
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分子=${kgTP} 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分子=${nogkTP} 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">分子=命中数(TP) 分母=sink命中的case数（不含sink未命中的未判定）</div></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分子=${kgTP} 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">分子=命中数(TP) 分母=sink命中的case数（不含sink未命中的未判定）</div></div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
         ${summary}
