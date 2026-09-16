@@ -315,11 +315,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
-        # Step 1: 获取 benchmark_set_id + config_json（一个连接）
+        # Step 1: 获取 benchmark_set_id（用于清理 benchmark_item）
         bsid = None
-        entries = []
-        bm_source = "vbench_zip"
-        vc_source_task_id = None
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
@@ -327,69 +324,11 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             row = cur.fetchone()
             if row:
                 bsid = row[0]
-                cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
-                srow = cur.fetchone()
-                if srow and srow[0]:
-                    import json as _j
-                    cfg = _j.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
-                    entries = cfg.get("manifest", {}).get("entries", [])
-                    bm_source = cfg.get("manifest", {}).get("benchmark_source", "vbench_zip")
-                    vc_source_task_id = cfg.get("manifest", {}).get("vc_source_task_id")
         finally:
             conn.close()
 
-        # Step 2: 获取 case 描述（按数据源分别处理）
-        case_details = {}
-        # 漏洞中心模式下，如果未指定 vc_source_task_id，用 entries 的 task_id_actual 补取
-        effective_vc_task = vc_source_task_id
-        if bm_source == "vuln_center" and not effective_vc_task:
-            for e in entries:
-                effective_vc_task = e.get("task_id_actual") or e.get("task_id")
-                if effective_vc_task:
-                    break
-        if bsid:
-            try:
-                if bm_source == "vuln_center":
-                    from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
-                    log("RETRY", f"漏洞中心取基线: project={bsid} task={effective_vc_task}")
-                    bm = get_vuln_center_benchmark(bsid, effective_vc_task)
-                    _n = len(bm.get("cases") or [])
-                    if _n == 0 and effective_vc_task:
-                        log("RETRY", f"task={effective_vc_task} 不是漏洞中心 source_task，不带 task 过滤重试")
-                        bm = get_vuln_center_benchmark(bsid, None)
-                        log("RETRY", f"不带 task 过滤返回 {len(bm.get('cases') or [])} 条 case")
-                    for c in (bm.get("cases") or []):
-                        cid = c.get("case_id") or c.get("id") or ""
-                        if cid:
-                            case_details[cid] = {
-                                "description": c.get("description") or "",
-                                "vulnerability_type": c.get("vulnerability_type") or "",
-                                "target_finding_id": c.get("target_finding_id") or "",
-                                "expected_label": c.get("expected_label") or "VULNERABLE",
-                                "source_file": c.get("source_file") or "",
-                                "source_function": c.get("source_function") or "",
-                                "source_line": c.get("source_line") or "",
-                            }
-                            es._fill_missing_source(case_details[cid])
-                else:
-                    from ...infrastructure.vbench_client import get_benchmark
-                    bm = get_benchmark(bsid)
-                    for c in (bm.get("cases") or []):
-                        cid = c.get("case_id") or c.get("id") or ""
-                        if cid:
-                            fnd = c.get("findings") or []
-                            desc = " ".join(f.get("explanation", "") for f in fnd if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
-                            case_details[cid] = {"description": desc,
-                                                "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
-                                                "target_finding_id": c.get("target_finding_id") or "",
-                                                "source_file": c.get("source_file") or "",
-                                                "source_function": c.get("source_function") or "",
-                                                "source_line": c.get("source_line") or ""}
-                            es._fill_missing_source(case_details[cid])
-            except Exception:
-                pass
-
-        # Step 3: 清理全部数据（单连接 + FK off）
+        # Step 2: 清理全部数据（单连接 + FK off）
+        # 基线数据、告警中心数据、benchmark_items 在 run() INGESTING 阶段重新获取/插入
         tables = ["statistical_result", "metric_result", "pair_derived_fact", "task_pair",
                   "outcome_fact", "knowledge_interaction_fact", "tool_action_fact", "resource_fact",
                   "task_run", "trace_source", "evaluation_report",
@@ -410,7 +349,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
-        # Step 3b: 删除固化 HTML 报告文件
+        # Step 2b: 删除固化 HTML 报告文件
         try:
             p = _static_report_path(evaluation_id)
             if os.path.isfile(p):
@@ -419,7 +358,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         except Exception:
             pass
 
-        # Step 4: 重置状态
+        # Step 3: 重置状态
         conn = connect(autocommit=True)
         try:
             conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s WHERE evaluation_id=%s",
@@ -427,82 +366,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
-        # Step 5: 重新插入 benchmark items（含 case 描述）— 单连接批量插入
-        # 漏洞中心模式下，只插入 case_details 里有的 case（过滤掉不属于当前任务的 case）
-        _filter_by_case_details = bm_source == "vuln_center" and case_details
-        if bsid and entries:
-            conn = connect(autocommit=True)
-            try:
-                cur = conn.cursor()
-                for e in entries:
-                    item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
-                    if _filter_by_case_details:
-                        item_ids = [bid for bid in item_ids if bid in case_details]
-                    for bid in item_ids:
-                        cd = case_details.get(bid) or {}
-                        fact_repo.insert_benchmark_item(cur, bid, bsid,
-                                                       e["task_id"], cd.get("expected_label") or e.get("expected_label", "VULNERABLE"),
-                                                       cd.get("target_finding_id") or e.get("target_finding_id"),
-                                                       cd if cd else None)
-            finally:
-                conn.close()
-
-        # Step 5b: 重新获取告警中心数据并更新 snapshot
-        _ac_pairs = []
-        _seen = set()
-        for e in entries:
-            _pid = e.get("project_id") or ""
-            _tid = e.get("task_id_actual") or effective_vc_task or ""
-            if _pid and _tid and (_pid, _tid) not in _seen:
-                _ac_pairs.append((_pid, _tid))
-                _seen.add((_pid, _tid))
-        if _ac_pairs:
-            try:
-                from ...infrastructure.vuln_center_client import get_alert_center_summary
-                _all_cases = []
-                _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
-                for _ac_proj, _ac_task in _ac_pairs:
-                    log("RETRY", f"告警中心取数据: project={_ac_proj} task={_ac_task}")
-                    ac_sum = get_alert_center_summary(_ac_proj, _ac_task)
-                    for k in _merged_counts:
-                        _merged_counts[k] += ac_sum.get("counts", {}).get(k, 0)
-                    _all_cases.extend({
-                        "case_id": c.get("id") or c.get("case_id") or "",
-                        "title": c.get("title") or "",
-                        "summary": c.get("summary") or "",
-                        "validation_result": c.get("validation_result"),
-                        "current_stage": c.get("current_stage"),
-                        "current_status": c.get("current_status"),
-                        "project_id": _ac_proj,
-                    } for c in ac_sum.get("cases", []))
-                _new_ac = {
-                    "source_task_ids": [t for _, t in _ac_pairs],
-                    "project_ids": [p for p, _ in _ac_pairs],
-                    "total": len(_all_cases),
-                    "counts": _merged_counts,
-                    "cases": _all_cases,
-                }
-                # 更新 snapshot 的 config_json
-                conn = connect(autocommit=True)
-                try:
-                    cur = conn.cursor()
-                    cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
-                    srow = cur.fetchone()
-                    if srow and srow[0]:
-                        import json as _j2
-                        cfg = _j2.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
-                        cfg.setdefault("manifest", {})["alert_center_data"] = _new_ac
-                        cur.execute("UPDATE evaluation_snapshot SET config_json=%s WHERE evaluation_id=%s",
-                                    (_j2.dumps(cfg, ensure_ascii=False), evaluation_id))
-                        log("RETRY", f"告警中心数据已更新 snapshot: total={len(_all_cases)}")
-                finally:
-                    conn.close()
-            except Exception as e:
-                import traceback as _tb
-                log("RETRY", f"告警中心数据获取失败: {e}")
-                _tb.print_exc()
-
-        # Step 6: 通知旧线程取消（协作取消），提交新线程到线程池
+        # Step 4: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
         # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
         conn = connect(autocommit=True)
