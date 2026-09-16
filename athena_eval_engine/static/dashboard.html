@@ -125,8 +125,8 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 <body>
 <div class="wrap">
   <header><div class="title" id="h-title">知识测评</div><div class="sub" id="h-sub"></div><div class="sp"></div>
-    <button class="ghost" onclick="Router.navigate('/create')">+ 新建评测</button>
-    <button class="ghost" onclick="Router.navigate('/system')">系统</button>
+    <button class="ghost" data-route="create" onclick="Router.navigate('/create')">+ 新建评测</button>
+    <button class="ghost" data-route="system" id="sys-btn" onclick="Router.navigate('/system')" style="display:none">系统</button>
     <button class="ghost" onclick="Router.handle()">刷新</button>
     <button class="ghost" id="theme-btn" onclick="toggleTheme()" style="font-size:18px;padding:8px 12px">🌙</button>
   </header>
@@ -134,6 +134,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 </div>
 <script>
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
+if(DEBUG){var _sb=document.getElementById("sys-btn");if(_sb)_sb.style.display="";}
 const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
 const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
@@ -157,6 +158,7 @@ function fmtMtime(mt){if(!mt)return'-';const d=new Date(mt*1000+8*3600000);const
 function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
 async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
 async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
+async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
 
 // ===== 客户端路由器（History API） =====
 const Router={
@@ -184,7 +186,13 @@ const Router={
   }
 };
 function updateNavActive(path){
-  document.querySelectorAll('header button.ghost').forEach(function(b){b.classList.remove('nav-active');});
+  document.querySelectorAll('header button.ghost').forEach(function(b){
+    b.classList.remove('nav-active');
+    var r=b.getAttribute('data-route');
+    if(r){
+      if((r==='create'&&path==='/create')||(r==='system'&&path==='/system')){b.classList.add('nav-active');}
+    }
+  });
 }
 
 async function render(){
@@ -1158,10 +1166,76 @@ async function runEval(){
   }
   catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}}
 
-// ===== ④ 系统 =====
-async function renderSystem(){let h=await jget("/api/v1/system/health");let s=await jget("/api/v1/system/schema");
-  $("view").innerHTML=`<div style="max-width:700px;flex:1;overflow-y:auto"><div class="card"><h3>数据库</h3><div style="font-size:15px;line-height:2">状态：<span class="bdg ${h.db==='ok'?'b-COMPLETED':'b-FAILED'}">${h.db}</span><br>数据库：${h.database}<br>表数：${h.tables}<br>外键数：${h.fks}</span></div></div>
-  <div class="card" style="margin-top:16px"><h3>表清单（${s.tables.length}）</h3><table><tr><th>表</th><th>行数</th></tr>${s.tables.map(t=>`<tr><td class="num">${t.table}</td><td>${t.rows}</td></tr>`).join("")}</table></div></div>`;}
+// ===== ④ 系统参数设置 =====
+async function renderSystem(){
+  var c=null;
+  try{c=await jget("/api/v1/system/config");}catch(e){$("view").innerHTML="<div class='card'>加载失败</div>";return;}
+  var h=`<div style="max-width:600px;flex:1;overflow-y:auto">
+    <div class="card"><h3>系统参数设置</h3>
+    <div style="font-size:13px;color:var(--sub);margin-bottom:16px">修改后立即生效并持久化到数据库，Pod 重启后保留配置。</div>
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div>
+        <label style="font-weight:600;font-size:14px">LLM 最大并发量</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 请求的全局信号量上限（1-200）</div>
+        <input id="cfg_llm_conc" type="number" min="1" max="200" value="${c.llm_max_concurrency}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">同时启动任务数</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">评测后台线程池大小（1-10）</div>
+        <input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">LLM 网关地址</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">OpenAI 兼容 API 的 Base URL</div>
+        <input id="cfg_llm_url" type="text" value="${c.llm_base_url}" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);font-family:monospace;font-size:13px">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">LLM 启用/禁用</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">禁用后所有 LLM 调用将报错（规则降级）</div>
+        <select id="cfg_llm_en" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+          <option value="true"${c.llm_enabled?' selected':''}>启用</option>
+          <option value="false"${!c.llm_enabled?' selected':''}>禁用</option>
+        </select>
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">Trace 解析并发数</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div>
+        <input id="cfg_parse_w" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">KG 分析并发数</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-50）</div>
+        <input id="cfg_kg_w" type="number" min="1" max="50" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+    </div>
+    <div style="margin-top:20px;display:flex;gap:12px">
+      <button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button>
+      <button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button>
+    </div>
+    <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
+    </div></div>`;
+  $("view").innerHTML=h;
+}
+
+async function saveSystemConfig(){
+  var body={
+    llm_max_concurrency:parseInt($("cfg_llm_conc").value)||null,
+    max_concurrent_evals:parseInt($("cfg_max_evals").value)||null,
+    llm_base_url:$("cfg_llm_url").value.trim()||null,
+    llm_enabled:$("cfg_llm_en").value==="true",
+    parse_workers:parseInt($("cfg_parse_w").value)||null,
+    kg_analysis_workers:parseInt($("cfg_kg_w").value)||null
+  };
+  // 去掉 null 字段
+  for(var k in body){if(body[k]===null)delete body[k];}
+  $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
+  try{
+    var r=await jput("/api/v1/system/config",body);
+    $("cfg_msg").innerHTML="<span style='color:var(--green)'>已保存："+r.updated.join("， ")+"</span>";
+  }catch(e){
+    $("cfg_msg").innerHTML="<span style='color:var(--red)'>保存失败："+e+"</span>";
+  }
+}
 
 // iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard（仅 debug 模式）
 if(DEBUG) window.addEventListener("message",function(ev){

@@ -1381,7 +1381,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             _session_compress_cache[sid] = _fallback
                             return _fallback
                     from concurrent.futures import ThreadPoolExecutor, as_completed
-                    with ThreadPoolExecutor(max_workers=8) as pool:
+                    from .evaluation_service import get_runtime_workers
+                    with ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"]) as pool:
                         futures = [pool.submit(_compress_one, item) for item in _uncached]
                         for fut in as_completed(futures):
                             _compressed.append(fut.result())

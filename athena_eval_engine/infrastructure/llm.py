@@ -54,14 +54,36 @@ def get_token_usage() -> dict:
 
 def is_enabled() -> bool:
     """是否允许发起 LLM 请求（开发环境可显式关闭）。"""
-    return LLM_ENABLED
+    return _runtime_cfg["llm_enabled"]
 
 
 def set_max_concurrency(n: int):
-    """进程启动时调用一次，设置全局 LLM 并发上限。后续调用不替换已有信号量。"""
-    global _llm_semaphore
-    if _llm_semaphore is None:
-        _llm_semaphore = threading.Semaphore(n)
+    """设置全局 LLM 并发上限。运行时可调用，替换信号量。"""
+    global _llm_semaphore, _MAX_CONCURRENCY
+    n = max(1, min(n, 200))
+    _MAX_CONCURRENCY = n
+    _llm_semaphore = threading.Semaphore(n)
+
+
+def get_max_concurrency() -> int:
+    return _MAX_CONCURRENCY
+
+
+# 运行时可调配置
+_runtime_cfg = {
+    "llm_enabled": LLM_ENABLED,
+    "llm_base_url": LLM_BASE_URL,
+}
+
+
+def get_runtime_config() -> dict:
+    return dict(_runtime_cfg)
+
+
+def set_runtime_config(**kwargs):
+    for k, v in kwargs.items():
+        if k in _runtime_cfg:
+            _runtime_cfg[k] = v
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,

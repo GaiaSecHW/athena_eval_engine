@@ -34,6 +34,19 @@ from ..application import platform_service as ps
 _cancel_events: dict[str, threading.Event] = {}
 _cancel_lock = threading.Lock()
 
+# 运行时可调并发参数
+_runtime_workers = {"parse": 4, "kg_analysis": 8}
+
+
+def get_runtime_workers() -> dict:
+    return dict(_runtime_workers)
+
+
+def set_runtime_workers(**kwargs):
+    for k, v in kwargs.items():
+        if k in _runtime_workers:
+            _runtime_workers[k] = max(1, min(v, 50))
+
 # 进度文本：AI 匹配等慢阶段向前端报告进度（内存字典，pod 重启后重跑无需持久化）
 # 两层：_progress_phase 存阶段级文本（解析/写入/配对等），_progress_tasks 存任务级文本（多 task_run 并行各自独立）
 _progress_phase: dict[str, str] = {}
@@ -1005,7 +1018,7 @@ def run(evaluation_id: str) -> dict:
                 _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
         # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
         set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
-        with ThreadPoolExecutor(max_workers=max(1, min(len(entries), 4))) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _runtime_workers["parse"]))) as pool:
             _parse_futures = {pool.submit(_parse_trace, e): i for i, e in enumerate(entries)}
             parsed = [None] * len(entries)
             _parse_done = 0

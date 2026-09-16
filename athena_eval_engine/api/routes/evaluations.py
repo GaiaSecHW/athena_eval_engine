@@ -19,9 +19,23 @@ from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
-# 最多 3 个评测同时运行，其余排队等待
-_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="eval")
+# 最多 N 个评测同时运行，其余排队等待（运行时可调）
+_max_concurrent_evals = 3
+_executor = ThreadPoolExecutor(max_workers=_max_concurrent_evals, thread_name_prefix="eval")
 _TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED"}
+
+
+def get_max_concurrent_evals() -> int:
+    return _max_concurrent_evals
+
+
+def set_max_concurrent_evals(n: int):
+    """设置最大并发评测数。重建线程池，已有任务在新池中继续执行。"""
+    global _executor, _max_concurrent_evals
+    n = max(1, min(n, 10))
+    _max_concurrent_evals = n
+    _executor.shutdown(wait=False)
+    _executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="eval")
 
 # 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
 _running_futures: dict[str, Future] = {}
@@ -111,6 +125,12 @@ def resume_stuck_evaluations():
     重新提交到线程池，run() 会检查 facts 是否已存在自动跳过已完成的阶段。
     CREATED 状态 = create() 未完成的半成品（无 snapshot），标记 FAILED 清理。
     """
+    # 执行 schema 迁移（建表、加列、更新约束）
+    from ...infrastructure.migrations import run_migrations
+    run_migrations()
+    # 加载 DB 持久化的系统参数（LLM 并发量、任务并发数等）
+    from .benchmark_system import load_system_config
+    load_system_config()
     try:
         from ...infrastructure.database import connect
         conn = connect(autocommit=True)
