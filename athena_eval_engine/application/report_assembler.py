@@ -1076,13 +1076,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             # 压缩后仍超限 → 跳过 LLM，规则降级
             if len(_data_str) > 840000:
                 log("KG_ANALYSIS", f"压缩后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
+                _cl = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(confusion, confusion)
                 results[_ci] = {
                     "case_id": case_id,
                     "kg_judgment": kg_judgment,
                     "query_summary": "数据量过大，无法进行 AI 分析" if case_interactions else "无知识查询",
                     "knowledge_summary": "",
                     "impact": "NEUTRAL",
-                    "reason": f"KG 判定: {confusion}（挖掘链数据过大，LLM 跳过，规则生成）",
+                    "reason": f"KG 判定: {_cl}（挖掘链数据过大，LLM 跳过，规则生成）",
                     "interactions": case_interactions,
                     "memory_interactions": case_mem_interactions,
                     "sink_analysis": _sink_analysis,
@@ -1136,7 +1137,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         ]
 
         # 收集 LLM 任务，稍后并行执行
-        _pending_llm.append((_ci, prompt, case_id, kg_judgment, case_interactions,
+        _pending_llm.append((_ci, prompt, case_id, kg_judgment, confusion, case_interactions,
                              case_mem_interactions, _sink_analysis, _no_finding_reason,
                              _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki))
 
@@ -1154,7 +1155,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         _count_lock = _th.Lock()
 
         def _run_llm(task):
-            _ci, prompt, case_id, kg_judgment, case_interactions, case_mem_interactions, \
+            _ci, prompt, case_id, kg_judgment, confusion, case_interactions, case_mem_interactions, \
                 _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, \
                 _nogk_no_finding_reason, _nogk_ki = task
             try:
@@ -1170,13 +1171,14 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 result["nogk_knowledge_intervention"] = _nogk_ki
                 return _ci, result
             except Exception:
+                _conf_label = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(confusion, confusion)
                 return _ci, {
                     "case_id": case_id,
                     "kg_judgment": kg_judgment,
                     "query_summary": "无相关知识查询" if not case_interactions else "LLM 分析失败",
                     "knowledge_summary": "",
                     "impact": "NEUTRAL",
-                    "reason": f"KG 判定: {kg_judgment}（LLM 不可用，规则生成）",
+                    "reason": f"KG 判定: {_conf_label}（LLM 不可用，规则生成）",
                     "interactions": case_interactions,
                     "memory_interactions": case_mem_interactions,
                     "sink_analysis": _sink_analysis,

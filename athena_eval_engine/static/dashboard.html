@@ -680,7 +680,7 @@ function renderReport(d){
       if(pcKa&&kgActive&&(pcKa.reason||pcKa.query_summary)){
         var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
         var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
-        var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞（真阳性）":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞（假阳性）":"未找到（假阴性）";
+        var jText=conf==="TP"?"漏洞（真阳性）":conf==="FP"?"漏洞（假阳性）":conf==="FN"?"未找到（假阴性）":conf==="TN"?"非漏洞（真阴性）":"未判定";
         kgHtml+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
         kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
         kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
