@@ -452,51 +452,51 @@ function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M1:{n:"准确率变化(ΔBA)",short:"Δ准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
+  M1:{n:"准确率变化",short:"Δ准确率",d:"KG vs No-KG 的平衡准确率差值。正值=KG 更准，负值=更差。",u:"ratio",
      range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无差异",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
      interp:(v)=>v==null?"无基准，无法计算":v>0.05?`KG 准确率高出 ${(v*100).toFixed(1)}pp`:v<-0.05?`KG 准确率低 ${(-v*100).toFixed(1)}pp`:"准确率无明显差异",
-     formula:"BA_KG - BA_NoKG, BA=(TPR+TNR)/2, TPR=TP/(TP+FN), TNR=TN/(TN+FP)"},
-  M4:{n:"漏报率变化(ΔFNR)",short:"Δ漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
+     formula:"平衡准确率_KG - 平衡准确率_NoKG, 平衡准确率=(真正例率+真负例率)/2, 真正例率=真阳性/(真阳性+假阴性), 真负例率=真阴性/(真阴性+假阳性)"},
+  M4:{n:"漏报率变化",short:"Δ漏报率",d:"KG vs No-KG 漏报率差值。负值=KG 漏报更少(好)，正值=更多。",u:"ratio",
      range:[{v:-1,t:"KG 漏报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 漏报多",c:"red"}],
      interp:(v)=>v==null?"无基准":v<0?`KG 漏报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 漏报增加 ${(v*100).toFixed(1)}pp`:"漏报率无变化",
-     formula:"FNR_KG - FNR_NoKG, FNR=FN/(FN+TP)"},
-  M13:{n:"误报率变化(ΔFPR)",short:"Δ误报率",d:"KG vs No-KG 误报率差值。负值=KG 误报更少(好)，正值=更多。",u:"ratio",
+     formula:"漏报率_KG - 漏报率_NoKG, 漏报率=假阴性/(假阴性+真阳性)"},
+  M13:{n:"误报率变化",short:"Δ误报率",d:"KG vs No-KG 误报率差值。负值=KG 误报更少(好)，正值=更多。",u:"ratio",
      range:[{v:-1,t:"KG 误报少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 误报多",c:"red"}],
      interp:(v)=>v==null?"无基准":v<0?`KG 误报减少 ${(-v*100).toFixed(1)}pp`:v>0?`KG 误报增加 ${(v*100).toFixed(1)}pp`:"误报率无变化",
-     formula:"FPR_KG - FPR_NoKG, FPR=(FP+FN)/(TP+FP+FN+TN)，仅统计agent挖掘过的sink"},
-  M14:{n:"精确率变化(ΔPrecision)",short:"Δ精确率",d:"KG vs No-KG 精确率差值。正值=KG 报出的漏洞更准，负值=更差。",u:"ratio",
+     formula:"误报率_KG - 误报率_NoKG, 误报率=(假阳性+假阴性)/(真阳性+假阳性+假阴性+真阴性)，仅统计agent挖掘过的sink"},
+  M14:{n:"精确率变化",short:"Δ精确率",d:"KG vs No-KG 精确率差值。正值=KG 报出的漏洞更准，负值=更差。",u:"ratio",
      range:[{v:-1,t:"KG 更差",c:"red"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更准",c:"green"}],
      interp:(v)=>v==null?"无基准":v>0?`KG 精确率高出 ${(v*100).toFixed(1)}pp`:v<0?`KG 精确率低 ${(-v*100).toFixed(1)}pp`:"精确率无明显差异",
-     formula:"Precision_KG - Precision_NoKG, Precision=TP/(TP+FP)"},
-  M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
+     formula:"精确率_KG - 精确率_NoKG, 精确率=真阳性/(真阳性+假阳性)"},
+  M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 占比低`,
      formula:"kg_count / total_tool_calls (知识查询次数 / 总工具调用次数)"},
-  M6:{n:"知识交付率(KDR)",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
+  M6:{n:"知识交付率",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识交付":v>=0.8?`知识交付率 ${v*100}%, 充分`:v>=0.5?`知识交付率 ${v*100}%, 部分`:`知识交付率 ${v*100}%, 不足`,
      formula:"successful_read_count / access_event_count (有效回复次数 / 总查询次数)"},
-  M11:{n:"记忆访问率(MAR)",short:"记忆访问",d:"Agent 工具调用中记忆读取/检索所占比例。与知识访问率同算法。",u:"ratio",
+  M11:{n:"记忆访问率",short:"记忆访问",d:"Agent 工具调用中记忆读取/检索所占比例。与知识访问率同算法。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(1)}%, 少量`:`记忆访问率 ${(v*100).toFixed(1)}%, 占比低`,
      formula:"memory_access_event_count / total_tool_calls (记忆读取次数 / 总工具调用次数)"},
-  M12:{n:"记忆交付率(MDR)",short:"记忆交付",d:"记忆读取中成功返回的比例。与知识交付率同算法。",u:"ratio",
+  M12:{n:"记忆交付率",short:"记忆交付",d:"记忆读取中成功返回的比例。与知识交付率同算法。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到记忆交付":v>=0.8?`记忆交付率 ${v*100}%, 充分`:v>=0.5?`记忆交付率 ${v*100}%, 部分`:`记忆交付率 ${v*100}%, 不足`,
      formula:"memory_successful_read_count / memory_access_event_count (成功读取次数 / 记忆读取次数)"},
-  M7:{n:"行为偏移(JSD)",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
+  M7:{n:"行为偏移",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
      range:[{v:0,t:"无差异",c:"green"},{v:0.1,t:"轻微",c:"amber"},{v:0.3,t:"显著",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0.1?`行为偏移 ${v*100}%, 轻微`:v<0.3?`行为偏移 ${v*100}%, 明显`:`行为偏移 ${v*100}%, 显著`,
      formula:"median(JSD_i), JSD_i=(0.5*KL(P||M)+0.5*KL(Q||M))/ln2, M=(P+Q)/2, P/Q=工具使用概率分布"},
-  M8:{n:"Token变化(ΔToken)",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
+  M8:{n:"Token变化",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
      range:[{v:-1,t:"KG 更省",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更耗",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${fmtNum(Math.abs(v))} token`:v>0?`KG 多用 ${fmtNum(v)} token`:"token 消耗无差异",
      formula:"median(KG_tokens - NoKG_tokens)"},
-  M9:{n:"步数变化(ΔSteps)",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
+  M9:{n:"步数变化",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
      range:[{v:-1,t:"KG 更少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更多",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${fmtNum(Math.abs(v))} 步`:v>0?`KG 多 ${fmtNum(v)} 步`:"步数无差异",
      formula:"median(KG_steps - NoKG_steps)"},
-  M10:{n:"时长变化(ΔTime)",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
+  M10:{n:"时长变化",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
      range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${fmtDur(-v)}`:v>0?`KG 慢 ${fmtDur(v)}`:"时长无差异",
      formula:"median(KG_duration_ms - NoKG_duration_ms)"}
@@ -522,7 +522,7 @@ function renderReport(d){
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
     const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零"};
+    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效"};
     if(!m||m.calculation_status!=="CALCULATED"){
       const rc=m?m.reason_code||m.calculation_status:"无数据";
       const reason=RC[rc]||rc||"无数据";
@@ -537,16 +537,6 @@ function renderReport(d){
       for(let i=mi.range.length-1;i>=0;i--){if(v>=mi.range[i].v){col=mi.range[i].c==="green"?"var(--green)":mi.range[i].c==="red"?"var(--red)":"var(--amber)";break;}}
     }
     const valStr=fmt(v,m.unit);
-    // KG/No-KG 绝对值拆分显示（M1/M4/M13 差值类指标）
-    const KG_FIELDS={"M1":{kg:"ba_kg",nogk:"ba_nogk"},"M4":{kg:"fnr_kg",nogk:"fnr_nogk"},"M13":{kg:"fpr_kg",nogk:"fpr_nogk"},"M14":{kg:"precision_kg",nogk:"precision_nogk"}};
-    let kgBreakdown="";
-    if(KG_FIELDS[mid]&&m.method){
-      const kf=KG_FIELDS[mid];
-      const kgV=m.method[kf.kg],nogkV=m.method[kf.nogk];
-      if(kgV!=null&&nogkV!=null&&!isNaN(kgV)&&!isNaN(nogkV)&&(r.has_nogk!==false)){
-        kgBreakdown=`<div style="display:flex;gap:12px;margin-top:4px;font-size:13px"><span>KG <b style="color:var(--acc)">${(kgV*100).toFixed(1)}%</b></span><span>No-KG <b>${(nogkV*100).toFixed(1)}%</b></span></div>`;
-      }
-    }
     let rangeBar="";
     if(mi.range&&mi.range.length>=2){
       const min=mi.range[0].v,max=mi.range[mi.range.length-1].v;
@@ -554,7 +544,29 @@ function renderReport(d){
       rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
     }
     var formulaHtml=mi.formula?"<details style='margin-top:4px'><summary style='cursor:pointer;font-size:12px;color:var(--gray)'>计算公式</summary><div style='font-size:12px;color:var(--sub);font-family:monospace;background:var(--p2);padding:4px 6px;border-radius:4px;margin-top:4px'>"+mi.formula+"</div></details>":"";
-    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div>'+kgBreakdown+'<div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
+    // 混淆矩阵值：显示计算过程
+    if(m.cm){
+      var cmParts=[];
+      if(mid==="M1"){
+        cmParts.push("真正例="+m.cm.tp,"假负例="+m.cm.fn,"真负例="+m.cm.tn,"假正例="+m.cm.fp);
+        var tpr=m.cm.tp+m.cm.fn>0?(m.cm.tp/(m.cm.tp+m.cm.fn)*100).toFixed(1):"0.0";
+        var tnr=m.cm.tn+m.cm.fp>0?(m.cm.tn/(m.cm.tn+m.cm.fp)*100).toFixed(1):"0.0";
+        cmParts.push("→ 真正例率="+tpr+"%, 真负例率="+tnr+"%");
+      }else if(mid==="M4"){
+        cmParts.push("假负例="+m.cm.fn,"真正例="+m.cm.tp);
+        cmParts.push("→ "+m.cm.fn+"/("+(m.cm.fn+m.cm.tp)+")");
+      }else if(mid==="M13"){
+        cmParts.push("假正例="+m.cm.fp,"假负例="+m.cm.fn,"真正例="+m.cm.tp,"真负例="+m.cm.tn);
+        cmParts.push("→ ("+m.cm.fp+"+"+m.cm.fn+")/("+(m.cm.tp+m.cm.fp+m.cm.fn+m.cm.tn)+")");
+      }else if(mid==="M14"){
+        cmParts.push("真正例="+m.cm.tp,"假正例="+m.cm.fp);
+        cmParts.push("→ "+m.cm.tp+"/("+(m.cm.tp+m.cm.fp)+")");
+      }
+      if(cmParts.length){
+        formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
+      }
+    }
+    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(m.d||mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
   }
 
   // 知识图谱与记忆介入情况：两种方案分别统计
@@ -668,7 +680,7 @@ function renderReport(d){
       if(pcKa&&kgActive&&(pcKa.reason||pcKa.query_summary)){
         var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
         var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
-        var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
+        var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞（真阳性）":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞（假阳性）":"未找到（假阴性）";
         kgHtml+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
         kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
         kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
@@ -843,13 +855,29 @@ function renderReport(d){
     }
     function _metricCards(gp0,gp1,gp2,glabel,cat){
       const isVerify=cat==="verify";
+      function _absMetric(metric,key,desc){
+        if(!metric) return null;
+        if(metric.calculation_status!=="CALCULATED") return metric;
+        const method=metric.method||{};
+        const val=method[key];
+        if(val==null) return {calculation_status:"NO_DATA",reason_code:"NO_DATA",n:metric.n};
+        var cm=null;
+        if(key.endsWith("_kg")){
+          if(method.tp_kg!=null){cm={tp:method.tp_kg,fp:method.fp_kg,fn:method.fn_kg,tn:method.tn_kg};}
+        }else{
+          if(method.tp_n!=null){cm={tp:method.tp_n,fp:method.fp_n,fn:method.fn_n,tn:method.tn_n};}
+        }
+        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm};
+      }
       const hasNogk=(r.has_nogk!==false); // 默认 true（兼容旧报告）
       const groups=[
-        ...(hasNogk?[["① 价值结果","衡量知识图谱与记忆对漏洞判定准确性的净贡献",
-          [["M1",gp0.M1],["M4",gp0.M4],["M13",gp0.M13],["M14",gp0.M14]]]]:[]),
-        ["② 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
+        ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
+          [["M1",_absMetric(gp0.M1,"ba_kg","KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_kg","KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_kg","KG 条件下与基线对比的精确率")]]],
+        ...(hasNogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
+          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]]]:[]),
+        ["③ 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
           (isVerify||!hasNogk)?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
-        ...(!isVerify&&hasNogk?[["③ 成本效率","对比 KG 与 No-KG 的资源消耗",
+        ...(!isVerify&&hasNogk?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
           [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]]:[])
       ];
       return `${groups.map(g=>`<div style="margin-bottom:14px">
@@ -857,7 +885,7 @@ function renderReport(d){
           <span style="font-weight:700;font-size:15px">${g[0]}</span>
           <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
         </div>
-        <div class="mcards" style="display:grid;grid-template-columns:repeat(5,1fr);gap:12px">
+        <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
           ${g[2].map(m=>mCard(m[0],m[1])).join("")}
         </div>
       </div>`).join("")}`;

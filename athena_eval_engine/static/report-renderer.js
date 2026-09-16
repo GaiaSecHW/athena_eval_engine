@@ -23,61 +23,64 @@ function fmt(v,u){
     return s+'<span class="ci">'+(u==="tokens"?" tok":" steps")+'</span>';}
   return Number(v).toFixed(3);
 }
+const CONF_LABEL={TP:"真阳性",FP:"假阳性",FN:"假阴性",TN:"真阴性",NA:"未判定"};
+const STATUS_LABEL={CALCULATED:"已计算",NA:"未计算",NO_DATA:"无数据"};
+const RC_ALL={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效"};
 function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const a=Math.abs(v);
   if(a>=1e9)return(v/1e9).toFixed(2)+'B';
   if(a>=1e6)return(v/1e6).toFixed(2)+'M';
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M1:{n:"平衡准确率(BA)",short:"准确率",d:"平衡准确率=(真正例率+真负例率)/2",u:"ratio",
+  M1:{n:"平衡准确率",short:"准确率",d:"平衡准确率=(真正例率+真负例率)/2",u:"ratio",
      range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"随机",c:"amber"},{v:1,t:"全对",c:"green"}],
      interp:(v)=>v==null?"无基准，无法计算":v>=0.8?`准确率 ${(v*100).toFixed(1)}%`:v>=0.5?`准确率 ${(v*100).toFixed(1)}%`:`准确率 ${(v*100).toFixed(1)}%`,
      formula:"平衡准确率=(真正例率+真负例率)/2, 真正例率=真正例/(真正例+假负例), 真负例率=真负例/(真负例+假正例)",
      kgKey:"ba_kg",nogkKey:"ba_nogk"},
-  M13:{n:"误报率(FPR)",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计sink命中的基线项",u:"ratio",
+  M13:{n:"误报率",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计sink命中的基线项",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
      interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
      formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=sink命中的基线项（finding匹配+sink发现）",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
-  M14:{n:"精确率(Precision)",short:"精确率",d:"精确率=真正例/(真正例+假正例)",u:"ratio",
+  M14:{n:"精确率",short:"精确率",d:"精确率=真正例/(真正例+假正例)",u:"ratio",
      range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:1,t:"全对",c:"green"}],
      interp:(v)=>v==null?"无基准":v>=0.8?`精确率 ${(v*100).toFixed(1)}%`:`精确率 ${(v*100).toFixed(1)}%`,
      formula:"精确率=真正例/(真正例+假正例)",
      kgKey:"precision_kg",nogkKey:"precision_nogk"},
-  M4:{n:"漏报率(FNR)",short:"漏报率",d:"漏报率=假负例/(假负例+真正例)",u:"ratio",
+  M4:{n:"漏报率",short:"漏报率",d:"漏报率=假负例/(假负例+真正例)",u:"ratio",
      range:[{v:0,t:"无漏报",c:"green"},{v:0.5,t:"部分漏报",c:"amber"},{v:1,t:"全漏报",c:"red"}],
      interp:(v)=>v==null?"无基准":v===0?"无漏报":`漏报率 ${(v*100).toFixed(1)}%`,
      formula:"漏报率=假负例/(假负例+真正例)",
      kgKey:"fnr_kg",nogkKey:"fnr_nogk"},
-  M5:{n:"知识访问率(KAR)",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
+  M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 极低`,
      formula:"kg_count / total_tool_calls (知识查询次数 / 总工具调用次数)"},
-  M6:{n:"知识交付率(KDR)",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
+  M6:{n:"知识交付率",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识交付":v>=0.8?`知识交付率 ${v*100}%, 充分`:v>=0.5?`知识交付率 ${v*100}%, 部分`:`知识交付率 ${v*100}%, 不足`,
      formula:"successful_read_count / access_event_count (有效回复次数 / 总查询次数)"},
-  M7:{n:"行为偏移(JSD)",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
+  M7:{n:"行为偏移",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
      range:[{v:0,t:"无差异",c:"green"},{v:0.1,t:"轻微",c:"amber"},{v:0.3,t:"显著",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0.1?`行为偏移 ${v*100}%, 轻微`:v<0.3?`行为偏移 ${v*100}%, 明显`:`行为偏移 ${v*100}%, 显著`,
      formula:"median(JSD_i), JSD_i=(0.5*KL(P||M)+0.5*KL(Q||M))/ln2, M=(P+Q)/2, P/Q=工具使用概率分布"},
-  M8:{n:"Token变化(ΔToken)",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
+  M8:{n:"Token变化",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
      range:[{v:-1,t:"KG 更省",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更耗",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${fmtNum(Math.abs(v))} token`:v>0?`KG 多用 ${fmtNum(v)} token`:"token 消耗无差异",
      formula:"median(KG_tokens - NoKG_tokens)"},
-  M9:{n:"步数变化(ΔSteps)",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
+  M9:{n:"步数变化",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
      range:[{v:-1,t:"KG 更少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更多",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${fmtNum(Math.abs(v))} 步`:v>0?`KG 多 ${fmtNum(v)} 步`:"步数无差异",
      formula:"median(KG_steps - NoKG_steps)"},
-  M10:{n:"时长变化(ΔTime)",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
+  M10:{n:"时长变化",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
      range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${fmtDur(-v)}`:v>0?`KG 慢 ${fmtDur(v)}`:"时长无差异",
      formula:"median(KG_duration_ms - NoKG_duration_ms)"},
-  M11:{n:"记忆访问率(MAR)",short:"记忆访问",d:"Agent 工具调用中记忆读取所占比例（交互级）。衡量 Agent 对记忆的依赖程度。",u:"ratio",
+  M11:{n:"记忆访问率",short:"记忆访问",d:"Agent 工具调用中记忆读取所占比例（交互级）。衡量 Agent 对记忆的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(1)}%, 少量`:`记忆访问率 ${(v*100).toFixed(1)}%, 极低`,
      formula:"memory_read_count / total_tool_calls (记忆读取次数 / 总工具调用次数)"},
-  M12:{n:"记忆交付率(MDR)",short:"记忆交付",d:"记忆查询中成功读取的比例（交互级）。衡量记忆质量。",u:"ratio",
+  M12:{n:"记忆交付率",short:"记忆交付",d:"记忆查询中成功读取的比例（交互级）。衡量记忆质量。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到记忆交付":v>=0.8?`记忆交付率 ${v*100}%, 充分`:v>=0.5?`记忆交付率 ${v*100}%, 部分`:`记忆交付率 ${v*100}%, 不足`,
      formula:"successful_memory_read_count / memory_access_event_count (成功记忆读取 / 记忆读取次数)"}
@@ -85,7 +88,7 @@ const MI={
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
 function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
 function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(1):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(1):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
-function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
+function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${STATUS_LABEL[m.calculation_status]||m.calculation_status}<br><span style="font-size:14px">${RC_ALL[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
 
 function selectReportTab(button,paneId){
   document.querySelectorAll('[data-report-tab]').forEach(el=>{el.style.display=el.id===paneId?'block':'none';});
@@ -100,7 +103,7 @@ function renderReport(d){
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
     const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零"};
+    const RC={...RC_ALL,"NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间"};
     if(!m||m.calculation_status!=="CALCULATED"){
       const rc=m?m.reason_code||m.calculation_status:"无数据";
       const reason=RC[rc]||rc||"无数据";
@@ -299,7 +302,7 @@ function renderReport(d){
           if(pcKa&&(pcKa.reason||pcKa.query_summary)){
             var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
             var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
-            var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞(TP)":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞(FP)":"未找到(FN)";
+            var jText=pcKa.kg_judgment==="VULNERABILITY"?"漏洞（真阳性）":pcKa.kg_judgment==="NON_VULNERABILITY"?"非漏洞（假阳性）":"未找到（假阴性）";
             h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p3);border-radius:6px'>";
             h+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
             h+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
@@ -634,7 +637,7 @@ function renderReport(d){
           }
           var kgConf=c.confusion||"NA";
           var kgConfColor=kgConf==="TP"||kgConf==="TN"?"var(--green)":kgConf==="FP"||kgConf==="FN"?"var(--red)":"var(--gray)";
-          var kgConfBadge=`<span style="font-size:11px;font-weight:600;color:${kgConfColor}">${kgConf}</span>`;
+          var kgConfBadge=`<span style="font-size:11px;font-weight:600;color:${kgConfColor}">${CONF_LABEL[kgConf]||kgConf}</span>`;
           if(kgConf==="TP")kgTP++;else if(kgConf==="FP"&&c.sink_hit)kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN"&&c.sink_hit)kgTN++;else kgNA++;
           let nogkCell="";
           if(_hasNogk){
@@ -651,7 +654,7 @@ function renderReport(d){
             var nogkConf=c.nogk_confusion||"NA";
             var nogkConfColor=nogkConf==="TP"||nogkConf==="TN"?"var(--green)":nogkConf==="FP"||nogkConf==="FN"?"var(--red)":"var(--gray)";
             if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP"&&c.nogk_sink_hit)nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN"&&c.nogk_sink_hit)nogkTN++;else nogkNA++;
-            nogkCell=nogkCell.replace(/<\/td>$/,` ${nogkConfColor?`<span style="font-size:11px;font-weight:600;color:${nogkConfColor}">${nogkConf}</span>`:""}</td>`);
+            nogkCell=nogkCell.replace(/<\/td>$/,` ${nogkConfColor?`<span style="font-size:11px;font-weight:600;color:${nogkConfColor}">${CONF_LABEL[nogkConf]||nogkConf}</span>`:""}</td>`);
           }
           rows.push(`<tr>
             <td class="num">${idx}</td>
@@ -666,8 +669,8 @@ function renderReport(d){
       const kgDenom=kgTP+kgFP+kgFN+kgTN;
       const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
       const summary=_hasNogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（TP=${kgTP} FP=${kgFP} FN=${kgFN} TN=${kgTN}${kgNA?` NA=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（TP=${nogkTP} FP=${nogkFP} FN=${nogkFN} TN=${nogkTN}${nogkNA?` NA=${nogkNA}`:""}）</span></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（TP=${kgTP} FP=${kgFP} FN=${kgFN} TN=${kgTN}${kgNA?` NA=${kgNA}`:""}）</div>`;
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）</div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
         ${summary}

@@ -184,9 +184,9 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
         # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
         if confusion == "NA":
             _sink_info = case.get("sink_info", "")
-            _na_reason = "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。"
+            _na_reason = "Agent 未找到此漏洞（未判定），无 trace 数据，未进行 AI 分析。"
             if _sink_info:
-                _na_reason = f"Agent 未找到此漏洞（NA）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
+                _na_reason = f"Agent 未找到此漏洞（未判定）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
             result.append({
                 "case_id": case_id,
                 "kg_judgment": "NOT_FOUND",
@@ -209,12 +209,13 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
         judgment = "VULNERABILITY" if confusion in ("TP", "FP") else "NON_VULNERABILITY"
         impact = "POSITIVE" if confusion == "TP" else "NEGATIVE" if confusion == "FP" else "NEUTRAL"
         if confusion == "FN":
-            reason = (f"Agent 接触了漏洞代码但未提交 finding（FN）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
+            reason = (f"Agent 接触了漏洞代码但未提交 finding（假阴性）。漏洞类型: {case.get('vulnerability_type', '未知')}，"
                       f"源文件: {case.get('source_file', '未知')}。LLM 未启用，无法深入分析原因。")
         elif confusion == "TN":
-            reason = f"Agent 正确判定为非漏洞（TN）。LLM 未启用，未生成深入分析。"
+            reason = f"Agent 正确判定为非漏洞（真阴性）。LLM 未启用，未生成深入分析。"
         else:
-            reason = f"KG 判定: {confusion}（规则降级，LLM 未启用）"
+            _conf_label = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(confusion, confusion)
+            reason = f"KG 判定: {_conf_label}（规则降级，LLM 未启用）"
         result.append({
             "case_id": case_id,
             "kg_judgment": judgment,
@@ -306,16 +307,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
-    1. KG 是否识别此漏洞（TP=漏洞, FP=非漏洞, FN=找到但判错, NA=未找到）
+    1. KG 是否识别此漏洞（真阳性=漏洞, 假阳性=非漏洞, 假阴性=找到但判错, 未判定=未找到）
     2. Agent 向知识图谱与记忆问了什么
     3. 知识图谱与记忆返回了什么
     4. 对排查此漏洞是正向还是负向
 
     四种状态：
-    - TP: agent确认漏洞，基线是漏洞（正确）
-    - FP: agent确认漏洞，基线非漏洞（误报）
-    - FN: agent判非漏洞，基线是漏洞（找到但判错）
-    - NA: agent没找到，基线是漏洞（漏报）→ 跳过，无trace数据
+    - 真阳性: agent确认漏洞，基线是漏洞（正确）
+    - 假阳性: agent确认漏洞，基线非漏洞（误报）
+    - 假阴性: agent判非漏洞，基线是漏洞（找到但判错）
+    - 未判定: agent没找到，基线是漏洞（漏报）→ 跳过，无trace数据
     """
     import re
 
@@ -808,9 +809,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         _ki = case.get("knowledge_intervention")
         if confusion == "NA":
             _sink_info = case.get("sink_info", "")
-            _na_reason = "Agent 未找到此漏洞（NA），无 trace 数据，未进行 AI 分析。"
+            _na_reason = "Agent 未找到此漏洞（未判定），无 trace 数据，未进行 AI 分析。"
             if _sink_info:
-                _na_reason = f"Agent 未找到此漏洞（NA）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
+                _na_reason = f"Agent 未找到此漏洞（未判定）。Sink 匹配：{_sink_info}。无相关挖掘链数据。"
             results[_ci] = {
                 "case_id": case_id,
                 "kg_judgment": "NOT_FOUND",
@@ -959,12 +960,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         }
 
         # 根据 confusion + agent_validation 构建场景特定的问题
+        _nogk_label = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(nogk_confusion, nogk_confusion)
         if confusion == "TP":
             _case_q = (
                 "## 场景：Agent 找到并确认了漏洞\n"
                 "1. 为什么能挖到这个漏洞？Agent 的挖掘过程是如何一步步接触到漏洞代码的？\n"
                 "2. 知识与记忆是正向/负向/中性？Agent 的知识查询是否引导到了漏洞所在区域？"
-                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
+                + ("\n3. 与未启用知识图谱条件下的结果（" + _nogk_label + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FN":
             # FN: sink 命中 + LLM 确认是挖掘过程，但 agent 没有生成 finding
@@ -981,7 +983,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "## 场景：Agent 接触了漏洞代码但未提交 finding\n"
                 f"1. 为什么 Agent 没有为此漏洞生成 finding？Sink 分析结论：{_nf_reason}{_ki_hint}\n"
                 "2. Agent 的挖掘过程是否接触到了漏洞 sink 点？知识/记忆是否帮助或阻碍了这一过程？"
-                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
+                + ("\n3. 与未启用知识图谱条件下的结果（" + _nogk_label + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
         elif confusion == "FP":
             _case_q = (
@@ -995,7 +997,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "## 场景：基线非漏洞，Agent 正确排除或未报告\n"
                 "1. 为什么正确排除（或未报告）？Agent 是否接触过此区域？\n"
                 "2. 知识与记忆是正向/负向/中性？"
-                + ("\n3. 与未启用知识图谱条件下的结果（" + nogk_confusion + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
+                + ("\n3. 与未启用知识图谱条件下的结果（" + _nogk_label + "）对比，知识是否产生了差异化影响？" if has_nogk else "")
             )
 
         # token 估算 + 按 session 分组压缩：防止输入超限（不截断，用 LLM 逐 session 压缩）
@@ -1103,7 +1105,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "JSON 中包含以下内容：\n"
                 "1. baseline_vulnerability：基线漏洞信息（漏洞描述、类型、源文件、源函数）\n"
                 "2. kg_status：启用知识图谱与记忆条件下的挖掘结果\n"
-                "   - confusion（判定结果）：TP=找到并确认了漏洞；FN=接触了漏洞代码但未提交 finding；FP=基线不是漏洞但报告为漏洞；TN=基线不是漏洞且正确排除\n"
+                "   - confusion（判定结果）：真阳性=找到并确认了漏洞；假阴性=接触了漏洞代码但未提交 finding；假阳性=基线不是漏洞但报告为漏洞；真阴性=基线不是漏洞且正确排除\n"
                 "   - agent_validation：Agent 自身的判定，CONFIRMED=确认是漏洞，FALSE_POSITIVE=判定不是漏洞\n"
                 "3. matched_finding：Agent 提交的漏洞报告中与基线匹配的那条（Agent 没找到时为 null）\n"
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
