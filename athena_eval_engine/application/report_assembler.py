@@ -777,6 +777,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     _total = len(case_results)
     _pending_llm = []  # (ci, prompt, case_id, kg_judgment, case_interactions, case_mem_interactions, _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki)
     for _ci, case in enumerate(case_results):
+        if progress_cb and _ci % 5 == 0:
+            progress_cb(_ci, _total)
         case_id = case.get("case_id", "")
         description = case.get("description", "")
         vuln_type = case.get("vulnerability_type", "")
@@ -1143,7 +1145,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
     # 串行准备完成，报告 fast-path 完成数
     _fast_done = _total - len(_pending_llm)
-    if progress_cb and _fast_done > 0:
+    if progress_cb:
         progress_cb(_fast_done, _total)
 
     # Phase 2: 并行执行 LLM 调用
