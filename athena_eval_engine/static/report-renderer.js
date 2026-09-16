@@ -7,7 +7,7 @@ function $(i){return document.getElementById(i);}
 function el(h){const d=document.createElement("div");d.innerHTML=h;return d.firstChild;}
 
 function fmtDur(ms){
-  if(ms===null||ms===undefined)return'<span class="na">NA</span>';
+  if(ms===null||ms===undefined||isNaN(ms))return'<span class="na">NA</span>';
   var abs=Math.abs(ms);var sign=ms<0?'-':'';
   if(abs>=3600000){var h=Math.floor(abs/3600000);var m=Math.floor((abs%3600000)/60000);return sign+h+'<span class="ci">时</span> '+m+'<span class="ci">分</span>';}
   if(abs>=60000){var m2=Math.floor(abs/60000);var s=Math.floor((abs%60000)/1000);return sign+m2+'<span class="ci">分</span> '+s+'<span class="ci">秒</span>';}
@@ -15,7 +15,7 @@ function fmtDur(ms){
   return sign+Math.round(abs)+'<span class="ci">ms</span>';
 }
 function fmt(v,u){
-  if(v===null||v===undefined)return'<span class="na">NA</span>';
+  if(v===null||v===undefined||isNaN(v))return'<span class="na">NA</span>';
   if(u==="ratio")return (v*100).toFixed(1)+'<span class="ci">%</span>';
   if(u==="ms")return fmtDur(v);
   if(u==="steps"||u==="tokens"){const a=Math.abs(v);let s;
@@ -23,7 +23,7 @@ function fmt(v,u){
     return s+'<span class="ci">'+(u==="tokens"?" tok":" steps")+'</span>';}
   return Number(v).toFixed(3);
 }
-function fmtNum(v){const a=Math.abs(v);
+function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const a=Math.abs(v);
   if(a>=1e9)return(v/1e9).toFixed(2)+'B';
   if(a>=1e6)return(v/1e6).toFixed(2)+'M';
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
@@ -83,9 +83,9 @@ const MI={
      formula:"successful_memory_read_count / memory_access_event_count (成功记忆读取 / 记忆读取次数)"}
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
-function dc(v,u){if(v===null||v===undefined)return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
-function ci(m){if(!m||m.ci_lower===null||m.ci_lower===undefined)return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(1):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(1):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
-function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
+function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
+function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(1):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(1):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
+function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
 
 function selectReportTab(button,paneId){
   document.querySelectorAll('[data-report-tab]').forEach(el=>{el.style.display=el.id===paneId?'block':'none';});
@@ -108,6 +108,7 @@ function renderReport(d){
       return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">${reason}${nNote}</div></div>`;
     }
     const v=m.estimate;
+    if(v==null||isNaN(v))return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">estimate 缺失</div></div>`;
     const interp=mi.interp?mi.interp(v):"";
     let col="var(--gray)";
     if(mi.range){
@@ -209,8 +210,8 @@ function renderReport(d){
       html+="<span class='bdg b-COMPLETED' style='font-size:13px'>有效返回 "+stats.success+"</span>";
       html+="<span class='bdg b-FAILED' style='font-size:13px'>返回失败 "+stats.fail+"</span>";
       html+="<span class='bdg b-CREATED' style='font-size:13px'>知识盲区 "+stats.blind+"</span>";
-      if(accessRate!==null)html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(1)+"%</span>";
-      if(deliveryRate!==null)html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(1)+"%</span>";
+      if(accessRate!=null&&!isNaN(accessRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(1)+"%</span>";
+      if(deliveryRate!=null&&!isNaN(deliveryRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(1)+"%</span>";
       html+="</div>";
     }
     return html;
