@@ -34,10 +34,10 @@ const MI={
      interp:(v)=>v==null?"无基准，无法计算":v>=0.8?`准确率 ${(v*100).toFixed(1)}%`:v>=0.5?`准确率 ${(v*100).toFixed(1)}%`:`准确率 ${(v*100).toFixed(1)}%`,
      formula:"平衡准确率=(真正例率+真负例率)/2, 真正例率=真正例/(真正例+假负例), 真负例率=真负例/(真负例+假正例)",
      kgKey:"ba_kg",nogkKey:"ba_nogk"},
-  M13:{n:"误报率(FPR)",short:"误报率",d:"误报率=假正例/(假正例+真负例)",u:"ratio",
+  M13:{n:"误报率(FPR)",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计agent挖掘过的sink",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
      interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
-     formula:"误报率=假正例/(假正例+真负例)",
+     formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=agent挖掘过的sink匹配基线项",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
   M14:{n:"精确率(Precision)",short:"精确率",d:"精确率=真正例/(真正例+假正例)",u:"ratio",
      range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:1,t:"全对",c:"green"}],
@@ -133,8 +133,8 @@ function renderReport(d){
         cmParts.push("假负例="+m.cm.fn,"真正例="+m.cm.tp);
         cmParts.push("→ "+m.cm.fn+"/("+(m.cm.fn+m.cm.tp)+")");
       }else if(mid==="M13"){
-        cmParts.push("假正例="+m.cm.fp,"真负例="+m.cm.tn);
-        cmParts.push("→ "+m.cm.fp+"/("+(m.cm.fp+m.cm.tn)+")");
+        cmParts.push("假正例="+m.cm.fp,"假负例="+m.cm.fn,"真正例="+m.cm.tp,"真负例="+m.cm.tn);
+        cmParts.push("→ ("+m.cm.fp+"+"+m.cm.fn+")/("+(m.cm.tp+m.cm.fp+m.cm.fn+m.cm.tn)+")");
       }else if(mid==="M14"){
         cmParts.push("真正例="+m.cm.tp,"假正例="+m.cm.fp);
         cmParts.push("→ "+m.cm.tp+"/("+(m.cm.tp+m.cm.fp)+")");

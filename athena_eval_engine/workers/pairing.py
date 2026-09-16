@@ -80,8 +80,8 @@ class TaskPairMatcherImpl:
                                       PairMatchStatus.INCOMPLETE))
                 continue
             k, n = kg[0], nogk[0]
-            # P0-2 双侧 benchmark_item 一致
-            if (k.benchmark_item_id or "") != (n.benchmark_item_id or "") or not k.benchmark_item_id:
+            # P0-2 双侧 benchmark_item 一致（双方都为空时允许配对，已按 task_id 分组保证同任务）
+            if (k.benchmark_item_id or "") != (n.benchmark_item_id or ""):
                 pairs.append(TaskPair(f"tp-{eid}-{tid}", eid, tid, k.benchmark_item_id,
                                       n.task_run_id, k.task_run_id, PairMatchStatus.UNMATCHED))
                 continue

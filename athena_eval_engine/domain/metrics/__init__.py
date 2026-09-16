@@ -31,6 +31,10 @@ class PairView:
     delta_token: float | None
     delta_steps: float | None
     delta_time: float | None
+    kg_confusion: str = ""   # TP/FP/FN/TN/NA from sink_matcher
+    nogk_confusion: str = ""
+    kg_mined: bool = False   # agent 是否挖掘了此 sink
+    nogk_mined: bool = False
 
 
 @dataclass
@@ -116,13 +120,26 @@ def _fnr(cm, kg=True) -> float:
     return fn / (fn + tp)
 
 
-def _fpr(cm, kg=True) -> float:
-    """FPR = FP/(FP+TN)。分母为 0 时返回 0（没有负样本就没有误报）。"""
-    fp = cm["fp_kg"] if kg else cm["fp_n"]
-    tn = cm["tn_kg"] if kg else cm["tn_n"]
-    if fp + tn == 0:
+def _fpr(pairs: list[PairView], kg=True) -> float:
+    """FPR = (FP_mined + FN) / (TP + FP_mined + FN + TN_mined)。
+    分母=agent挖掘过的sink匹配基线项，分子=识别错误项(FP+FN)。
+    分母为 0 时返回 0。"""
+    tp = fp_mined = fn = tn_mined = 0
+    for p in pairs:
+        conf = p.kg_confusion if kg else p.nogk_confusion
+        mined = p.kg_mined if kg else p.nogk_mined
+        if conf == "TP":
+            tp += 1
+        elif conf == "FP" and mined:
+            fp_mined += 1
+        elif conf == "FN":
+            fn += 1
+        elif conf == "TN" and mined:
+            tn_mined += 1
+    denom = tp + fp_mined + fn + tn_mined
+    if denom == 0:
         return 0.0
-    return fp / (fp + tn)
+    return (fp_mined + fn) / denom
 
 
 def _precision(cm, kg=True) -> float:
@@ -198,26 +215,45 @@ def calc_m4(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[Stati
 
 # ===== M13 ΔFPR =====
 def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    cm = _confusion(pairs)
-    est = _fpr(cm, True) - _fpr(cm, False)
-    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _fpr(_confusion(ps), True) - _fpr(_confusion(ps), False),
+    # 无 confusion 标签时（task-level 回退）返回 NA，不静默返回 0
+    if not any(p.kg_confusion or p.nogk_confusion for p in pairs):
+        return (MetricResult("M13", None, "ratio", len(pairs), "primary_analysis",
+                             calculation_status=NA, reason_code="NO_CONFUSION_LABELS",
+                             method={}),
+                [StatisticalResult("M13", "gt_stratified_paired_bootstrap",
+                                   testing_tier="PRIMARY", scope_type="METRIC",
+                                   status=NA, reason_code="NO_CONFUSION_LABELS")])
+    est = _fpr(pairs, True) - _fpr(pairs, False)
+    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _fpr(ps, True) - _fpr(ps, False),
                                         B=2000, seed=seed)
     test_name = "gt_stratified_paired_bootstrap"
     if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
-        br = paired_bootstrap(pairs, lambda ps: _fpr(_confusion(ps), True) - _fpr(_confusion(ps), False),
+        br = paired_bootstrap(pairs, lambda ps: _fpr(ps, True) - _fpr(ps, False),
                               B=2000, seed=seed)
         test_name = "paired_bootstrap"
     status = CALCULATED if br.status == "CALCULATED" else NA
-    fpr_kg = _fpr(cm, True); fpr_nogk = _fpr(cm, False)
+    fpr_kg = _fpr(pairs, True); fpr_nogk = _fpr(pairs, False)
     m13_est = est if status == CALCULATED else None
+    # 统计挖掘过的混淆矩阵（用于 method 字典展示）
+    tp_kg = fp_kg = fn_kg = tn_kg = 0
+    tp_n = fp_n = fn_n = tn_n = 0
+    for p in pairs:
+        if p.kg_confusion == "TP": tp_kg += 1
+        elif p.kg_confusion == "FP" and p.kg_mined: fp_kg += 1
+        elif p.kg_confusion == "FN": fn_kg += 1
+        elif p.kg_confusion == "TN" and p.kg_mined: tn_kg += 1
+        if p.nogk_confusion == "TP": tp_n += 1
+        elif p.nogk_confusion == "FP" and p.nogk_mined: fp_n += 1
+        elif p.nogk_confusion == "FN": fn_n += 1
+        elif p.nogk_confusion == "TN" and p.nogk_mined: tn_n += 1
     return (MetricResult("M13", m13_est, "ratio", len(pairs), "primary_analysis",
                          calculation_status=status, reason_code=br.reason_code,
                          method={"uncertainty": test_name, "valid": br.valid,
                                  "fpr_kg": fpr_kg, "fpr_nogk": fpr_nogk,
-                                 "tp_kg": cm["tp_kg"], "fp_kg": cm["fp_kg"],
-                                 "fn_kg": cm["fn_kg"], "tn_kg": cm["tn_kg"],
-                                 "tp_n": cm["tp_n"], "fp_n": cm["fp_n"],
-                                 "fn_n": cm["fn_n"], "tn_n": cm["tn_n"]}),
+                                 "tp_kg": tp_kg, "fp_kg": fp_kg,
+                                 "fn_kg": fn_kg, "tn_kg": tn_kg,
+                                 "tp_n": tp_n, "fp_n": fp_n,
+                                 "fn_n": fn_n, "tn_n": tn_n}),
             [StatisticalResult("M13", test_name,
                                ci_lower=br.ci_lower, ci_upper=br.ci_upper,
                                testing_tier="PRIMARY", scope_type="METRIC",
@@ -387,7 +423,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     为 None 时回退到 pairs（任务级）。"""
     from concurrent.futures import ThreadPoolExecutor
     mrs = []; srs = []
-    cp = confusion_pairs or pairs  # M1-M4 用 item 级 pair
+    cp = confusion_pairs if confusion_pairs is not None else pairs  # M1-M4/M13/M14 用 item 级 pair
     # M5/M6 无 bootstrap，瞬时完成，直接算
     # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
@@ -395,7 +431,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M1/M4/M13 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
+    # M1/M4/M13/M14 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
     with ThreadPoolExecutor(max_workers=4) as pool:
         fut_m1 = pool.submit(calc_m1, cp, seed=seed)
         fut_m4 = pool.submit(calc_m4, cp, seed=seed)
