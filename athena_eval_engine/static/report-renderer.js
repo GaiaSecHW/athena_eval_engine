@@ -268,9 +268,19 @@ function renderReport(d){
     kgHtml+="</div>";
   }
 
-  // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
+  // 混淆矩阵汇总（与 M13 误报率、匹配明细一致）
   var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
+  var kgTP=0,kgFP=0,kgFN=0,kgTN=0,kgNA=0;
+  caseResults.forEach(function(c){
+    var conf=c.confusion||"NA";
+    if(conf==="TP")kgTP++;else if(conf==="FP"&&c.sink_hit)kgFP++;else if(conf==="FN")kgFN++;else if(conf==="TN"&&c.sink_hit)kgTN++;else kgNA++;
+  });
+  var kgFprNum=kgFP+kgFN,kgFprDen=kgTP+kgFP+kgFN+kgTN;
+  var kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
+  kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（分子="+kgFprNum+"=假阳性+假阴性 分母="+kgFprDen+"=sink命中的case数）</span></div>";
+
+  // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
   var hasAnyPcAnalysis=pcAnalysis.length>0;
   if(caseResults.length&&(kgActive||memActive||hasAnyPcAnalysis)){
     function _renderCaseCard(c,idx){
@@ -718,9 +728,13 @@ function renderReport(d){
       if(!rows.length) return "";
       const kgDenom=kgTP+kgFP+kgFN+kgTN;
       const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
+      const kgFprNum=kgFP+kgFN,kgFprDen=kgDenom;
+      const nogkFprNum=nogkFP+nogkFN,nogkFprDen=nogkDenom;
+      const kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
+      const nogkFprStr=nogkFprDen>0?(nogkFprNum/nogkFprDen*100).toFixed(1)+"%":"—";
       const summary=_hasNogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分子=${kgTP} 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<span style="margin-left:16px">No-KG 分子=${nogkTP} 分母=${nogkDenom}（真阳性=${nogkTP} 假阳性=${nogkFP} 假阴性=${nogkFN} 真阴性=${nogkTN}${nogkNA?` 未判定=${nogkNA}`:""}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">分子=命中数(TP) 分母=sink命中的case数（不含sink未命中的未判定）</div></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 分子=${kgTP} 分母=${kgDenom}（真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">分子=命中数(TP) 分母=sink命中的case数（不含sink未命中的未判定）</div></div>`;
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（分子=${kgFprNum}=假阳性${kgFP}+假阴性${kgFN} 分母=${kgFprDen}=sink命中的case数）<span style="margin-left:16px">No-KG 误报率=${nogkFprStr}（分子=${nogkFprNum}=假阳性${nogkFP}+假阴性${nogkFN} 分母=${nogkFprDen}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}（不含sink未命中的未判定）</div></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（分子=${kgFprNum}=假阳性${kgFP}+假阴性${kgFN} 分母=${kgFprDen}=sink命中的case数）<div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}（不含sink未命中的未判定）</div></div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
         ${summary}
