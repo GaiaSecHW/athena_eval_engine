@@ -859,8 +859,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 related_sessions = set()
 
         # 从 mining_actions 提取关联 session（覆盖所有场景：chain_actions 或 trace_finding_process）
-        if mining_actions and not related_sessions:
-            related_sessions = {a.get("session_id", "") for a in mining_actions if a.get("session_id")}
+        # chain_sessions 保存了截断前的全部 session_id（chain_actions 截断到 200 条后补充）
+        if not related_sessions:
+            if case.get("chain_sessions"):
+                related_sessions = set(case["chain_sessions"])
+            elif mining_actions:
+                related_sessions = {a.get("session_id", "") for a in mining_actions if a.get("session_id")}
 
         # 知识/记忆交互扩展到关联 session
         if related_sessions:

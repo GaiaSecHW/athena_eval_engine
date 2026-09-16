@@ -28,10 +28,12 @@ def _evid(evs) -> str | None:
 
 def _truncate_chain_actions(case: dict, limit: int = 200) -> dict:
     """截断 case_result 中的 chain_actions 到 limit 条（LLM 只用前 200 条）。
-    同一条链的行为会跨 28+ case 重复，未截断时单 outcome_fact 可达 44MB。"""
+    同一条链的行为会跨 28+ case 重复，未截断时单 outcome_fact 可达 44MB。
+    保留全部 session_id 到 chain_sessions（related_sessions 提取需要）。"""
     ca = case.get("chain_actions")
     if isinstance(ca, list) and len(ca) > limit:
         case = dict(case)  # 不修改原对象
+        case["chain_sessions"] = list({a.get("session_id", "") for a in ca if a.get("session_id")})
         case["chain_actions"] = ca[:limit]
     return case
 
