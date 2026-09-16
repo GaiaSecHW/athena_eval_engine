@@ -175,10 +175,9 @@ def _run_bg_resume(evaluation_id: str):
 
 
 @app.get("/health")
-def health():
-    with _running_lock:
-        running = len(_running_futures)
-    return {"status": "ok", "running_tasks": running}
+async def health():
+    # async 走事件循环不走线程池；不加锁避免竞争，len() 在 CPython 下原子
+    return {"status": "ok", "running_tasks": len(_running_futures)}
 
 
 @app.get("/api/v1/evaluations/running")
@@ -852,7 +851,7 @@ def _static_report_path(evaluation_id: str) -> str:
     return os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
 
 
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 
 @app.api_route("/reports/{evaluation_id}.html", methods=["GET", "HEAD"])
@@ -904,3 +903,13 @@ def get_pipeline(evaluation_id: str):
                 "pairs": pairs, "derived": derived, "metrics": metrics}
     finally:
         conn.close()
+
+
+# ===== SPA catch-all：必须最后注册，确保不拦截已有路由 =====
+@app.get("/{path:path}")
+def serve_spa(path: str):
+    if path.startswith("api/") or path.startswith("reports/") or path == "health":
+        raise HTTPException(404)
+    html_path = os.path.join(os.path.dirname(__file__), "..", "static", "dashboard.html")
+    with open(html_path, "r", encoding="utf-8") as f:
+        return HTMLResponse(f.read())

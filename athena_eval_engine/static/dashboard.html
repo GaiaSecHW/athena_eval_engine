@@ -125,8 +125,9 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 <body>
 <div class="wrap">
   <header><div class="title" id="h-title">知识测评</div><div class="sub" id="h-sub"></div><div class="sp"></div>
-    <button class="ghost" onclick="renderCreate()">+ 新建评测</button>
-    <button class="ghost" onclick="render()">刷新</button>
+    <button class="ghost" onclick="Router.navigate('/create')">+ 新建评测</button>
+    <button class="ghost" onclick="Router.navigate('/system')">系统</button>
+    <button class="ghost" onclick="Router.handle()">刷新</button>
     <button class="ghost" id="theme-btn" onclick="toggleTheme()" style="font-size:18px;padding:8px 12px">🌙</button>
   </header>
   <main><div id="view"></div></main>
@@ -155,6 +156,35 @@ function fmtMtime(mt){if(!mt)return'-';const d=new Date(mt*1000+8*3600000);const
 function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
 async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
 async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
+
+// ===== 客户端路由器（History API） =====
+const Router={
+  base:'',
+  init(){
+    if(location.pathname.indexOf('/eval')===0)this.base='/eval';
+    window.addEventListener('popstate',function(){Router.handle();});
+    this.handle();
+  },
+  navigate(path){
+    history.pushState(null,'',this.base+path);
+    this.handle();
+  },
+  handle(){
+    var path=location.pathname.substring(this.base.length)||'/';
+    updateNavActive(path);
+    if(path==='/'||path===''){renderEvals();}
+    else if(path.indexOf('/evaluations/')===0){
+      var id=path.split('/')[2];
+      if(id)selEv(id);else renderEvals();
+    }
+    else if(path==='/create'){renderCreate();}
+    else if(path==='/system'){renderSystem();}
+    else{renderEvals();}
+  }
+};
+function updateNavActive(path){
+  document.querySelectorAll('header button.ghost').forEach(function(b){b.classList.remove('nav-active');});
+}
 
 async function render(){
   const v=$("view");v.innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载中…</h3></div>';
@@ -203,7 +233,7 @@ function renderEvList(){
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
       '</span>':'';
-    return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="selEv(\''+e.evaluation_id+'\')">'+
+    return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="Router.navigate(\'/evaluations/'+e.evaluation_id+'\')">'+
       '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
       '<div class="ev-meta"><span class="bdg b-'+badge+'">'+(e.status||'-')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
@@ -239,7 +269,7 @@ async function selEv(id){
     // FAILED: 直接显示错误 + 重试
     if(s.status==="FAILED"){
       var errMsg=s.error_message||"无详细错误信息";
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
@@ -275,7 +305,7 @@ async function selEv(id){
       // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
       if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
-      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
@@ -307,7 +337,7 @@ async function selEv(id){
     }
   }catch(e){}
   // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
   try{
     // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
     const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
@@ -317,12 +347,12 @@ async function selEv(id){
     }
   }catch(e){}
   try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
-  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
+  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
 }
 function loadIframeReport(id){
   var rep=$("view");
   rep.style.overflow='hidden';
-  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
+  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
 }
 function retryEval(eid){
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
@@ -330,7 +360,7 @@ function retryEval(eid){
     risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
-      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
       jget('/api/v1/evaluations/'+eid+'/report').then(function(){}).catch(function(){});
       F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
         if(d.status==='QUEUED'||d.status==='RUNNING'){
@@ -359,8 +389,8 @@ function deleteEval(eid,name){
     onConfirm:function(){
   F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
     if(d.status==='ok'){
-      renderEvals();
-      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="renderEvals()">返回列表</button></div>';
+      Router.navigate('/');
+      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="Router.navigate('/')">返回列表</button></div>';
     }else{
       alert('删除失败: '+JSON.stringify(d));
     }
@@ -465,7 +495,7 @@ function selectReportTab(button,paneId){
 }
 
 function renderReport(d){
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
   var rep=$("rep-content");
   rep.style.overflowY='auto';
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
@@ -909,7 +939,7 @@ async function renderCreate(){
   sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
   _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
   _vbCases=null;_vcCases=null;_vcTasks=null;_vcKey="";
-  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="renderEvals()">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
+  $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="Router.navigate('/')">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:16px">
       <div class="card" id="kg-col"></div>
@@ -1116,7 +1146,7 @@ async function runEval(){
   if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("nogk",sel.nogk.verifyTrace,sel.nogk.verifyTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
   try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,vc_source_project_name:sel.bsrc==='vuln_center'?(sel.vcProjName||undefined):undefined,vc_source_task_name:sel.bsrc==='vuln_center'?(sel.vcTaskName||undefined):undefined,entries:entries});
     $("run-st").textContent="✅ 评测已创建，排队中…";
-    activeId=r.evaluation_id;renderEvals();setTimeout(selEv,500,r.evaluation_id);
+    activeId=r.evaluation_id;Router.navigate('/evaluations/'+r.evaluation_id);
     // selEv 内部已启动轮询，不再重复轮询
   }
   catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}}
@@ -1133,7 +1163,7 @@ if(DEBUG) window.addEventListener("message",function(ev){
   else if(d.action==="delete"&&d.evaluation_id){deleteEval(d.evaluation_id,d.evaluation_id);}
 });
 
-render();
+Router.init();
 </script>
 </body>
 </html>
