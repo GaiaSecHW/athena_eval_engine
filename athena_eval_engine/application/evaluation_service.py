@@ -328,7 +328,7 @@ def create(req: CreateRequest):
 
 
 def _db_query(fn, _retries=8):
-    """短连接执行 DB 操作。连接断开时重连重试。"""
+    """从连接池取连接执行 DB 操作。ping 检测 + 断连重试双重保障。"""
     import pymysql
     last_err = None
     for attempt in range(_retries):

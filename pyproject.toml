@@ -7,6 +7,7 @@ dependencies = [
     "fastapi>=0.110",
     "pydantic>=2",
     "pymysql>=1.1",
+    "DBUtils>=3.1",
     "cryptography>=42",
     "PyYAML>=6",
     "numpy>=1.26",
