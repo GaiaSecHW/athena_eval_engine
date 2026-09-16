@@ -35,6 +35,39 @@ _llm_semaphore = threading.Semaphore(_MAX_CONCURRENCY)
 _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
+# 从 400 错误中收集的 max context tokens 和 chars/token 换算率
+_max_context_tokens = None
+_chars_per_token = 3.0  # 默认值，400 错误后用实际数据更新
+
+def get_max_context_tokens():
+    """返回从 400 错误中收集的 max context tokens，未收集时返回 None。"""
+    return _max_context_tokens
+
+def get_chars_per_token():
+    """返回 chars/token 换算率，默认 3.0，400 错误后用实际数据更新。"""
+    return _chars_per_token
+
+def _collect_max_tokens(error_text, messages):
+    """从 LLM 400 错误响应中解析 max context tokens 和实际 token 数，
+    结合当时 messages 的字符数计算 chars/token 换算率。"""
+    global _max_context_tokens, _chars_per_token
+    import re
+    # 提取 max context tokens: "maximum context length is 131072 tokens"
+    m = re.search(r'maximum context (?:length|window) is (\d+) tokens', error_text, re.IGNORECASE)
+    if not m:
+        m = re.search(r'max_?context_?(?:length|tokens|window)\D{0,5}(\d{4,})', error_text, re.IGNORECASE)
+    if m:
+        _max_context_tokens = int(m.group(1))
+    # 提取实际 token 数: "your messages resulted in 150000 tokens"
+    m2 = re.search(r'(?:resulted in|have )(\d+) tokens', error_text, re.IGNORECASE)
+    if m2:
+        actual_tokens = int(m2.group(1))
+        msg_chars = sum(len(str(msg.get("content", ""))) for msg in messages)
+        if actual_tokens > 0 and msg_chars > 0:
+            _chars_per_token = msg_chars / actual_tokens
+    if _max_context_tokens:
+        log("LLM", f"从 400 错误中收集 max_context_tokens={_max_context_tokens} chars_per_token={_chars_per_token:.2f}")
+
 
 def reset_token_usage():
     """重置 token 计数器（评测开始前调用）。"""
@@ -167,6 +200,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
             if status != 200:
                 data = resp.read().decode("utf-8")
                 err_preview = data[:500]
+                if status == 400:
+                    _collect_max_tokens(data, messages)
                 log("LLM", f"HTTP {status} from {base}: {err_preview}")
                 conn.close()
                 conn = None

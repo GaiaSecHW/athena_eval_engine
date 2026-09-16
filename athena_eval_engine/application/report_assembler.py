@@ -1003,8 +1003,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             )
 
         # token 估算 + 按 session 分组压缩：防止输入超限（不截断，用 LLM 逐 session 压缩）
+        _mt = llm_mod.get_max_context_tokens()
+        _cpt = llm_mod.get_chars_per_token()
+        # token 数 × chars/token 换算率 × 70%（留 system prompt + response 空间）
+        _char_limit = int(_mt * _cpt * 0.7) if _mt else 840000
         _data_str = json.dumps(data, ensure_ascii=False)
-        if len(_data_str) > 840000:  # ~280k tokens，400k 上下文的 70%
+        if len(_data_str) > _char_limit:
             log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，按 session 压缩 mining_actions...")
             # 1. mining_actions 按 session_id 分组，每组单独用 LLM 压缩成摘要（缓存复用）
             _actions = data.get("mining_actions", [])
@@ -1075,27 +1079,62 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             _data_str = json.dumps(data, ensure_ascii=False)
             log("KG_ANALYSIS", f"压缩后 {len(_data_str)} chars")
 
-            # 压缩后仍超限 → 跳过 LLM，规则降级
-            if len(_data_str) > 840000:
-                log("KG_ANALYSIS", f"压缩后仍超限 ({len(_data_str)} chars)，跳过 LLM，规则降级")
-                _cl = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(confusion, confusion)
-                results[_ci] = {
-                    "case_id": case_id,
-                    "kg_judgment": kg_judgment,
-                    "query_summary": "数据量过大，无法进行 AI 分析" if case_interactions else "无知识查询",
-                    "knowledge_summary": "",
-                    "impact": "NEUTRAL",
-                    "reason": f"KG 判定: {_cl}（挖掘链数据过大，LLM 跳过，规则生成）",
-                    "interactions": case_interactions,
-                    "memory_interactions": case_mem_interactions,
-                    "sink_analysis": _sink_analysis,
-                    "no_finding_reason": _no_finding_reason,
-                    "knowledge_intervention": _ki,
-                    "nogk_sink_analysis": _nogk_sink_analysis,
-                    "nogk_no_finding_reason": _nogk_no_finding_reason,
-                    "nogk_knowledge_intervention": _nogk_ki,
-                }
-                continue
+            # 压缩后仍超限 → 分批聚合压缩（不截断，多轮压缩直到 fit）
+            if len(_data_str) > _char_limit:
+                _batch_sys_prompt = {"role": "system", "content": (
+                    "你是漏洞挖掘过程分析员。将多个会话的挖掘过程摘要合并成一个总摘要。\n\n"
+                    "# 合并目标\n"
+                    "保留以下信息：\n"
+                    "1. 知识/记忆查询的完整问答：Agent 查询了什么、得到什么回答、后续做了什么\n"
+                    "2. 漏洞接触链：Agent 从哪个入口开始、如何一步步接触到漏洞代码\n"
+                    "3. 判定决策点：Agent 提交漏洞报告、排除漏洞、验证结果的依据\n"
+                    "4. 各会话间的调用关系：哪个会话调用了哪个会话、为什么\n\n"
+                    '只返回 JSON：{"mining_summary": "<=3000字中文，按时间线描述完整挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
+                )}
+                _round = 0
+                while len(_data_str) > _char_limit:
+                    _round += 1
+                    _actions = data.get("mining_actions", [])
+                    if not _actions or len(_actions) <= 1:
+                        break
+                    # 分批：累计到 80% 最大量就切一批
+                    _batches = []
+                    _batch = []
+                    _batch_size = 0
+                    for a in _actions:
+                        _a_str = json.dumps(a, ensure_ascii=False)
+                        if _batch_size + len(_a_str) > _char_limit * 0.8 and _batch:
+                            _batches.append(_batch)
+                            _batch = []
+                            _batch_size = 0
+                        _batch.append(a)
+                        _batch_size += len(_a_str)
+                    if _batch:
+                        _batches.append(_batch)
+                    if len(_batches) <= 1:
+                        break  # 只有一批，无法再压缩
+                    log("KG_ANALYSIS", f"第{_round}轮分批聚合: {len(_actions)} 摘要 → {len(_batches)} 批")
+                    def _compress_batch(batch):
+                        try:
+                            _r = llm_mod.chat_json(
+                                [_batch_sys_prompt, {"role": "user", "content": json.dumps(batch, ensure_ascii=False)}],
+                                temperature=0, max_tokens=8000)
+                            if isinstance(_r, dict):
+                                return _r
+                            return {"mining_summary": str(_r)[:500]}
+                        except Exception as _e:
+                            log("KG_ANALYSIS", f"批次压缩失败: {_e}")
+                            return {"mining_summary": "压缩失败"}
+                    from concurrent.futures import ThreadPoolExecutor, as_completed
+                    from .evaluation_service import get_runtime_workers
+                    with ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"]) as pool:
+                        futures = [pool.submit(_compress_batch, batch) for batch in _batches]
+                        _compressed = []
+                        for fut in as_completed(futures):
+                            _compressed.append(fut.result())
+                    data["mining_actions"] = _compressed
+                    _data_str = json.dumps(data, ensure_ascii=False)
+                    log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
 
         _nogk_desc = ("10. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
                        "11. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
