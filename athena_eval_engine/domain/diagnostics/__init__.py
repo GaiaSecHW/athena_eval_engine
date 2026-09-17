@@ -38,7 +38,7 @@ def diagnose(metrics: list, stats: list, *, kar_ref=0.8, kdr_ref=0.9,
 
     m5, s5 = get("M5"); m6, s6 = get("M6")
     m11, s11 = get("M11"); m12, s12 = get("M12")
-    m1, s1 = get("M1"); m7, s7 = get("M7"); m8, s8 = get("M8")
+    m7, s7 = get("M7"); m8, s8 = get("M8")
 
     # 知识访问率低
     if m5 and m5.estimate is not None and s5 and s5.ci_upper is not None:
@@ -59,14 +59,7 @@ def diagnose(metrics: list, stats: list, *, kar_ref=0.8, kdr_ref=0.9,
                                      "知识访问后的交付链路存在问题",
                                      "检查 wiki 内容路径 / reject_patterns 是否过严"))
 
-    # 知识交付率高 但 准确率无变化
-    if m6 and m6.estimate is not None and s6 and s6.ci_lower is not None and s6.ci_lower > kdr_ref:
-        if m1 and _dir(m1, s1) == "≈":
-            hits.append(DiagnosticHit("D3", f"知识交付率={m6.estimate:.1%}(高) 但 准确率无变化",
-                                     "知识已交付，但尚未观察到总体任务收益",
-                                     "检查知识是否对齐目标 finding；考虑 benchmark 质量"))
-
-    # ===== 记忆诊断（与知识诊断同结构：D8/D9/D10）=====
+    # ===== 记忆诊断（与知识诊断同结构：D8/D9）=====
     # D8: 记忆访问率低
     if m11 and m11.estimate is not None and s11 and s11.ci_upper is not None:
         if s11.ci_upper < kar_ref:
@@ -83,29 +76,16 @@ def diagnose(metrics: list, stats: list, *, kar_ref=0.8, kdr_ref=0.9,
                                      "记忆读取后的内容获取存在问题",
                                      "检查记忆文件路径 / 记忆内容是否为空"))
 
-    # D10: 记忆交付率高 但 准确率无变化
-    if m12 and m12.estimate is not None and s12 and s12.ci_lower is not None and s12.ci_lower > kdr_ref:
-        if m1 and _dir(m1, s1) == "≈":
-            hits.append(DiagnosticHit("D10", f"记忆交付率={m12.estimate:.1%}(高) 但 准确率无变化",
-                                      "记忆已成功读取，但尚未观察到总体任务收益",
-                                      "检查记忆内容是否对齐目标漏洞；跨会话经验是否有效复用"))
-
-    # 行为偏移大 + 准确率提升 / 回归率上升
+    # 行为偏移大
     if m7 and m7.estimate is not None and m7.estimate >= jsd_shift:
-        if m1 and _dir(m1, s1) == "↑":
-            hits.append(DiagnosticHit("D4", f"行为偏移={m7.estimate:.2f}(大) + 准确率提升",
-                                     "工具行为变化伴随总体效果提升",
-                                     "可继续观察行为变化模式"))
-    # 准确率提升 但 token 大增
-    if m1 and _dir(m1, s1) == "↑" and m8 and m8.estimate is not None and s8 and s8.ci_lower is not None and s8.ci_lower > 0:
-        hits.append(DiagnosticHit("D6", f"准确率提升 + token增加{m8.estimate:.0f}",
-                                 "效果提升但资源成本增加",
-                                 "评估收益/成本比是否可接受"))
+        hits.append(DiagnosticHit("D4", f"行为偏移={m7.estimate:.2f}(大)",
+                                 "工具行为变化显著",
+                                 "可继续观察行为变化模式"))
 
-    # 准确率无变化 但 token 增加
-    if m1 and _dir(m1, s1) == "≈" and m8 and m8.estimate is not None and s8 and s8.ci_lower is not None and s8.ci_lower > 0:
-        hits.append(DiagnosticHit("D7", f"准确率无变化 + token增加{m8.estimate:.0f}",
-                                 "未观察到明显收益，但产生额外成本",
-                                 "检查 KG 是否真正被使用"))
+    # token 增加
+    if m8 and m8.estimate is not None and s8 and s8.ci_lower is not None and s8.ci_lower > 0:
+        hits.append(DiagnosticHit("D6", f"token增加{m8.estimate:.0f}",
+                                 "产生额外资源成本",
+                                 "评估收益/成本比是否可接受"))
 
     return hits

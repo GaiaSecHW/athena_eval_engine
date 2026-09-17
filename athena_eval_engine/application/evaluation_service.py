@@ -1491,7 +1491,7 @@ def run(evaluation_id: str) -> dict:
             except Exception: pass
         try:
             cur.execute("ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN "
-                        "('M1','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13','M14'))")
+                        "('M5','M6','M7','M8','M9','M10','M11','M12','M13'))")
         except Exception: pass  # 可能已存在
         # calculation_method 列从 VARCHAR(128) 改为 TEXT（method 字典含 KG/No-KG 绝对值，JSON 超长）
         try:

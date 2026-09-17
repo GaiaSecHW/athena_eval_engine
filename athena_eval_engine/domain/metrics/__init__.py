@@ -72,56 +72,6 @@ class StatisticalResult:
     details: dict = field(default_factory=dict)
 
 
-def _confusion(pairs: list[PairView]) -> dict:
-    """dataset-level 2x2：A=Preserved,B=Regressed,C=Recovered,D=PersistedFailure。
-    confusion: TP/FP/FN/TN per condition（dataset 聚合）。"""
-    A = B = C = D = 0
-    tp_kg = fp_kg = fn_kg = tn_kg = 0
-    tp_n = fp_n = fn_n = tn_n = 0
-    for p in pairs:
-        ks, ns = p.kg_success, p.nogk_success
-        if ns and ks: A += 1
-        elif ns and not ks: B += 1
-        elif (not ns) and ks: C += 1
-        else: D += 1
-        # KG confusion
-        if p.kg_outcome == "SUCCESS":
-            if p.gt == "VULNERABLE": tp_kg += 1
-            else: fp_kg += 1
-        else:
-            if p.gt == "VULNERABLE": fn_kg += 1
-            else: tn_kg += 1
-        if p.nogk_outcome == "SUCCESS":
-            if p.gt == "VULNERABLE": tp_n += 1
-            else: fp_n += 1
-        else:
-            if p.gt == "VULNERABLE": fn_n += 1
-            else: tn_n += 1
-    return dict(A=A, B=B, C=C, D=D,
-                tp_kg=tp_kg, fp_kg=fp_kg, fn_kg=fn_kg, tn_kg=tn_kg,
-                tp_n=tp_n, fp_n=fp_n, fn_n=fn_n, tn_n=tn_n)
-
-
-def _ba(cm, kg=True) -> float:
-    """BA = (TPR+TNR)/2。TPR=TP/(TP+FN), TNR=TN/(TN+FP)。分母为 0 时该率为 0。"""
-    tp = cm["tp_kg"] if kg else cm["tp_n"]
-    fn = cm["fn_kg"] if kg else cm["fn_n"]
-    tn = cm["tn_kg"] if kg else cm["tn_n"]
-    fp = cm["fp_kg"] if kg else cm["fp_n"]
-    tpr = tp / (tp + fn) if (tp + fn) > 0 else 0.0
-    tnr = tn / (tn + fp) if (tn + fp) > 0 else 0.0
-    return (tpr + tnr) / 2
-
-
-def _fnr(cm, kg=True) -> float:
-    """FNR = FN/(FN+TP)。分母为 0 时返回 0（没有正样本就没有漏报）。"""
-    fn = cm["fn_kg"] if kg else cm["fn_n"]
-    tp = cm["tp_kg"] if kg else cm["tp_n"]
-    if fn + tp == 0:
-        return 0.0
-    return fn / (fn + tp)
-
-
 def _fpr(pairs: list[PairView], kg=True) -> float:
     """FPR = (FP_sink + FN) / (TP + FP_sink + FN + TN_sink)。
     分母=sink命中的基线项（chains存在），分子=识别错误项(FP+FN)。
@@ -142,77 +92,6 @@ def _fpr(pairs: list[PairView], kg=True) -> float:
     if denom == 0:
         return 0.0
     return (fp_hit + fn) / denom
-
-
-def _precision(cm, kg=True) -> float:
-    """Precision = TP/(TP+FP)。分母为 0 时返回 0（没有报出就没有精确率）。"""
-    tp = cm["tp_kg"] if kg else cm["tp_n"]
-    fp = cm["fp_kg"] if kg else cm["fp_n"]
-    if tp + fp == 0:
-        return 0.0
-    return tp / (tp + fp)
-
-
-# ===== M1 ΔBA =====
-def calc_m1(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    cm = _confusion(pairs)
-    est = _ba(cm, True) - _ba(cm, False)
-    # 先尝试 GT 分层 bootstrap；单 GT 类别时回退到非分层 bootstrap
-    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _ba(_confusion(ps), True) - _ba(_confusion(ps), False),
-                                        B=2000, seed=seed)
-    test_name = "gt_stratified_paired_bootstrap"
-    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
-        br = paired_bootstrap(pairs, lambda ps: _ba(_confusion(ps), True) - _ba(_confusion(ps), False),
-                              B=2000, seed=seed)
-        test_name = "paired_bootstrap"
-    status = CALCULATED if br.status == "CALCULATED" else NA
-    m1_est = est if status == CALCULATED else None
-    ba_kg = _ba(cm, True); ba_nogk = _ba(cm, False)
-    return (MetricResult("M1", m1_est, "ratio", len(pairs), "primary_analysis",
-                         calculation_status=status,
-                         reason_code=br.reason_code,
-                         method={"uncertainty": test_name,
-                                 "bootstrap_valid_replicates": br.valid,
-                                 "ba_kg": ba_kg, "ba_nogk": ba_nogk,
-                                 "tp_kg": cm["tp_kg"], "fp_kg": cm["fp_kg"],
-                                 "fn_kg": cm["fn_kg"], "tn_kg": cm["tn_kg"],
-                                 "tp_n": cm["tp_n"], "fp_n": cm["fp_n"],
-                                 "fn_n": cm["fn_n"], "tn_n": cm["tn_n"]}),
-            [StatisticalResult("M1", test_name,
-                               ci_lower=br.ci_lower, ci_upper=br.ci_upper,
-                               testing_tier="PRIMARY", scope_type="METRIC",
-                               status=status, reason_code=br.reason_code,
-                               details={"bootstrap_B": br.requested, "valid": br.valid, "attempts": br.attempts})])
-
-
-# ===== M4 ΔFNR =====
-def calc_m4(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    cm = _confusion(pairs)
-    est = _fnr(cm, True) - _fnr(cm, False)
-    # 先尝试 GT 分层 bootstrap；单 GT 类别时回退到非分层 bootstrap
-    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _fnr(_confusion(ps), True) - _fnr(_confusion(ps), False),
-                                        B=2000, seed=seed)
-    test_name = "gt_stratified_paired_bootstrap"
-    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
-        br = paired_bootstrap(pairs, lambda ps: _fnr(_confusion(ps), True) - _fnr(_confusion(ps), False),
-                              B=2000, seed=seed)
-        test_name = "paired_bootstrap"
-    status = CALCULATED if br.status == "CALCULATED" else NA
-    fnr_kg = _fnr(cm, True); fnr_nogk = _fnr(cm, False)
-    m4_est = est if status == CALCULATED else None
-    return (MetricResult("M4", m4_est, "ratio", len(pairs), "primary_analysis",
-                         calculation_status=status, reason_code=br.reason_code,
-                         method={"uncertainty": test_name, "valid": br.valid,
-                                 "fnr_kg": fnr_kg, "fnr_nogk": fnr_nogk,
-                                 "tp_kg": cm["tp_kg"], "fp_kg": cm["fp_kg"],
-                                 "fn_kg": cm["fn_kg"], "tn_kg": cm["tn_kg"],
-                                 "tp_n": cm["tp_n"], "fp_n": cm["fp_n"],
-                                 "fn_n": cm["fn_n"], "tn_n": cm["tn_n"]}),
-            [StatisticalResult("M4", test_name,
-                               ci_lower=br.ci_lower, ci_upper=br.ci_upper,
-                               testing_tier="PRIMARY", scope_type="METRIC",
-                               status=status, reason_code=br.reason_code,
-                               details={"valid": br.valid, "attempts": br.attempts})])
 
 
 # ===== M13 ΔFPR =====
@@ -257,35 +136,6 @@ def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[Stat
                                  "tp_n": tp_n, "fp_n": fp_n,
                                  "fn_n": fn_n, "tn_n": tn_n}),
             [StatisticalResult("M13", test_name,
-                               ci_lower=br.ci_lower, ci_upper=br.ci_upper,
-                               testing_tier="PRIMARY", scope_type="METRIC",
-                               status=status, reason_code=br.reason_code,
-                               details={"valid": br.valid, "attempts": br.attempts})])
-
-
-# ===== M14 ΔPrecision =====
-def calc_m14(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    cm = _confusion(pairs)
-    est = _precision(cm, True) - _precision(cm, False)
-    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _precision(_confusion(ps), True) - _precision(_confusion(ps), False),
-                                        B=2000, seed=seed)
-    test_name = "gt_stratified_paired_bootstrap"
-    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
-        br = paired_bootstrap(pairs, lambda ps: _precision(_confusion(ps), True) - _precision(_confusion(ps), False),
-                              B=2000, seed=seed)
-        test_name = "paired_bootstrap"
-    status = CALCULATED if br.status == "CALCULATED" else NA
-    prec_kg = _precision(cm, True); prec_nogk = _precision(cm, False)
-    m14_est = est if status == CALCULATED else None
-    return (MetricResult("M14", m14_est, "ratio", len(pairs), "primary_analysis",
-                         calculation_status=status, reason_code=br.reason_code,
-                         method={"uncertainty": test_name, "valid": br.valid,
-                                 "precision_kg": prec_kg, "precision_nogk": prec_nogk,
-                                 "tp_kg": cm["tp_kg"], "fp_kg": cm["fp_kg"],
-                                 "fn_kg": cm["fn_kg"], "tn_kg": cm["tn_kg"],
-                                 "tp_n": cm["tp_n"], "fp_n": cm["fp_n"],
-                                 "fn_n": cm["fn_n"], "tn_n": cm["tn_n"]}),
-            [StatisticalResult("M14", test_name,
                                ci_lower=br.ci_lower, ci_upper=br.ci_upper,
                                testing_tier="PRIMARY", scope_type="METRIC",
                                status=status, reason_code=br.reason_code,
@@ -429,7 +279,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     为 None 时回退到 pairs（任务级）。"""
     from concurrent.futures import ThreadPoolExecutor
     mrs = []; srs = []
-    cp = confusion_pairs if confusion_pairs is not None else pairs  # M1-M4/M13/M14 用 item 级 pair
+    cp = confusion_pairs if confusion_pairs is not None else pairs  # M13 用 item 级 pair
     # M5/M6 无 bootstrap，瞬时完成，直接算
     # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
@@ -437,25 +287,19 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M1/M4/M13/M14 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
+    # M13 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
     with ThreadPoolExecutor(max_workers=4) as pool:
-        fut_m1 = pool.submit(calc_m1, cp, seed=seed)
-        fut_m4 = pool.submit(calc_m4, cp, seed=seed)
         fut_m13 = pool.submit(calc_m13, cp, seed=seed)
-        fut_m14 = pool.submit(calc_m14, cp, seed=seed)
         fut_m7 = pool.submit(calc_m7, pairs, seed=seed)
         fut_m8 = pool.submit(calc_m8, pairs, seed=seed)
         fut_m9 = pool.submit(calc_m9, pairs, seed=seed)
         fut_m10 = pool.submit(calc_m10, pairs, seed=seed)
-        m1, s1 = fut_m1.result()
-        m4, s4 = fut_m4.result()
         m13, s13 = fut_m13.result()
-        m14, s14 = fut_m14.result()
         m7, s7 = fut_m7.result()
         m8, s8 = fut_m8.result()
         m9, s9 = fut_m9.result()
         m10, s10 = fut_m10.result()
     # 按顺序排列
-    mrs = [m1, m4, m13, m14, m5, m6, m7, m8, m9, m10, m11, m12]
-    srs = s1 + s4 + s13 + s14 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
+    mrs = [m13, m5, m6, m7, m8, m9, m10, m11, m12]
+    srs = s13 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
     return {"metric_results": mrs, "statistical_results": srs}

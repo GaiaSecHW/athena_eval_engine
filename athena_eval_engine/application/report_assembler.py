@@ -54,7 +54,7 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
             "method": m.method or {},
         }
 
-    p0 = {mid: _entry(mid) for mid in ("M1", "M4", "M13", "M14")}
+    p0 = {mid: _entry(mid) for mid in ("M13",)}
     p1 = {mid: _entry(mid) for mid in ("M5", "M6", "M7", "M11", "M12")}
     p2 = {mid: _entry(mid) for mid in ("M8", "M9", "M10")}
 

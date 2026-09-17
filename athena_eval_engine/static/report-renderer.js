@@ -46,26 +46,11 @@ function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M1:{n:"平衡准确率",short:"准确率",d:"平衡准确率=(真正例率+真负例率)/2",u:"ratio",
-     range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"随机",c:"amber"},{v:1,t:"全对",c:"green"}],
-     interp:(v)=>v==null?"无基准，无法计算":v>=0.8?`准确率 ${(v*100).toFixed(1)}%`:v>=0.5?`准确率 ${(v*100).toFixed(1)}%`:`准确率 ${(v*100).toFixed(1)}%`,
-     formula:"平衡准确率=(真正例率+真负例率)/2, 真正例率=真正例/(真正例+假负例), 真负例率=真负例/(真负例+假正例)",
-     kgKey:"ba_kg",nogkKey:"ba_nogk"},
   M13:{n:"误报率",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计sink命中的基线项",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
      interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
      formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=sink命中的基线项（finding匹配+sink发现）",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
-  M14:{n:"精确率",short:"精确率",d:"精确率=真正例/(真正例+假正例)",u:"ratio",
-     range:[{v:0,t:"全错",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:1,t:"全对",c:"green"}],
-     interp:(v)=>v==null?"无基准":v>=0.8?`精确率 ${(v*100).toFixed(1)}%`:`精确率 ${(v*100).toFixed(1)}%`,
-     formula:"精确率=真正例/(真正例+假正例)",
-     kgKey:"precision_kg",nogkKey:"precision_nogk"},
-  M4:{n:"漏报率",short:"漏报率",d:"漏报率=假负例/(假负例+真正例)",u:"ratio",
-     range:[{v:0,t:"无漏报",c:"green"},{v:0.5,t:"部分漏报",c:"amber"},{v:1,t:"全漏报",c:"red"}],
-     interp:(v)=>v==null?"无基准":v===0?"无漏报":`漏报率 ${(v*100).toFixed(1)}%`,
-     formula:"漏报率=假负例/(假负例+真正例)",
-     kgKey:"fnr_kg",nogkKey:"fnr_nogk"},
   M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
      interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(2)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(2)}%, 少量`:`知识访问率 ${(v*100).toFixed(2)}%, 极低`,
@@ -142,20 +127,9 @@ function renderReport(d){
     // 混淆矩阵值：显示计算过程
     if(m.cm){
       var cmParts=[];
-      if(mid==="M1"){
-        cmParts.push("真正例="+m.cm.tp,"假负例="+m.cm.fn,"真负例="+m.cm.tn,"假正例="+m.cm.fp);
-        var tpr=m.cm.tp+m.cm.fn>0?(m.cm.tp/(m.cm.tp+m.cm.fn)*100).toFixed(1):"0.0";
-        var tnr=m.cm.tn+m.cm.fp>0?(m.cm.tn/(m.cm.tn+m.cm.fp)*100).toFixed(1):"0.0";
-        cmParts.push("→ 真正例率="+tpr+"%, 真负例率="+tnr+"%");
-      }else if(mid==="M4"){
-        cmParts.push("假负例="+m.cm.fn,"真正例="+m.cm.tp);
-        cmParts.push("→ "+m.cm.fn+"/("+(m.cm.fn+m.cm.tp)+")");
-      }else if(mid==="M13"){
+      if(mid==="M13"){
         cmParts.push("假正例="+m.cm.fp,"假负例="+m.cm.fn,"真正例="+m.cm.tp,"真负例="+m.cm.tn);
         cmParts.push("→ ("+m.cm.fp+"+"+m.cm.fn+")/("+(m.cm.tp+m.cm.fp+m.cm.fn+m.cm.tn)+")");
-      }else if(mid==="M14"){
-        cmParts.push("真正例="+m.cm.tp,"假正例="+m.cm.fp);
-        cmParts.push("→ "+m.cm.tp+"/("+(m.cm.tp+m.cm.fp)+")");
       }
       if(cmParts.length){
         formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
@@ -684,9 +658,9 @@ function renderReport(d){
       const hasNogk=r.has_nogk!==false; // 默认 true（兼容旧报告）
       const groups=[
         ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
-          [["M1",_absMetric(gp0.M1,"ba_kg","KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_kg","KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_kg","KG 条件下与基线对比的精确率")]]],
+          [["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")]]],
         ...(hasNogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
-          [["M1",_absMetric(gp0.M1,"ba_nogk","No-KG 条件下与基线对比的平衡准确率")],["M4",_absMetric(gp0.M4,"fnr_nogk","No-KG 条件下与基线对比的漏报率")],["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")],["M14",_absMetric(gp0.M14,"precision_nogk","No-KG 条件下与基线对比的精确率")]]]]:[]),
+          [["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")]]]]:[]),
         ["③ 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
           (isVerify||!hasNogk)?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
         ...(!isVerify&&hasNogk?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
