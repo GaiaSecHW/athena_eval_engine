@@ -809,6 +809,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         _sink_analysis = case.get("sink_analysis", "")
         _no_finding_reason = case.get("no_finding_reason", "")
         _ki = case.get("knowledge_intervention")
+        _finding_session = case.get("session_id", "") or case.get("finding_session", "")
+        _sink_hit_sessions = case.get("sink_hit_sessions", [])
         if confusion == "NA":
             _sink_info = case.get("sink_info", "")
             _na_reason = "Agent 未找到此漏洞（未判定），无 trace 数据，未进行 AI 分析。"
@@ -829,6 +831,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
+                "finding_session": _finding_session,
+                "sink_hit_sessions": _sink_hit_sessions,
             }
             continue
 
@@ -895,6 +899,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
+                "finding_session": _finding_session,
+                "sink_hit_sessions": _sink_hit_sessions,
             }
             continue
 
@@ -917,6 +923,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
+                "finding_session": _finding_session,
+                "sink_hit_sessions": _sink_hit_sessions,
             }
             continue
 
@@ -935,6 +943,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "kg_judgment": kg_judgment,
                 "matched_finding_id": matched_fid or None,
                 "agent_validation": _agent_vr,
+                "finding_session": _finding_session,
             },
             "matched_finding": ({
                 "title": finding_info["title"],
@@ -1180,7 +1189,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         # 收集 LLM 任务，稍后并行执行
         _pending_llm.append((_ci, prompt, case_id, kg_judgment, confusion, case_interactions,
                              case_mem_interactions, _sink_analysis, _no_finding_reason,
-                             _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki))
+                             _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki,
+                             _finding_session, _sink_hit_sessions))
 
     # 串行准备完成，报告 fast-path 完成数
     _fast_done = _total - len(_pending_llm)
