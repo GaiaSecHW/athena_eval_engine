@@ -41,7 +41,7 @@ LLM_ENABLED = os.environ.get("EVAL_LLM_ENABLED", str(LLM.get("enabled", _DEFAULT
 
 # V-Bench
 VBENCH = _cfg.get("vbench", {})
-VBENCH_API_URL = os.environ.get("VBENCH_API_URL", VBENCH.get("api_url", "https://secflow.ai.icsl.huawei.com/vbench/api/v1"))
+VBENCH_API_URL = os.environ.get("VBENCH_API_URL", VBENCH.get("api_url", "http://vbench-api:80/api/v1"))
 
 # 漏洞中心（Chimera，secflow-platform-vuln）— V-Bench 测评集的原始数据源
 VULN_CENTER = _cfg.get("vuln_center", {})
@@ -49,8 +49,8 @@ VULN_CENTER_API_URL = os.environ.get("EVAL_VULN_CENTER_API_URL", VULN_CENTER.get
 
 # 平台 API
 PLATFORM = _cfg.get("platform", {})
-PROJECT_API = os.environ.get("PROJECT_API", PLATFORM.get("project_api", "http://127.0.0.1:18081"))
-SCHEDULE_API = os.environ.get("SCHEDULE_API", PLATFORM.get("schedule_api", "http://127.0.0.1:18082"))
+PROJECT_API = os.environ.get("PROJECT_API", PLATFORM.get("project_api", "http://secflow-platform-project:80"))
+SCHEDULE_API = os.environ.get("SCHEDULE_API", PLATFORM.get("schedule_api", "http://chirmera-platform-schedule:80"))
 # 漏洞 case 平台 API。集群内使用 Service 地址（与 vuln_center 同源）。
 VULN_API_URL = os.environ.get("VULN_API_URL", PLATFORM.get(
     "vuln_api_url", "http://secflow-platform-vuln:80"))

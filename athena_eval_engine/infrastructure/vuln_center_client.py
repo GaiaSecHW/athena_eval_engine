@@ -14,18 +14,32 @@ description 渲染完全移植 V-Bench builder 的
 """
 from __future__ import annotations
 import json
+import time
 import urllib.parse
 import urllib.request
+from urllib.error import URLError
 from ..config_loader import VULN_CENTER_API_URL, PLATFORM_TOKEN
 
 
-def _get(url: str, params: dict | None = None) -> dict | list:
-    """带 bearer token 的 GET，返回 JSON。沿用 vbench_client 的 urllib 同步风格。"""
+def _get(url: str, params: dict | None = None, retries: int = 3,
+         retry_delay: float = 5.0) -> dict | list:
+    """带 bearer token 的 GET，返回 JSON。沿用 vbench_client 的 urllib 同步风格。
+
+    内部 Service 短暂抖动时指数退避重试。
+    """
     if params:
         url = f"{url}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        return json.loads(r.read().decode("utf-8"))
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
+            with urllib.request.urlopen(req, timeout=20) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    raise last_err
 
 
 def list_vuln_cases(project_id: str, source_task_id: str | None = None,
@@ -173,10 +187,7 @@ def search_vuln_cases(project_id: str, search_term: str, page_size: int = 20) ->
         "page": 1,
         "page_size": page_size,
     }
-    url = f"{VULN_CENTER_API_URL}?{urllib.parse.urlencode(params)}"
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-    with urllib.request.urlopen(req, timeout=20) as r:
-        data = json.loads(r.read().decode("utf-8"))
+    data = _get(VULN_CENTER_API_URL, params)
     return data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
 
 
