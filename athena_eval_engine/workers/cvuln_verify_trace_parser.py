@@ -192,6 +192,20 @@ class CVulnVerifyTraceParser(TraceParser):
         eid = f"{session_id}-{line_no}"
         evs = []
 
+        if t == "session":
+            # session 行可能含 parent_id（类似 WebVulnVerify 的 session_meta）
+            sess = d.get("session", d)
+            if isinstance(sess, dict):
+                pid = str(sess.get("parent_id") or sess.get("parentId") or "")
+                if pid:
+                    evs.append(RawEvent(
+                        event_type="SESSION_START", session_id=session_id,
+                        trace_id=trace_id, event_id=eid, timestamp_ms=ts,
+                        tool_name="", input_json={"parent_id": pid},
+                        output_json=None, raw_type="session",
+                    ))
+            return evs
+
         if t == "message":
             msg = d.get("message", {})
             if not isinstance(msg, dict):
@@ -383,6 +397,12 @@ class CVulnVerifyTraceParser(TraceParser):
                 sg['memory_reads'] = []
             if 'case_id' not in sg:
                 sg['case_id'] = ''
+
+            # SESSION_START: 提取 parent_id → parent_map
+            if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
+                pid = str(ev.input_json.get("parent_id") or "")
+                if pid:
+                    graph['parent_map'][sid] = pid
 
             if not ev.is_tool_call():
                 continue

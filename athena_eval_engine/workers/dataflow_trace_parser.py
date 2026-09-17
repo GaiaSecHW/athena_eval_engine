@@ -460,6 +460,129 @@ class DataflowVulnScanTraceParser(TraceParser):
 
         graph['edges'] = filtered_edges
 
+        # ---- Build parent_map from session_id naming rules ----
+        # Format: dvs_xxx/d{depth}-{func}-{analysisType}-{param}-{index}[-error{N}]
+        # Three dimensions of parent-child:
+        # 1. Cross-depth: d00→d01→d02 (function call chain)
+        # 2. Same-depth analysis flow: taint/fptrack → vuln-judge → vuln-pattern-enhancement
+        #    → vuln-false-positive-judge → vuln-report
+        # 3. Error retry: -errorN → original (non-error)
+        if 'parent_map' not in graph:
+            graph['parent_map'] = {}
+        _ANALYSIS_FLOW = ['taint', 'fptrack', 'vuln-judge',
+                          'vuln-pattern-enhancement', 'vuln-false-positive-judge', 'vuln-report']
+        _INITIAL_TYPES = {'taint', 'fptrack'}
+
+        _session_meta: dict[str, dict] = {}
+        _depth_groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
+
+        for sid in graph['sessions']:
+            if sid == 'dvs-intake-result':
+                continue
+            parts = sid.split('/')
+            if len(parts) < 2 or not parts[0].startswith('dvs_'):
+                continue
+            dvs_run = parts[0]
+            rest = parts[1]
+
+            m_depth = re.match(r'd(\d+)-(.+)', rest)
+            if not m_depth:
+                continue
+            depth = int(m_depth.group(1))
+            rest2 = m_depth.group(2)
+
+            # Extract error number suffix
+            error_num = 0
+            err_m = re.search(r'-error(\d+)$', rest2)
+            if err_m:
+                error_num = int(err_m.group(1))
+                rest2 = rest2[:err_m.start()]
+
+            # Identify analysis type (search longest first to avoid partial matches)
+            analysis_type = ''
+            for at in sorted(_ANALYSIS_FLOW, key=len, reverse=True):
+                marker = f'-{at}-'
+                if marker in rest2:
+                    analysis_type = at
+                    break
+            if not analysis_type:
+                for at in sorted(_ANALYSIS_FLOW, key=len, reverse=True):
+                    if rest2.endswith(f'-{at}'):
+                        analysis_type = at
+                        break
+
+            # Split function name from the rest
+            func = rest2
+            if analysis_type:
+                marker = f'-{analysis_type}-'
+                idx = rest2.find(marker)
+                if idx > 0:
+                    func = rest2[:idx]
+                else:
+                    idx = rest2.rfind(f'-{analysis_type}')
+                    if idx > 0:
+                        func = rest2[:idx]
+
+            _session_meta[sid] = {
+                'dvs_run': dvs_run, 'depth': depth, 'func': func,
+                'analysis_type': analysis_type, 'error_num': error_num,
+            }
+            _depth_groups[dvs_run][depth].append(sid)
+
+        for sid, info in _session_meta.items():
+            dvs_run = info['dvs_run']
+            depth = info['depth']
+
+            # 1. Error retry → parent is non-error original
+            if info['error_num'] > 0:
+                for other_sid, other_info in _session_meta.items():
+                    if (other_info['dvs_run'] == dvs_run and
+                        other_info['depth'] == depth and
+                        other_info['func'] == info['func'] and
+                        other_info['analysis_type'] == info['analysis_type'] and
+                        other_info['error_num'] == 0):
+                        graph['parent_map'][sid] = other_sid
+                        break
+                continue
+
+            # 2. Same-depth analysis flow → parent is previous analysis type
+            if info['analysis_type'] and info['analysis_type'] not in _INITIAL_TYPES:
+                at_idx = _ANALYSIS_FLOW.index(info['analysis_type'])
+                for prev_idx in range(at_idx - 1, -1, -1):
+                    prev_at = _ANALYSIS_FLOW[prev_idx]
+                    for other_sid, other_info in _session_meta.items():
+                        if (other_info['dvs_run'] == dvs_run and
+                            other_info['depth'] == depth and
+                            other_info['func'] == info['func'] and
+                            other_info['analysis_type'] == prev_at and
+                            other_info['error_num'] == 0):
+                            graph['parent_map'][sid] = other_sid
+                            break
+                    if sid in graph['parent_map']:
+                        break
+                if sid in graph['parent_map']:
+                    continue
+
+            # 3. Cross-depth → parent is at depth N-1
+            if depth > 0:
+                prev_sids = _depth_groups[dvs_run].get(depth - 1, [])
+                if len(prev_sids) == 1:
+                    graph['parent_map'][sid] = prev_sids[0]
+                elif len(prev_sids) > 1:
+                    # Use shared files to find closest parent
+                    best_parent = None
+                    best_count = -1
+                    for p_sid in prev_sids:
+                        shared = 0
+                        for _fid, f_sids in graph.get('file_to_sessions', {}).items():
+                            if sid in f_sids and p_sid in f_sids:
+                                shared += 1
+                        if shared > best_count:
+                            best_count = shared
+                            best_parent = p_sid
+                    if best_parent and best_count >= 0:
+                        graph['parent_map'][sid] = best_parent
+
         graph['finding_to_session'] = finding_to_session
         return graph
 

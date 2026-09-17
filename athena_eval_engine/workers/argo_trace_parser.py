@@ -422,6 +422,16 @@ class ArgoTraceParser(TraceParser):
                         if s1 != s2:
                             graph['edges'][s1].add(s2)
 
+        # 3. parent_map: investigate session 是 verify session 的上级
+        #    同一 finding_key 出现在 investigate 和 verify → investigate 是父
+        for key, inv_sids in graph['finding_to_investigate'].items():
+            ver_sids = graph['finding_to_verify'].get(key, set())
+            if not inv_sids or not ver_sids:
+                continue
+            inv_first = sorted(inv_sids)[0]
+            for vsid in ver_sids:
+                graph['parent_map'][vsid] = inv_first
+
         return graph
 
     def _extract_action(self, ev):

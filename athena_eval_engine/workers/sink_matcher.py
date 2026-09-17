@@ -220,11 +220,12 @@ def collect_chain_findings(chain_sessions: set[str], findings: list[dict]) -> li
 
 def build_session_chain(chain_sessions: set[str], events: list,
                         sink_hit_sessions: list[str] | None = None,
-                        finding_sessions: list[str] | None = None) -> list[dict]:
-    """构建 session 链（按时间排序），标注每个 session 是否命中 sink 或包含 finding。
+                        finding_sessions: list[str] | None = None,
+                        session_graph: dict | None = None) -> list[dict]:
+    """构建 session 链，按调用关系（parent_map）排序，标注 sink/finding。
 
-    返回: [{session_id, has_sink, has_finding, first_ts}, ...] 按时间从早到晚排序。
-    链的起点（最早）在头部，sink/finding session 在尾部或中间，用 has_sink/has_finding 标注。
+    有 parent_map 时按父子调用关系排序（根→子→孙），无 parent_map 时退化为时间排序。
+    返回: [{session_id, has_sink, has_finding, first_ts}, ...]
     """
     if not chain_sessions:
         return []
@@ -242,15 +243,49 @@ def build_session_chain(chain_sessions: set[str], events: list,
         if sid not in session_first_ts or ts < session_first_ts[sid]:
             session_first_ts[sid] = ts
 
-    result = []
+    # 从 session_graph 提取 parent_map（有方向的父子关系）
+    parent_map: dict[str, str] = {}
+    if session_graph:
+        parent_map = session_graph.get("parent_map", {})
+
+    # 构建链内的 children 映射（仅限 chain_sessions 内的 parent→child）
+    children: dict[str, list[str]] = {}
+    has_parent_in_chain: set[str] = set()
     for sid in chain_sessions:
-        result.append({
+        pid = parent_map.get(sid)
+        if pid and pid in chain_sessions:
+            children.setdefault(pid, []).append(sid)
+            has_parent_in_chain.add(sid)
+
+    result: list[dict] = []
+
+    def _make_entry(sid: str) -> dict:
+        return {
             "session_id": sid,
             "has_sink": sid in sink_set,
             "has_finding": sid in finding_set,
             "first_ts": session_first_ts.get(sid, 0),
-        })
-    result.sort(key=lambda x: x["first_ts"])
+        }
+
+    def _dfs(sid: str):
+        """前序遍历：父→子→孙，兄弟按时间排序。"""
+        result.append(_make_entry(sid))
+        kids = children.get(sid, [])
+        kids.sort(key=lambda s: session_first_ts.get(s, 0))
+        for k in kids:
+            _dfs(k)
+
+    if children:
+        # 有 parent_map：找根（在链内但 parent 不在链内的 session）
+        roots = [sid for sid in chain_sessions if sid not in has_parent_in_chain]
+        roots.sort(key=lambda s: session_first_ts.get(s, 0))
+        for r in roots:
+            _dfs(r)
+    else:
+        # 无 parent_map：退化为时间排序
+        for sid in sorted(chain_sessions, key=lambda s: session_first_ts.get(s, 0)):
+            result.append(_make_entry(sid))
+
     return result
 
 
@@ -794,7 +829,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_sessions": sorted(_chain_sessions),
                 "sink_hit_sessions": sr["sink_sessions"],
                 "finding_session": finding_session,
-                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], _finding_sessions),
+                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], _finding_sessions, session_graph),
             })
         elif any_mining and not chain_findings:
             # LLM=是 + 无 finding → FN（挖了但没报）
@@ -817,7 +852,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_sessions": sorted(_chain_sessions),
                 "sink_hit_sessions": sr["sink_sessions"],
                 "finding_session": "",
-                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], []),
+                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], [], session_graph),
             })
         else:
             # LLM=不是 → 检查是否有 finding
@@ -844,7 +879,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_sessions": sorted(_chain_sessions0),
                 "sink_hit_sessions": sr["sink_sessions"],
                 "finding_session": _finding_sessions0[0] if _finding_sessions0 else "",
-                "session_chain": build_session_chain(_chain_sessions0, events, sr["sink_sessions"], _finding_sessions0),
+                "session_chain": build_session_chain(_chain_sessions0, events, sr["sink_sessions"], _finding_sessions0, session_graph),
             })
 
         _progress(f"Sink 匹配: {bi+1}/{len(benchmarks)} 基线完成")
