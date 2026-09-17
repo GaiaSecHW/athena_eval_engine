@@ -180,6 +180,8 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
         _sink_analysis = case.get("sink_analysis", "")
         _no_finding_reason = case.get("no_finding_reason", "")
         _ki = case.get("knowledge_intervention")
+        _finding_session = case.get("session_id", "") or case.get("finding_session", "")
+        _sink_hit_sessions = case.get("sink_hit_sessions", [])
 
         # NA = agent 没找到漏洞（VULNERABLE 基线），列出但不做 AI 分析
         if confusion == "NA":
@@ -202,6 +204,8 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
                 "nogk_knowledge_intervention": _nogk_ki,
+                "finding_session": _finding_session,
+                "sink_hit_sessions": _sink_hit_sessions,
             })
             continue
 
@@ -231,6 +235,8 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
             "nogk_sink_analysis": _nogk_sink_analysis,
             "nogk_no_finding_reason": _nogk_no_finding_reason,
             "nogk_knowledge_intervention": _nogk_ki,
+            "finding_session": _finding_session,
+            "sink_hit_sessions": _sink_hit_sessions,
         })
     return result
 
@@ -1208,7 +1214,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         def _run_llm(task):
             _ci, prompt, case_id, kg_judgment, confusion, case_interactions, case_mem_interactions, \
                 _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, \
-                _nogk_no_finding_reason, _nogk_ki = task
+                _nogk_no_finding_reason, _nogk_ki, _finding_session, _sink_hit_sessions = task
             try:
                 result = llm_mod.chat_json(prompt, temperature=0)
                 result["case_id"] = case_id
@@ -1220,6 +1226,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 result["nogk_sink_analysis"] = _nogk_sink_analysis
                 result["nogk_no_finding_reason"] = _nogk_no_finding_reason
                 result["nogk_knowledge_intervention"] = _nogk_ki
+                result["finding_session"] = _finding_session
+                result["sink_hit_sessions"] = _sink_hit_sessions
                 return _ci, result
             except Exception:
                 _conf_label = {"TP": "真阳性", "FP": "假阳性", "FN": "假阴性", "TN": "真阴性"}.get(confusion, confusion)
@@ -1238,6 +1246,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     "nogk_sink_analysis": _nogk_sink_analysis,
                     "nogk_no_finding_reason": _nogk_no_finding_reason,
                     "nogk_knowledge_intervention": _nogk_ki,
+                    "finding_session": _finding_session,
+                    "sink_hit_sessions": _sink_hit_sessions,
                 }
 
         _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))

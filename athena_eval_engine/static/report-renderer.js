@@ -313,7 +313,22 @@ function renderReport(d){
         h+="<span style='font-size:12px;color:var(--sub)'>（"+_basename+(_sinkLoc?":"+_sinkLoc:"")+"）</span>";
       }
       h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"")+"</span>";
+      if(c.finding_session){
+        h+="<span style='font-size:12px;color:var(--acc);font-family:monospace'>📝 "+String(c.finding_session).slice(0,12).replace(/</g,"&lt;")+"</span>";
+      }
+      var _confColor=conf==="TP"||conf==="TN"?"var(--green)":conf==="FP"||conf==="FN"?"var(--red)":"var(--gray)";
+      h+="<span style='font-size:11px;font-weight:600;color:"+_confColor+"'>"+(CONF_LABEL[conf]||conf)+"</span>";
       h+="</div>";
+      // session 链（与匹配明细表一致）
+      if(c.session_chain&&c.session_chain.length){
+        var _parts=c.session_chain.map(function(s){
+          var sid=String(s.session_id||"").slice(0,8);
+          var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
+          var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
+          return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
+        });
+        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px'>"+_parts.join(" → ")+"</div>";
+      }
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
       // sink 匹配分析 + finding 匹配分析（分开渲染）
