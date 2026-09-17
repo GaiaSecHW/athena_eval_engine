@@ -218,6 +218,42 @@ def collect_chain_findings(chain_sessions: set[str], findings: list[dict]) -> li
     return [f for f in findings if f.get("session_id", "") in chain_sessions]
 
 
+def build_session_chain(chain_sessions: set[str], events: list,
+                        sink_hit_sessions: list[str] | None = None,
+                        finding_sessions: list[str] | None = None) -> list[dict]:
+    """构建 session 链（按时间排序），标注每个 session 是否命中 sink 或包含 finding。
+
+    返回: [{session_id, has_sink, has_finding, first_ts}, ...] 按时间从早到晚排序。
+    链的起点（最早）在头部，sink/finding session 在尾部或中间，用 has_sink/has_finding 标注。
+    """
+    if not chain_sessions:
+        return []
+
+    sink_set = set(sink_hit_sessions or [])
+    finding_set = set(finding_sessions or [])
+
+    # 找每个 session 的最早事件时间戳
+    session_first_ts: dict[str, int] = {}
+    for e in events:
+        sid = e.session_id
+        if sid not in chain_sessions:
+            continue
+        ts = e.timestamp_ms or 0
+        if sid not in session_first_ts or ts < session_first_ts[sid]:
+            session_first_ts[sid] = ts
+
+    result = []
+    for sid in chain_sessions:
+        result.append({
+            "session_id": sid,
+            "has_sink": sid in sink_set,
+            "has_finding": sid in finding_set,
+            "first_ts": session_first_ts.get(sid, 0),
+        })
+    result.sort(key=lambda x: x["first_ts"])
+    return result
+
+
 def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list) -> list[dict]:
     """提取链上的知识/记忆交互（完整问答对）。
 
@@ -545,7 +581,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                                 "candidate_findings": [],
                                 "sink_info": "", "sink_analysis": "", "no_finding_reason": "",
                                 "knowledge_intervention": None, "chain_actions": [],
-                                "mined": False, "sink_hit": False})
+                                "mined": False, "sink_hit": False,
+                                "sink_sessions": [], "sink_hit_sessions": [], "finding_session": "",
+                                "session_chain": []})
         has_vuln = any(b.expected_label and b.expected_label.value == "VULNERABLE" for b in benchmarks)
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -666,6 +704,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_info": "无 sink 信息", "sink_analysis": "", "no_finding_reason": "",
                 "knowledge_intervention": None, "chain_actions": [],
                 "mined": False, "sink_hit": False,
+                "sink_sessions": [], "sink_hit_sessions": [], "finding_session": "",
+                "session_chain": [],
             })
             continue
 
@@ -682,6 +722,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "sink_analysis": "", "no_finding_reason": "",
                 "knowledge_intervention": None, "chain_actions": [],
                 "mined": False, "sink_hit": False,
+                "sink_sessions": [], "sink_hit_sessions": [], "finding_session": "",
+                "session_chain": [],
             })
             continue
 
@@ -726,6 +768,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
             _ei = f.get("_event_idx")
             finding_ts = events[_ei].timestamp_ms if _ei is not None and 0 <= _ei < len(events) else None
             log("SINK_MATCH", f"MATCHED case={cid} ← finding={matched_fid} reason={mining_reason}")
+            _chain_sessions = mining_chain or set()
+            _finding_sessions = [f.get("session_id", "") for f in chain_findings if f.get("session_id")]
             case_results.append({
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": True, "matched_finding_id": matched_fid, "finding_title": finding_title,
@@ -747,13 +791,17 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
                 "mined": True, "sink_hit": True,
-                "sink_sessions": sorted(mining_chain) if mining_chain else [],
+                "sink_sessions": sorted(_chain_sessions),
+                "sink_hit_sessions": sr["sink_sessions"],
+                "finding_session": finding_session,
+                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], _finding_sessions),
             })
         elif any_mining and not chain_findings:
             # LLM=是 + 无 finding → FN（挖了但没报）
             # no_finding_reason 由 LLM 分析为什么没有生成 finding
             confusion = "FN" if is_vuln else "TN"
             log("SINK_MATCH", f"MINED_NO_FINDING case={cid} reason={no_finding_reason[:80]}")
+            _chain_sessions = mining_chain or set()
             case_results.append({
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": False, "matched_finding_id": None, "finding_title": "",
@@ -766,7 +814,10 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": knowledge_intervention,
                 "chain_actions": chain_actions,
                 "mined": True, "sink_hit": True,
-                "sink_sessions": sorted(mining_chain) if mining_chain else [],
+                "sink_sessions": sorted(_chain_sessions),
+                "sink_hit_sessions": sr["sink_sessions"],
+                "finding_session": "",
+                "session_chain": build_session_chain(_chain_sessions, events, sr["sink_sessions"], []),
             })
         else:
             # LLM=不是 → 检查是否有 finding
@@ -776,6 +827,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
             else:
                 # LLM=不是 + 无 finding → TN
                 confusion = "TN"
+            _chain_sessions0 = sr["chains"][0] if sr["chains"] else set()
+            _finding_sessions0 = [f.get("session_id", "") for f in chain_findings if f.get("session_id")]
             case_results.append({
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": False, "matched_finding_id": None, "finding_title": "",
@@ -788,7 +841,10 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
                 "mined": False, "sink_hit": True,
-                "sink_sessions": sorted(sr["chains"][0]) if sr["chains"] else [],
+                "sink_sessions": sorted(_chain_sessions0),
+                "sink_hit_sessions": sr["sink_sessions"],
+                "finding_session": _finding_sessions0[0] if _finding_sessions0 else "",
+                "session_chain": build_session_chain(_chain_sessions0, events, sr["sink_sessions"], _finding_sessions0),
             })
 
         _progress(f"Sink 匹配: {bi+1}/{len(benchmarks)} 基线完成")
