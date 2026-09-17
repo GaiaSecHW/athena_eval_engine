@@ -49,21 +49,16 @@ class ArgoTraceParser(TraceParser):
     def _resolve_jsonl_files(uri: str) -> list[str]:
         """解析 .jsonl 文件列表。
 
-        优先查 uri/argo/ 子目录（Claude Code 标准布局），
-        不存在时回退到 uri 下的 .jsonl 文件（非标准布局，如 Turing agent）。
+        Argo session 的 .jsonl 固定在 uri/argo/ 目录下（Claude Code 标准布局），
+        含 argo/ 下的子目录（子 session）。
         """
         if not os.path.isdir(uri):
             return [uri]
         argo_dir = os.path.join(uri, "argo")
-        if os.path.isdir(argo_dir):
-            # 标准布局：argo/ 下所有 .jsonl（含子目录）
-            return sorted(glob.glob(os.path.join(argo_dir, "**", "*.jsonl"), recursive=True))
-        # 回退：uri 下的 .jsonl 文件（非标准布局）
-        files = sorted(glob.glob(os.path.join(uri, "*.jsonl")))
-        if files:
-            return files
-        # 最后手段：递归搜索
-        return sorted(glob.glob(os.path.join(uri, "**", "*.jsonl"), recursive=True))
+        if not os.path.isdir(argo_dir):
+            return []
+        # argo/ 下所有 .jsonl（含子目录）
+        return sorted(glob.glob(os.path.join(argo_dir, "**", "*.jsonl"), recursive=True))
 
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""

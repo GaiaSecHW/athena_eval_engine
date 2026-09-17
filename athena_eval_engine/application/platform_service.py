@@ -281,8 +281,9 @@ def _classify_trace(p: str, mtime: float | None = None) -> dict:
             seg = norm_path.split("/tools/")[1]
             tool_task_id = seg.split("/")[0] if seg else ""
     elif "findings.db" in p:
+        # SecMate 内部 DB，不作为 trace 文件
         kind = "findings"
-        trace_kind = "turing"
+        trace_kind = "other"
     elif p.endswith(".jsonl"):
         if "/session/WebVerify/" in norm_path:
             kind = "webverify_session"
@@ -434,6 +435,15 @@ def _scan_dir(base: str, out: list) -> None:
             t["file_count"] = cnt
             out.append(t)
 
+    # 2b. WebVerify 目录（顶层 {base}/session/WebVerify）
+    wv_dir = os.path.join(base, "session", "WebVerify")
+    if os.path.isdir(wv_dir):
+        cnt, mt = _count_jsonl_shallow(wv_dir)
+        if cnt > 0:
+            t = _make_session_dir_trace(wv_dir, mt or None)
+            t["file_count"] = cnt
+            out.append(t)
+
     # 3. tools/ 下的各工具目录
     tools_dir = os.path.join(base, "tools")
     if os.path.isdir(tools_dir):
@@ -460,8 +470,9 @@ def _scan_dir(base: str, out: list) -> None:
                     t["file_count"] = cnt
                     out.append(t)
 
-            # 3c. .db 文件（固定路径）
-            for db_rel in ["findings.db", "run/findings.db", "run/trace/trace.db"]:
+            # 3c. opencode.db（Turing SQLite，固定路径）
+            # findings.db / trace.db 是 SecMate 内部 DB，由 SecMateTraceParser 自行读取，不作为 trace 扫描
+            for db_rel in ["session/opencode/opencode.db"]:
                 db_path = os.path.join(tool_dir, *db_rel.split("/"))
                 if os.path.isfile(db_path):
                     try:

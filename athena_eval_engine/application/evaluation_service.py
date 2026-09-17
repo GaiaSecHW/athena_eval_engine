@@ -749,7 +749,7 @@ def run(evaluation_id: str) -> dict:
         if "dataflow_vuln_scan" in p and (p.endswith(".jsonl") or _os.path.isdir(p)):
             from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
             return DataflowVulnScanTraceParser()
-        if p.endswith("opencode.db") or p.endswith("findings.db"):
+        if p.endswith("opencode.db"):
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
         if _os.path.isdir(p) or p.endswith(".jsonl"):
