@@ -30,9 +30,8 @@ from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchS
 from ..orchestration.state_machine import PIPELINE, assert_transition
 from ..application import platform_service as ps
 
-# 协作取消：force retry 时设置 cancel event，run() 在阶段边界检查并退出
-_cancel_events: dict[str, threading.Event] = {}
-_cancel_lock = threading.Lock()
+# 协作取消：force retry 时在 DB 设 CANCEL_REQUESTED，run() 在阶段边界检查并退出
+# 跨 worker 生效（--workers 2 时不同 worker 共享同一 DB）
 
 # 运行时可调并发参数
 _runtime_workers = {"parse": 4, "kg_analysis": 8}
@@ -82,26 +81,43 @@ def clear_progress(evaluation_id: str):
 
 
 def set_cancel(evaluation_id: str):
-    """标记一个评测任务为取消（force retry 时调用，通知旧线程退出）。"""
-    with _cancel_lock:
-        ev = _cancel_events.get(evaluation_id)
-        if ev is None:
-            ev = threading.Event()
-            _cancel_events[evaluation_id] = ev
-        ev.set()
-        log("CANCEL", f"{evaluation_id} 收到取消信号")
+    """标记一个评测任务为取消（force retry 时调用，通知旧线程退出）。
+    跨 worker 生效：写 DB cancel_requested=1，独立于 status，不会被新线程覆盖。
+    """
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE evaluation SET cancel_requested=1 WHERE evaluation_id=%s",
+                    (evaluation_id,))
+        conn.commit()
+    finally:
+        conn.close()
+    log("CANCEL", f"{evaluation_id} 收到取消信号")
 
 
 def clear_cancel(evaluation_id: str):
     """清除取消标记（新线程启动时调用）。"""
-    with _cancel_lock:
-        _cancel_events.pop(evaluation_id, None)
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("UPDATE evaluation SET cancel_requested=0 WHERE evaluation_id=%s",
+                    (evaluation_id,))
+        conn.commit()
+    finally:
+        conn.close()
 
 
 def is_cancelled(evaluation_id: str) -> bool:
-    """检查评测任务是否被取消。"""
-    ev = _cancel_events.get(evaluation_id)
-    return ev is not None and ev.is_set()
+    """检查评测任务是否被取消（读 DB cancel_requested）。"""
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT cancel_requested FROM evaluation WHERE evaluation_id=%s",
+                    (evaluation_id,))
+        row = cur.fetchone()
+        return row is not None and row[0] == 1
+    finally:
+        conn.close()
 
 
 class TaskCancelledError(Exception):

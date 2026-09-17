@@ -1,5 +1,7 @@
 """Web 展示路由（R6）— 静态 HTML dashboard + 评测列表。"""
 from __future__ import annotations
+import asyncio
+import json
 from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
@@ -15,12 +17,8 @@ def index():
     return (STATIC / "dashboard.html").read_text(encoding="utf-8")
 
 
-@router.get("/api/v1/evaluations")
-def list_evaluations(page: int = 1, page_size: int = 20):
-    import json
-    page = max(1, page)
-    page_size = max(1, min(page_size, 100))
-    offset = (page - 1) * page_size
+def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
+    """同步逻辑：查 DB + 解析 config_json + 组装响应。"""
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -75,3 +73,11 @@ def list_evaluations(page: int = 1, page_size: int = 20):
         }
     finally:
         conn.close()
+
+
+@router.get("/api/v1/evaluations")
+async def list_evaluations(page: int = 1, page_size: int = 20):
+    page = max(1, page)
+    page_size = max(1, min(page_size, 100))
+    offset = (page - 1) * page_size
+    return await asyncio.to_thread(_list_evaluations_sync, page, page_size, offset)
