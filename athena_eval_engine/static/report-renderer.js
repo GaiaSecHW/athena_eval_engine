@@ -14,6 +14,12 @@ function fmtDur(ms){
   if(abs>=1000){return sign+(abs/1000).toFixed(1)+'<span class="ci">秒</span>';}
   return sign+Math.round(abs)+'<span class="ci">ms</span>';
 }
+function fmtTs(ts){
+  if(!ts)return'';
+  var d=new Date(ts+8*3600000);
+  var p=function(n){return String(n).padStart(2,'0')};
+  return p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds());
+}
 function fmt(v,u){
   if(v===null||v===undefined||isNaN(v))return'<span class="na">NA</span>';
   if(u==="ratio")return (v*100).toFixed(2)+'<span class="ci">%</span>';
@@ -484,7 +490,7 @@ function renderReport(d){
           ivs.forEach(function(iv,i){
             h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
             var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
-            if(iv.timestamp){var ts=new Date(iv.timestamp);src+=" · "+ts.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
+            if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
             h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
@@ -514,7 +520,7 @@ function renderReport(d){
           memIvs.forEach(function(iv,i){
             h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
             var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
-            if(iv.timestamp){var ts=new Date(iv.timestamp);src+=" · "+ts.toLocaleString("zh-CN",{month:"2-digit",day:"2-digit",hour:"2-digit",minute:"2-digit",second:"2-digit"});}
+            if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
             h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
