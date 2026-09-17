@@ -461,17 +461,27 @@ class DataflowVulnScanTraceParser(TraceParser):
         graph['edges'] = filtered_edges
 
         # ---- Build parent_map from session_id naming rules ----
-        # Format: dvs_xxx/d{depth}-{func}-{analysisType}-{param}-{index}[-error{N}]
-        # Three dimensions of parent-child:
+        # Format: dvs_xxx/d{depth}-{func}-{analysisType}-{param}-{index}[-TaintFunctionGuess][-error{N}]
+        #
+        # Analysis types (in flow order):
+        #   taint/track (initial, parallel) → vuln-judge → vuln-pattern-enhancement
+        #   → vuln-false-positive-judge → vuln-report
+        #
+        # Four dimensions of parent-child:
         # 1. Cross-depth: d00→d01→d02 (function call chain)
-        # 2. Same-depth analysis flow: taint/fptrack → vuln-judge → vuln-pattern-enhancement
-        #    → vuln-false-positive-judge → vuln-report
+        # 2. Same-depth analysis flow: taint/track → vuln-judge → ...
         # 3. Error retry: -errorN → original (non-error)
+        # 4. TaintFunctionGuess: sub-analysis of taint (same depth/func/param)
+        #
+        # Error patterns differ by type:
+        # - taint: error in param position: taint-error{N}-{index}
+        # - track/vuln-*: error at end: ...-error{N}$
+        # - TaintFunctionGuess: error at end: ...-TaintFunctionGuess-error{N}
         if 'parent_map' not in graph:
             graph['parent_map'] = {}
-        _ANALYSIS_FLOW = ['taint', 'fptrack', 'vuln-judge',
+        _ANALYSIS_FLOW = ['taint', 'track', 'vuln-judge',
                           'vuln-pattern-enhancement', 'vuln-false-positive-judge', 'vuln-report']
-        _INITIAL_TYPES = {'taint', 'fptrack'}
+        _INITIAL_TYPES = {'taint', 'track'}
 
         _session_meta: dict[str, dict] = {}
         _depth_groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -491,14 +501,24 @@ class DataflowVulnScanTraceParser(TraceParser):
             depth = int(m_depth.group(1))
             rest2 = m_depth.group(2)
 
-            # Extract error number suffix
+            # 1. Strip TaintFunctionGuess suffix (with optional error)
+            is_tfg = False
             error_num = 0
-            err_m = re.search(r'-error(\d+)$', rest2)
-            if err_m:
-                error_num = int(err_m.group(1))
-                rest2 = rest2[:err_m.start()]
+            tfg_m = re.search(r'-TaintFunctionGuess(-error(\d+))?$', rest2)
+            if tfg_m:
+                is_tfg = True
+                if tfg_m.group(2):
+                    error_num = int(tfg_m.group(2))
+                rest2 = rest2[:tfg_m.start()]
 
-            # Identify analysis type (search longest first to avoid partial matches)
+            # 2. Strip error suffix at end (for track, vuln-*, non-TFG taint)
+            if error_num == 0:
+                err_m = re.search(r'-error(\d+)$', rest2)
+                if err_m:
+                    error_num = int(err_m.group(1))
+                    rest2 = rest2[:err_m.start()]
+
+            # 3. Identify analysis type (search longest first to avoid partial matches)
             analysis_type = ''
             for at in sorted(_ANALYSIS_FLOW, key=len, reverse=True):
                 marker = f'-{at}-'
@@ -511,21 +531,32 @@ class DataflowVulnScanTraceParser(TraceParser):
                         analysis_type = at
                         break
 
-            # Split function name from the rest
+            # 4. Split function name and param signature
             func = rest2
+            param_sig = ''
             if analysis_type:
                 marker = f'-{analysis_type}-'
                 idx = rest2.find(marker)
                 if idx > 0:
                     func = rest2[:idx]
+                    param_sig = rest2[idx + len(marker):]
                 else:
                     idx = rest2.rfind(f'-{analysis_type}')
                     if idx > 0:
                         func = rest2[:idx]
 
+            # 5. Handle taint error in param position: taint-error{N}-{index}
+            #    (taint retries have error{N} where param should be, not at end)
+            if analysis_type == 'taint' and not is_tfg and param_sig:
+                err_param_m = re.match(r'error(\d+)(?:-(.+))?$', param_sig)
+                if err_param_m:
+                    error_num = int(err_param_m.group(1))
+                    param_sig = err_param_m.group(2) or ''
+
             _session_meta[sid] = {
                 'dvs_run': dvs_run, 'depth': depth, 'func': func,
                 'analysis_type': analysis_type, 'error_num': error_num,
+                'is_tfg': is_tfg, 'param_sig': param_sig,
             }
             _depth_groups[dvs_run][depth].append(sid)
 
@@ -540,12 +571,30 @@ class DataflowVulnScanTraceParser(TraceParser):
                         other_info['depth'] == depth and
                         other_info['func'] == info['func'] and
                         other_info['analysis_type'] == info['analysis_type'] and
-                        other_info['error_num'] == 0):
+                        other_info['error_num'] == 0 and
+                        other_info['is_tfg'] == info['is_tfg']):
+                        # For TFG errors, also match param_sig
+                        if info['is_tfg'] and other_info['param_sig'] != info['param_sig']:
+                            continue
                         graph['parent_map'][sid] = other_sid
                         break
                 continue
 
-            # 2. Same-depth analysis flow → parent is previous analysis type
+            # 2. TaintFunctionGuess → parent is corresponding taint session
+            if info['is_tfg']:
+                for other_sid, other_info in _session_meta.items():
+                    if (other_info['dvs_run'] == dvs_run and
+                        other_info['depth'] == depth and
+                        other_info['func'] == info['func'] and
+                        other_info['analysis_type'] == 'taint' and
+                        not other_info['is_tfg'] and
+                        other_info['error_num'] == 0 and
+                        other_info['param_sig'] == info['param_sig']):
+                        graph['parent_map'][sid] = other_sid
+                        break
+                continue
+
+            # 3. Same-depth analysis flow → parent is previous analysis type
             if info['analysis_type'] and info['analysis_type'] not in _INITIAL_TYPES:
                 at_idx = _ANALYSIS_FLOW.index(info['analysis_type'])
                 for prev_idx in range(at_idx - 1, -1, -1):
@@ -555,7 +604,8 @@ class DataflowVulnScanTraceParser(TraceParser):
                             other_info['depth'] == depth and
                             other_info['func'] == info['func'] and
                             other_info['analysis_type'] == prev_at and
-                            other_info['error_num'] == 0):
+                            other_info['error_num'] == 0 and
+                            not other_info['is_tfg']):
                             graph['parent_map'][sid] = other_sid
                             break
                     if sid in graph['parent_map']:
@@ -563,7 +613,7 @@ class DataflowVulnScanTraceParser(TraceParser):
                 if sid in graph['parent_map']:
                     continue
 
-            # 3. Cross-depth → parent is at depth N-1
+            # 4. Cross-depth → parent is at depth N-1
             if depth > 0:
                 prev_sids = _depth_groups[dvs_run].get(depth - 1, [])
                 if len(prev_sids) == 1:
