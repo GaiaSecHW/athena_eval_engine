@@ -265,12 +265,18 @@ def create_evaluation(req: CreateRequest):
         def _run_bg():
             from ...infrastructure.database import connect
             set_eval_ctx(req.evaluation_id)
-            # 标记 RUNNING
+            # 原子获取状态锁：只有 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED 才能跳转 RUNNING
+            # 跨 worker 同步：两个 worker 同时调用，只有一个 rowcount=1
             conn = connect(autocommit=True)
             try:
                 cur = conn.cursor()
-                cur.execute("UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3) WHERE evaluation_id=%s",
-                            (req.evaluation_id,))
+                cur.execute(
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                    "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
+                    (req.evaluation_id,))
+                if cur.rowcount == 0:
+                    log("EVAL", f"{req.evaluation_id} 已被其他 worker 接管，退出")
+                    return
             finally:
                 conn.close()
             try:
