@@ -972,22 +972,29 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "session_chain": _session_chain,
             })
         else:
-            # LLM=不是 → 检查是否有 finding
-            if chain_findings:
-                # LLM=不是 + 有 finding → FP
-                confusion = "FP" if is_vuln else "TN"
-            else:
-                # LLM=不是 + 无 finding → TN
-                confusion = "TN"
+            # LLM=不是 → 此链非此基线漏洞的挖掘过程
+            # VULNERABLE 基线：agent 未找到此漏洞 → FN
+            # NON_VULNERABLE 基线：无 finding 匹配此基线 → TN
+            confusion = "FN" if is_vuln else "TN"
+            log("SINK_MATCH", f"NOT_MINED case={cid} chains={len(sr['chains'])} findings={len(chain_findings)}")
             case_results.append({
                 "case_id": cid, "expected_label": b.expected_label.value if b.expected_label else "NA",
                 "matched": False, "matched_finding_id": None, "finding_title": "",
                 "confusion": confusion, "session_id": "", "agent_validation": None,
                 "finding_ts": None,
-                "candidate_findings": [],
+                "candidate_findings": [{
+                    "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                    "title": f.get("title") or f.get("vuln_type") or "",
+                    "vuln_type": f.get("vuln_type", ""),
+                    "description": f.get("description") or "",
+                    "source": f.get("source") or "",
+                    "sink": f.get("sink") or "",
+                    "validation_result": f.get("validation_result"),
+                    "session_id": f.get("session_id", ""),
+                } for f in chain_findings],
                 "sink_info": f"LLM判定非挖掘 ({len(sr['chains'])}链)",
                 "sink_analysis": "",
-                "no_finding_reason": "",
+                "no_finding_reason": "LLM 判定此链非此基线漏洞的挖掘过程",
                 "knowledge_intervention": None,
                 "chain_actions": chain_actions,
                 "mined": False, "sink_hit": True,
