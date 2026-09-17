@@ -396,17 +396,26 @@ def _build_action_lines(chain_actions: list[dict], llm_module,
             _chain_meta[entry["session_id"]] = entry
 
     def _session_header(sid: str) -> str:
-        """构建 session 头部行，标注 sink/finding。"""
+        """构建 session 头部行，标注 sink/finding。
+
+        Dataflow session ID 含 '/'，取最后一段（d01-Func-vuln-judge-...）；
+        UUID 类 session ID 取最后 8 位。
+        """
+        # Dataflow: dvs_xxx/d01-Func-vuln-judge-param-00 → 取 '/' 后部分
+        if "/" in sid:
+            display = sid.rsplit("/", 1)[-1]
+        else:
+            display = sid[-8:] if len(sid) > 8 else sid
         meta = _chain_meta.get(sid)
         if not meta:
-            return f"--- Session: {sid[-8:]} ---"
+            return f"--- Session: {display} ---"
         marks = []
         if meta.get("has_sink"):
             marks.append("sink命中")
         if meta.get("has_finding"):
             marks.append("finding提交")
         mark_str = f" ({', '.join(marks)})" if marks else ""
-        return f"--- Session: {sid[-8:]}{mark_str} ---"
+        return f"--- Session: {display}{mark_str} ---"
 
     # 先构建原始行（按 session 分段，插入头部）
     action_lines = []
