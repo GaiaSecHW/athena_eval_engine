@@ -580,7 +580,7 @@ class DataflowVulnScanTraceParser(TraceParser):
                         if shared > best_count:
                             best_count = shared
                             best_parent = p_sid
-                    if best_parent and best_count >= 0:
+                    if best_parent and best_count > 0:
                         graph['parent_map'][sid] = best_parent
 
         graph['finding_to_session'] = finding_to_session
