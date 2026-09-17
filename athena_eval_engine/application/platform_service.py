@@ -14,6 +14,7 @@ import subprocess
 import threading
 import time
 import urllib.request
+from urllib.error import URLError
 from urllib.parse import urlencode
 from ..config_loader import PROJECT_API, SCHEDULE_API, VULN_API_URL, PLATFORM_TOKEN, DATA_ROOT
 
@@ -72,10 +73,18 @@ def _get_sched_pod() -> str:
     return pod
 
 
-def _get(url):
-    req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-    with urllib.request.urlopen(req, timeout=15) as r:
-        return json.loads(r.read().decode("utf-8"))
+def _get(url, *, retries: int = 3, retry_delay: float = 5.0):
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
+            with urllib.request.urlopen(req, timeout=15) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    raise last_err  # type: ignore[misc]
 
 
 def get_projects(page_size: int = 1000):
