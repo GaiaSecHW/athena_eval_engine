@@ -315,8 +315,7 @@ class SecMateTraceParser(TraceParser):
         step_count = 0
         min_ts = max_ts = None
         for path in files:
-            session_id = os.path.splitext(os.path.relpath(path, uri) if os.path.isdir(uri) else os.path.basename(path))[0]
-            session_id = session_id.replace("\\", "/")
+            session_id = os.path.splitext(os.path.basename(path))[0]
             with open(path, "r", encoding="utf-8") as f:
                 for line_no, line in enumerate(f, 1):
                     try:
