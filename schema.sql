@@ -93,6 +93,7 @@ CREATE TABLE evaluation (
     statistics_version     VARCHAR(64) NOT NULL DEFAULT '1.0',
     action_schema_version  VARCHAR(64) NOT NULL DEFAULT '1.0',
     error_message          TEXT,
+    cancel_requested       TINYINT(1) NOT NULL DEFAULT 0,
     version                BIGINT NOT NULL DEFAULT 0,
     created_at             DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
     started_at             DATETIME(3),
@@ -778,3 +779,6 @@ CREATE TABLE IF NOT EXISTS system_config (
     config_value VARCHAR(512) NOT NULL,
     updated_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- Migration: add cancel_requested column to evaluation (for existing deployments)
+ALTER TABLE evaluation ADD COLUMN IF NOT EXISTS cancel_requested TINYINT(1) NOT NULL DEFAULT 0;

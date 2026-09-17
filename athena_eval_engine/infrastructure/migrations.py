@@ -53,6 +53,13 @@ MIGRATIONS = [
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
     },
+    {
+        "id": "005_evaluation_cancel_requested",
+        "desc": "evaluation 表增加 cancel_requested 列（跨 worker 取消信号）",
+        "sql": [
+            "ALTER TABLE evaluation ADD COLUMN cancel_requested TINYINT(1) NOT NULL DEFAULT 0",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

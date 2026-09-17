@@ -180,9 +180,8 @@ def resume_stuck_evaluations():
                 log("STARTUP", f"发现 {len(stuck)} 个卡住的评测，准备续跑:")
                 for eid, status in stuck:
                     log("STARTUP", f"{eid} (was {status}) → 续跑")
-                    # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
-                    cur.execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL WHERE evaluation_id=%s",
-                                (eid,))
+                    # 不再同步设 RUNNING——由 _run_bg_resume 的原子 UPDATE 处理
+                    # 两个 worker 都会提交，但只有一个赢 atomic UPDATE
                     _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
             else:
                 log("STARTUP", f"无卡住的评测")
@@ -193,14 +192,24 @@ def resume_stuck_evaluations():
 
 
 def _run_bg_resume(evaluation_id: str):
-    """续跑单个评测。设 RUNNING 状态，确保 DB 反映实际运行状态。"""
+    """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
     set_eval_ctx(evaluation_id)
     from ...infrastructure.database import connect
+    stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                    'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                    'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    placeholders = ','.join(['%s'] * len(stuck_states))
     try:
         conn = connect(autocommit=True)
         try:
-            conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s",
-                                  (evaluation_id,))
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
+                (evaluation_id, *stuck_states))
+            if cur.rowcount == 0:
+                log("EVAL", f"{evaluation_id} 续跑已被其他 worker 接管，退出")
+                return
         finally:
             conn.close()
     except Exception:
@@ -253,14 +262,7 @@ def create_evaluation(req: CreateRequest):
                                    vc_source_project_name=req.vc_source_project_name,
                                    vc_source_task_name=req.vc_source_task_name,
                                    entries=req.entries))
-        # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
-        from ...infrastructure.database import connect as _connect_create
-        _conn = _connect_create(autocommit=True)
-        try:
-            _conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3) WHERE evaluation_id=%s",
-                                   (req.evaluation_id,))
-        finally:
-            _conn.close()
+        # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
             from ...infrastructure.database import connect
@@ -430,19 +432,21 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
         # Step 4: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
-        # 同步设 RUNNING，确保即使线程池满排队中，DB 也反映"正在运行"
-        conn = connect(autocommit=True)
-        try:
-            conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s",
-                                  (evaluation_id,))
-        finally:
-            conn.close()
+        # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
         def _run_bg():
             from ...infrastructure.database import connect as _connect
             set_eval_ctx(evaluation_id)
+            # 原子获取状态锁：只有 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED 才能跳转 RUNNING
             conn = _connect(autocommit=True)
             try:
-                conn.cursor().execute("UPDATE evaluation SET evaluation_status='RUNNING', error_message=NULL, started_at=NOW(3) WHERE evaluation_id=%s", (evaluation_id,))
+                cur = conn.cursor()
+                cur.execute(
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                    "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
+                    (evaluation_id,))
+                if cur.rowcount == 0:
+                    log("EVAL", f"{evaluation_id} retry 已被其他 worker 接管，退出")
+                    return
             finally:
                 conn.close()
             try:
