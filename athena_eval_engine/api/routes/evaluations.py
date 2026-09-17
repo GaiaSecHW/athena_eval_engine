@@ -6,6 +6,7 @@ GET  /api/v1/evaluations/{id}/metrics → 指标
 GET  /api/v1/evaluations/{id}/report → 报告
 """
 from __future__ import annotations
+import asyncio
 import json
 import os
 import threading
@@ -30,16 +31,40 @@ def get_max_concurrent_evals() -> int:
 
 
 def set_max_concurrent_evals(n: int):
-    """设置最大并发评测数。加锁重建线程池，避免并发 submit 撞上已关闭的 executor。"""
+    """设置最大并发评测数。
+
+    重建线程池时，将旧池中**等待中**（未运行）的任务取消并重新提交到新池，
+    使其立即采用新并发数。已运行的任务继续在旧池中完成。
+    """
     global _executor, _max_concurrent_evals
     n = max(1, min(n, 10))
     with _running_lock:
         _max_concurrent_evals = n
-        _executor.shutdown(wait=False)
+        old_executor = _executor
         _executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="eval")
 
+        # 取消旧池中等待中的任务，重新提交到新池
+        for eid, entry in list(_running_futures.items()):
+            fut, fn = entry
+            if fut.cancel():  # True = 尚未运行，成功取消
+                _running_futures.pop(eid, None)
+                new_fut = _executor.submit(fn)
+                _running_futures[eid] = (new_fut, fn)
+                def _done_cb(f, eid=eid):
+                    with _running_lock:
+                        cur = _running_futures.get(eid)
+                        if cur is not None and cur[0] is f:
+                            _running_futures.pop(eid, None)
+                new_fut.add_done_callback(_done_cb)
+                log("THREAD", f"{eid} 从旧线程池迁移到新线程池")
+            # else: 已在运行，继续在旧池中完成
+
+    old_executor.shutdown(wait=False)
+
+
 # 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
-_running_futures: dict[str, Future] = {}
+# value = (Future, fn)，存储 fn 以便并发数变更时取消并重新提交
+_running_futures: dict[str, tuple[Future, object]] = {}
 _running_lock = threading.Lock()
 
 
@@ -53,14 +78,15 @@ def _submit_eval(evaluation_id: str, fn) -> Future:
     with _running_lock:
         old = _running_futures.pop(evaluation_id, None)
         if old is not None:
-            old.cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
+            old[0].cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
             log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
         fut = _executor.submit(fn)
-        _running_futures[evaluation_id] = fut
+        _running_futures[evaluation_id] = (fut, fn)
         def _done_cb(f, eid=evaluation_id):
             """只移除自己——旧线程的回调不能误删新线程的 future。"""
             with _running_lock:
-                if _running_futures.get(eid) is f:
+                cur = _running_futures.get(eid)
+                if cur is not None and cur[0] is f:
                     _running_futures.pop(eid, None)
         fut.add_done_callback(_done_cb)
         return fut
@@ -199,10 +225,19 @@ async def health():
 
 
 @app.get("/api/v1/evaluations/running")
-def get_running():
-    """查看当前正在运行的评测任务（线程数 = 任务数）。"""
-    with _running_lock:
-        ids = list(_running_futures.keys())
+async def get_running():
+    """查看当前正在运行的评测任务（DB-based，跨 worker 一致）。"""
+    from ...infrastructure.database import connect
+    conn = await asyncio.to_thread(connect, autocommit=True)
+    try:
+        cur = conn.cursor()
+        await asyncio.to_thread(cur.execute,
+            "SELECT evaluation_id FROM evaluation WHERE evaluation_status NOT IN "
+            "('CREATED','COMPLETED','COMPLETED_WITH_WARNINGS','FAILED','CANCELLED','CANCEL_REQUESTED','QUEUED')")
+        rows = cur.fetchall()
+    finally:
+        conn.close()
+    ids = [r[0] for r in rows]
     return {"running_count": len(ids), "evaluation_ids": ids}
 
 
@@ -424,28 +459,9 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}")
-def get_status(evaluation_id: str):
-    # 死线程检测：状态是运行中但线程已不在 _running_futures → 线程静默死亡
-    _RUNNING = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                'DIAGNOSING', 'REPORTING', 'FINALIZING')
-    with _running_lock:
-        is_alive = evaluation_id in _running_futures
-    if not is_alive:
-        from ...infrastructure.database import connect
-        conn = connect(autocommit=True)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-            row = cur.fetchone()
-            if row and row[0] in _RUNNING:
-                cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
-                            "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
-                            (f"[{row[0]}] 评测线程静默死亡（状态卡在 {row[0]}，线程已不在运行池中）", evaluation_id))
-                log("WATCHDOG", f"{evaluation_id} 状态={row[0]} 但线程已死，标记 FAILED")
-        finally:
-            conn.close()
-    r = es.get_status(evaluation_id)
+async def get_status(evaluation_id: str):
+    # DB-based：不再依赖 _running_futures（多 worker 下各进程内存不共享）
+    r = await asyncio.to_thread(es.get_status, evaluation_id)
     if "error" in r:
         raise HTTPException(status_code=404, detail=r["error"])
     return r
