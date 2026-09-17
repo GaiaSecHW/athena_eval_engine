@@ -173,13 +173,15 @@ def get_alert_center_summary(project_id: str, source_task_id: str | None = None)
     }
 
 
-def search_vuln_cases(project_id: str, search_term: str, page_size: int = 20) -> list[dict]:
-    """按 case ID 搜索漏洞中心 case，不走 scope=vuln_center。
+def search_vuln_cases(project_id: str, search_term: str, scope: str = "alert_center",
+                      page_size: int = 20) -> list[dict]:
+    """按 case ID 搜索 case。
 
-    用于 CVulnVerify 从 trace_case_ids 反查 source_task.task_id。
+    CVulnVerify 的 trace_case_ids 来自告警中心，默认 scope=alert_center。
     返回原始 case 列表，调用方自行提取所需字段。
     """
     params = {
+        "scope": scope,
         "project_id": project_id,
         "search": search_term,
         "sort_field": "created_at",
@@ -192,8 +194,8 @@ def search_vuln_cases(project_id: str, search_term: str, page_size: int = 20) ->
 
 
 def get_task_id_by_case_id(project_id: str, case_id: str) -> str | None:
-    """通过 case ID 搜索漏洞中心，返回 source_task.task_id。"""
-    items = search_vuln_cases(project_id, case_id, page_size=1)
+    """通过 case ID 搜索告警中心，返回 source_task.task_id。"""
+    items = search_vuln_cases(project_id, case_id, scope="alert_center", page_size=1)
     if not items:
         return None
     source_task = items[0].get("source_task") or {}

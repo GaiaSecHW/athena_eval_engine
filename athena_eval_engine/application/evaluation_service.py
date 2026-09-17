@@ -916,17 +916,17 @@ def run(evaluation_id: str) -> dict:
                 trace_case_ids = [str(c) for c in e.get("trace_case_ids", []) if c]
                 # CVulnVerify 的 JSONL 文件在项目目录下（非任务目录），
                 # 需要任务 ID 来过滤出本次评测的文件。
-                # 优先用 manifest 的 task_id_actual；缺失时从漏洞中心
+                # 优先用 manifest 的 task_id_actual；缺失时从告警中心
                 # 按 trace_case_ids 搜索获取 source_task.task_id。
                 if not task_id_actual and trace_case_ids:
                     try:
                         from ..infrastructure.vuln_center_client import get_task_id_by_case_id
                         _proj = e.get("project_id", "")
                         task_id_actual = get_task_id_by_case_id(_proj, trace_case_ids[0]) or ""
-                        log("CVULN", f"manifest 无 task_id_actual，从漏洞中心搜索获取: "
+                        log("CVULN", f"manifest 无 task_id_actual，从告警中心搜索获取: "
                               f"{task_id_actual}")
                     except Exception as err:
-                        log("CVULN", f"从漏洞中心获取 task_id 失败: {err}")
+                        log("CVULN", f"从告警中心获取 task_id 失败: {err}")
                 trace_source["source_task_id"] = task_id_actual
                 # trace_case_ids 与 benchmark_item_id 属于不同命名空间，
                 # 不能用它过滤基线。它只传给 parser 做 JSONL 文件过滤。
