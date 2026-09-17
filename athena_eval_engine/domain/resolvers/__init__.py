@@ -36,7 +36,9 @@ class TraceParser(ABC):
         """
         import re
         import os
+        import time
         from collections import defaultdict
+        from ...infrastructure.log_util import log
         # 文件/fact 被 >此数量的 session 共享时不建边（防止常见文件产生噪声边）
         _MAX_SESSIONS_PER_LINK = 5
         graph = {
@@ -44,7 +46,11 @@ class TraceParser(ABC):
             'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
             'parent_map': {},
         }
-        for ev in events:
+        _n = len(events)
+        _start = time.time()
+        for idx, ev in enumerate(events):
+            if idx > 0 and idx % 50000 == 0:
+                log("SINK_MATCH", f"build_session_graph {idx}/{_n} events elapsed={int(time.time()-_start)}s")
             sid = ev.session_id
             if not sid:
                 continue

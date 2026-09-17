@@ -38,9 +38,14 @@ def build_file_read_index(events: list) -> list[dict]:
 
     返回: [{file_path, basename, offset, limit, content, session_id, timestamp}, ...]
     """
+    import time
+    _n = len(events)
+    _start = time.time()
     # 构建 call_id → TOOL_RESULT 映射
     result_by_call_id: dict[str, str] = {}
-    for e in events:
+    for idx, e in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_file_read_index pass1 {idx}/{_n} elapsed={int(time.time()-_start)}s")
         if e.event_type == "TOOL_RESULT" and e.call_id:
             output = e.output_json
             if isinstance(output, str):
@@ -49,7 +54,9 @@ def build_file_read_index(events: list) -> list[dict]:
                 result_by_call_id[e.call_id] = str(output)
 
     reads: list[dict] = []
-    for e in events:
+    for idx, e in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_file_read_index pass2 {idx}/{_n} elapsed={int(time.time()-_start)}s")
         if e.event_type != "TOOL_CALL":
             continue
         tool = e.tool_name or ""
@@ -203,7 +210,10 @@ def collect_chain_actions(chain_sessions: set[str], events: list, parser,
     if parser is None:
         return []
     actions = []
-    for ev in events:
+    _n = len(events)
+    for idx, ev in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"collect_chain_actions {idx}/{_n} events")
         if not ev.is_tool_call():
             continue
         if ev.session_id not in chain_sessions:
@@ -241,7 +251,10 @@ def build_session_chain(chain_sessions: set[str], events: list,
 
     # 找每个 session 的最早事件时间戳
     session_first_ts: dict[str, int] = {}
-    for e in events:
+    _n = len(events)
+    for idx, e in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_session_chain {idx}/{_n} events")
         sid = e.session_id
         if sid not in chain_sessions:
             continue
@@ -305,7 +318,10 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
     """
     # 构建 call_id → TOOL_RESULT 映射
     result_by_call_id: dict[str, str] = {}
-    for e in events:
+    _n = len(events)
+    for idx, e in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"collect_chain_kis pass1 {idx}/{_n}")
         if e.event_type == "TOOL_RESULT" and e.call_id:
             output = e.output_json
             if isinstance(output, str):
@@ -314,7 +330,9 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
                 result_by_call_id[e.call_id] = str(output)
 
     interactions = []
-    for e in events:
+    for idx, e in enumerate(events):
+        if idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"collect_chain_kis pass2 {idx}/{_n}")
         if e.session_id not in chain_sessions:
             continue
         if not e.is_tool_call():
@@ -617,7 +635,8 @@ def analyze_chain_llm(chain_actions: list[dict], chain_findings: list[dict],
 
 
 def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
-                         findings_override=None, progress_cb=None) -> tuple:
+                         findings_override=None, progress_cb=None,
+                         session_graph=None) -> tuple:
     """Sink 点匹配主入口 — 替换 ai_match_outcome 中的 LLM 匹配阶段。
 
     流程：
@@ -694,8 +713,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
     # Step 2: 构建文件读取索引
     file_reads = build_file_read_index(events)
 
-    # Step 3: 构建 session graph
-    session_graph = parser.build_session_graph(events) if parser else {}
+    # Step 3: 构建 session graph（如调用方已构建则复用，避免重复遍历百万级 events）
+    if session_graph is None:
+        session_graph = parser.build_session_graph(events) if parser else {}
 
     # Step 4: 对每个基线做 sink 匹配 + 链分析
     _progress(f"Sink 匹配: 0/{len(benchmarks)} 基线完成")

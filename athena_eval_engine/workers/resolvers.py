@@ -8,6 +8,7 @@
 """
 from __future__ import annotations
 import re
+import time
 from typing import Iterable
 from ..domain.raw_event import RawEvent
 from ..domain.task_run import TaskRun, BenchmarkItem
@@ -18,6 +19,9 @@ from ..domain.enums import (
     Condition, ConditionSource, Outcome, Prediction, Confusion, ExpectedLabel,
     CanonicalAction,
 )
+from ..infrastructure.log_util import log
+
+_LOG_INTERVAL = 50000  # 每 5 万条事件输出一次进度
 
 
 def _ev(e: RawEvent, field_path: str = None) -> Evidence:
@@ -80,7 +84,10 @@ class OutcomeResolverImpl:
         DataflowVulnScan（assistant 文本 findings JSON）、
         SecMate（store_tracer_verdict outcome）。"""
         candidates = []
-        for e in events:
+        _n = len(events)
+        for idx, e in enumerate(events):
+            if idx > 0 and idx % _LOG_INTERVAL == 0:
+                log("RESOLVE", f"OutcomeResolver._latest_validation {idx}/{_n} events")
             # DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件，非 tool call）
             if e.event_type == "TEXT" and e.output_json:
                 text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
@@ -256,7 +263,10 @@ class KnowledgeResolverImpl:
         memory_interactions: list[dict] = []  # 记忆交互事件（只读）
         mem_call_ids: set[str] = set()  # 记忆 CALL 的 call_id（用于 RESULT 精确配对）
         mem_success_count = 0
+        _n = len(events)
         for idx, e in enumerate(events):
+            if idx > 0 and idx % _LOG_INTERVAL == 0:
+                log("RESOLVE", f"KnowledgeResolver {idx}/{_n} events")
             # text part 含 Reference/Athena 指引 = prompt 注入了知识库（KG2.0 配置存在）
             if e.event_type == "TEXT" and self._text_patterns:
                 raw = ""
@@ -374,7 +384,10 @@ class ToolActionResolverImpl:
 
     def resolve(self, task_run: TaskRun, events: list[RawEvent], schema=None) -> ToolActionFact:
         counts = {a.value: 0 for a in CanonicalAction}
-        for e in events:
+        _n = len(events)
+        for idx, e in enumerate(events):
+            if idx > 0 and idx % _LOG_INTERVAL == 0:
+                log("RESOLVE", f"ToolActionResolver {idx}/{_n} events")
             if not e.is_tool_call():
                 continue
             action = self._classify(e)

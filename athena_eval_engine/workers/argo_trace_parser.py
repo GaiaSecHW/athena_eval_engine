@@ -311,6 +311,8 @@ class ArgoTraceParser(TraceParser):
         - session ↔ session：通过共享文件/fact 关联
         """
         from collections import defaultdict as _dd
+        import time as _time
+        from ..infrastructure.log_util import log as _log
         _MAX_SESSIONS_PER_LINK = 5
         graph = {
             'sessions': {},
@@ -322,7 +324,11 @@ class ArgoTraceParser(TraceParser):
             'parent_map': {},
         }
 
-        for ev in events:
+        _n = len(events)
+        _start = _time.time()
+        for idx, ev in enumerate(events):
+            if idx > 0 and idx % 50000 == 0:
+                _log("SINK_MATCH", f"argo.build_session_graph {idx}/{_n} elapsed={int(_time.time()-_start)}s")
             sid = ev.session_id
             if not sid:
                 continue

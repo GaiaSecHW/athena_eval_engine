@@ -8,6 +8,7 @@ from __future__ import annotations
 import json
 import os
 import sys
+import time
 import threading
 from dataclasses import dataclass, field
 from ..infrastructure.database import connect
@@ -25,6 +26,7 @@ from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
 from .report_assembler import (assemble, render_json,
                                ai_per_case_kg_analysis, rule_based_per_case_kg_analysis)
+from .fpr_analysis import run_fpr_analysis
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchStatus
 from ..orchestration.state_machine import PIPELINE, assert_transition
@@ -971,7 +973,14 @@ def run(evaluation_id: str) -> dict:
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
 
             log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
-            with ThreadPoolExecutor(max_workers=50) as inner_pool:
+            _trace_start = time.time()
+            _TRACE_TIMEOUT = 7200  # 单条 trace 超时上限 2 小时
+            # 提前构建 session_graph，sink_match_baselines 和返回值共用，避免重复遍历百万级 events
+            session_graph = parser.build_session_graph(events) if parser else {}
+            log("MATCH", f"{cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
+                  f"in {int(time.time()-_trace_start)}s")
+            inner_pool = ThreadPoolExecutor(max_workers=50)
+            try:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
@@ -1047,13 +1056,30 @@ def run(evaluation_id: str) -> dict:
                                                     progress_cb=lambda text, tr=tr: set_task_progress(
                                                         evaluation_id, tr.task_run_id,
                                                         f"[{tr.condition.value}] {text}"),
-                                                    findings_override=_findings_override)
+                                                    findings_override=_findings_override,
+                                                    session_graph=session_graph)
                 except RuntimeError:
                     raise RuntimeError("线程池已关闭（Pod 可能正在重启）")
-                oc, case_results = fut_outcome.result()
-                kn = fut_kn.result()
-                ta = fut_ta.result()
-                rs = fut_rs.result()
+                _elapsed = time.time() - _trace_start
+                _remaining = max(1, _TRACE_TIMEOUT - _elapsed)
+                log("MATCH", f"{cond.value} waiting for results (elapsed={int(_elapsed)}s, timeout={int(_remaining)}s)...")
+                oc, case_results = fut_outcome.result(timeout=_remaining)
+                _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
+                kn = fut_kn.result(timeout=_remaining)
+                _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
+                ta = fut_ta.result(timeout=_remaining)
+                _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
+                rs = fut_rs.result(timeout=_remaining)
+            except TimeoutError:
+                log("MATCH", f"{cond.value} TIMEOUT after {int(time.time()-_trace_start)}s "
+                      f"(events={len(events)}), aborting trace")
+                inner_pool.shutdown(wait=False, cancel_futures=True)
+                raise RuntimeError(f"trace 超时（{int(time.time()-_trace_start)}s, events={len(events)}）")
+            except Exception:
+                inner_pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                inner_pool.shutdown(wait=True)
             log("MATCH", f"{cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
@@ -1088,8 +1114,7 @@ def run(evaluation_id: str) -> dict:
                  "pending": sum(1 for c in _ac_cases if not c.get("validation_result"))}
             ) if _ac_cases else {}
             oc.case_results = case_results
-            # session_graph 由 parser 构建（基类有通用实现，各子类可覆盖）
-            session_graph = parser.build_session_graph(events)
+            # session_graph 已在 resolve 开头构建，sink_match_baselines 复用，无需重复遍历
             return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs, "case_results": case_results, "session_graph": session_graph, "findings": _findings, "events": events, "_task_id": tr.task_id, "parser": parser, "_is_verify": is_verify}, parsed["src"]
 
         # 预取所有 trace 到本地（串行，避免并发写同一文件 WinError 32）
@@ -1556,6 +1581,40 @@ def run(evaluation_id: str) -> dict:
         for item in group["per_case_kg_analysis"]:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
+
+    # ===== Phase 6b: FPR 分析（基线 CSV vs 漏洞中心数据 → 误报率）=====
+    _mining_entry = next((e for e in entries
+                          if e.get("category", "") != "verify" and e.get("project_id") and e.get("task_id")), None)
+    if _mining_entry:
+        _fpr_pid = _mining_entry["project_id"]
+        _fpr_tid = _mining_entry["task_id"]
+        log("EVAL", f"FPR 分析: project={_fpr_pid}, task={_fpr_tid}")
+        set_progress(evaluation_id, "FPR 分析: 基线 vs 漏洞中心数据匹配中...")
+        try:
+            def _fpr_cb(done, total):
+                set_task_progress(evaluation_id, "FPR分析", f"FPR匹配 {done}/{total}")
+            _fpr_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb)
+        except Exception as _fpr_err:
+            log("FPR", f"FPR 分析失败（不影响评测）: {_fpr_err}")
+            _fpr_result = None
+        if _fpr_result:
+            _metric_groups.append({
+                "task_id": _fpr_tid,
+                "category": "e2e",
+                "label": "漏洞E2E结果",
+                "agent_name": "",
+                "p0": {}, "p1": {}, "p2": {},
+                "diagnostic_hits": [],
+                "case_results": [],
+                "pair_count": 0,
+                "fpr_analysis": _fpr_result,
+            })
+            log("EVAL", f"FPR 分析完成: FPR={_fpr_result['fpr']:.1%}, 匹配={_fpr_result['matched']}")
+            set_progress(evaluation_id, "FPR 分析完成，生成报告中...")
+        else:
+            log("EVAL", "FPR 分析无结果（基线未配置或无数据），跳过第三个 tab")
+            set_progress(evaluation_id, "生成报告中...")
+
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
