@@ -380,14 +380,18 @@ class DataflowVulnScanTraceParser(TraceParser):
     def build_session_graph(self, events):
         """构建 DVS session 关系图。
 
-        在基类（共享文件/fact/athena 查询）基础上增加：
-        - session_type = 'scan'
-        - finding_to_session 映射（case_id → dvs-intake-result）
-        - dvs_run_id 标注（从 session_id 路径提取）
-        - intake session → 同 dvs_run_id 的分析 session 边
-        - 记忆读取路径
+        每个 dvs_run_id 是一组独立的函数分析运行（按调用链深度 d00→d01→d02
+        关联）。不同 dvs_run_id 之间无调用链关系，不应建边。
+
+        基类按共享文件/fact 建边，但不同 dvs_run 可能分析同一源文件
+        （如 hks_core.c），产生跨 dvs_run 的传递性边，导致 BFS 全连通。
+        因此在基类建边后，按 dvs_run_id 过滤：只保留同 dvs_run 内的边。
+
+        dvs-intake-result 是虚拟 session（汇总 events.jsonl 提交记录），
+        不属于任何分析链，不参与建边。
         """
         import re
+        from collections import defaultdict
         graph = super().build_session_graph(events)
         finding_to_session = {}
 
@@ -429,24 +433,32 @@ class DataflowVulnScanTraceParser(TraceParser):
                     for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
                         sg['memory_reads'].append(m.group(1))
 
-        # 第二遍：为 intake session 建边到同 dvs_run_id 的分析 session
-        intake_session = graph['sessions'].get('dvs-intake-result')
-        if intake_session:
-            # 收集所有有 case_id 的 dvs_run_id
-            intake_dvs_runs: set[str] = set()
-            for ev in events:
-                if ev.session_id == 'dvs-intake-result' and ev.event_id:
-                    # event_id 格式: intake-{dvs_name}-{line_no}
-                    parts = ev.event_id.split('-', 2)
-                    if len(parts) >= 2:
-                        intake_dvs_runs.add(parts[1])
+        # 第二遍：按 dvs_run_id 过滤边，只保留同 dvs_run 内的连接
+        # 基类可能因跨 dvs_run 共享文件产生噪声边，这里重建
+        _MAX_SESSIONS_PER_LINK = 5
+        filtered_edges = defaultdict(set)
 
-            # 为每个有 finding 的 dvs_run_id 创建边
-            for sid, sg in graph['sessions'].items():
-                dvs_run = sg.get('dvs_run_id', '')
-                if dvs_run and dvs_run in intake_dvs_runs:
-                    graph['edges']['dvs-intake-result'].add(sid)
-                    graph['edges'][sid].add('dvs-intake-result')
+        for fid, sids in graph.get('fact_to_sessions', {}).items():
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            r1 = graph['sessions'].get(s1, {}).get('dvs_run_id', '')
+                            r2 = graph['sessions'].get(s2, {}).get('dvs_run_id', '')
+                            if r1 and r2 and r1 == r2:
+                                filtered_edges[s1].add(s2)
+
+        for fm, sids in graph.get('file_to_sessions', {}).items():
+            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
+                for s1 in sids:
+                    for s2 in sids:
+                        if s1 != s2:
+                            r1 = graph['sessions'].get(s1, {}).get('dvs_run_id', '')
+                            r2 = graph['sessions'].get(s2, {}).get('dvs_run_id', '')
+                            if r1 and r2 and r1 == r2:
+                                filtered_edges[s1].add(s2)
+
+        graph['edges'] = filtered_edges
 
         graph['finding_to_session'] = finding_to_session
         return graph
