@@ -34,7 +34,7 @@ from ..application import platform_service as ps
 # 跨 worker 生效（--workers 2 时不同 worker 共享同一 DB）
 
 # 运行时可调并发参数
-_runtime_workers = {"parse": 4, "kg_analysis": 8}
+_runtime_workers = {"parse": 4, "kg_analysis": 4}
 
 
 def get_runtime_workers() -> dict:
@@ -393,7 +393,7 @@ def run(evaluation_id: str) -> dict:
 
     # 设置全局 LLM 并发上限（仅首次调用生效）
     from ..infrastructure.llm import set_max_concurrency
-    set_max_concurrency(50)
+    set_max_concurrency(20)
 
     # ===== 重跑前清空所有历史数据（DB + 静态报告文件）=====
     def _clear_all_old_data(cur):
@@ -1524,7 +1524,7 @@ def run(evaluation_id: str) -> dict:
         # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
         log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
         set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
-        with _TP(max_workers=2) as kg_pool:
+        with _TP(max_workers=1) as kg_pool:
             fut_group_pcka = {}
             for group in _metric_groups:
                 (_g_cases, _g_interactions, _g_session_graph,
@@ -1540,6 +1540,7 @@ def run(evaluation_id: str) -> dict:
                     has_nogk=has_nogk)
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
+                _group_kg_inputs.pop(group["task_id"], None)
         log("EVAL", f"知识与记忆介入分析完成")
         set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
     else:

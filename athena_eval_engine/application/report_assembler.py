@@ -1128,6 +1128,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             _compressed.append(fut.result())
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
+                del _uncached, _by_session
 
             # 2. knowledge_interactions 保留 question（查询命令），不传 answer（完整输出）
             _kis = data.get("knowledge_interactions", [])
