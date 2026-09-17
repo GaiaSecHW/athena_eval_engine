@@ -321,96 +321,157 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
 
 
 
+def _count_jsonl_shallow(d: str, exclude_subdirs: tuple = ()) -> tuple[int, float]:
+    """统计目录下 .jsonl 文件数和最新 mtime（浅层：当前目录 + 一层子目录）。
+
+    比 glob(recursive=True) 快得多——只 os.scandir 两次，不遍历整棵树。
+    """
+    count = 0
+    latest_mt = 0.0
+    subdirs = []
+    try:
+        for entry in os.scandir(d):
+            if entry.is_file() and entry.name.endswith(".jsonl"):
+                count += 1
+                try:
+                    mt = entry.stat().st_mtime
+                    if mt > latest_mt:
+                        latest_mt = mt
+                except OSError:
+                    pass
+            elif entry.is_dir():
+                if entry.name in exclude_subdirs:
+                    continue
+                subdirs.append(entry.path)
+    except OSError:
+        pass
+    for sub in subdirs:
+        try:
+            for entry in os.scandir(sub):
+                if entry.is_file() and entry.name.endswith(".jsonl"):
+                    count += 1
+                    try:
+                        mt = entry.stat().st_mtime
+                        if mt > latest_mt:
+                            latest_mt = mt
+                    except OSError:
+                        pass
+        except OSError:
+            pass
+    return count, latest_mt
+
+
+def _count_jsonl_deep(d: str, exclude_files: tuple = (), max_depth: int | None = None) -> tuple[int, float]:
+    """统计目录下所有 .jsonl（含子目录递归），用于 dataflow 等深层结构。
+
+    max_depth: None=无限递归, 1=只扫一层子目录, 2=两层
+    """
+    count = 0
+    latest_mt = 0.0
+    try:
+        for entry in os.scandir(d):
+            if entry.is_file() and entry.name.endswith(".jsonl"):
+                if exclude_files and any(ex in entry.name for ex in exclude_files):
+                    continue
+                count += 1
+                try:
+                    mt = entry.stat().st_mtime
+                    if mt > latest_mt:
+                        latest_mt = mt
+                except OSError:
+                    pass
+            elif entry.is_dir() and (max_depth is None or max_depth > 0):
+                new_depth = max_depth - 1 if max_depth is not None else None
+                c, mt = _count_jsonl_deep(entry.path, exclude_files, new_depth)
+                count += c
+                if mt > latest_mt:
+                    latest_mt = mt
+    except OSError:
+        pass
+    return count, latest_mt
+
+
 def _scan_dir(base: str, out: list) -> None:
-    """k8s 模式：只找 session 目录 + .db 文件。"""
+    """k8s 模式：按固定路径检查目录是否存在，不递归 glob。
+
+    目录结构固定：
+      {base}/session/                         ← Argo/Turing session
+      {base}/session/dataflow_vuln_scan/      ← Dataflow
+      {base}/tools/{tool}/session/WebVerify/   ← WebVulnVerify
+      {base}/tools/{tool}/run/.worker-config/projects/ ← SecMate
+      {base}/tools/{tool}/*.db                 ← findings.db / opencode.db
+      {base}/tools/{tool}/run/findings.db
+      {base}/tools/{tool}/run/trace/trace.db
+    """
     if not os.path.isdir(base):
         return
-    # 1. 找所有名为 session 的目录
-    for d in glob.glob(f"{base}/**/session", recursive=True):
-        if not os.path.isdir(d):
-            continue
-        # 统计目录下的 .jsonl 文件数和最新 mtime（包括子目录如 argo/）
-        jsonl_files = glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
-        # dataflow_vuln_scan 子目录单独作为 dataflow trace（见下），此处排除避免重复计数
-        jsonl_files = [f for f in jsonl_files if "dataflow_vuln_scan" not in f.replace("\\", "/")]
-        # WebVerify .jsonl 由下方单独处理，此处排除避免重复
-        jsonl_files = [f for f in jsonl_files if "/WebVerify/" not in f.replace("\\", "/")]
-        if not jsonl_files:
-            continue
-        latest_mt = 0.0
-        for f in jsonl_files:
-            try:
-                mt = os.path.getmtime(f)
-                if mt > latest_mt:
-                    latest_mt = mt
-            except OSError:
-                pass
-        t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
-        t["file_count"] = len(jsonl_files)
-        out.append(t)
-    # 2. 找 WebVerify 目录（WebVulnVerify trace）
-    for d in glob.glob(f"{base}/**/WebVerify", recursive=True):
-        if not os.path.isdir(d):
-            continue
-        wv_files = glob.glob(os.path.join(d, "*.jsonl"))
-        if not wv_files:
-            continue
-        latest_mt = 0.0
-        for f in wv_files:
-            try:
-                mt = os.path.getmtime(f)
-                if mt > latest_mt:
-                    latest_mt = mt
-            except OSError:
-                pass
-        t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
-        t["file_count"] = len(wv_files)
-        out.append(t)
-    # 2b. 找 dataflow_vuln_scan 目录（新工具：.../session/dataflow_vuln_scan/<dvs_run>/*.jsonl）
-    for d in glob.glob(f"{base}/**/dataflow_vuln_scan", recursive=True):
-        if not os.path.isdir(d):
-            continue
-        jsonl_files = [f for f in glob.glob(os.path.join(d, "**", "*.jsonl"), recursive=True)
-                       if "system-prompt" not in os.path.basename(f)]
-        if not jsonl_files:
-            continue
-        latest_mt = 0.0
-        for f in jsonl_files:
-            try:
-                mt = os.path.getmtime(f)
-                if mt > latest_mt:
-                    latest_mt = mt
-            except OSError:
-                pass
-        t = _make_session_dir_trace(d, latest_mt if latest_mt > 0 else None)
-        t["file_count"] = len(jsonl_files)
-        out.append(t)
-    # 2c. 找 SecMate transcript 目录：tools/secmate-*/run/.worker-config/projects
-    # SecMate agent transcript 在 .worker-config/projects/{normalized-path}/ 下
-    for d in glob.glob(f"{base}/**/secmate-*/run/.worker-config/projects", recursive=True):
-        if not os.path.isdir(d):
-            continue
-        if "restart-backups" in d:
-            continue
-        jsonl_files = glob.glob(os.path.join(d, "*", "*.jsonl"))
-        if not jsonl_files:
-            continue
-        latest_mt = 0.0
-        for f in jsonl_files:
-            try:
-                latest_mt = max(latest_mt, os.path.getmtime(f))
-            except OSError:
-                pass
-        t = _make_session_dir_trace(d, latest_mt or None)
-        t["file_count"] = len(jsonl_files)
-        out.append(t)
-    # 3. 找 .db 文件（opencode.db / findings.db）
-    for p in glob.glob(f"{base}/**/*.db", recursive=True):
+
+    # 1. session 目录（顶层 {base}/session）
+    session_dir = os.path.join(base, "session")
+    if os.path.isdir(session_dir):
+        cnt, mt = _count_jsonl_shallow(session_dir,
+                                       exclude_subdirs=("dataflow_vuln_scan", "WebVerify"))
+        if cnt > 0:
+            t = _make_session_dir_trace(session_dir, mt or None)
+            t["file_count"] = cnt
+            out.append(t)
+
+    # 2. dataflow_vuln_scan 目录
+    dfs_dir = os.path.join(base, "session", "dataflow_vuln_scan")
+    if os.path.isdir(dfs_dir):
+        cnt, mt = _count_jsonl_deep(dfs_dir, exclude_files=("system-prompt",))
+        if cnt > 0:
+            t = _make_session_dir_trace(dfs_dir, mt or None)
+            t["file_count"] = cnt
+            out.append(t)
+
+    # 3. tools/ 下的各工具目录
+    tools_dir = os.path.join(base, "tools")
+    if os.path.isdir(tools_dir):
         try:
-            mt = os.path.getmtime(p)
+            tool_dirs = [e.path for e in os.scandir(tools_dir) if e.is_dir()]
         except OSError:
-            mt = None
-        out.append(_classify_trace(p, mt))
+            tool_dirs = []
+        for tool_dir in tool_dirs:
+            # 3a. WebVerify 目录
+            wv_dir = os.path.join(tool_dir, "session", "WebVerify")
+            if os.path.isdir(wv_dir):
+                cnt, mt = _count_jsonl_shallow(wv_dir)
+                if cnt > 0:
+                    t = _make_session_dir_trace(wv_dir, mt or None)
+                    t["file_count"] = cnt
+                    out.append(t)
+
+            # 3b. SecMate transcript 目录
+            sm_dir = os.path.join(tool_dir, "run", ".worker-config", "projects")
+            if os.path.isdir(sm_dir) and "restart-backups" not in tool_dir:
+                cnt, mt = _count_jsonl_deep(sm_dir, max_depth=1)
+                if cnt > 0:
+                    t = _make_session_dir_trace(sm_dir, mt or None)
+                    t["file_count"] = cnt
+                    out.append(t)
+
+            # 3c. .db 文件（固定路径）
+            for db_rel in ["findings.db", "run/findings.db", "run/trace/trace.db"]:
+                db_path = os.path.join(tool_dir, *db_rel.split("/"))
+                if os.path.isfile(db_path):
+                    try:
+                        mt = os.path.getmtime(db_path)
+                    except OSError:
+                        mt = None
+                    out.append(_classify_trace(db_path, mt))
+
+    # 4. 顶层 .db 文件
+    try:
+        for entry in os.scandir(base):
+            if entry.is_file() and entry.name.endswith(".db"):
+                try:
+                    mt = entry.stat().st_mtime
+                except OSError:
+                    mt = None
+                out.append(_classify_trace(entry.path, mt))
+    except OSError:
+        pass
 
 
 def _kubectl_find_dirs(pod: str, base: str, dir_name: str, env: dict) -> list[dict]:
