@@ -312,7 +312,7 @@ function renderReport(d){
         var _sinkLoc=_sinkLine||_sinkFunc;
         h+="<span style='font-size:12px;color:var(--sub)'>（"+_basename+(_sinkLoc?":"+_sinkLoc:"")+"）</span>";
       }
-      h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
+      h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"")+"</span>";
       h+="</div>";
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
@@ -340,7 +340,10 @@ function renderReport(d){
           h+="<div style='margin-bottom:8px;padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:3px'>KG</div>";
           if(_sinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_sinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(c.sink_sessions&&c.sink_sessions.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🔗 证据 session</div>"+c.sink_sessions.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
+          var _kgHitSns=[];
+          if(c.sink_hit_sessions&&c.sink_hit_sessions.length)_kgHitSns=_kgHitSns.concat(c.sink_hit_sessions);
+          if(c.finding_session&&_kgHitSns.indexOf(c.finding_session)<0)_kgHitSns.push(c.finding_session);
+          if(_kgHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_kgHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).slice(0,12).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
@@ -348,7 +351,10 @@ function renderReport(d){
           h+="<div style='padding:6px 8px;background:var(--p2);border-radius:6px'>";
           h+="<div style='font-size:11px;font-weight:600;color:var(--sub);margin-bottom:3px'>No-KG</div>";
           if(_nogkSinkInfo)h+="<div style='font-size:12px;color:var(--sub);margin-bottom:3px'><b>匹配状态:</b> "+String(_nogkSinkInfo).replace(/</g,"&lt;")+"</div>";
-          if(c.nogk_sink_sessions&&c.nogk_sink_sessions.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🔗 证据 session</div>"+c.nogk_sink_sessions.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
+          var _nogkHitSns=[];
+          if(c.nogk_sink_hit_sessions&&c.nogk_sink_hit_sessions.length)_nogkHitSns=_nogkHitSns.concat(c.nogk_sink_hit_sessions);
+          if(c.nogk_finding_session&&_nogkHitSns.indexOf(c.nogk_finding_session)<0)_nogkHitSns.push(c.nogk_finding_session);
+          if(_nogkHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_nogkHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).slice(0,12).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
           if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
@@ -682,7 +688,17 @@ function renderReport(d){
           const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
           let kgCell;
-          const _kgSessInfo=(c.sink_sessions&&c.sink_sessions.length)?`<div style="font-size:11px;color:var(--acc)">session: ${c.sink_sessions.map(s=>s.slice(0,8)).join(', ')}</div>`:"";
+          function _chainHtml(chain){
+            if(!chain||!chain.length)return "";
+            var parts=chain.map(function(s){
+              var sid=String(s.session_id||"").slice(0,8);
+              var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
+              var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
+              return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
+            });
+            return "<div style='font-size:11px;margin-top:2px'>"+parts.join(" → ")+"</div>";
+          }
+          const _kgSessInfo=_chainHtml(c.session_chain);
           if(c.matched){
             kgCell=`<span style="color:var(--green)">✓命中</span> ${(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")}`+(_kgSessInfo||kgCandNote);
           }else if(c.mined){
@@ -701,7 +717,7 @@ function renderReport(d){
             const nogkCands=c.nogk_candidate_findings||[];
             const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
             const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
-            const _nogkSessInfo=(c.nogk_sink_sessions&&c.nogk_sink_sessions.length)?`<div style="font-size:11px;color:var(--acc)">session: ${c.nogk_sink_sessions.map(s=>s.slice(0,8)).join(', ')}</div>`:"";
+            const _nogkSessInfo=_chainHtml(c.nogk_session_chain);
             if(c.nogk_matched){
               nogkCell=`<td><span style="color:var(--green)">✓命中</span> ${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}${_nogkSessInfo||nogkCandNote}</td>`;
             }else if(c.nogk_mined){
