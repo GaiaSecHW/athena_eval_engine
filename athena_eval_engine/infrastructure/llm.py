@@ -139,7 +139,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     path = parsed.path.rstrip("/") + "/chat/completions"
     _model = model or DEFAULT_MODEL
     first_token_timeout = timeout if timeout is not None else FIRST_TOKEN_TIMEOUT
-    log("LLM", f"POST {base}{path} model={_model} msgs={len(messages)} "
+    log("LLM", f"POST {host}:{port}{path} model={_model} msgs={len(messages)} "
           f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s")
 
     body = json.dumps({
