@@ -125,8 +125,8 @@ def set_runtime_config(**kwargs):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
-            api_base=None, api_key=None, timeout=None, **_unused) -> str:
-    """单次 LLM 调用（SSE 流式），不重试。
+            api_base=None, api_key=None, timeout=None, **_unused) -> tuple[str, str | None]:
+    """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
     ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
@@ -280,7 +280,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
 
         if content:
             log("LLM", f"OK stream done content_len={len(content)} elapsed={time.time()-_req_ts:.1f}s")
-            return content
+            return content, finish_reason
         raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
     except (socket.timeout, TimeoutError) as e:
         phase = "首 token" if first_token else "后续 token 断流"
@@ -301,7 +301,7 @@ def chat(messages, **kwargs) -> str:
     retries = kwargs.get("retries", MAX_RETRIES)
     for attempt in range(retries):
         try:
-            return _chat_once(messages, **{k: v for k, v in kwargs.items() if k != "retries"})
+            return _chat_once(messages, **{k: v for k, v in kwargs.items() if k != "retries"})[0]
         except Exception as e:
             last_err = str(e)[:300]
             log("LLM", f"chat attempt {attempt+1}/{retries} failed: {last_err}")
@@ -323,7 +323,7 @@ def chat_json(messages, **kwargs) -> dict:
     for attempt in range(retries):
         # ── LLM 调用（网络/超时错误走原重试逻辑）──
         try:
-            raw = _chat_once(msgs, **{k: v for k, v in kwargs.items() if k != "retries"})
+            raw, _fr = _chat_once(msgs, **{k: v for k, v in kwargs.items() if k != "retries"})
         except Exception as e:
             last_err = str(e)[:300]
             err_lower = last_err.lower()
@@ -373,7 +373,12 @@ def chat_json(messages, **kwargs) -> dict:
                     json_err = je
         if parsed is not None and isinstance(parsed, dict):
             return parsed
-        # parsed 是 list 或 None → 视为解析失败，反馈给 LLM 重试
+        # parsed 是 list 或 None → 视为解析失败
+        # finish_reason=length 意味着 max_tokens 截断了输出，correction 重试只会重复截断
+        if _fr == "length":
+            log("LLM", f"chat_json JSON 截断（finish_reason=length, content_len={len(raw)}），跳过 correction 重试")
+            last_err = f"JSON 被 max_tokens 截断（finish_reason=length, content_len={len(raw)}）"
+            break
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
         err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
         log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail}, feeding back to LLM")

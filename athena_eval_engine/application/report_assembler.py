@@ -1057,12 +1057,58 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "其他 read/grep/bash 为普通文件操作。\n\n"
                         '只返回 JSON：{"session_id": "会话标识", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
                     )}
+                    # 单 session 过大时分段压缩再合并：防止 LLM 输出超 max_tokens 截断
+                    _SEGMENT_CHAR_LIMIT = 60000  # 单段输入上限（chars），约 15K-30K tokens
                     def _compress_one(item):
                         sid, acts = item
                         try:
-                            _r = llm_mod.chat_json(
-                                [_sys_prompt, {"role": "user", "content": json.dumps(acts, ensure_ascii=False)}],
-                                temperature=0, max_tokens=8000)
+                            _acts_str = json.dumps(acts, ensure_ascii=False)
+                            if len(_acts_str) <= _SEGMENT_CHAR_LIMIT:
+                                _r = llm_mod.chat_json(
+                                    [_sys_prompt, {"role": "user", "content": _acts_str}],
+                                    temperature=0, max_tokens=8000)
+                            else:
+                                # 分段：按 _SEGMENT_CHAR_LIMIT 切分 acts
+                                _segments = []
+                                _seg = []
+                                _seg_size = 0
+                                for a in acts:
+                                    _a_str = json.dumps(a, ensure_ascii=False)
+                                    if _seg_size + len(_a_str) > _SEGMENT_CHAR_LIMIT and _seg:
+                                        _segments.append(_seg)
+                                        _seg = []
+                                        _seg_size = 0
+                                    _seg.append(a)
+                                    _seg_size += len(_a_str)
+                                if _seg:
+                                    _segments.append(_seg)
+                                log("KG_ANALYSIS", f"session {sid} 分段压缩: {len(acts)} actions → {len(_segments)} 段")
+                                _seg_results = []
+                                for si, seg in enumerate(_segments):
+                                    try:
+                                        _sr = llm_mod.chat_json(
+                                            [_sys_prompt, {"role": "user", "content": json.dumps(seg, ensure_ascii=False)}],
+                                            temperature=0, max_tokens=4000)
+                                        if isinstance(_sr, dict):
+                                            _seg_results.append(_sr)
+                                    except Exception as _se:
+                                        log("KG_ANALYSIS", f"session {sid} 段 {si} 压缩失败: {_se}")
+                                if len(_seg_results) <= 1:
+                                    _r = _seg_results[0] if _seg_results else {"session_id": sid, "mining_summary": "压缩失败"}
+                                else:
+                                    # 合并各段摘要
+                                    _merge_prompt = {"role": "system", "content": (
+                                        "你是漏洞挖掘过程分析员。将多段挖掘过程摘要合并成一个完整摘要。\n\n"
+                                        "保留以下信息：\n"
+                                        "1. 知识/记忆查询的完整问答\n"
+                                        "2. 漏洞接触链\n"
+                                        "3. 判定决策点\n"
+                                        "4. 各段之间的衔接关系\n\n"
+                                        '只返回 JSON：{"session_id": "' + sid + '", "mining_summary": "<=2000字中文，按时间线描述完整挖掘过程", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "后续行为"}], "key_actions": ["关键操作1", ...]}'
+                                    )}
+                                    _r = llm_mod.chat_json(
+                                        [_merge_prompt, {"role": "user", "content": json.dumps(_seg_results, ensure_ascii=False)}],
+                                        temperature=0, max_tokens=4000)
                             if isinstance(_r, dict):
                                 _session_compress_cache[sid] = _r
                                 return _r
