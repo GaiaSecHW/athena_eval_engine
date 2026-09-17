@@ -280,6 +280,7 @@ class TuringTraceParser(TraceParser):
                 if sid in graph['sessions'] and pid in graph['sessions']:
                     graph['edges'][sid].add(pid)
                     graph['edges'][pid].add(sid)
+                    graph['parent_map'][sid] = pid
             # 补充标注所有 session 的 agent 角色（非仅 parent_id 非空的）
             for row in conn.execute("SELECT id, agent FROM session"):
                 sid = row["id"]

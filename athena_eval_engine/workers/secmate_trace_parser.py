@@ -483,6 +483,7 @@ class SecMateTraceParser(TraceParser):
             'source_task_to_sessions': defaultdict(set),
             'source_session_to_sessions': defaultdict(set),
             'edges': defaultdict(set),
+            'parent_map': {},
         }
         for ev in events:
             sid = ev.session_id
@@ -528,6 +529,7 @@ class SecMateTraceParser(TraceParser):
                 if ssid:
                     sg['source_session_ids'].add(ssid)
                     graph['source_session_to_sessions'][ssid].add(sid)
+                    graph['parent_map'][sid] = ssid
 
             # 共享文件（与基类默认实现相同）
             if tool == "bash":

@@ -319,6 +319,7 @@ class ArgoTraceParser(TraceParser):
             'finding_to_investigate': _dd(set),  # finding_key -> investigate session_ids
             'finding_to_verify': _dd(set),        # finding_key -> verify session_ids
             'edges': _dd(set),
+            'parent_map': {},
         }
 
         for ev in events:

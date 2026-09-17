@@ -554,6 +554,7 @@ class WebVulnVerifyTraceParser(TraceParser):
                         graph['sessions'][pid] = {'files': set(), 'vuln_ids': set()}
                     graph['edges'][sid].add(pid)
                     graph['edges'][pid].add(sid)
+                    graph['parent_map'][sid] = pid
                 # metadata.vulnerability_id — 所有 session 都有
                 meta = sess.get("metadata", {})
                 if isinstance(meta, dict):

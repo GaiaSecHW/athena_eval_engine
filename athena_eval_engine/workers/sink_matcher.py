@@ -137,8 +137,8 @@ def find_sink_sessions(file_reads: list[dict], source_file: str,
                 if r["offset"] <= target_line <= r["offset"] + r["limit"]:
                     matched_sessions.add(r["session_id"])
                     continue
-            # 检查行号是否在返回内容里（词边界匹配，避免 "5" 匹配 "15"/"50"）
-            if re.search(r'\b' + str(target_line) + r'\b', r["content"]):
+            # 检查行号是否在返回内容里（行首匹配，避免内容中的数字误匹配）
+            if re.search(r'(?:^|\n)' + str(target_line) + r'\b', r["content"]):
                 matched_sessions.add(r["session_id"])
                 continue
         # 检查方法名是否在返回内容里（词边界匹配，避免 "get" 匹配 "forget"）

@@ -42,6 +42,7 @@ class TraceParser(ABC):
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
             'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
+            'parent_map': {},
         }
         for ev in events:
             sid = ev.session_id
