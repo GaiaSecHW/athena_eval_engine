@@ -20,9 +20,14 @@ from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
-# 最多 N 个评测同时运行，其余排队等待（运行时可调）
+# 最多 N 个评测同时运行，其余排队等待
+# 线程池固定大小（上界），通过计数器 + 条件变量动态控制实际并发数
+# 调整并发数只需改变量 + notify，不重建池，不会出现并发数超限
+_MAX_POOL = 10  # 线程池上界，实际并发由 _max_concurrent_evals 控制
 _max_concurrent_evals = 3
-_executor = ThreadPoolExecutor(max_workers=_max_concurrent_evals, thread_name_prefix="eval")
+_running_count = 0
+_executor = ThreadPoolExecutor(max_workers=_MAX_POOL, thread_name_prefix="eval")
+_concurrency_cv = threading.Condition(threading.Lock())
 _TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED"}
 
 
@@ -31,62 +36,56 @@ def get_max_concurrent_evals() -> int:
 
 
 def set_max_concurrent_evals(n: int):
-    """设置最大并发评测数。
+    """设置最大并发评测数。立即生效，无需重建线程池。
 
-    重建线程池时，将旧池中**等待中**（未运行）的任务取消并重新提交到新池，
-    使其立即采用新并发数。已运行的任务继续在旧池中完成。
+    增大时唤醒等待中的线程立即开始；减小时已运行的任务继续，新任务等待。
     """
-    global _executor, _max_concurrent_evals
-    n = max(1, min(n, 10))
-    with _running_lock:
+    global _max_concurrent_evals
+    n = max(1, min(n, _MAX_POOL))
+    with _concurrency_cv:
+        old = _max_concurrent_evals
         _max_concurrent_evals = n
-        old_executor = _executor
-        _executor = ThreadPoolExecutor(max_workers=n, thread_name_prefix="eval")
-
-        # 取消旧池中等待中的任务，重新提交到新池
-        for eid, entry in list(_running_futures.items()):
-            fut, fn = entry
-            if fut.cancel():  # True = 尚未运行，成功取消
-                _running_futures.pop(eid, None)
-                new_fut = _executor.submit(fn)
-                _running_futures[eid] = (new_fut, fn)
-                def _done_cb(f, eid=eid):
-                    with _running_lock:
-                        cur = _running_futures.get(eid)
-                        if cur is not None and cur[0] is f:
-                            _running_futures.pop(eid, None)
-                new_fut.add_done_callback(_done_cb)
-                log("THREAD", f"{eid} 从旧线程池迁移到新线程池")
-            # else: 已在运行，继续在旧池中完成
-
-    old_executor.shutdown(wait=False)
+        if n > old:
+            _concurrency_cv.notify_all()  # 唤醒等待线程
+    log("THREAD", f"max_concurrent_evals: {old} → {n}")
 
 
 # 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
-# value = (Future, fn)，存储 fn 以便并发数变更时取消并重新提交
-_running_futures: dict[str, tuple[Future, object]] = {}
+_running_futures: dict[str, Future] = {}
 _running_lock = threading.Lock()
 
 
 def _submit_eval(evaluation_id: str, fn) -> Future:
     """提交评测任务到线程池，保证一个 evaluation_id 只有一个在运行的线程。
 
-    - 如果该 evaluation_id 已有线程在跑（force retry 场景），先从映射中移除旧线程
-    - 旧线程物理上可能仍在运行，但不再被追踪；新线程的 DB 写入会覆盖旧线程的结果
-    - 线程结束（正常或异常）时自动从映射中移除
+    通过条件变量控制并发：运行前 acquire 计数，结束后 release。
+    调整 max_concurrent_evals 不需要重建池，立即生效。
     """
+    def _wrapped():
+        global _running_count
+        with _concurrency_cv:
+            while _running_count >= _max_concurrent_evals:
+                _concurrency_cv.wait()
+            _running_count += 1
+        try:
+            fn()
+        finally:
+            with _concurrency_cv:
+                _running_count -= 1
+                _concurrency_cv.notify()  # 唤醒一个等待线程
+
     with _running_lock:
         old = _running_futures.pop(evaluation_id, None)
         if old is not None:
-            old[0].cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
+            old.cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
             log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
-        fut = _executor.submit(fn)
-        _running_futures[evaluation_id] = (fut, fn)
+        fut = _executor.submit(_wrapped)
+        _running_futures[evaluation_id] = fut
         def _done_cb(f, eid=evaluation_id):
             """只移除自己——旧线程的回调不能误删新线程的 future。"""
             with _running_lock:
                 cur = _running_futures.get(eid)
-                if cur is not None and cur[0] is f:
+                if cur is not None and cur is f:
                     _running_futures.pop(eid, None)
         fut.add_done_callback(_done_cb)
         return fut
@@ -244,7 +243,9 @@ async def health():
     from ...infrastructure import llm as _llm
     return {
         "status": "ok",
-        "running_tasks": len(_running_futures),
+        "running_tasks": _running_count,
+        "max_concurrent_evals": _max_concurrent_evals,
+        "queued_tasks": len(_running_futures) - _running_count,
         "llm_active": _llm.get_active_concurrency(),
         "llm_max": _llm.get_max_concurrency(),
     }
