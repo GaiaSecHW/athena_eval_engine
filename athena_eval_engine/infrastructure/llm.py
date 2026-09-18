@@ -134,7 +134,7 @@ def set_runtime_config(**kwargs):
             _runtime_cfg[k] = v
 
 
-def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
+def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             api_base=None, api_key=None, timeout=None, **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
@@ -152,11 +152,10 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     log("LLM", f"POST {host}:{port}{path} model={_model} msgs={len(messages)} "
           f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s")
 
-    body = json.dumps({
+    _payload = {
         "model": _model,
         "messages": messages,
         "temperature": temperature,
-        "max_tokens": max_tokens,
         "stream": True,
         "stream_options": {"include_usage": True},
         # 关闭推理模式（兼容各厂商参数，换模型无需改代码）
@@ -166,7 +165,10 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
         "enable_thinking": False,
         "reasoning_effort": "none",
         "reasoning_split": False,
-    }).encode("utf-8")
+    }
+    if max_tokens is not None:
+        _payload["max_tokens"] = max_tokens
+    body = json.dumps(_payload).encode("utf-8")
 
     headers = {
         "Content-Type": "application/json",
