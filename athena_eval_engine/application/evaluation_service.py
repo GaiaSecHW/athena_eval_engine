@@ -1601,7 +1601,7 @@ def run(evaluation_id: str) -> dict:
             _metric_groups.append({
                 "task_id": _fpr_tid,
                 "category": "e2e",
-                "label": "漏洞E2E结果",
+                "label": "漏洞E2E分析",
                 "agent_name": "",
                 "p0": {}, "p1": {}, "p2": {},
                 "diagnostic_hits": [],

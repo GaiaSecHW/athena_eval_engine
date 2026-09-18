@@ -783,7 +783,7 @@ function renderReport(d){
   ${(()=>{
     const rawGroups=r.metric_groups||[];
     const mg=(rawGroups.length?rawGroups:[{task_id:"",label:"评测结果",p0,p1,p2,diagnostic_hits:h}]).slice().sort((a,b)=>{
-      const order={mining:0,verify:1,e2e:2};return (order[a.category]??3)-(order[b.category]??3);
+      const order={e2e:0,mining:1,verify:2};return (order[a.category]??3)-(order[b.category]??3);
     });
     function _statsTable(tid,label){
       const tools=d.tool_stats||[];const res=d.resource_stats||[];const oc=d.outcome_details||[];

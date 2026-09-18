@@ -1,6 +1,6 @@
-"""FPR（误报率）分析模块 — 基线 CSV vs 漏洞中心数据，嵌套循环 1vs1 LLM 匹配。
+"""FPR（误报率）分析模块 — 基线 CSV vs 漏洞中心数据，批量 LLM 匹配。
 
-在 REPORTING 阶段被调用，结果作为第三个 tab（漏洞E2E结果）展示。
+在 REPORTING 阶段被调用，结果作为第一个 tab（漏洞E2E分析）展示。
 基线 CSV 来源：run8_reports_full.zip 生成的 run8_baseline.csv（含 VULNERABLE + NON_VULNERABLE）。
 """
 from __future__ import annotations
@@ -11,6 +11,8 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from ..infrastructure import vuln_center_client
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
+
+_BATCH_SIZE = 5
 
 
 def _get_baseline_path() -> str:
@@ -74,41 +76,152 @@ def _build_finding_desc(case: dict) -> str:
     return "\n".join(parts)
 
 
-def _llm_match_pair(finding_desc: str, baseline_content: str) -> tuple[bool, str]:
-    """用 LLM 判断两个漏洞描述是否为同一个漏洞，返回 (is_same, reason)。"""
-    prompt = [
-        {
-            "role": "system",
-            "content": (
-                "你是漏洞匹配判定器。判断两个漏洞描述是否指的是同一个漏洞。\n"
-                "匹配标准：漏洞位置、漏洞类型、漏洞原理相同或高度相似。\n"
-                "只返回 JSON：{\"is_same\": true或false, \"reason\": \"简要理由\"}"
-            ),
-        },
-        {
-            "role": "user",
-            "content": (
-                f"漏洞中心漏洞:\n{finding_desc}\n\n"
-                f"基线漏洞:\n{baseline_content}\n\n"
-                f"判断这两个描述是否指的是同一个漏洞。"
-            ),
-        },
-    ]
-    try:
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
-        is_same = result.get("is_same", False)
-        reason = result.get("reason", "")
-        if not isinstance(is_same, bool):
-            is_same = str(is_same).lower() == "true"
-        return is_same, reason
-    except Exception as e:
-        log("FPR", f"LLM 判断失败: {e}")
-        return False, f"LLM 错误: {e}"
+def _llm_match_batch(baseline_content: str,
+                     batch_findings: list[tuple[int, str]]) -> tuple[list[tuple[int, float]], str]:
+    """用 LLM 从一批漏洞中找出与基线匹配的候选，返回 (matched_list, reason)。
+
+    batch_findings: [(original_fidx, finding_desc), ...]
+    返回: [(original_fidx, confidence 0.0-1.0), ...]（空列表=无匹配），理由
+
+    如果 token 超限，自动减半 batch size 重试，直到 1vs1。
+    """
+    if len(batch_findings) == 1:
+        fidx, desc = batch_findings[0]
+        prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "你是漏洞匹配判定器。判断两个漏洞描述是否指的是同一个漏洞。\n"
+                    "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
+                    '只返回 JSON：{"is_same": true或false, "confidence": 0.0-1.0, "reason": "简要理由"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"漏洞中心漏洞:\n{desc}\n\n"
+                    f"基线漏洞:\n{baseline_content}\n\n"
+                    f"判断这两个描述是否指的是同一个漏洞。"
+                ),
+            },
+        ]
+        try:
+            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+            is_same = result.get("is_same", False)
+            reason = result.get("reason", "")
+            if not isinstance(is_same, bool):
+                is_same = str(is_same).lower() == "true"
+            conf = result.get("confidence", 1.0)
+            try:
+                conf = float(conf)
+            except (ValueError, TypeError):
+                conf = 1.0
+            return ([(fidx, conf)] if is_same else []), reason
+        except Exception as e:
+            log("FPR", f"LLM 判断失败: {e}")
+            return [], f"LLM 错误: {e}"
+
+    # 多条：批量判断，token 超限时自动降级
+    current_batch = batch_findings
+    while len(current_batch) > 1:
+        lines = []
+        for i, (fidx, desc) in enumerate(current_batch):
+            lines.append(f"--- 候选{i+1} ---\n{desc}")
+        candidates_text = "\n\n".join(lines)
+
+        prompt = [
+            {
+                "role": "system",
+                "content": (
+                    "你是漏洞匹配判定器。给定一个基线漏洞和多个候选漏洞，"
+                    "找出所有与基线指的是同一个漏洞的候选，并为每个命中的候选给出置信度。\n"
+                    "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
+                    "confidence 越高表示匹配越确信：1.0=完全确定，0.7=较可能，0.5=不确定。\n"
+                    "如果没有匹配的候选，matched 为 []。\n"
+                    '只返回 JSON：{"matched": [{"no": 候选编号, "confidence": 0.0-1.0}], "reason": "简要理由"}\n'
+                    '示例：{"matched": [{"no": 1, "confidence": 0.9}], "reason": "候选1的漏洞位置和攻击入口与基线一致"}\n'
+                    '示例：{"matched": [{"no": 1, "confidence": 0.9}, {"no": 3, "confidence": 0.6}], "reason": "候选1和3都与基线匹配，候选1更确信"}\n'
+                    '示例：{"matched": [], "reason": "无匹配"}'
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    f"基线漏洞:\n{baseline_content}\n\n"
+                    f"候选漏洞:\n{candidates_text}\n\n"
+                    f"找出所有与基线漏洞是同一个漏洞的候选，给出编号和置信度（1-{len(current_batch)}），"
+                    f"如果没有匹配则返回空列表 []。"
+                ),
+            },
+        ]
+        try:
+            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+            matched_raw = result.get("matched", [])
+            reason = result.get("reason", "")
+            # 解析为 [(fidx, confidence), ...]
+            matched_pairs: list[tuple[int, float]] = []
+            if isinstance(matched_raw, list):
+                for item in matched_raw:
+                    if isinstance(item, dict):
+                        no = item.get("no", item.get("idx", item.get("candidate", 0)))
+                        conf = item.get("confidence", 1.0)
+                    elif isinstance(item, (int, float)):
+                        no = item
+                        conf = 1.0
+                    elif isinstance(item, str):
+                        import re
+                        nums = re.findall(r'\d+', item)
+                        if nums:
+                            no = int(nums[0])
+                        else:
+                            continue
+                        conf = 1.0
+                    else:
+                        continue
+                    try:
+                        no = int(no)
+                        conf = float(conf)
+                    except (ValueError, TypeError):
+                        continue
+                    if 1 <= no <= len(current_batch):
+                        matched_pairs.append((current_batch[no - 1][0], conf))
+            elif isinstance(matched_raw, int) and 1 <= matched_raw <= len(current_batch):
+                matched_pairs.append((current_batch[matched_raw - 1][0], 1.0))
+            if matched_pairs:
+                return matched_pairs, reason
+            return [], reason or "无匹配"
+        except Exception as e:
+            err_lower = str(e).lower()
+            if any(kw in err_lower for kw in (
+                "context length", "too long", "maximum context",
+                "token limit", "context_window", "input too long",
+                "prompt too long",
+            )):
+                # token 超限，减半 batch size 重试
+                half = len(current_batch) // 2
+                log("FPR", f"token 超限 (batch={len(current_batch)})，降级到 {half}+{len(current_batch)-half}")
+                left = current_batch[:half]
+                right = current_batch[half:]
+                # 先查左半边
+                left_matches, left_reason = _llm_match_batch(baseline_content, left)
+                if left_matches:
+                    # 左半边有匹配，合并右半边结果
+                    right_matches, _ = _llm_match_batch(baseline_content, right)
+                    return left_matches + right_matches, left_reason
+                # 左半边无匹配，查右半边
+                return _llm_match_batch(baseline_content, right)
+            log("FPR", f"LLM 批量判断失败: {e}")
+            return [], f"LLM 错误: {e}"
+
+    # 降级到 1 条
+    return _llm_match_batch(baseline_content, current_batch[:1])
 
 
 def _run_matching(findings: list[dict], baseline_rows: list[dict],
                   progress_cb=None) -> list[dict]:
-    """嵌套循环匹配：基线外循环，漏洞中心数据内循环，1vs1对比。
+    """批量匹配：基线外循环，漏洞中心数据按 BATCH_SIZE 分批，每批一次 LLM 调用。
+
+    多个候选命中时，取置信度最高的匹配，其余留在池中给后续基线匹配。
 
     返回与 findings 等长的列表，每个元素含:
       match_idx (基线索引, -1=未匹配), reason, baseline 信息
@@ -126,27 +239,41 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
         bl_content = bl.get("content", "")
         bl_title = bl.get("title", "")
 
-        matched_fidx = None
-        matched_reason = ""
+        # 将剩余 findings 分批，每批 BATCH_SIZE 个
+        batches: list[list[tuple[int, str]]] = []
+        for i in range(0, len(remaining), _BATCH_SIZE):
+            chunk_idxs = remaining[i:i + _BATCH_SIZE]
+            batch = [(f_idx, _build_finding_desc(findings[f_idx]))
+                     for f_idx in chunk_idxs]
+            batches.append(batch)
 
-        with ThreadPoolExecutor(max_workers=min(10, len(remaining))) as pool:
-            future_to_fidx: dict = {}
-            for f_idx in remaining:
-                finding_desc = _build_finding_desc(findings[f_idx])
-                fut = pool.submit(_llm_match_pair, finding_desc, bl_content)
-                future_to_fidx[fut] = f_idx
+        # 收集所有批次的匹配结果
+        all_matches: list[tuple[int, float]] = []
 
-            for fut in as_completed(future_to_fidx):
-                f_idx = future_to_fidx[fut]
-                is_same, reason = fut.result()
-                if is_same and matched_fidx is None:
-                    matched_fidx = f_idx
-                    matched_reason = reason
+        with ThreadPoolExecutor(max_workers=min(10, len(batches))) as pool:
+            future_to_batch: dict = {}
+            for batch in batches:
+                fut = pool.submit(_llm_match_batch, bl_content, batch)
+                future_to_batch[fut] = batch
 
-        if matched_fidx is not None:
+            for fut in as_completed(future_to_batch):
+                batch = future_to_batch[fut]
+                matched_pairs, _ = fut.result()
+                all_matches.extend(matched_pairs)
+
+        if all_matches:
+            # 按置信度降序排列，取最高的
+            all_matches.sort(key=lambda x: x[1], reverse=True)
+            matched_fidx = all_matches[0][0]
+            best_conf = all_matches[0][1]
+            if len(all_matches) > 1:
+                others = [f"[{f+1}({c:.1f})]" for f, c in all_matches[1:]]
+                log("FPR", f"基线'{bl_title}' 有多个候选命中: [{matched_fidx+1}({best_conf:.1f})] + {' '.join(others)}，取置信度最高")
+            else:
+                log("FPR", f"基线'{bl_title}' 匹配 [{matched_fidx+1}] 置信度={best_conf:.1f}")
             match_results[matched_fidx] = {
                 "match_idx": bl_idx,
-                "reason": matched_reason,
+                "reason": f"置信度={best_conf:.1f}",
             }
             remaining.remove(matched_fidx)
             log("FPR", f"[{bl_idx+1}/{len(baseline_rows)}] 基线'{bl_title}' → 匹配漏洞中心[{matched_fidx+1}]")
@@ -232,7 +359,7 @@ def run_fpr_analysis(project_id: str, task_id: str,
 
     返回 dict:
       fpr, matched, fp, tp, total_findings, total_baseline, match_details
-    若基线 CSV 未配置或不存在，返回 None（不生成第三个 tab）。
+    若基线 CSV 未配置或不存在，返回 None（不生成 tab）。
     """
     csv_path = _get_baseline_path()
     if not csv_path:
@@ -257,7 +384,7 @@ def run_fpr_analysis(project_id: str, task_id: str,
         log("FPR", "漏洞中心无数据，跳过 FPR 分析")
         return None
 
-    log("FPR", f"LLM 匹配: {len(baseline_rows)} 条基线(外循环) × {len(findings)} 条漏洞中心数据(内循环)")
+    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条漏洞中心数据 (batch={_BATCH_SIZE})")
     match_results = _run_matching(findings, baseline_rows, progress_cb)
 
     fpr, matched, fp = _calculate_fpr(match_results, baseline_rows)
