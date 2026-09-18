@@ -539,8 +539,9 @@ def run(evaluation_id: str) -> dict:
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
     # 外挂补充非漏洞基线（huks-蓝区迁移等基线未生成非漏洞数据的场景）
+    _vc_proj_name = _ingest_manifest.get("vc_source_project_name") or ""
     _non_vuln_count = sum(1 for cd in case_details.values() if cd.get("expected_label") == "NON_VULNERABLE")
-    if _non_vuln_count == 0:
+    if _vc_proj_name == "huks-蓝区迁移" and _non_vuln_count == 0:
         csv_path = os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
         if os.path.isfile(csv_path):
             from .fpr_analysis import load_baseline
