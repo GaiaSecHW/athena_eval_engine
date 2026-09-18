@@ -99,7 +99,10 @@ def _try_dispatch():
                     # 任务被暂停后退出：设状态为 QUEUED，加入暂停队列
                     _set_queued_status(eid)
                     _paused_evals.append(eid)
-            _try_dispatch()
+            try:
+                _try_dispatch()
+            except RuntimeError:
+                pass  # executor 已关闭（pod 关闭中）
         fut.add_done_callback(_done_cb)
 
 
