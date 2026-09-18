@@ -148,12 +148,16 @@ def _start_config_watcher():
                         "WHERE e.evaluation_status='CREATED'")
                     created_rows = cur.fetchall()
                     if created_rows:
+                        from .evaluations import _running_futures, _running_lock, _pending_evals, _paused_evals
                         with _running_lock:
                             active_ids = set(_running_futures.keys())
+                            pending_ids = set(eid for eid, _ in _pending_evals)
+                            paused_ids = set(_paused_evals)
+                        known_ids = active_ids | pending_ids | paused_ids
                         from .evaluations import _submit_eval, _run_bg_resume
                         for (eid,) in created_rows:
-                            if eid in active_ids:
-                                continue  # 已在线程池
+                            if eid in known_ids:
+                                continue  # 已在线程池或队列中
                             log("WATCHDOG", f"{eid} (CREATED, has snapshot) 不在线程池 → 续跑")
                             _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
 
