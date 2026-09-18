@@ -87,12 +87,17 @@ def _try_dispatch():
                 return
             fut = _executor.submit(fn)
             _running_futures[eid] = fut
+            log("THREAD", f"_try_dispatch: 调度 {eid} (running={len(_running_futures)}, pausing={len(_pausing_eids)}, "
+                  f"pending={len(_pending_evals)}, paused={len(_paused_evals)})")
         # done callback 在锁外注册
         def _done_cb(f, eid=eid):
             with _running_lock:
                 cur = _running_futures.get(eid)
                 if cur is not None and cur is f:
                     _running_futures.pop(eid, None)
+                else:
+                    log("THREAD", f"_done_cb: {eid} cur is f={cur is f} (cur={'set' if cur else 'None'}, "
+                          f"running={len(_running_futures)}, pausing={len(_pausing_eids)})")
                 was_pausing = eid in _pausing_eids
                 _pausing_eids.discard(eid)
                 if was_pausing:
@@ -172,6 +177,9 @@ def _submit_eval(evaluation_id: str, fn) -> None:
             _pausing_eids.discard(evaluation_id)
             log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
         _pending_evals.append((evaluation_id, fn))
+        log("THREAD", f"_submit_eval: {evaluation_id} 加入队列 "
+              f"(running={len(_running_futures)}, pausing={len(_pausing_eids)}, "
+              f"pending={len(_pending_evals)}, paused={len(_paused_evals)}, max={_max_concurrent_evals})")
     _try_dispatch()
 
 
@@ -305,6 +313,7 @@ def resume_stuck_evaluations():
 def _run_bg_resume(evaluation_id: str):
     """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
     set_eval_ctx(evaluation_id)
+    log("THREAD", f"_run_bg_resume: {evaluation_id} 开始执行")
     from ...infrastructure.database import connect
     stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
                     'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
@@ -596,6 +605,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         def _run_bg():
             from ...infrastructure.database import connect as _connect
             set_eval_ctx(evaluation_id)
+            log("THREAD", f"_run_bg: {evaluation_id} 开始执行")
             # 原子获取状态锁：只有 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED 才能跳转 RUNNING
             conn = _connect(autocommit=True)
             try:
