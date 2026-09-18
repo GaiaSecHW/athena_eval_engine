@@ -222,69 +222,101 @@ def _llm_match_batch(baseline_content: str,
 
 def _run_matching(findings: list[dict], baseline_rows: list[dict],
                   progress_cb=None) -> list[dict]:
-    """批量匹配：基线外循环，漏洞中心数据按 BATCH_SIZE 分批，每批一次 LLM 调用。
+    """两阶段并行匹配：所有基线并行匹配 → 冲突解决（1:1 分配）。
 
-    多个候选命中时，取置信度最高的匹配，其余留在池中给后续基线匹配。
+    阶段 1：每个基线独立对所有 findings 并行匹配，选最佳候选。
+    阶段 2：一个 finding 被多个基线选中时，按置信度高低分配给最高者。
 
     返回与 findings 等长的列表，每个元素含:
       match_idx (基线索引, -1=未匹配), reason, baseline 信息
     """
-    remaining = list(range(len(findings)))
-    match_results = [
-        {"match_idx": -1, "reason": "未匹配"} for _ in range(len(findings))
-    ]
+    _MAX_BASELINE_WORKERS = 20
 
-    for bl_idx, bl in enumerate(baseline_rows):
-        if not remaining:
-            log("FPR", f"漏洞中心数据已全部匹配完，跳过剩余基线 ({bl_idx+1}/{len(baseline_rows)})")
-            break
+    # 阶段 1：所有基线并行匹配
+    # 每个基线的结果: (bl_idx, best_fidx | None, best_conf, all_matches)
+    bl_results: list[tuple[int, int | None, float, list[tuple[int, float]]]] = []
+    _done_count = [0]
+    _count_lock = __import__("threading").Lock()
 
+    def _match_one_baseline(bl_idx: int) -> tuple[int, int | None, float, list[tuple[int, float]]]:
+        bl = baseline_rows[bl_idx]
         bl_content = bl.get("content", "")
         bl_title = bl.get("title", "")
 
-        # 将剩余 findings 分批，每批 BATCH_SIZE 个
+        # 所有 findings 分批
+        all_fidx = list(range(len(findings)))
         batches: list[list[tuple[int, str]]] = []
-        for i in range(0, len(remaining), _BATCH_SIZE):
-            chunk_idxs = remaining[i:i + _BATCH_SIZE]
+        for i in range(0, len(all_fidx), _BATCH_SIZE):
+            chunk_idxs = all_fidx[i:i + _BATCH_SIZE]
             batch = [(f_idx, _build_finding_desc(findings[f_idx]))
                      for f_idx in chunk_idxs]
             batches.append(batch)
 
-        # 收集所有批次的匹配结果
         all_matches: list[tuple[int, float]] = []
-
         with ThreadPoolExecutor(max_workers=min(10, len(batches))) as pool:
             future_to_batch: dict = {}
             for batch in batches:
                 fut = pool.submit(_llm_match_batch, bl_content, batch)
                 future_to_batch[fut] = batch
-
             for fut in as_completed(future_to_batch):
-                batch = future_to_batch[fut]
                 matched_pairs, _ = fut.result()
                 all_matches.extend(matched_pairs)
 
         if all_matches:
-            # 按置信度降序排列，取最高的
             all_matches.sort(key=lambda x: x[1], reverse=True)
-            matched_fidx = all_matches[0][0]
+            best_fidx = all_matches[0][0]
             best_conf = all_matches[0][1]
+        else:
+            best_fidx = None
+            best_conf = 0.0
+
+        if progress_cb:
+            with _count_lock:
+                _done_count[0] += 1
+                progress_cb(_done_count[0], len(baseline_rows))
+
+        return bl_idx, best_fidx, best_conf, all_matches
+
+    with ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows))) as bl_pool:
+        futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
+        for fut in as_completed(futures):
+            bl_results.append(fut.result())
+
+    # 阶段 2：冲突解决 — 1:1 分配
+    # 按置信度降序排列所有基线的最佳匹配，贪心分配
+    bl_results.sort(key=lambda x: x[2], reverse=True)
+
+    match_results = [
+        {"match_idx": -1, "reason": "未匹配"} for _ in range(len(findings))
+    ]
+    assigned_findings: set[int] = set()
+
+    for bl_idx, best_fidx, best_conf, all_matches in bl_results:
+        bl_title = baseline_rows[bl_idx].get("title", "")
+
+        # 尝试最佳候选，如果已被占用，尝试次佳
+        matched_fidx = None
+        matched_conf = 0.0
+        for f_idx, conf in all_matches:
+            if f_idx not in assigned_findings:
+                matched_fidx = f_idx
+                matched_conf = conf
+                break
+
+        if matched_fidx is not None:
+            assigned_findings.add(matched_fidx)
             if len(all_matches) > 1:
                 others = [f"[{f+1}({c:.1f})]" for f, c in all_matches[1:]]
-                log("FPR", f"基线'{bl_title}' 有多个候选命中: [{matched_fidx+1}({best_conf:.1f})] + {' '.join(others)}，取置信度最高")
+                log("FPR", f"基线'{bl_title}' 有多个候选命中: [{matched_fidx+1}({matched_conf:.1f})] + {' '.join(others)}，取置信度最高")
             else:
-                log("FPR", f"基线'{bl_title}' 匹配 [{matched_fidx+1}] 置信度={best_conf:.1f}")
+                log("FPR", f"基线'{bl_title}' 匹配 [{matched_fidx+1}] 置信度={matched_conf:.1f}")
             match_results[matched_fidx] = {
                 "match_idx": bl_idx,
-                "reason": f"置信度={best_conf:.1f}",
+                "reason": f"置信度={matched_conf:.1f}",
             }
-            remaining.remove(matched_fidx)
             log("FPR", f"[{bl_idx+1}/{len(baseline_rows)}] 基线'{bl_title}' → 匹配漏洞中心[{matched_fidx+1}]")
         else:
             log("FPR", f"[{bl_idx+1}/{len(baseline_rows)}] 基线'{bl_title}' → 无匹配")
-
-        if progress_cb:
-            progress_cb(bl_idx + 1, len(baseline_rows))
 
     return match_results
 

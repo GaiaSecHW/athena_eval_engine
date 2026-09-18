@@ -1642,70 +1642,77 @@ def run(evaluation_id: str) -> dict:
     _ac_fpr_nogk = None
     _fpr_cache: dict = {}   # (project_id, task_id) → (alert_result, vc_ids)
 
-    for _cond_label, _cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
+    def _run_fpr_for_cond(cond_label, cond_val):
+        """单个条件的 FPR 分析（可并行调用）。"""
         _mining_entry = next((e for e in entries
                               if e.get("category", "") != "verify"
-                              and e.get("condition") == _cond_val
+                              and e.get("condition") == cond_val
                               and e.get("project_id")), None)
         if not _mining_entry:
-            continue
+            return cond_val, None, None
         _fpr_pid = _mining_entry["project_id"]
         _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
         if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
             _fpr_tid = _mining_entry.get("task_id", "")
 
-        _cache_key = (_fpr_pid, _fpr_tid)
+        log("EVAL", f"FPR 分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+        set_progress(evaluation_id, f"FPR 分析 ({cond_label}): 基线 vs 告警中心数据匹配中...")
+        try:
+            def _fpr_cb(done, total, _cl=cond_label):
+                set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
+            _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
+                                           source="alert_center", case_details=case_details)
+        except Exception as _fpr_err:
+            log("FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
+            _ac_result = None
 
-        if _cache_key not in _fpr_cache:
-            log("EVAL", f"FPR 分析 ({_cond_label}): project={_fpr_pid}, task={_fpr_tid}")
-            set_progress(evaluation_id, f"FPR 分析 ({_cond_label}): 基线 vs 告警中心数据匹配中...")
-            try:
-                def _fpr_cb(done, total, _cl=_cond_label):
-                    set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
-                _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
-                                               source="alert_center", case_details=case_details)
-            except Exception as _fpr_err:
-                log("FPR", f"FPR 分析失败 ({_cond_label}): {_fpr_err}")
-                _ac_result = None
-
-            # 获取漏洞中心 case ID 集合（用于派生子集）
-            _vc_ids: set[str] = set()
-            if _ac_result:
-                try:
-                    from ..infrastructure.vuln_center_client import list_vuln_cases
-                    _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
-                    _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
-                    log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
-                except Exception as _vc_err:
-                    log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
-
-            _fpr_cache[_cache_key] = (_ac_result, _vc_ids)
-
-        _ac_result, _vc_ids = _fpr_cache[_cache_key]
-
+        # 获取漏洞中心 case ID 集合（用于派生子集）
+        _vc_ids: set[str] = set()
         if _ac_result:
-            # 派生漏洞中心 FPR（从告警中心结果按 case ID 筛选）
-            if _vc_ids:
-                _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids)
-            else:
-                _vc_result = None
-                log("FPR", "漏洞中心 case ID 为空，无法派生验证 FPR")
+            try:
+                from ..infrastructure.vuln_center_client import list_vuln_cases
+                _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
+                _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
+                log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
+            except Exception as _vc_err:
+                log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
 
-            log("EVAL", f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%} "
-                f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']}), "
-                f"验证 FPR={_vc_result['fpr']:.1%} "
-                f"(匹配 {_vc_result['matched']}/{_vc_result['total_findings']})"
-                if _vc_result else
-                f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%}, 验证 FPR 未能派生")
+        return cond_val, _ac_result, _vc_ids
 
-            if _cond_val == "KG":
-                _ac_fpr_kg = _ac_result
-                _e2e_fpr_kg = _vc_result
+    # KG/NOGK 并行 FPR 分析
+    from concurrent.futures import ThreadPoolExecutor as _FPR_TP
+    with _FPR_TP(max_workers=2) as _fpr_pool:
+        _fpr_futures = {
+            _fpr_pool.submit(_run_fpr_for_cond, label, val): val
+            for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
+        }
+        for _fut in _fpr_futures:
+            _cond_val, _ac_result, _vc_ids = _fut.result()
+            if _ac_result:
+                # 派生漏洞中心 FPR（从告警中心结果按 case ID 筛选）
+                if _vc_ids:
+                    _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids)
+                else:
+                    _vc_result = None
+                    log("FPR", "漏洞中心 case ID 为空，无法派生验证 FPR")
+
+                _cond_label = "KG" if _cond_val == "KG" else "NOGK"
+                log("EVAL", f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%} "
+                    f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']}), "
+                    f"验证 FPR={_vc_result['fpr']:.1%} "
+                    f"(匹配 {_vc_result['matched']}/{_vc_result['total_findings']})"
+                    if _vc_result else
+                    f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%}, 验证 FPR 未能派生")
+
+                if _cond_val == "KG":
+                    _ac_fpr_kg = _ac_result
+                    _e2e_fpr_kg = _vc_result
+                else:
+                    _ac_fpr_nogk = _ac_result
+                    _e2e_fpr_nogk = _vc_result
             else:
-                _ac_fpr_nogk = _ac_result
-                _e2e_fpr_nogk = _vc_result
-        else:
-            log("EVAL", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
+                _cond_label = "KG" if _cond_val == "KG" else "NOGK"
+                log("EVAL", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
 
     # 将 E2E FPR 结果挂到 verify metric_group
     if _e2e_fpr_kg or _e2e_fpr_nogk:
