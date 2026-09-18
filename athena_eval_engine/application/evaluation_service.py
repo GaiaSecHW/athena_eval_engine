@@ -1600,7 +1600,7 @@ def run(evaluation_id: str) -> dict:
         # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
         log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
         set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
-        with _TP(max_workers=1) as kg_pool:
+        with _TP(max_workers=max(1, len(_metric_groups))) as kg_pool:
             fut_group_pcka = {}
             for group in _metric_groups:
                 (_g_cases, _g_interactions, _g_session_graph,
