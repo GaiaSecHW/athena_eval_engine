@@ -1066,7 +1066,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             if len(_acts_str) <= _SEGMENT_CHAR_LIMIT:
                                 _r = llm_mod.chat_json(
                                     [_sys_prompt, {"role": "user", "content": _acts_str}],
-                                    temperature=0, max_tokens=8000)
+                                    temperature=0, max_tokens=16000)
                             else:
                                 # 分段：按 _SEGMENT_CHAR_LIMIT 切分 acts
                                 _segments = []
