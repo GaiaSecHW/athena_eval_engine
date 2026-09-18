@@ -111,10 +111,10 @@ def _start_config_watcher():
                     placeholders = ",".join(["%s"] * len(_RUNNING_STATES))
                     if _first_tick:
                         # 首次：标记 worker 启动前已存在的运行中评测
+                        # 注意：不检查 finished_at IS NULL，因为续跑的评测可能有上一轮的 stale finished_at
                         cur.execute(
                             f"SELECT evaluation_id, evaluation_status FROM evaluation "
                             f"WHERE evaluation_status IN ({placeholders}) "
-                            f"AND finished_at IS NULL "
                             f"AND started_at < DATE_SUB(NOW(3), INTERVAL 2 MINUTE)",
                             _RUNNING_STATES)
                     else:
@@ -122,7 +122,6 @@ def _start_config_watcher():
                         cur.execute(
                             f"SELECT evaluation_id, evaluation_status FROM evaluation "
                             f"WHERE evaluation_status IN ({placeholders}) "
-                            f"AND finished_at IS NULL "
                             f"AND started_at < DATE_SUB(NOW(3), INTERVAL 120 MINUTE)",
                             _RUNNING_STATES)
                     zombies = cur.fetchall()
