@@ -391,27 +391,37 @@ def derive_fpr_from_subset(alert_result: dict, vuln_center_case_ids: set[str]) -
 
 
 def run_fpr_analysis(project_id: str, task_id: str,
-                     progress_cb=None, source: str = "vuln_center") -> dict | None:
-    """主入口：基线 CSV vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
+                     progress_cb=None, source: str = "vuln_center",
+                     case_details: dict | None = None) -> dict | None:
+    """主入口：基线 vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
 
     source="vuln_center"  → 漏洞中心数据（E2E 分析）
     source="alert_center" → 告警中心数据（漏洞挖掘误报率）
 
+    基线数据来自 case_details（与 benchmark_item 表同源，来自 benchmark.zip），
+    不再依赖外部 CSV 文件。
+
     返回 dict:
       fpr, matched, fp, tp, total_findings, total_baseline, match_details
-    若基线 CSV 未配置或不存在，返回 None（不生成 tab）。
+    若 case_details 为空，返回 None（不生成 tab）。
     """
-    csv_path = _get_baseline_path()
-    if not csv_path:
-        log("FPR", "未配置 FPR_BASELINE_CSV，跳过 FPR 分析")
-        return None
-    if not os.path.isfile(csv_path):
-        log("FPR", f"基线 CSV 不存在: {csv_path}，跳过 FPR 分析")
+    if not case_details:
+        log("FPR", "case_details 为空，跳过 FPR 分析")
         return None
 
-    log("FPR", f"加载基线: {csv_path}")
-    baseline_rows = load_baseline(csv_path)
-    log("FPR", f"基线 {len(baseline_rows)} 条")
+    # 从 case_details 构建基线行（与 benchmark_item 表同源）
+    baseline_rows = []
+    for cid, cd in case_details.items():
+        baseline_rows.append({
+            "case_id": cid,
+            "title": cd.get("vulnerability_type", ""),
+            "content": cd.get("description", ""),
+            "label": cd.get("expected_label", "VULNERABLE"),
+            "category": cd.get("vulnerability_type", ""),
+        })
+    _vuln_n = sum(1 for r in baseline_rows if r["label"] == "VULNERABLE")
+    _nonvuln_n = sum(1 for r in baseline_rows if r["label"] == "NON_VULNERABLE")
+    log("FPR", f"基线 {len(baseline_rows)} 条（漏洞={_vuln_n} 非漏洞={_nonvuln_n}）")
 
     if source == "alert_center":
         log("FPR", f"从告警中心获取数据: project={project_id}, task={task_id}")

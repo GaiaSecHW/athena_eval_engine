@@ -86,6 +86,7 @@ const MI={
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
 function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
+function sessionDisplayName(sid){if(!sid)return"";var s=String(sid);var idx=s.lastIndexOf("/");if(idx>=0)s=s.slice(idx+1);return s.replace(/</g,"&lt;");}
 function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(2):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(2):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
 function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${STATUS_LABEL[m.calculation_status]||m.calculation_status}<br><span style="font-size:14px">${RC_ALL[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
 
@@ -302,7 +303,7 @@ function renderReport(d){
       }
       h+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"")+"</span>";
       if(c.finding_session){
-        h+="<span style='font-size:12px;color:var(--acc);font-family:monospace'>📝 "+String(c.finding_session).slice(0,12).replace(/</g,"&lt;")+"</span>";
+        h+="<span style='font-size:12px;color:var(--acc);font-family:monospace'>📝 "+sessionDisplayName(c.finding_session)+"</span>";
       }
       var _confColor=conf==="TP"||conf==="TN"?"var(--green)":conf==="FP"||conf==="FN"?"var(--red)":"var(--gray)";
       h+="<span style='font-size:11px;font-weight:600;color:"+_confColor+"'>"+(CONF_LABEL[conf]||conf)+"</span>";
@@ -310,12 +311,12 @@ function renderReport(d){
       // session 链（与匹配明细表一致）
       if(c.session_chain&&c.session_chain.length){
         var _parts=c.session_chain.map(function(s){
-          var sid=String(s.session_id||"").slice(0,8);
+          var sid=sessionDisplayName(s.session_id);
           var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
           var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
           return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
         });
-        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px'>"+_parts.join(" → ")+"</div>";
+        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'>"+_parts.join(" → ")+"</div>";
       }
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
@@ -346,7 +347,7 @@ function renderReport(d){
           var _kgHitSns=[];
           if(c.sink_hit_sessions&&c.sink_hit_sessions.length)_kgHitSns=_kgHitSns.concat(c.sink_hit_sessions);
           if(c.finding_session&&_kgHitSns.indexOf(c.finding_session)<0)_kgHitSns.push(c.finding_session);
-          if(_kgHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_kgHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).slice(0,12).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
+          if(_kgHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_kgHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+sessionDisplayName(s)+"</code>";}).join(', ')+"</div>";
           if(_sinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_sinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
@@ -357,7 +358,7 @@ function renderReport(d){
           var _nogkHitSns=[];
           if(c.nogk_sink_hit_sessions&&c.nogk_sink_hit_sessions.length)_nogkHitSns=_nogkHitSns.concat(c.nogk_sink_hit_sessions);
           if(c.nogk_finding_session&&_nogkHitSns.indexOf(c.nogk_finding_session)<0)_nogkHitSns.push(c.nogk_finding_session);
-          if(_nogkHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_nogkHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+String(s).slice(0,12).replace(/</g,"&lt;")+"</code>";}).join(', ')+"</div>";
+          if(_nogkHitSns.length)h+="<div style='margin-top:4px;padding:4px 8px;background:var(--p3);border-radius:4px;border-left:2px solid var(--acc)'><div style='font-size:11px;font-weight:600;color:var(--acc);margin-bottom:2px'>🎯 命中 session</div>"+_nogkHitSns.map(function(s){return "<code style='font-size:12px;color:var(--txt)'>"+sessionDisplayName(s)+"</code>";}).join(', ')+"</div>";
           if(_nogkSinkAnalysis)h+="<div style='font-size:12px;color:var(--txt);margin-bottom:3px;line-height:1.5'><b>链分析:</b> "+String(_nogkSinkAnalysis).replace(/</g,"&lt;")+"</div>";
           h+="</div>";
         }
@@ -471,9 +472,9 @@ function renderReport(d){
           h+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🔍 知识交互（"+ivs.length+" 条）</summary>";
           ivs.forEach(function(iv,i){
             h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
+            var src=iv.session_id?("session: "+sessionDisplayName(iv.session_id)):"";
             if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
-            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
+            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px;word-break:break-all'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
             var rawQ=iv.command||iv.question||"";
@@ -501,9 +502,9 @@ function renderReport(d){
           h+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🧠 记忆交互（"+memIvs.length+" 条）</summary>";
           memIvs.forEach(function(iv,i){
             h+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            var src=iv.session_id?("session: "+String(iv.session_id).slice(0,16)+"…"):"";
+            var src=iv.session_id?("session: "+sessionDisplayName(iv.session_id)):"";
             if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
-            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
+            h+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px;word-break:break-all'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
             var qp=iv.command_parsed||iv.question||"";
             var op=iv.output_parsed||iv.answer||"";
             var rawQ=iv.command||iv.question||"";
@@ -694,12 +695,12 @@ function renderReport(d){
           function _chainHtml(chain){
             if(!chain||!chain.length)return "";
             var parts=chain.map(function(s){
-              var sid=String(s.session_id||"").slice(0,8);
+              var sid=sessionDisplayName(s.session_id);
               var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
               var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
               return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
             });
-            return "<div style='font-size:11px;margin-top:2px'>"+parts.join(" → ")+"</div>";
+            return "<div style='font-size:11px;margin-top:2px;word-break:break-all'>"+parts.join(" → ")+"</div>";
           }
           const _kgSessInfo=_chainHtml(c.session_chain);
           if(c.matched){

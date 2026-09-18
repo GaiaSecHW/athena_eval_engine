@@ -15,6 +15,7 @@ import io
 import urllib.request
 from urllib.error import URLError
 from ..config_loader import DATA_ROOT, PLATFORM_TOKEN, VBENCH_API_URL
+from .log_util import log
 
 
 def _get(path: str, retries: int = 3, retry_delay: float = 5.0) -> dict | list:
@@ -129,12 +130,16 @@ def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
     1. 漏洞中心全量格式 — case 含 id/title/subject 等字段，复用 _case_to_benchmark 归一
     2. 简版格式 — ``{"false_positives": [{"description": "...", "reason": "..."}]}``
     """
+    from .log_util import log
     fp_files = [n for n in names if n.endswith("false_positives.json")]
     if not fp_files:
+        log("VBENCH", "⚠ false_positives.json 未在 benchmark.zip 中找到 — 非漏洞基线将为 0")
         return []
+    log("VBENCH", f"找到 false_positives.json: {fp_files[0]}")
     from .vuln_center_client import _case_to_benchmark
     data = json.loads(zf.read(fp_files[0]))
     fp_cases = data.get("false_positives", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    log("VBENCH", f"false_positives.json 解析出 {len(fp_cases)} 条非漏洞 case")
     result = []
     for i, c in enumerate(fp_cases):
         if isinstance(c, dict) and c.get("id"):
@@ -171,9 +176,12 @@ def _read_benchmark_zip(zip_path: str) -> dict:
             gt = [n for n in names if n.endswith("ground_truths/" + c["case_id"] + ".json")]
             c["findings"] = json.loads(zf.read(gt[0])).get("findings", []) if gt else []
         _extract_source_from_traces(cases)
+        _vuln_n = sum(1 for c in cases if (c.get("expected_label") or "VULNERABLE") == "VULNERABLE")
+        log("VBENCH", f"benchmark.json: {len(cases)} 条漏洞 case")
         # 非漏洞基线（false_positives.json）— 与漏洞 case 同构，expected_label=NON_VULNERABLE
         fp_cases = _read_false_positives(zf, names)
         cases.extend(fp_cases)
+        log("VBENCH", f"benchmark.zip 读取完成: 漏洞={_vuln_n} 非漏洞={len(fp_cases)} 总计={len(cases)}")
         return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
                 "schema_version": benchmark.get("schema_version"), "cases": cases}
 
@@ -187,9 +195,11 @@ def get_benchmark(benchmark_set_id: str) -> dict:
 
     # ① 本地文件存在 → 直接读（毫秒级，k8s 共享存储 + 本地 dev 均走此路径）
     if os.path.isfile(zip_path):
+        log("VBENCH", f"读取本地 benchmark.zip: {zip_path}")
         return _read_benchmark_zip(zip_path)
 
     # ② fallback: kubectl exec 进 schedule pod 读取（本地 dev 无共享存储时）
+    log("VBENCH", f"本地路径不存在，fallback kubectl exec: {zip_path}")
     import subprocess
     env = dict(os.environ, MSYS_NO_PATHCONV="1")
     from ..application.platform_service import _get_sched_pod
@@ -214,6 +224,7 @@ def get_benchmark(benchmark_set_id: str) -> dict:
         ["kubectl", "-n", "secflow-ns", "exec", pod, "--", "python3", "-c", py_script],
         capture_output=True, timeout=120, env=env)
     if not r.stdout:
+        log("VBENCH", "⚠ kubectl exec 无输出 — 返回空基线")
         return {"benchmark_id": None, "name": None, "cases": []}
     bm = json.loads(r.stdout.decode("utf-8").strip())
     benchmark = bm.get("benchmark", {})
@@ -221,6 +232,7 @@ def get_benchmark(benchmark_set_id: str) -> dict:
     _extract_source_from_traces(cases)
     # 非漏洞基线（false_positives.json）
     raw_fp = bm.get("false_positives") or []
+    log("VBENCH", f"kubectl exec 读取: 漏洞={len(cases)} 非漏洞={len(raw_fp)} 总计={len(cases)+len(raw_fp)}")
     from .vuln_center_client import _case_to_benchmark
     for i, c in enumerate(raw_fp):
         if isinstance(c, dict) and c.get("id"):

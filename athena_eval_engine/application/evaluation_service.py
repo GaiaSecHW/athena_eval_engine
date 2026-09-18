@@ -511,6 +511,8 @@ def run(evaluation_id: str) -> dict:
             _vuln_n = sum(1 for c in _all_cases if (c.get("expected_label") or "VULNERABLE") == "VULNERABLE")
             _nonvuln_n = sum(1 for c in _all_cases if c.get("expected_label") == "NON_VULNERABLE")
             log("INGEST", f"V-Bench 返回 {len(_all_cases)} 条 case（漏洞={_vuln_n} 非漏洞={_nonvuln_n}）")
+            if _nonvuln_n == 0:
+                log("INGEST", "⚠ 非漏洞基线为 0 — 请确认 benchmark.zip 中包含 false_positives.json")
             _total = len(_all_cases)
             _done = 0
             for c in _all_cases:
@@ -1661,7 +1663,7 @@ def run(evaluation_id: str) -> dict:
                 def _fpr_cb(done, total, _cl=_cond_label):
                     set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
                 _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
-                                               source="alert_center")
+                                               source="alert_center", case_details=case_details)
             except Exception as _fpr_err:
                 log("FPR", f"FPR 分析失败 ({_cond_label}): {_fpr_err}")
                 _ac_result = None
