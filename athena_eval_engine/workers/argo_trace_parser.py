@@ -362,6 +362,8 @@ class ArgoTraceParser(TraceParser):
             if ev.event_type == "TEXT" and ev.output_json:
                 txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
                 if '"accepted"' in txt:
+                    if len(txt) > 100000:
+                        _log("SINK_MATCH", f"argo.build_session_graph: TEXT event too large ({len(txt)} chars at idx={idx}), skipping payload extraction")
                     for payload in self._extract_accepted_payloads(txt):
                         data = payload.get("data", payload)
                         if not isinstance(data, dict):
@@ -606,6 +608,11 @@ class ArgoTraceParser(TraceParser):
                 _add(obj)
             search_start = close_idx + 3
         if results:
+            return results
+
+        # 策略 2: 直接在文本中搜索关键词并做花括号匹配
+        # 大文本跳过策略 2（O(n²) 字符级扫描会卡死），只用策略 1 的 ```json 块提取
+        if len(text) > 100000:
             return results
 
         # 策略 2: 直接在文本中搜索关键词并做花括号匹配
