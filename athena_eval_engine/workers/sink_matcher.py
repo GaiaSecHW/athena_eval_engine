@@ -44,8 +44,6 @@ def build_file_read_index(events: list) -> list[dict]:
     # 构建 call_id → TOOL_RESULT 映射
     result_by_call_id: dict[str, str] = {}
     for idx, e in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"build_file_read_index pass1 {idx}/{_n} elapsed={int(time.time()-_start)}s")
         if e.event_type == "TOOL_RESULT" and e.call_id:
             output = e.output_json
             if isinstance(output, str):
@@ -55,8 +53,6 @@ def build_file_read_index(events: list) -> list[dict]:
 
     reads: list[dict] = []
     for idx, e in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"build_file_read_index pass2 {idx}/{_n} elapsed={int(time.time()-_start)}s")
         if e.event_type != "TOOL_CALL":
             continue
         tool = e.tool_name or ""
@@ -212,8 +208,6 @@ def collect_chain_actions(chain_sessions: set[str], events: list, parser,
     actions = []
     _n = len(events)
     for idx, ev in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"collect_chain_actions {idx}/{_n} events")
         if not ev.is_tool_call():
             continue
         if ev.session_id not in chain_sessions:
@@ -253,8 +247,6 @@ def build_session_chain(chain_sessions: set[str], events: list,
     session_first_ts: dict[str, int] = {}
     _n = len(events)
     for idx, e in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"build_session_chain {idx}/{_n} events")
         sid = e.session_id
         if sid not in chain_sessions:
             continue
@@ -320,8 +312,6 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
     result_by_call_id: dict[str, str] = {}
     _n = len(events)
     for idx, e in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"collect_chain_kis pass1 {idx}/{_n}")
         if e.event_type == "TOOL_RESULT" and e.call_id:
             output = e.output_json
             if isinstance(output, str):
@@ -331,8 +321,6 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
 
     interactions = []
     for idx, e in enumerate(events):
-        if idx > 0 and idx % 50000 == 0:
-            log("SINK_MATCH", f"collect_chain_kis pass2 {idx}/{_n}")
         if e.session_id not in chain_sessions:
             continue
         if not e.is_tool_call():

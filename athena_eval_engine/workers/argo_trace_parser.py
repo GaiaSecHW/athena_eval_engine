@@ -329,8 +329,6 @@ class ArgoTraceParser(TraceParser):
         _n = len(events)
         _start = _time.time()
         for idx, ev in enumerate(events):
-            if idx > 0 and idx % 50000 == 0:
-                _log("SINK_MATCH", f"argo.build_session_graph {idx}/{_n} elapsed={int(_time.time()-_start)}s")
             sid = ev.session_id
             if not sid:
                 continue
