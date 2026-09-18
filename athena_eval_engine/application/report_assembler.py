@@ -1022,6 +1022,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         _cpt = llm_mod.get_chars_per_token()
         # token 数 × chars/token 换算率 × 70%（留 system prompt + response 空间）
         _char_limit = int(_mt * _cpt * 0.7) if _mt else 840000
+
+        # 先剥离 knowledge_interactions 的 answer（完整 LLM 输出，数据量大）
+        # 在初始大小检查之前执行，避免 answer 导致不必要的压缩流程
+        _kis = data.get("knowledge_interactions", [])
+        if _kis:
+            data["knowledge_interactions"] = [
+                {"tool": ki.get("tool", ""), "question": ki.get("question", "")}
+                for ki in _kis
+            ]
+
         _data_str = json.dumps(data, ensure_ascii=False)
         if len(_data_str) > _char_limit:
             log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，按 session 压缩 mining_actions...")
@@ -1057,7 +1067,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         "其他 read/grep/bash 为普通文件操作。\n\n"
                         '只返回 JSON：{"session_id": "会话标识", "mining_summary": "<=2000字中文，按时间线描述挖掘过程，重点标注知识/记忆查询的时机和后续行为变化", "knowledge_queries": [{"question": "查询内容", "answer": "回答要点", "follow_up": "得到回答后 Agent 做了什么"}], "key_actions": ["关键操作1", ...]}'
                     )}
-                    # 单 session 过大时分段压缩再合并：防止 LLM 输出超 max_tokens 截断
+                    # 单 session 过大时分段压缩再合并：防止 LLM 输出过长导致解析问题
                     _SEGMENT_CHAR_LIMIT = 60000  # 单段输入上限（chars），约 15K-30K tokens
                     def _compress_one(item):
                         sid, acts = item
@@ -1066,7 +1076,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             if len(_acts_str) <= _SEGMENT_CHAR_LIMIT:
                                 _r = llm_mod.chat_json(
                                     [_sys_prompt, {"role": "user", "content": _acts_str}],
-                                    temperature=0, max_tokens=16000)
+                                    temperature=0)
                             else:
                                 # 分段：按 _SEGMENT_CHAR_LIMIT 切分 acts
                                 _segments = []
@@ -1088,7 +1098,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                     try:
                                         _sr = llm_mod.chat_json(
                                             [_sys_prompt, {"role": "user", "content": json.dumps(seg, ensure_ascii=False)}],
-                                            temperature=0, max_tokens=4000)
+                                            temperature=0)
                                         if isinstance(_sr, dict):
                                             _seg_results.append(_sr)
                                     except Exception as _se:
@@ -1108,7 +1118,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                                     )}
                                     _r = llm_mod.chat_json(
                                         [_merge_prompt, {"role": "user", "content": json.dumps(_seg_results, ensure_ascii=False)}],
-                                        temperature=0, max_tokens=4000)
+                                        temperature=0)
                             if isinstance(_r, dict):
                                 _session_compress_cache[sid] = _r
                                 return _r
@@ -1130,13 +1140,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
                 del _uncached, _by_session
 
-            # 2. knowledge_interactions 保留 question（查询命令），不传 answer（完整输出）
-            _kis = data.get("knowledge_interactions", [])
-            if _kis:
-                data["knowledge_interactions"] = [
-                    {"tool": ki.get("tool", ""), "question": ki.get("question", "")}
-                    for ki in _kis
-                ]
+            # knowledge_interactions 的 answer 已在初始大小检查前剥离
 
             _data_str = json.dumps(data, ensure_ascii=False)
             log("KG_ANALYSIS", f"压缩后 {len(_data_str)} chars")
@@ -1180,7 +1184,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         try:
                             _r = llm_mod.chat_json(
                                 [_batch_sys_prompt, {"role": "user", "content": json.dumps(batch, ensure_ascii=False)}],
-                                temperature=0, max_tokens=8000)
+                                temperature=0)
                             if isinstance(_r, dict):
                                 return _r
                             return {"mining_summary": str(_r)[:500]}
