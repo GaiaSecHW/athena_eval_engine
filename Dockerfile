@@ -31,4 +31,4 @@ ENV TZ=Asia/Shanghai \
 
 EXPOSE 8090
 
-CMD ["sh", "-c", "ulimit -n 65536 && exec python -m uvicorn athena_eval_engine.api.routes.evaluations:app --host 0.0.0.0 --port 8090 --workers 2"]
+CMD ["sh", "-c", "ulimit -n 65536 && exec python -m uvicorn athena_eval_engine.api.routes.evaluations:app --host 0.0.0.0 --port 8090 --workers 1"]
