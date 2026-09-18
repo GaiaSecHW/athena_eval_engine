@@ -100,6 +100,9 @@ def set_max_concurrency(n: int):
     """
     global _llm_semaphore, _MAX_CONCURRENCY
     n = max(1, min(n, 200))
+    if n == 20:
+        import traceback
+        log("LLM", f"⚠ set_max_concurrency(20) 被调用！调用栈:\n{''.join(traceback.format_stack())}")
     old = _llm_semaphore
     _MAX_CONCURRENCY = n
     _llm_semaphore = threading.Semaphore(n)
