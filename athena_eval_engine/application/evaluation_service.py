@@ -26,7 +26,7 @@ from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
 from .report_assembler import (assemble, render_json,
                                ai_per_case_kg_analysis, rule_based_per_case_kg_analysis)
-from .fpr_analysis import run_fpr_analysis
+from .fpr_analysis import run_fpr_analysis, derive_fpr_from_subset
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchStatus
 from ..orchestration.state_machine import PIPELINE, assert_transition
@@ -983,13 +983,15 @@ def run(evaluation_id: str) -> dict:
             category = parsed.get("category", "")
             _trace_project_id = parsed.get("project_id", "")
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
+            _trid = tr.task_run_id
 
-            log("MATCH", f"{cond.value} bench_items={len(bench)} starting ai_match + resolve...")
+            log("MATCH", f"[{_trid}] {cond.value} bench_items={len(bench)} events={len(events)} starting ai_match + resolve...")
             _trace_start = time.time()
             _TRACE_TIMEOUT = 7200  # 单条 trace 超时上限 2 小时
             # 提前构建 session_graph，sink_match_baselines 和返回值共用，避免重复遍历百万级 events
+            log("MATCH", f"[{_trid}] {cond.value} build_session_graph start (events={len(events)})")
             session_graph = parser.build_session_graph(events) if parser else {}
-            log("MATCH", f"{cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
+            log("MATCH", f"[{_trid}] {cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
                   f"in {int(time.time()-_trace_start)}s")
             inner_pool = ThreadPoolExecutor(max_workers=50)
             try:
@@ -997,6 +999,7 @@ def run(evaluation_id: str) -> dict:
                 fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
                 fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
                 fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
+                log("MATCH", f"[{_trid}] {cond.value} KN/TA/RS resolvers submitted")
 
                 # 三方匹配（主线程跑，KN/TA/RS 在后台并行）
                 _findings_override = None
@@ -1010,7 +1013,7 @@ def run(evaluation_id: str) -> dict:
                         _ac_cases = [c for c in _ac_cases if c.get("project_id") == _trace_project_id]
                     # Step 1: 提取 parser findings
                     _parser_findings = parser.extract_findings(events)
-                    log("MATCH", f"{cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
+                    log("MATCH", f"[{_trid}] {cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
                           f"(is_verify={is_verify})")
 
                     # Step 2: 告警中心 case ↔ finding AI 匹配（告警中心为锚点，跟基线一样）
@@ -1032,7 +1035,7 @@ def run(evaluation_id: str) -> dict:
                         else:
                             # T001: 告警中心全部 = agent 认为是漏洞
                             _parser_findings[fi]["validation_result"] = "CONFIRMED"
-                        log("MATCH", f"{cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')} "
+                        log("MATCH", f"[{_trid}] {cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')} "
                               f"vr={vr} → {_parser_findings[fi]['validation_result']}")
 
                     # Step 4: 未匹配上 finding 的告警中心 case 作为兜底 finding
@@ -1058,7 +1061,7 @@ def run(evaluation_id: str) -> dict:
                     _findings_override = _parser_findings
                     _ac_confirmed = sum(1 for f in _parser_findings if f.get("validation_result") == "CONFIRMED")
                     _ac_fp = sum(1 for f in _parser_findings if f.get("validation_result") == "FALSE_POSITIVE")
-                    log("MATCH", f"{cond.value} 三方匹配完成: findings={len(_parser_findings)} "
+                    log("MATCH", f"[{_trid}] {cond.value} 三方匹配完成: findings={len(_parser_findings)} "
                           f"matched={len(_matched)} unmatched_ac={len(_unmatched_ac)} "
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
@@ -1070,20 +1073,25 @@ def run(evaluation_id: str) -> dict:
                                                         f"[{tr.condition.value}] {text}"),
                                                     findings_override=_findings_override,
                                                     session_graph=session_graph)
+                    log("MATCH", f"[{_trid}] {cond.value} sink_match_baselines submitted (findings_override={'yes' if _findings_override is not None else 'no'})")
                 except RuntimeError:
                     raise RuntimeError("线程池已关闭（Pod 可能正在重启）")
                 _elapsed = time.time() - _trace_start
                 _remaining = max(1, _TRACE_TIMEOUT - _elapsed)
-                log("MATCH", f"{cond.value} waiting for results (elapsed={int(_elapsed)}s, timeout={int(_remaining)}s)...")
+                log("MATCH", f"[{_trid}] {cond.value} waiting for results (elapsed={int(_elapsed)}s, timeout={int(_remaining)}s)...")
                 oc, case_results = fut_outcome.result(timeout=_remaining)
+                log("MATCH", f"[{_trid}] {cond.value} sink_match done (elapsed={int(time.time()-_trace_start)}s)")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 kn = fut_kn.result(timeout=_remaining)
+                log("MATCH", f"[{_trid}] {cond.value} KN resolver done (elapsed={int(time.time()-_trace_start)}s)")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 ta = fut_ta.result(timeout=_remaining)
+                log("MATCH", f"[{_trid}] {cond.value} TA resolver done (elapsed={int(time.time()-_trace_start)}s)")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 rs = fut_rs.result(timeout=_remaining)
+                log("MATCH", f"[{_trid}] {cond.value} RS resolver done (elapsed={int(time.time()-_trace_start)}s)")
             except TimeoutError:
-                log("MATCH", f"{cond.value} TIMEOUT after {int(time.time()-_trace_start)}s "
+                log("MATCH", f"[{_trid}] {cond.value} TIMEOUT after {int(time.time()-_trace_start)}s "
                       f"(events={len(events)}), aborting trace")
                 inner_pool.shutdown(wait=False, cancel_futures=True)
                 raise RuntimeError(f"trace 超时（{int(time.time()-_trace_start)}s, events={len(events)}）")
@@ -1092,7 +1100,7 @@ def run(evaluation_id: str) -> dict:
                 raise
             else:
                 inner_pool.shutdown(wait=True)
-            log("MATCH", f"{cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
+            log("MATCH", f"[{_trid}] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}")
@@ -1103,7 +1111,9 @@ def run(evaluation_id: str) -> dict:
                 _fp = _ac_fp
                 _analyze_count = len(_ac_cases) if _alert_center_data else (_ac_confirmed + _ac_fp)
             else:
+                log("MATCH", f"[{_trid}] {cond.value} extract_findings start (events={len(events)})")
                 _findings = parser.extract_findings(events)
+                log("MATCH", f"[{_trid}] {cond.value} extract_findings done: {len(_findings)} findings (elapsed={int(time.time()-_trace_start)}s)")
                 _confirmed = sum(1 for f in _findings if f.get('validation_result') == 'CONFIRMED')
                 _fp = sum(1 for f in _findings if f.get('validation_result') == 'FALSE_POSITIVE')
                 # WebVulnVerify: 验证接收总数 = vulnerability_analyze + vulnerability_verify 的唯一 vulnerability_id 数
@@ -1114,7 +1124,7 @@ def run(evaluation_id: str) -> dict:
                         if _vid and _vid != "?":
                             _analyze_vids.add(_vid)
                 _analyze_count = len(_analyze_vids) if _analyze_vids else (_confirmed + _fp)
-            log("MATCH", f"{cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}")
+            log("MATCH", f"[{_trid}] {cond.value} findings={len(_findings)} confirmed={_confirmed} fp={_fp} analyze_recv={_analyze_count}")
             ta.action_distribution["confirmed_finding_count"] = _confirmed
             ta.action_distribution["false_positive_finding_count"] = _fp
             ta.action_distribution["analyze_received_count"] = _analyze_count
@@ -1154,18 +1164,24 @@ def run(evaluation_id: str) -> dict:
         _check_cancel(evaluation_id, "AI_MATCHING")
         log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 50）")
         _pool = ThreadPoolExecutor(max_workers=max(1, len(parsed)))
+        _match_start = time.time()
+        log("MATCH", f"pool.map start: {len(parsed)} traces, max_workers={max(1, len(parsed))}")
         try:
             results = list(_pool.map(_resolve_trace, parsed))
-        except Exception:
+        except Exception as e:
             _pool.shutdown(wait=False, cancel_futures=True)
+            log("MATCH", f"pool.map FAILED after {int(time.time()-_match_start)}s: {str(e)[:200]}")
             raise
         else:
+            log("MATCH", f"pool.map all done, shutting down pool (elapsed={int(time.time()-_match_start)}s)")
             _pool.shutdown(wait=True)
+            log("MATCH", f"pool.shutdown(wait=True) done (total={int(time.time()-_match_start)}s)")
         for tr, f, src in results:
             task_runs.append(tr)
             facts[tr.task_run_id] = f
             facts[tr.task_run_id]["_source_uri"] = src
 
+        log("MATCH", f"all {len(results)} traces resolved, entering RESOLVING (total={int(time.time()-_match_start)}s)")
         # Phase 3: 写入 facts（每 task_run 一个短连接，避免长连接被防火墙断开）
         set_progress(evaluation_id, "写入事实数据...")
         _set_status_short(evaluation_id, "RESOLVING")
@@ -1594,10 +1610,15 @@ def run(evaluation_id: str) -> dict:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
 
-    # ===== Phase 6b: E2E FPR 分析（基线 CSV vs 漏洞中心数据 → 误报率）=====
-    # 按 condition (KG/NOGK) 分别找 mining entry，分别计算 E2E FPR，结果合并展示在漏洞验证 tab
-    _e2e_fpr_kg = None
+    # ===== Phase 6b+6c: FPR 分析（统一：告警中心匹配 → 派生漏洞中心 FPR）=====
+    # 跑一次告警中心匹配，按 case ID 筛选派生漏洞中心 FPR，保证一致性。
+    # 漏洞中心 case ID 是告警中心的真子集（128/158），无需独立 LLM 匹配。
+    _e2e_fpr_kg = None       # 漏洞中心 FPR（E2E，派生）
     _e2e_fpr_nogk = None
+    _ac_fpr_kg = None        # 告警中心 FPR（挖掘，直接）
+    _ac_fpr_nogk = None
+    _fpr_cache: dict = {}   # (project_id, task_id) → (alert_result, vc_ids)
+
     for _cond_label, _cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
         _mining_entry = next((e for e in entries
                               if e.get("category", "") != "verify"
@@ -1609,67 +1630,68 @@ def run(evaluation_id: str) -> dict:
         _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
         if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
             _fpr_tid = _mining_entry.get("task_id", "")
-        log("EVAL", f"E2E FPR 分析 ({_cond_label}): project={_fpr_pid}, task={_fpr_tid}")
-        set_progress(evaluation_id, f"E2E FPR 分析 ({_cond_label}): 基线 vs 漏洞中心数据匹配中...")
-        try:
-            def _fpr_cb(done, total, _cl=_cond_label):
-                set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
-            _fpr_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb)
-        except Exception as _fpr_err:
-            log("FPR", f"E2E FPR 分析失败 ({_cond_label}): {_fpr_err}")
-            _fpr_result = None
-        if _fpr_result:
-            log("EVAL", f"E2E FPR ({_cond_label}) 完成: FPR={_fpr_result['fpr']:.1%}, 匹配={_fpr_result['matched']}")
-            if _cond_val == "KG":
-                _e2e_fpr_kg = _fpr_result
-            else:
-                _e2e_fpr_nogk = _fpr_result
-        else:
-            log("EVAL", f"E2E FPR ({_cond_label}) 无结果（基线未配置或漏洞中心无数据）")
 
-    # 将 E2E FPR 结果挂到 verify metric_group（替换 verify tab 的误报率）
+        _cache_key = (_fpr_pid, _fpr_tid)
+
+        if _cache_key not in _fpr_cache:
+            log("EVAL", f"FPR 分析 ({_cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+            set_progress(evaluation_id, f"FPR 分析 ({_cond_label}): 基线 vs 告警中心数据匹配中...")
+            try:
+                def _fpr_cb(done, total, _cl=_cond_label):
+                    set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
+                _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
+                                               source="alert_center")
+            except Exception as _fpr_err:
+                log("FPR", f"FPR 分析失败 ({_cond_label}): {_fpr_err}")
+                _ac_result = None
+
+            # 获取漏洞中心 case ID 集合（用于派生子集）
+            _vc_ids: set[str] = set()
+            if _ac_result:
+                try:
+                    from ..infrastructure.vuln_center_client import list_vuln_cases
+                    _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
+                    _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
+                    log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
+                except Exception as _vc_err:
+                    log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
+
+            _fpr_cache[_cache_key] = (_ac_result, _vc_ids)
+
+        _ac_result, _vc_ids = _fpr_cache[_cache_key]
+
+        if _ac_result:
+            # 派生漏洞中心 FPR（从告警中心结果按 case ID 筛选）
+            if _vc_ids:
+                _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids)
+            else:
+                _vc_result = None
+                log("FPR", "漏洞中心 case ID 为空，无法派生验证 FPR")
+
+            log("EVAL", f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%} "
+                f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']}), "
+                f"验证 FPR={_vc_result['fpr']:.1%} "
+                f"(匹配 {_vc_result['matched']}/{_vc_result['total_findings']})"
+                if _vc_result else
+                f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%}, 验证 FPR 未能派生")
+
+            if _cond_val == "KG":
+                _ac_fpr_kg = _ac_result
+                _e2e_fpr_kg = _vc_result
+            else:
+                _ac_fpr_nogk = _ac_result
+                _e2e_fpr_nogk = _vc_result
+        else:
+            log("EVAL", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
+
+    # 将 E2E FPR 结果挂到 verify metric_group
     if _e2e_fpr_kg or _e2e_fpr_nogk:
         for _mg in _metric_groups:
             if _mg.get("category") == "verify":
                 _mg["e2e_fpr_kg"] = _e2e_fpr_kg
                 _mg["e2e_fpr_nogk"] = _e2e_fpr_nogk
-        set_progress(evaluation_id, "E2E FPR 分析完成，开始漏洞挖掘误报率分析...")
-    else:
-        set_progress(evaluation_id, "生成报告中...")
 
-    # ===== Phase 6c: 漏洞挖掘误报率分析（基线 CSV vs 告警中心数据，按 KG/No-KG 分别计算）=====
-    _ac_fpr_kg = None
-    _ac_fpr_nogk = None
-    for _cond_label, _cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
-        _mining_entry = next((e for e in entries
-                              if e.get("category", "") != "verify"
-                              and e.get("condition") == _cond_val
-                              and e.get("project_id")), None)
-        if not _mining_entry:
-            continue
-        _fpr_ac_pid = _mining_entry["project_id"]
-        _fpr_ac_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
-        if not _fpr_ac_tid or _fpr_ac_tid == _mining_entry.get("task_id"):
-            _fpr_ac_tid = _mining_entry.get("task_id", "")
-        log("EVAL", f"漏洞挖掘 FPR ({_cond_label}): project={_fpr_ac_pid}, task={_fpr_ac_tid}")
-        set_progress(evaluation_id, f"漏洞挖掘 FPR ({_cond_label}): 基线 vs 告警中心数据匹配中...")
-        try:
-            def _fpr_ac_cb(done, total, _cl=_cond_label):
-                set_task_progress(evaluation_id, f"FPR挖掘分析{_cl}", f"FPR匹配 {done}/{total}")
-            _fpr_ac_result = run_fpr_analysis(_fpr_ac_pid, _fpr_ac_tid, progress_cb=_fpr_ac_cb,
-                                               source="alert_center")
-        except Exception as _fpr_ac_err:
-            log("FPR", f"漏洞挖掘 FPR 分析失败 ({_cond_label}): {_fpr_ac_err}")
-            _fpr_ac_result = None
-        if _fpr_ac_result:
-            log("EVAL", f"漏洞挖掘 FPR ({_cond_label}) 完成: FPR={_fpr_ac_result['fpr']:.1%}, 匹配={_fpr_ac_result['matched']}")
-            if _cond_val == "KG":
-                _ac_fpr_kg = _fpr_ac_result
-            else:
-                _ac_fpr_nogk = _fpr_ac_result
-        else:
-            log("EVAL", f"漏洞挖掘 FPR ({_cond_label}) 无结果（告警中心无数据）")
-
+    # 漏洞挖掘误报率 metric_group
     if _ac_fpr_kg or _ac_fpr_nogk:
         _metric_groups.append({
             "task_id": "",
@@ -1683,9 +1705,9 @@ def run(evaluation_id: str) -> dict:
             "e2e_fpr_kg": _ac_fpr_kg,
             "e2e_fpr_nogk": _ac_fpr_nogk,
         })
-        set_progress(evaluation_id, "漏洞挖掘误报率分析完成，生成报告中...")
+        set_progress(evaluation_id, "FPR 分析完成，生成报告中...")
     else:
-        log("EVAL", "漏洞挖掘 FPR 分析无结果（告警中心无数据），跳过挖掘误报率 tab")
+        log("EVAL", "FPR 分析无结果（告警中心无数据），跳过误报率 tab")
         set_progress(evaluation_id, "生成报告中...")
 
     # AI 评测摘要
