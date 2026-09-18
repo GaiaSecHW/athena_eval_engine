@@ -303,7 +303,7 @@ def _run_bg_resume(evaluation_id: str):
     """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
     set_eval_ctx(evaluation_id)
     from ...infrastructure.database import connect
-    stuck_states = ('QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+    stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
                     'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
                     'DIAGNOSING', 'REPORTING', 'FINALIZING')
     placeholders = ','.join(['%s'] * len(stuck_states))
