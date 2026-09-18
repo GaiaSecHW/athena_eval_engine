@@ -10,6 +10,7 @@ import asyncio
 import json
 import os
 import threading
+from collections import deque
 from concurrent.futures import ThreadPoolExecutor, Future
 from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
@@ -21,13 +22,18 @@ from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
 # 最多 N 个评测同时运行，其余排队等待
-# 线程池固定大小（上界），通过计数器 + 条件变量动态控制实际并发数
-# 调整并发数只需改变量 + notify，不重建池，不会出现并发数超限
+# 线程池固定大小（上界 10），通过队列 + 协作取消动态控制实际并发数
+#   - 增大并发：_try_dispatch() 从队列调度（暂停的优先于新任务）
+#   - 减小并发：_pause_excess() 对最晚创建的任务设 cancel_requested，
+#     任务在下一个 _check_cancel 阶段边界退出，状态设为 QUEUED
 _MAX_POOL = 10  # 线程池上界，实际并发由 _max_concurrent_evals 控制
 _max_concurrent_evals = 3
-_running_count = 0
 _executor = ThreadPoolExecutor(max_workers=_MAX_POOL, thread_name_prefix="eval")
-_concurrency_cv = threading.Condition(threading.Lock())
+_running_futures: dict[str, Future] = {}  # 已提交到池（运行中 + 暂停中）
+_pausing_eids: set[str] = set()  # 已发取消信号但尚未退出的任务
+_paused_evals: deque[str] = deque()  # 暂停的任务（优先级高于新任务）
+_pending_evals: deque[tuple[str, object]] = deque()  # 新任务等待队列
+_running_lock = threading.Lock()
 _TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED"}
 
 
@@ -35,60 +41,146 @@ def get_max_concurrent_evals() -> int:
     return _max_concurrent_evals
 
 
+def _running_count() -> int:
+    """实际运行中（已提交但未在暂停中）。须在 _running_lock 内调用。"""
+    return len(_running_futures) - len(_pausing_eids)
+
+
 def set_max_concurrent_evals(n: int):
     """设置最大并发评测数。立即生效，无需重建线程池。
 
-    增大时唤醒等待中的线程立即开始；减小时已运行的任务继续，新任务等待。
+    增大时从队列调度等待任务（暂停的优先于新任务），并清除暂停中的取消标记；
+    减小时暂停最晚创建的任务（协作取消，在下一个阶段边界退出）。
     """
     global _max_concurrent_evals
     n = max(1, min(n, _MAX_POOL))
-    with _concurrency_cv:
+    with _running_lock:
         old = _max_concurrent_evals
         _max_concurrent_evals = n
-        if n > old:
-            _concurrency_cv.notify_all()  # 唤醒等待线程
+    if n > old:
+        # 增大：清除暂停中任务的取消标记（让它们继续运行）
+        with _running_lock:
+            to_clear = list(_pausing_eids)
+            _pausing_eids.clear()
+        for eid in to_clear:
+            es.clear_cancel(eid)
+            log("THREAD", f"{eid} 暂停取消（并发数增大）")
+        _try_dispatch()  # 调度等待中的任务
+    elif n < old:
+        _pause_excess(n)  # 减小：暂停多余的任务
     log("THREAD", f"max_concurrent_evals: {old} → {n}")
 
 
-# 任务 ↔ 线程映射：一个任务只能存在一个在运行的线程
-_running_futures: dict[str, Future] = {}
-_running_lock = threading.Lock()
-
-
-def _submit_eval(evaluation_id: str, fn) -> Future:
-    """提交评测任务到线程池，保证一个 evaluation_id 只有一个在运行的线程。
-
-    通过条件变量控制并发：运行前 acquire 计数，结束后 release。
-    调整 max_concurrent_evals 不需要重建池，立即生效。
-    """
-    def _wrapped():
-        global _running_count
-        with _concurrency_cv:
-            while _running_count >= _max_concurrent_evals:
-                _concurrency_cv.wait()
-            _running_count += 1
-        try:
-            fn()
-        finally:
-            with _concurrency_cv:
-                _running_count -= 1
-                _concurrency_cv.notify()  # 唤醒一个等待线程
-
-    with _running_lock:
-        old = _running_futures.pop(evaluation_id, None)
-        if old is not None:
-            old.cancel()  # 如果还在排队未执行，取消；已运行的无法取消但不再追踪
-            log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
-        fut = _executor.submit(_wrapped)
-        _running_futures[evaluation_id] = fut
-        def _done_cb(f, eid=evaluation_id):
-            """只移除自己——旧线程的回调不能误删新线程的 future。"""
+def _try_dispatch():
+    """从队列调度任务到线程池。暂停的任务优先于新任务。"""
+    while True:
+        with _running_lock:
+            if _running_count() >= _max_concurrent_evals:
+                return
+            if _paused_evals:
+                eid = _paused_evals.popleft()
+                es.clear_cancel(eid)  # 清除取消标记
+                fn = lambda e=eid: _run_bg_resume(e)
+            elif _pending_evals:
+                eid, fn = _pending_evals.popleft()
+            else:
+                return
+            fut = _executor.submit(fn)
+            _running_futures[eid] = fut
+        # done callback 在锁外注册
+        def _done_cb(f, eid=eid):
             with _running_lock:
                 cur = _running_futures.get(eid)
                 if cur is not None and cur is f:
                     _running_futures.pop(eid, None)
+                was_pausing = eid in _pausing_eids
+                _pausing_eids.discard(eid)
+                if was_pausing:
+                    # 任务被暂停后退出：设状态为 QUEUED，加入暂停队列
+                    _set_queued_status(eid)
+                    _paused_evals.append(eid)
+            _try_dispatch()
         fut.add_done_callback(_done_cb)
-        return fut
+
+
+def _pause_excess(target: int):
+    """暂停最晚创建的任务，使运行数降至 target。
+
+    对最晚创建的任务设 cancel_requested，任务在下一个 _check_cancel
+    阶段边界退出（TaskCancelledError）。done callback 将状态设为 QUEUED，
+    并加入 _paused_evals 队列（优先于新任务调度）。
+    """
+    to_pause = []
+    with _running_lock:
+        # 非暂停中的任务，最晚创建的在最后
+        candidates = [eid for eid in _running_futures if eid not in _pausing_eids]
+        while len(candidates) > target:
+            eid = candidates.pop()
+            _pausing_eids.add(eid)
+            to_pause.append(eid)
+    for eid in to_pause:
+        es.set_cancel(eid)  # 通知任务在下一个阶段边界退出
+        log("THREAD", f"{eid} 已暂停（并发数减少）")
+
+
+def _set_queued_status(eid: str):
+    """任务被暂停后，将 DB 状态设为 QUEUED。"""
+    try:
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (eid,))
+            row = cur.fetchone()
+            status = row[0] if row else "UNKNOWN"
+            if status not in _TERMINAL_EVALUATION_STATUSES:
+                cur.execute("UPDATE evaluation SET evaluation_status='QUEUED' WHERE evaluation_id=%s", (eid,))
+                conn.commit()
+                log("THREAD", f"{eid} 已暂停，状态 {status} → QUEUED")
+            else:
+                log("THREAD", f"{eid} 暂停时已终态 {status}，不覆盖")
+        finally:
+            conn.close()
+    except Exception as e:
+        log("THREAD", f"{eid} 设置 QUEUED 失败: {e}")
+
+
+def _submit_eval(evaluation_id: str, fn) -> None:
+    """提交评测任务到队列。保证一个 evaluation_id 只有一个在运行的线程。
+
+    新任务加入 _pending_evals 队列，由 _try_dispatch() 调度。
+    如果该 evaluation_id 已在暂停队列中，移至新任务队列（force retry 场景）。
+    """
+    with _running_lock:
+        # 从暂停队列移除（force retry 暂停中的任务）
+        try:
+            _paused_evals.remove(evaluation_id)
+        except ValueError:
+            pass
+        # 从待调度队列移除
+        for item in list(_pending_evals):
+            if item[0] == evaluation_id:
+                _pending_evals.remove(item)
+                break
+        # 取消旧线程
+        old = _running_futures.pop(evaluation_id, None)
+        if old is not None:
+            old.cancel()
+            _pausing_eids.discard(evaluation_id)
+            log("THREAD", f"{evaluation_id} 旧线程被替换（force retry）")
+        _pending_evals.append((evaluation_id, fn))
+    _try_dispatch()
+
+
+def _submit_paused_eval(evaluation_id: str):
+    """将暂停的评测加入暂停队列（pod 重启后恢复）。"""
+    with _running_lock:
+        if evaluation_id in _running_futures:
+            return  # 已在线程池
+        if evaluation_id in _paused_evals:
+            return  # 已在暂停队列
+        _paused_evals.append(evaluation_id)
+    _try_dispatch()
 
 
 def _record_background_failure(evaluation_id: str, error: Exception, source: str) -> None:
@@ -180,6 +272,12 @@ def resume_stuck_evaluations():
                 cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
                             "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
                             ("create() 未完成（无 snapshot），评测创建失败", eid))
+            # QUEUED = 暂停的评测，加入暂停队列（优先于新任务调度）
+            cur.execute("SELECT evaluation_id FROM evaluation WHERE evaluation_status='QUEUED'")
+            queued_rows = cur.fetchall()
+            for (eid,) in queued_rows:
+                log("STARTUP", f"{eid} (was QUEUED) → 加入暂停队列")
+                _submit_paused_eval(eid)
             # RUNNING_STATES = 线程已死但 DB 还显示运行中，续跑
             stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
                             'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
@@ -205,7 +303,7 @@ def _run_bg_resume(evaluation_id: str):
     """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
     set_eval_ctx(evaluation_id)
     from ...infrastructure.database import connect
-    stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+    stuck_states = ('QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
                     'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
                     'DIAGNOSING', 'REPORTING', 'FINALIZING')
     placeholders = ','.join(['%s'] * len(stuck_states))
@@ -239,13 +337,19 @@ def _run_bg_resume(evaluation_id: str):
 
 @app.get("/health")
 async def health():
-    # async 走事件循环不走线程池；不加锁避免竞争，len() 在 CPython 下原子
+    # async 走事件循环不走线程池；加锁读取一致快照
     from ...infrastructure import llm as _llm
+    with _running_lock:
+        running = len(_running_futures) - len(_pausing_eids)
+        pending = len(_pending_evals)
+        paused = len(_paused_evals)
+        max_evals = _max_concurrent_evals
     return {
         "status": "ok",
-        "running_tasks": _running_count,
-        "max_concurrent_evals": _max_concurrent_evals,
-        "queued_tasks": len(_running_futures) - _running_count,
+        "running_tasks": running,
+        "max_concurrent_evals": max_evals,
+        "queued_tasks": pending + paused,
+        "paused_tasks": paused,
         "llm_active": _llm.get_active_concurrency(),
         "llm_max": _llm.get_max_concurrency(),
     }
@@ -817,7 +921,8 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;backgroun
 .b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
 .b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
-.b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}

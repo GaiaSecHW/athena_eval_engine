@@ -157,6 +157,19 @@ def _start_config_watcher():
                             log("WATCHDOG", f"{eid} (CREATED, has snapshot) 不在线程池 → 续跑")
                             _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
 
+                    # ── 4. QUEUED 但不在线程池中的评测 → 加入暂停队列（pod 重启后恢复）──
+                    cur.execute("SELECT evaluation_id FROM evaluation WHERE evaluation_status='QUEUED'")
+                    queued_rows = cur.fetchall()
+                    if queued_rows:
+                        with _running_lock:
+                            active_ids = set(_running_futures.keys())
+                        from .evaluations import _submit_paused_eval
+                        for (eid,) in queued_rows:
+                            if eid in active_ids:
+                                continue  # 已在线程池
+                            log("WATCHDOG", f"{eid} (QUEUED) 不在线程池 → 加入暂停队列")
+                            _submit_paused_eval(eid)
+
                     _first_tick = False
                 finally:
                     conn.close()
