@@ -668,14 +668,16 @@ def _build_report(evaluation_id: str):
                 md = {"description": vc_c.get("description", ""),
                       "vulnerability_type": vc_c.get("vulnerability_type", ""),
                       "source_file": vc_c.get("source_file", ""),
-                      "source_function": vc_c.get("source_function", "")}
+                      "source_function": vc_c.get("source_function", ""),
+                      "source_line": vc_c.get("source_line", "")}
                 if not label or label == "VULNERABLE":
                     label = vc_c.get("expected_label", label)
             case_results.append({"case_id": bid, "expected_label": label or "NA",
                                 "description": md.get("description", ""),
                                 "vulnerability_type": md.get("vulnerability_type", ""),
                                 "source_file": md.get("source_file", ""),
-                                "source_function": md.get("source_function", "")})
+                                "source_function": md.get("source_function", ""),
+                                "source_line": md.get("source_line", "")})
 
         # 用 outcome 的 per-case 结果覆盖（含 matched/confusion）
         for c in case_results:
