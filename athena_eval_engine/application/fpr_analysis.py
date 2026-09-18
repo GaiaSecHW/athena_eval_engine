@@ -356,6 +356,40 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
     return detail
 
 
+def derive_fpr_from_subset(alert_result: dict, vuln_center_case_ids: set[str]) -> dict:
+    """从告警中心匹配结果中按 case ID 筛选漏洞中心子集，重新计算 FPR。
+
+    保证一致性：不重新匹配，只筛选已有结果。
+    漏洞中心 case ID 是告警中心的真子集（如 128/158）。
+    """
+    match_details = alert_result.get("match_details", [])
+
+    # 筛选：只保留在漏洞中心中的 case
+    subset_details = [d for d in match_details
+                      if d.get("finding_id", "") in vuln_center_case_ids]
+
+    # 重新计算 FPR
+    matched = 0
+    fp = 0
+    for d in subset_details:
+        if d.get("match_status") == "已匹配":
+            matched += 1
+            if d.get("is_fp", False):
+                fp += 1
+    tp = matched - fp
+    fpr = fp / matched if matched > 0 else 0.0
+
+    return {
+        "fpr": fpr,
+        "matched": matched,
+        "fp": fp,
+        "tp": tp,
+        "total_findings": len(subset_details),
+        "total_baseline": alert_result.get("total_baseline", 0),
+        "match_details": subset_details,
+    }
+
+
 def run_fpr_analysis(project_id: str, task_id: str,
                      progress_cb=None, source: str = "vuln_center") -> dict | None:
     """主入口：基线 CSV vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
