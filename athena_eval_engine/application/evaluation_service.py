@@ -32,6 +32,18 @@ from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchS
 from ..orchestration.state_machine import PIPELINE, assert_transition
 from ..application import platform_service as ps
 
+def _extract_source_task_id(entry: dict) -> str:
+    """从 entry 的 source_uri 提取平台任务 UUID（漏洞中心 API 需要，非 benchmark task_id）。
+
+    source_uri 格式: /data/files/{project_id}/tasks/{task_uuid}/session/...
+    无法提取时返回空字符串。
+    """
+    import re
+    src = entry.get("source_uri", "") or ""
+    m = re.search(r'/tasks/([^/]+)', src)
+    return m.group(1) if m else ""
+
+
 # 协作取消：force retry 时在 DB 设 CANCEL_REQUESTED，run() 在阶段边界检查并退出
 # 跨 worker 生效（--workers 2 时不同 worker 共享同一 DB）
 
@@ -457,7 +469,7 @@ def run(evaluation_id: str) -> dict:
     case_details = {}
     if _bm_source == "vuln_center" and not _vc_task_id:
         for e in _ingest_entries:
-            tid_actual = e.get("task_id_actual") or e.get("task_id")
+            tid_actual = e.get("task_id_actual") or _extract_source_task_id(e) or e.get("task_id")
             if tid_actual:
                 _vc_task_id = tid_actual
                 break
@@ -551,7 +563,7 @@ def run(evaluation_id: str) -> dict:
     _seen_pairs: set[tuple[str, str]] = set()
     for e in _ingest_entries:
         _pid = e.get("project_id") or ""
-        _tid = e.get("task_id_actual") or _vc_task_id or ""
+        _tid = e.get("task_id_actual") or _extract_source_task_id(e) or _vc_task_id or ""
         if _pid and _tid and (_pid, _tid) not in _seen_pairs:
             _ac_pairs.append((_pid, _tid))
             _seen_pairs.add((_pid, _tid))
@@ -677,7 +689,7 @@ def run(evaluation_id: str) -> dict:
         _vc_tid = cfg.get("manifest", {}).get("vc_source_task_id")
         if _bm_src == "vuln_center" and not _vc_tid:
             for e in entries:
-                _vc_tid = e.get("task_id_actual") or e.get("task_id")
+                _vc_tid = e.get("task_id_actual") or _extract_source_task_id(e) or e.get("task_id")
                 if _vc_tid:
                     break
         if _bm_src == "vuln_center" and _vc_tid:
@@ -914,7 +926,7 @@ def run(evaluation_id: str) -> dict:
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
-                task_id_actual = e.get("task_id_actual", "")
+                task_id_actual = e.get("task_id_actual", "") or _extract_source_task_id(e)
                 trace_case_ids = [str(c) for c in e.get("trace_case_ids", []) if c]
                 # CVulnVerify 的 JSONL 文件在项目目录下（非任务目录），
                 # 需要任务 ID 来过滤出本次评测的文件。
@@ -1582,38 +1594,99 @@ def run(evaluation_id: str) -> dict:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
 
-    # ===== Phase 6b: FPR 分析（基线 CSV vs 漏洞中心数据 → 误报率）=====
-    _mining_entry = next((e for e in entries
-                          if e.get("category", "") != "verify" and e.get("project_id") and e.get("task_id")), None)
-    if _mining_entry:
+    # ===== Phase 6b: E2E FPR 分析（基线 CSV vs 漏洞中心数据 → 误报率）=====
+    # 按 condition (KG/NOGK) 分别找 mining entry，分别计算 E2E FPR，结果合并展示在漏洞验证 tab
+    _e2e_fpr_kg = None
+    _e2e_fpr_nogk = None
+    for _cond_label, _cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
+        _mining_entry = next((e for e in entries
+                              if e.get("category", "") != "verify"
+                              and e.get("condition") == _cond_val
+                              and e.get("project_id")), None)
+        if not _mining_entry:
+            continue
         _fpr_pid = _mining_entry["project_id"]
-        _fpr_tid = _mining_entry["task_id"]
-        log("EVAL", f"FPR 分析: project={_fpr_pid}, task={_fpr_tid}")
-        set_progress(evaluation_id, "FPR 分析: 基线 vs 漏洞中心数据匹配中...")
+        _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
+        if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
+            _fpr_tid = _mining_entry.get("task_id", "")
+        log("EVAL", f"E2E FPR 分析 ({_cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+        set_progress(evaluation_id, f"E2E FPR 分析 ({_cond_label}): 基线 vs 漏洞中心数据匹配中...")
         try:
-            def _fpr_cb(done, total):
-                set_task_progress(evaluation_id, "FPR分析", f"FPR匹配 {done}/{total}")
+            def _fpr_cb(done, total, _cl=_cond_label):
+                set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
             _fpr_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb)
         except Exception as _fpr_err:
-            log("FPR", f"FPR 分析失败（不影响评测）: {_fpr_err}")
+            log("FPR", f"E2E FPR 分析失败 ({_cond_label}): {_fpr_err}")
             _fpr_result = None
         if _fpr_result:
-            _metric_groups.append({
-                "task_id": _fpr_tid,
-                "category": "e2e",
-                "label": "漏洞E2E分析",
-                "agent_name": "",
-                "p0": {}, "p1": {}, "p2": {},
-                "diagnostic_hits": [],
-                "case_results": [],
-                "pair_count": 0,
-                "fpr_analysis": _fpr_result,
-            })
-            log("EVAL", f"FPR 分析完成: FPR={_fpr_result['fpr']:.1%}, 匹配={_fpr_result['matched']}")
-            set_progress(evaluation_id, "FPR 分析完成，生成报告中...")
+            log("EVAL", f"E2E FPR ({_cond_label}) 完成: FPR={_fpr_result['fpr']:.1%}, 匹配={_fpr_result['matched']}")
+            if _cond_val == "KG":
+                _e2e_fpr_kg = _fpr_result
+            else:
+                _e2e_fpr_nogk = _fpr_result
         else:
-            log("EVAL", "FPR 分析无结果（基线未配置或无数据），跳过第三个 tab")
-            set_progress(evaluation_id, "生成报告中...")
+            log("EVAL", f"E2E FPR ({_cond_label}) 无结果（基线未配置或漏洞中心无数据）")
+
+    # 将 E2E FPR 结果挂到 verify metric_group（替换 verify tab 的误报率）
+    if _e2e_fpr_kg or _e2e_fpr_nogk:
+        for _mg in _metric_groups:
+            if _mg.get("category") == "verify":
+                _mg["e2e_fpr_kg"] = _e2e_fpr_kg
+                _mg["e2e_fpr_nogk"] = _e2e_fpr_nogk
+        set_progress(evaluation_id, "E2E FPR 分析完成，开始漏洞挖掘误报率分析...")
+    else:
+        set_progress(evaluation_id, "生成报告中...")
+
+    # ===== Phase 6c: 漏洞挖掘误报率分析（基线 CSV vs 告警中心数据，按 KG/No-KG 分别计算）=====
+    _ac_fpr_kg = None
+    _ac_fpr_nogk = None
+    for _cond_label, _cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
+        _mining_entry = next((e for e in entries
+                              if e.get("category", "") != "verify"
+                              and e.get("condition") == _cond_val
+                              and e.get("project_id")), None)
+        if not _mining_entry:
+            continue
+        _fpr_ac_pid = _mining_entry["project_id"]
+        _fpr_ac_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
+        if not _fpr_ac_tid or _fpr_ac_tid == _mining_entry.get("task_id"):
+            _fpr_ac_tid = _mining_entry.get("task_id", "")
+        log("EVAL", f"漏洞挖掘 FPR ({_cond_label}): project={_fpr_ac_pid}, task={_fpr_ac_tid}")
+        set_progress(evaluation_id, f"漏洞挖掘 FPR ({_cond_label}): 基线 vs 告警中心数据匹配中...")
+        try:
+            def _fpr_ac_cb(done, total, _cl=_cond_label):
+                set_task_progress(evaluation_id, f"FPR挖掘分析{_cl}", f"FPR匹配 {done}/{total}")
+            _fpr_ac_result = run_fpr_analysis(_fpr_ac_pid, _fpr_ac_tid, progress_cb=_fpr_ac_cb,
+                                               source="alert_center")
+        except Exception as _fpr_ac_err:
+            log("FPR", f"漏洞挖掘 FPR 分析失败 ({_cond_label}): {_fpr_ac_err}")
+            _fpr_ac_result = None
+        if _fpr_ac_result:
+            log("EVAL", f"漏洞挖掘 FPR ({_cond_label}) 完成: FPR={_fpr_ac_result['fpr']:.1%}, 匹配={_fpr_ac_result['matched']}")
+            if _cond_val == "KG":
+                _ac_fpr_kg = _fpr_ac_result
+            else:
+                _ac_fpr_nogk = _fpr_ac_result
+        else:
+            log("EVAL", f"漏洞挖掘 FPR ({_cond_label}) 无结果（告警中心无数据）")
+
+    if _ac_fpr_kg or _ac_fpr_nogk:
+        _metric_groups.append({
+            "task_id": "",
+            "category": "mining_fpr",
+            "label": "漏洞挖掘误报率",
+            "agent_name": "",
+            "p0": {}, "p1": {}, "p2": {},
+            "diagnostic_hits": [],
+            "case_results": [],
+            "pair_count": 0,
+            "e2e_fpr_kg": _ac_fpr_kg,
+            "e2e_fpr_nogk": _ac_fpr_nogk,
+        })
+        set_progress(evaluation_id, "漏洞挖掘误报率分析完成，生成报告中...")
+    else:
+        log("EVAL", "漏洞挖掘 FPR 分析无结果（告警中心无数据），跳过挖掘误报率 tab")
+        set_progress(evaluation_id, "生成报告中...")
 
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,

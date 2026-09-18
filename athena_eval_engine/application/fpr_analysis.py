@@ -1,6 +1,9 @@
-"""FPR（误报率）分析模块 — 基线 CSV vs 漏洞中心数据，批量 LLM 匹配。
+"""FPR（误报率）分析模块 — 基线 CSV vs 漏洞中心/告警中心数据，批量 LLM 匹配。
 
-在 REPORTING 阶段被调用，结果作为第一个 tab（漏洞E2E分析）展示。
+在 REPORTING 阶段被调用，结果作为 tab 展示：
+- source="vuln_center"  → 漏洞E2E分析 tab
+- source="alert_center" → 漏洞挖掘误报率 tab
+
 基线 CSV 来源：run8_reports_full.zip 生成的 run8_baseline.csv（含 VULNERABLE + NON_VULNERABLE）。
 """
 from __future__ import annotations
@@ -354,8 +357,11 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
 
 
 def run_fpr_analysis(project_id: str, task_id: str,
-                     progress_cb=None) -> dict | None:
-    """主入口：基线 CSV vs 漏洞中心数据 → FPR + 匹配明细。
+                     progress_cb=None, source: str = "vuln_center") -> dict | None:
+    """主入口：基线 CSV vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
+
+    source="vuln_center"  → 漏洞中心数据（E2E 分析）
+    source="alert_center" → 告警中心数据（漏洞挖掘误报率）
 
     返回 dict:
       fpr, matched, fp, tp, total_findings, total_baseline, match_details
@@ -373,18 +379,28 @@ def run_fpr_analysis(project_id: str, task_id: str,
     baseline_rows = load_baseline(csv_path)
     log("FPR", f"基线 {len(baseline_rows)} 条")
 
-    log("FPR", f"从漏洞中心获取数据: project={project_id}, task={task_id}")
-    findings = vuln_center_client.list_vuln_cases(
-        project_id=project_id,
-        source_task_id=task_id,
-    )
-    log("FPR", f"漏洞中心返回 {len(findings)} 条")
+    if source == "alert_center":
+        log("FPR", f"从告警中心获取数据: project={project_id}, task={task_id}")
+        findings = vuln_center_client.list_alert_center_cases(
+            project_id=project_id,
+            source_task_id=task_id,
+        )
+        log("FPR", f"告警中心返回 {len(findings)} 条")
+        source_label = "告警中心"
+    else:
+        log("FPR", f"从漏洞中心获取数据: project={project_id}, task={task_id}")
+        findings = vuln_center_client.list_vuln_cases(
+            project_id=project_id,
+            source_task_id=task_id,
+        )
+        log("FPR", f"漏洞中心返回 {len(findings)} 条")
+        source_label = "漏洞中心"
 
     if not findings:
-        log("FPR", "漏洞中心无数据，跳过 FPR 分析")
+        log("FPR", f"{source_label}无数据，跳过 FPR 分析")
         return None
 
-    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条漏洞中心数据 (batch={_BATCH_SIZE})")
+    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE})")
     match_results = _run_matching(findings, baseline_rows, progress_cb)
 
     fpr, matched, fp = _calculate_fpr(match_results, baseline_rows)

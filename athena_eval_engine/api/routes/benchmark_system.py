@@ -16,8 +16,8 @@ _CONFIG_KEYS = {
     "parse_workers", "kg_analysis_workers",
 }
 
-# 配置版本号（DB 更新时 +1，worker 定期检查，变化则重载）
-_config_version = 0
+# 配置时间戳（DB 更新时写 NOW(3)，worker 定期检查，变化则重载）
+_config_version = None
 _config_version_lock = threading.Lock()
 
 
@@ -67,43 +67,108 @@ def load_system_config():
 
 
 def _start_config_watcher():
-    """后台线程：每 10 秒检查 DB config_version，变化则重载配置。"""
+    """后台线程：每 10 秒同步配置时间戳 + 检测僵死评测任务。
+
+    1. 配置同步：比较 DB 中 _version 时间戳，变化则重载所有配置。
+    2. 僵死检测：查询非终态但超时的评测，不在本 worker 运行则标记 FAILED。
+       - 首次 tick：标记 worker 启动前已存在的运行中评测（pod 重启后的僵死）
+       - 后续 tick：标记超过 2 小时的僵死评测
+    """
+    _RUNNING_STATES = (
+        'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+        'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+        'DIAGNOSING', 'REPORTING', 'FINALIZING',
+    )
+    _TERMINAL = ('COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED', 'CANCELLED')
+
     def _watcher():
         global _config_version
+        from .evaluations import _running_futures, _running_lock
+        _first_tick = True
         while True:
             time.sleep(10)
             try:
                 conn = connect(autocommit=True)
                 try:
                     cur = conn.cursor()
+
+                    # ── 1. 配置同步（时间戳比较）──
                     cur.execute("SELECT config_value FROM system_config WHERE config_key='_version'")
                     row = cur.fetchone()
-                    db_ver = int(row[0]) if row else 0
-                finally:
-                    conn.close()
-                with _config_version_lock:
-                    if db_ver != _config_version:
-                        _config_version = db_ver
-                if db_ver > 0:
-                    # 重新加载所有配置
-                    conn = connect(autocommit=True)
-                    try:
-                        cur = conn.cursor()
-                        cur.execute("SELECT config_key, config_value FROM system_config WHERE config_key IN (%s)" % ",".join(["%s"]*len(_CONFIG_KEYS)), tuple(_CONFIG_KEYS))
+                    db_ts = str(row[0]) if row else None
+                    if db_ts is not None and db_ts != _config_version:
+                        with _config_version_lock:
+                            _config_version = db_ts
+                        cur.execute(
+                            "SELECT config_key, config_value FROM system_config "
+                            "WHERE config_key IN (%s)" % ",".join(["%s"] * len(_CONFIG_KEYS)),
+                            tuple(_CONFIG_KEYS))
                         for key, value in cur.fetchall():
                             _apply_config(key, value)
-                        log("SYS_CFG", f"配置已重载 (version={db_ver})")
-                    finally:
-                        conn.close()
-            except Exception:
-                pass
+                        log("SYS_CFG", f"配置已重载 (timestamp={db_ts})")
+
+                    # ── 2. 僵死评测检测 ──
+                    placeholders = ",".join(["%s"] * len(_RUNNING_STATES))
+                    if _first_tick:
+                        # 首次：标记 worker 启动前已存在的运行中评测
+                        cur.execute(
+                            f"SELECT evaluation_id, evaluation_status FROM evaluation "
+                            f"WHERE evaluation_status IN ({placeholders}) "
+                            f"AND finished_at IS NULL "
+                            f"AND started_at < DATE_SUB(NOW(3), INTERVAL 2 MINUTE)",
+                            _RUNNING_STATES)
+                    else:
+                        # 后续：标记超过 2 小时的僵死评测
+                        cur.execute(
+                            f"SELECT evaluation_id, evaluation_status FROM evaluation "
+                            f"WHERE evaluation_status IN ({placeholders}) "
+                            f"AND finished_at IS NULL "
+                            f"AND started_at < DATE_SUB(NOW(3), INTERVAL 120 MINUTE)",
+                            _RUNNING_STATES)
+                    zombies = cur.fetchall()
+                    if zombies:
+                        with _running_lock:
+                            active_ids = set(_running_futures.keys())
+                        for eid, status in zombies:
+                            if eid in active_ids:
+                                continue  # 仍在运行
+                            cur.execute(
+                                "UPDATE evaluation SET evaluation_status='FAILED', "
+                                "error_message=%s, finished_at=NOW(3) "
+                                "WHERE evaluation_id=%s AND evaluation_status NOT IN "
+                                "('COMPLETED','COMPLETED_WITH_WARNINGS','FAILED','CANCELLED')",
+                                (f"线程异常退出（{status} 状态超时）", eid))
+                            if cur.rowcount > 0:
+                                log("WATCHDOG", f"僵死评测 {eid} (status={status}) → FAILED")
+
+                    # ── 3. CREATED + 有 snapshot 但不在线程池中的评测 → 续跑 ──
+                    cur.execute(
+                        "SELECT e.evaluation_id FROM evaluation e "
+                        "INNER JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
+                        "WHERE e.evaluation_status='CREATED'")
+                    created_rows = cur.fetchall()
+                    if created_rows:
+                        with _running_lock:
+                            active_ids = set(_running_futures.keys())
+                        from .evaluations import _submit_eval, _run_bg_resume
+                        for (eid,) in created_rows:
+                            if eid in active_ids:
+                                continue  # 已在线程池
+                            log("WATCHDOG", f"{eid} (CREATED, has snapshot) 不在线程池 → 续跑")
+                            _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
+
+                    _first_tick = False
+                finally:
+                    conn.close()
+            except Exception as e:
+                log("WATCHDOG", f"watcher 异常: {e}")
 
     t = threading.Thread(target=_watcher, daemon=True, name="config-watcher")
     t.start()
 
 
 def _save_config(key: str, value: str):
-    """写入 DB（upsert），并递增 _version 触发其他 worker 重载。"""
+    """写入 DB（upsert），并更新 _version 时间戳触发其他 worker 重载。"""
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -111,10 +176,10 @@ def _save_config(key: str, value: str):
             "INSERT INTO system_config (config_key, config_value) VALUES (%s, %s) "
             "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
             (key, value))
-        # 递增版本号，触发其他 worker 的 watcher 重载
+        # 写入当前时间戳，触发其他 worker 的 watcher 重载
         cur.execute(
-            "INSERT INTO system_config (config_key, config_value) VALUES ('_version', '1') "
-            "ON DUPLICATE KEY UPDATE config_value=config_value+1")
+            "INSERT INTO system_config (config_key, config_value) VALUES ('_version', NOW(3)) "
+            "ON DUPLICATE KEY UPDATE config_value=NOW(3)")
         conn.commit()
     finally:
         conn.close()
@@ -204,7 +269,7 @@ def update_system_config(params: SystemConfigUpdate):
         set_runtime_workers(kg_analysis=params.kg_analysis_workers)
         _save_config("kg_analysis_workers", str(params.kg_analysis_workers))
         updated.append(f"kg_analysis_workers={params.kg_analysis_workers}")
-    # 同步本地版本号，避免 watcher 重复重载
+    # 同步本地时间戳，避免 watcher 重复重载
     try:
         conn = connect(autocommit=True)
         try:
@@ -213,7 +278,7 @@ def update_system_config(params: SystemConfigUpdate):
             row = cur.fetchone()
             if row:
                 with _config_version_lock:
-                    _config_version = int(row[0])
+                    _config_version = str(row[0])
         finally:
             conn.close()
     except Exception:
