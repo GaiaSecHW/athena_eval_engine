@@ -98,17 +98,36 @@ def schema_info():
         conn.close()
 
 
+def _load_config_from_db() -> dict:
+    """从 DB 读取持久化的系统参数（不受多 worker 内存隔离影响）。"""
+    result = {}
+    try:
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT config_key, config_value FROM system_config")
+            for key, value in cur.fetchall():
+                if key in _CONFIG_KEYS:
+                    result[key] = value
+        finally:
+            conn.close()
+    except Exception as e:
+        log("SYS_CFG", f"从 DB 读取配置失败: {e}")
+    return result
+
+
 @sys_r.get("/config")
 def get_system_config():
-    """获取运行时系统参数。"""
+    """获取系统参数（从 DB 读取，确保多 worker 一致）。"""
     from ...infrastructure import llm
     from .evaluations import get_max_concurrent_evals
     from ...application.evaluation_service import get_runtime_workers
+    db_cfg = _load_config_from_db()
     return {
-        "llm_max_concurrency": llm.get_max_concurrency(),
-        "max_concurrent_evals": get_max_concurrent_evals(),
-        "parse_workers": get_runtime_workers().get("parse", 4),
-        "kg_analysis_workers": get_runtime_workers().get("kg_analysis", 8),
+        "llm_max_concurrency": int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency())),
+        "max_concurrent_evals": int(db_cfg.get("max_concurrent_evals", get_max_concurrent_evals())),
+        "parse_workers": int(db_cfg.get("parse_workers", get_runtime_workers().get("parse", 4))),
+        "kg_analysis_workers": int(db_cfg.get("kg_analysis_workers", get_runtime_workers().get("kg_analysis", 8))),
     }
 
 
