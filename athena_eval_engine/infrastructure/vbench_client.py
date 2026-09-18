@@ -142,10 +142,9 @@ def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
             result.append(_case_to_benchmark(c, "NON_VULNERABLE"))
         else:
             # 简版格式：只有 description + reason
-            import hashlib as _hl
             desc = c.get("description", "") if isinstance(c, dict) else str(c)
             reason = c.get("reason", "") if isinstance(c, dict) else ""
-            cid = c.get("case_id") or c.get("id") or f"fp-{_hl.md5(desc.encode()).hexdigest()[:12]}"
+            cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
             result.append({
                 "case_id": cid,
                 "vulnerability_type": reason or "",
@@ -223,14 +222,13 @@ def get_benchmark(benchmark_set_id: str) -> dict:
     # 非漏洞基线（false_positives.json）
     raw_fp = bm.get("false_positives") or []
     from .vuln_center_client import _case_to_benchmark
-    import hashlib as _hl
     for i, c in enumerate(raw_fp):
         if isinstance(c, dict) and c.get("id"):
             cases.append(_case_to_benchmark(c, "NON_VULNERABLE"))
         else:
             desc = c.get("description", "") if isinstance(c, dict) else str(c)
             reason = c.get("reason", "") if isinstance(c, dict) else ""
-            cid = c.get("case_id") or c.get("id") or f"fp-{_hl.md5(desc.encode()).hexdigest()[:12]}"
+            cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
             cases.append({
                 "case_id": cid,
                 "vulnerability_type": reason or "",
