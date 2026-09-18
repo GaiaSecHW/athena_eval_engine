@@ -31,6 +31,10 @@ MAX_RATE_LIMIT_RETRIES = 20
 _MAX_CONCURRENCY = 50
 _llm_semaphore = threading.Semaphore(_MAX_CONCURRENCY)
 
+# LLM 当前并发计数器（线程安全）
+_active_lock = threading.Lock()
+_active_count = 0
+
 # LLM token 用量累积器（线程安全，跨所有线程共享）
 _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
@@ -108,6 +112,12 @@ def get_max_concurrency() -> int:
     return _MAX_CONCURRENCY
 
 
+def get_active_concurrency() -> int:
+    """返回当前正在进行的 LLM 调用数。"""
+    with _active_lock:
+        return _active_count
+
+
 # 运行时可调配置
 _runtime_cfg = {
     "llm_enabled": LLM_ENABLED,
@@ -170,6 +180,9 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     _sem = _llm_semaphore
     if _sem is not None:
         _sem.acquire()
+    global _active_count
+    with _active_lock:
+        _active_count += 1
     conn = None
     first_token = True
     try:
@@ -289,6 +302,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     finally:
         if conn:
             conn.close()
+        with _active_lock:
+            _active_count -= 1
         if _sem is not None:
             _sem.release()
 

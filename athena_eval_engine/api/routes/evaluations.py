@@ -230,7 +230,13 @@ def _run_bg_resume(evaluation_id: str):
 @app.get("/health")
 async def health():
     # async 走事件循环不走线程池；不加锁避免竞争，len() 在 CPython 下原子
-    return {"status": "ok", "running_tasks": len(_running_futures)}
+    from ...infrastructure import llm as _llm
+    return {
+        "status": "ok",
+        "running_tasks": len(_running_futures),
+        "llm_active": _llm.get_active_concurrency(),
+        "llm_max": _llm.get_max_concurrency(),
+    }
 
 
 @app.get("/api/v1/evaluations/running")
