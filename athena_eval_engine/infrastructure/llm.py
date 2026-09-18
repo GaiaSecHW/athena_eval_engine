@@ -259,6 +259,13 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             line = resp.readline()
             if not line:
                 break  # 连接关闭
+            # ── 内容超时检查（放在所有 continue 之前，确保每行都检查）──
+            # 防止 LLM 网关持续发 keepalive/空 delta 的 chunk 导致无限循环
+            _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
+            if time.time() - _last_content_ts > _timeout:
+                _phase = "首 token" if first_token else "后续 token 断流"
+                log("LLM", f"stream content stall ({_timeout}s no content, {_phase}), aborting")
+                raise RuntimeError(f"LLM {_phase}超时（{_timeout}s 无实际内容）")
             line_str = line.decode("utf-8", errors="replace").strip()
             if not line_str:
                 continue  # SSE 事件分隔空行
@@ -304,13 +311,6 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             if fr:
                 finish_reason = fr
                 _last_content_ts = time.time()
-            # ── 内容超时检查（不管 choices 是否为空都检查）──
-            # 防止 LLM 网关持续发空 delta 的 chunk 导致无限循环
-            _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
-            if time.time() - _last_content_ts > _timeout:
-                _phase = "首 token" if first_token else "后续 token 断流"
-                log("LLM", f"stream content stall ({_timeout}s no content, {_phase}), aborting")
-                raise RuntimeError(f"LLM {_phase}超时（{_timeout}s 无实际内容）")
 
         content = "".join(content_parts)
         if not content and reasoning_parts:
