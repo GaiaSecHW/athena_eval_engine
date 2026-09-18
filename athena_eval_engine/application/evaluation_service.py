@@ -1745,11 +1745,44 @@ def run(evaluation_id: str) -> dict:
     _db_query(_finalize)
 
     # ===== Phase 8: 固化静态报告 HTML（打开时零计算）=====
+    _html_ok = False
     try:
         from ..api.routes.evaluations import render_static_report
         render_static_report(evaluation_id)
+        _html_ok = True
     except Exception as e:
         log("REPORT", f"⚠ 固化 HTML 失败（不影响评测结果）: {e}")
+
+    # ===== Phase 9: 报告 JSON 瘦身 + 清理临时文件 =====
+    # HTML 生成成功后，剥离 dashboard 不使用的大字段（candidate_findings 等），
+    # 并删除临时 _cr.json 文件。JSON 从 250MB 降到 ~5MB。
+    if _html_ok:
+        import json as _json_slim
+        try:
+            with open(_json_path, "r", encoding="utf-8") as _f:
+                _rj_data = _json_slim.loads(_f.read())
+            # dashboard 需要的 case_results 字段白名单
+            _KEEP_FIELDS = {"case_id", "expected_label", "confusion", "nogk_confusion",
+                             "description", "vulnerability_type", "source_file",
+                             "source_function", "session_id"}
+            for _mg in _rj_data.get("metric_groups", []):
+                for _cr in _mg.get("case_results", []):
+                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
+                    for _k in _strip_keys:
+                        _cr.pop(_k, None)
+            _rj_slim = _json_slim.dumps(_rj_data, ensure_ascii=False)
+            with open(_json_path, "w", encoding="utf-8") as _f:
+                _f.write(_rj_slim)
+            log("EVAL", f"报告 JSON 瘦身后: {len(_rj_slim):,} 字节")
+        except Exception as e:
+            log("EVAL", f"⚠ 报告 JSON 瘦身失败: {e}")
+
+        # 删除临时 case_results 文件
+        for _tr in task_runs:
+            _cr_file = _os.path.join(_reports_dir, f"{evaluation_id}_{_tr.task_run_id}_cr.json")
+            if _os.path.isfile(_cr_file):
+                _os.remove(_cr_file)
+        log("EVAL", f"已清理 {len(task_runs)} 个临时 _cr.json 文件")
 
     clear_eval_ctx()
     return {"status": final_status, "metrics": len(out["metric_results"]),
