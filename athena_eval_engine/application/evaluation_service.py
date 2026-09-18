@@ -1566,7 +1566,7 @@ def run(evaluation_id: str) -> dict:
         cur.execute("INSERT IGNORE INTO evaluation_population_snapshot (population_snapshot_id, calculation_run_id, "
                     "population_type, population_entity_type, task_count, estimator_version, population_ids_uri, population_ids_hash) "
                     "VALUES (%s,%s,'primary_analysis','TASK_PAIR',%s,'1.0','uri','hash')", (pop_id, cr_id, len(pair_views)))
-        # 修复 metric_result 的 metric_id CHECK 约束（加 M13/M14，删 M2/M3）
+        # 修复 metric_result 的 metric_id CHECK 约束（加 M13，删 M2/M3）
         try:
             cur.execute("ALTER TABLE metric_result DROP CHECK metric_result_metric_id_chk")
         except Exception:

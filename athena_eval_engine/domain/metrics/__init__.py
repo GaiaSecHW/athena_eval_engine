@@ -1,4 +1,4 @@
-"""Metric Engine — M1-M10（§9.2 / §9.5-9.10）。
+"""Metric Engine — M1-M13（§9.2 / §9.5-9.10）。
 
 每个 Metric.calculate(context) → (MetricResult, [StatisticalResult])。
 - M1/M4：dataset-level confusion + GT-stratified bootstrap CI
@@ -6,6 +6,8 @@
 - M5/M6：Wilson CI
 - M7：JSD median + IQR + Paired Bootstrap
 - M8-M10：ΔToken/Steps/Time median + IQR + Paired Bootstrap CI + Wilcoxon
+- M11/M12：记忆访问率/交付率（Wilson CI，同 M5/M6）
+- M13：误报率（FPR），占位由 REPORTING 阶段 _update_m13_fpr 填充
 分母=0 → 该率为 0（CALCULATED）；UNDETERMINED 不计。
 """
 from __future__ import annotations
@@ -57,7 +59,7 @@ class MetricResult:
 
 @dataclass
 class StatisticalResult:
-    metric_id: str | None  # METRIC 行=M1-M10；JOINT 行=None
+    metric_id: str | None  # METRIC 行=M1-M13；JOINT 行=None
     test_name: str
     statistic: float | None = None
     p_value: float | None = None
@@ -216,7 +218,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
                      kg_access_events=0, kg_successful_reads=0,
                      mem_read_count=0, mem_successful_reads=0,
                      kg_tool_calls=0, total_tool_calls=0, seed=42) -> dict:
-    """跑全部 10 指标 + 统计证据。返回 {metric_results, statistical_results}。
+    """跑全部 13 指标 + 统计证据。返回 {metric_results, statistical_results}。
     bootstrap 指标用线程池并行（numpy 释放 GIL）。
     confusion_pairs: 按 benchmark_item 展开的 pair 列表，用于 M1-M4 混淆矩阵。
     为 None 时回退到 pairs（任务级）。"""

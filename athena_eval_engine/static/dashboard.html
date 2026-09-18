@@ -406,7 +406,7 @@ function retryEval(eid){
 function deleteEval(eid,name){
   showConfirm({icon:'🗑️',iconBg:'rgba(248,113,113,.15)',iconColor:'var(--red)',title:'删除评测',
     desc:'删除将永久清除该评测的全部数据，不可恢复。',
-    risks:['trace 解析结果（facts、events）','指标计算结果（M1-M10、统计检验）','AI 分析报告（叙述、漏洞对比）','基线匹配数据'],
+    risks:['trace 解析结果（facts、events）','指标计算结果（M1-M13、统计检验）','AI 分析报告（叙述、漏洞对比）','基线匹配数据'],
     confirmText:'永久删除',confirmColor:'var(--red)',
     onConfirm:function(){
   F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{

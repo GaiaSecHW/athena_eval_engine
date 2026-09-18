@@ -43,7 +43,7 @@ bash port-forward.sh   # 另一终端运行
 2. **PARSING** — 并行 trace 解析（ThreadPoolExecutor，最多 4 worker）。每个 trace：parser → RawEvents，然后 4 个 resolver + AI matcher 并行运行。`retry` 路径：如 facts 已在 DB 中，跳过解析直接加载。
 3. **RESOLVING** — Facts 批量写入 MySQL（幂等，重复 key 跳过）。
 4. **PAIRING** — `TaskPairMatcherImpl` 按 `(evaluation_id, task_id)` 匹配 KG/No-KG 运行。`PairDerivedFactComputer` 计算 JSD、ΔToken、ΔSteps、ΔTime、PairTransition。
-5. **CALCULATING** — `run_all_metrics()` 计算 M1–M10，并行 bootstrap（numpy 释放 GIL）。统计检验：GT 分层 paired bootstrap（M1/M4）、paired bootstrap（M2/M3/M7/M8–M10）、Wilson CI（M5/M6）、McNemar（M2/M3 joint）、Wilcoxon（M8–M10）。
+5. **CALCULATING** — `run_all_metrics()` 计算 M1–M13，并行 bootstrap（numpy 释放 GIL）。统计检验：GT 分层 paired bootstrap（M1/M4）、paired bootstrap（M2/M3/M7/M8–M10）、Wilson CI（M5/M6/M11/M12）、McNemar（M2/M3 joint）、Wilcoxon（M8–M10）。M13 误报率为占位，由 REPORTING 阶段 `_update_m13_fpr` 用 LLM 基线匹配结果填充。
 6. **REPORTING** — `assemble()` 构建报告模型；`ai_per_case_kg_analysis()` 调用 LLM 生成逐漏洞 KG 归因分析。LLM 不可用时有规则降级。
 7. **FINALIZE** — 写入 `evaluation_report` 表，状态设为 COMPLETED。
 
@@ -53,7 +53,7 @@ bash port-forward.sh   # 另一终端运行
 
 ### 分层结构
 
-- **`domain/`** — 纯业务逻辑，无 I/O。`enums.py`（镜像 `schema.sql` CHECK 约束）、`raw_event.py`（规范事件）、`task_run.py`（TaskRun/BenchmarkItem）、`facts/`（4 种 fact）、`metrics/`（M1–M10 + `run_all_metrics`）、`statistics/engine.py`（bootstrap/McNemar/Wilson/Wilcoxon）、`diagnostics/`（规则异常检测）。
+- **`domain/`** — 纯业务逻辑，无 I/O。`enums.py`（镜像 `schema.sql` CHECK 约束）、`raw_event.py`（规范事件）、`task_run.py`（TaskRun/BenchmarkItem）、`facts/`（4 种 fact）、`metrics/`（M1–M13 + `run_all_metrics`）、`statistics/engine.py`（bootstrap/McNemar/Wilson/Wilcoxon）、`diagnostics/`（规则异常检测）。
 - **`workers/`** — Trace 解析器与 resolver。`turing_trace_parser.py`（SQLite opencode.db）、`argo_trace_parser.py`（Claude Code JSONL）、`secmate_trace_parser.py`（SecMate JSONL）、`resolvers.py`（4 个 resolver）、`ai_matcher.py`（LLM finding→benchmark 匹配）、`pairing.py`。
 - **`application/`** — 编排。`evaluation_service.py`（主 `create()`/`run()`/`get_status()`/`get_report()`）、`platform_service.py`（项目/任务发现、dev 模式 kubectl exec 读 trace）、`report_assembler.py`（报告模型 + LLM 叙述）。
 - **`infrastructure/`** — 外部集成。`database.py`（pymysql）、`llm.py`（OpenAI 兼容客户端，SSE 流式，`chat()`/`chat_json()`）、`vbench_client.py`。
@@ -66,7 +66,7 @@ bash port-forward.sh   # 另一终端运行
 - **RawEvent**: trace 解析产生的规范事件。`is_kg_interaction` flag 由 parser 设置，决定 KG 交互（resolver 不硬编码工具名）。
 - **Facts**: 每个 task run 提取 4 种 fact — OutcomeFact（是否找到漏洞）、KnowledgeInteractionFact（是否访问/交付 KG）、ToolActionFact（工具调用分布）、ResourceFact（token/步数/耗时）。
 - **PairView**: KG+No-KG pair 及 outcomes + derived deltas，metric 计算的输入。
-- **Metrics M1–M10**: ΔBA（准确率）、IR（改善率）、RR（回归率）、ΔFNR、KAR（知识访问率）、KDR（知识交付率）、JSD（行为偏移）、ΔToken、ΔSteps、ΔTime。
+- **Metrics M1–M13**: ΔBA（准确率）、IR（改善率）、RR（回归率）、ΔFNR、KAR（知识访问率）、KDR（知识交付率）、JSD（行为偏移）、ΔToken、ΔSteps、ΔTime、MAR（记忆访问率）、MDR（记忆交付率）、FPR（误报率）。
 - **Canonical Actions**: KG > FINDING > CODE > SHELL > OTHER（工具分类优先级）。
 
 ### Trace 格式

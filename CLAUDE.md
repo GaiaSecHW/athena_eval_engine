@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-Athena Eval Engine (知识图谱2.0 安全评测引擎) — evaluates whether a knowledge graph (KG) helps an AI agent find vulnerabilities. The same task is run twice (KG enabled vs No-KG control group), and 10 metrics (M1–M10) quantify the KG's impact on accuracy, behavior, and cost. The pipeline is: **Trace → Fact → Pair → Metric → Report**.
+Athena Eval Engine (知识图谱2.0 安全评测引擎) — evaluates whether a knowledge graph (KG) helps an AI agent find vulnerabilities. The same task is run twice (KG enabled vs No-KG control group), and 13 metrics (M1–M13) quantify the KG's impact on accuracy, behavior, and cost. The pipeline is: **Trace → Fact → Pair → Metric → Report**.
 
 The codebase is entirely in Python (≥3.10), uses FastAPI for the API, MySQL for persistence, and calls an OpenAI-compatible LLM endpoint for AI analysis. All comments and domain concepts are in Chinese.
 
@@ -53,7 +53,7 @@ The orchestrator runs synchronously inside a background thread (ThreadPoolExecut
 2. **PARSING** — Parallel trace parsing (ThreadPoolExecutor, up to 4 workers). Each trace: parser → RawEvents, then 4 resolvers + AI matcher run in parallel per trace. `retry` path: if facts already exist in DB, skips re-parsing and loads from DB.
 3. **RESOLVING** — Facts written to MySQL in a single batch (idempotent on duplicate keys).
 4. **PAIRING** — `TaskPairMatcherImpl` matches KG/No-KG task runs by `(evaluation_id, task_id)`. `PairDerivedFactComputer` computes JSD, ΔToken, ΔSteps, ΔTime, PairTransition.
-5. **CALCULATING** — `run_all_metrics()` computes M1–M10 with parallel bootstrap (numpy releases GIL). Statistical tests: GT-stratified paired bootstrap (M1/M4), paired bootstrap (M2/M3/M7/M8–M10), Wilson CI (M5/M6), McNemar (M2/M3 joint), Wilcoxon (M8–M10).
+5. **CALCULATING** — `run_all_metrics()` computes M1–M13 with parallel bootstrap (numpy releases GIL). Statistical tests: GT-stratified paired bootstrap (M1/M4), paired bootstrap (M2/M3/M7/M8–M10), Wilson CI (M5/M6/M11/M12), McNemar (M2/M3 joint), Wilcoxon (M8–M10). M13 FPR is a placeholder, filled by `_update_m13_fpr` in REPORTING stage using LLM baseline matching results.
 6. **REPORTING** — `assemble()` builds report model; `ai_per_case_kg_analysis()` calls LLM for per-case KG attribution analysis. Rule-based fallback if LLM unavailable.
 7. **FINALIZE** — Write report to `evaluation_report` table, set status to COMPLETED.
 
@@ -63,7 +63,7 @@ Strict whitelist of transitions (CREATED → VALIDATING → INGESTING → PARSIN
 
 ### Layered Structure
 
-- **`domain/`** — Pure business logic, no I/O. `enums.py` (mirrors `schema.sql` CHECK constraints), `raw_event.py` (canonical event), `task_run.py` (TaskRun/BenchmarkItem), `facts/` (OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact, PairDerivedFact), `metrics/` (M1–M10 + `run_all_metrics`), `statistics/engine.py` (bootstrap/McNemar/Wilson/Wilcoxon), `diagnostics/` (rule-based anomaly detection).
+- **`domain/`** — Pure business logic, no I/O. `enums.py` (mirrors `schema.sql` CHECK constraints), `raw_event.py` (canonical event), `task_run.py` (TaskRun/BenchmarkItem), `facts/` (OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact, PairDerivedFact), `metrics/` (M1–M13 + `run_all_metrics`), `statistics/engine.py` (bootstrap/McNemar/Wilson/Wilcoxon), `diagnostics/` (rule-based anomaly detection).
 - **`workers/`** — Trace parsers and resolvers. `turing_trace_parser.py` (SQLite opencode.db → RawEvent), `argo_trace_parser.py` (Claude Code JSONL → RawEvent), `resolvers.py` (4 resolvers: Outcome, Knowledge, ToolAction, Resource), `ai_matcher.py` (LLM-based finding→benchmark matching), `pairing.py` (pair matching + derived fact computation).
 - **`application/`** — Orchestration. `evaluation_service.py` (the main `create()`/`run()`/`get_status()`/`get_report()`), `platform_service.py` (project/task discovery, kubectl exec for trace files in dev), `report_assembler.py` (report model + LLM narrative).
 - **`infrastructure/`** — External integrations. `database.py` (pymysql, `connect()`, `ensure_schema()`), `llm.py` (OpenAI-compatible client with retry, `chat()`/`chat_json()`), `vbench_client.py` (benchmark baseline data).
@@ -77,7 +77,7 @@ Strict whitelist of transitions (CREATED → VALIDATING → INGESTING → PARSIN
 - **RawEvent** (§8.2): Canonical event from trace parsing. `is_kg_interaction` flag set by parser determines KG interactions (resolvers don't hardcode tool names).
 - **Facts**: 4 fact types extracted per task run — OutcomeFact (vuln found?), KnowledgeInteractionFact (KG accessed/delivered?), ToolActionFact (tool call distribution), ResourceFact (tokens/steps/duration).
 - **PairView**: KG+No-KG pair with outcomes + derived deltas. Input to metric calculations.
-- **Metrics M1–M10**: ΔBA (accuracy), IR (improvement rate), RR (regression rate), ΔFNR, KAR (knowledge access rate), KDR (knowledge delivery rate), JSD (behavior shift), ΔToken, ΔSteps, ΔTime. NA + reason_code when denominators are zero (never output 0).
+- **Metrics M1–M13**: ΔBA (accuracy), IR (improvement rate), RR (regression rate), ΔFNR, KAR (knowledge access rate), KDR (knowledge delivery rate), JSD (behavior shift), ΔToken, ΔSteps, ΔTime, MAR (memory access rate), MDR (memory delivery rate), FPR (false positive rate). NA + reason_code when denominators are zero (never output 0).
 - **Canonical Actions**: KG > FINDING > CODE > SHELL > OTHER (priority order for tool classification).
 
 ### Trace Formats
