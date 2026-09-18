@@ -810,15 +810,18 @@ def _build_report(evaluation_id: str):
         # 同步过滤 metric_groups 中的 case_results 和 per_case_kg_analysis
         # 始终用 benchmark_item 表的 case 集合过滤，确保 metric_groups 与顶层一致
         _valid_case_ids = {c["case_id"] for c in case_results}
-        _rep = r.get("report") or {}
-        for _grp in (_rep.get("metric_groups") or []):
-            _gc = _grp.get("case_results") or []
-            _grp["case_results"] = [c for c in _gc if c.get("case_id") in _valid_case_ids]
-            if len(_gc) != len(_grp["case_results"]):
-                log("REPORT", f"metric_groups[{_grp.get('task_id','')}] case_results: "
-                      f"{len(_gc)} → {len(_grp['case_results'])} 条")
-            _pcka = _grp.get("per_case_kg_analysis") or []
-            _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _valid_case_ids]
+        if not _valid_case_ids:
+            log("REPORT", f"⚠ benchmark_item 查询返回 0 行，跳过 metric_groups 过滤（保护已有数据）")
+        else:
+            _rep = r.get("report") or {}
+            for _grp in (_rep.get("metric_groups") or []):
+                _gc = _grp.get("case_results") or []
+                _grp["case_results"] = [c for c in _gc if c.get("case_id") in _valid_case_ids]
+                if len(_gc) != len(_grp["case_results"]):
+                    log("REPORT", f"metric_groups[{_grp.get('task_id','')}] case_results: "
+                          f"{len(_gc)} → {len(_grp['case_results'])} 条")
+                _pcka = _grp.get("per_case_kg_analysis") or []
+                _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _valid_case_ids]
     es._db_query(_do)
     return r
 
