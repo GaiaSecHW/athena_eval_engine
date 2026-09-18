@@ -186,9 +186,12 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
     conn = None
     first_token = True
     try:
-        # ── Phase 1: 发请求，429 限流有限重试，拿到 200 响应头 ──
+        # ── Phase 1: 发请求，429 限流 / 500 服务端错误有限重试，拿到 200 响应头 ──
         _req_ts = time.time()
-        for _attempt in range(MAX_RATE_LIMIT_RETRIES):
+        _429_count = 0
+        _500_count = 0
+        MAX_500_RETRIES = 50
+        while True:
             conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
             try:
                 conn.request("POST", path, body=body, headers=headers)
@@ -200,6 +203,11 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 raise RuntimeError(f"LLM 首 token 超时（{first_token_timeout}s）") from e
             status = resp.status
             if status == 429:
+                if _429_count >= MAX_RATE_LIMIT_RETRIES:
+                    conn.close()
+                    conn = None
+                    raise RuntimeError(f"LLM 429 限流重试耗尽（{MAX_RATE_LIMIT_RETRIES} 次）")
+                _429_count += 1
                 retry_after = resp.getheader("Retry-After")
                 delay = 3
                 if retry_after:
@@ -209,6 +217,22 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 conn.close()
                 conn = None
                 time.sleep(delay)
+                continue
+            if status == 500:
+                if _500_count >= MAX_500_RETRIES:
+                    data = resp.read().decode("utf-8")
+                    err_preview = data[:500]
+                    log("LLM", f"HTTP 500 重试耗尽（{MAX_500_RETRIES} 次）: {err_preview}")
+                    conn.close()
+                    conn = None
+                    raise RuntimeError(f"LLM HTTP 500 重试耗尽（{MAX_500_RETRIES} 次）: {err_preview}")
+                _500_count += 1
+                data = resp.read().decode("utf-8")
+                err_preview = data[:200]
+                log("LLM", f"HTTP 500 from {base}, retry {_500_count}/{MAX_500_RETRIES} in 5s: {err_preview}")
+                conn.close()
+                conn = None
+                time.sleep(5)
                 continue
             if status != 200:
                 data = resp.read().decode("utf-8")
@@ -220,8 +244,6 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=16000,
                 conn = None
                 raise RuntimeError(f"LLM HTTP {status}: {err_preview}")
             break  # 200，进入 SSE 读取
-        else:
-            raise RuntimeError(f"LLM 429 限流重试耗尽（{MAX_RATE_LIMIT_RETRIES} 次）")
 
         # ── Phase 2: 逐行读 SSE 流 ──
         content_parts = []
