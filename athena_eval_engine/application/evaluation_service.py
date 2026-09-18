@@ -542,8 +542,9 @@ def run(evaluation_id: str) -> dict:
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
     # huks-蓝区迁移：非漏洞基线从外挂 CSV 获取（漏洞从 API 获取，非漏洞从 CSV 获取）
-    _vc_proj_name = _ingest_manifest.get("vc_source_project_name") or ""
-    if _vc_proj_name == "huks-蓝区迁移":
+    _proj_name = (_ingest_manifest.get("vc_source_project_name")
+                  or _ingest_manifest.get("vbench_project_name") or "")
+    if _proj_name == "huks-蓝区迁移":
         csv_path = os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
         if os.path.isfile(csv_path):
             from .fpr_analysis import load_baseline
@@ -1757,6 +1758,64 @@ def run(evaluation_id: str) -> dict:
     else:
         log("EVAL", "FPR 分析无结果（告警中心无数据），跳过误报率 tab")
         set_progress(evaluation_id, "生成报告中...")
+
+    # ===== 更新 M13 指标：用 LLM 匹配 FPR 替换 sink-point 匹配 FPR =====
+    # 公式：FPR = FP / (FP + TP)，以基线 label 为准
+    def _update_m13_fpr(m13, fpr_kg_result, fpr_nogk_result, label=""):
+        """用 run_fpr_analysis 的结果更新 M13 指标。FPR 分析失败则标记 NA + 报错。"""
+        if not m13:
+            return
+        if not fpr_kg_result and not fpr_nogk_result:
+            m13["estimate"] = None
+            m13["calculation_status"] = "NA"
+            m13["reason_code"] = "FPR_ANALYSIS_FAILED"
+            m13["ci_lower"] = None
+            m13["ci_upper"] = None
+            m = m13.get("method", {})
+            m["formula"] = "FP / (FP + TP)"
+            log("EVAL", f"⚠ M13 ({label}) FPR 分析失败，标记 NA")
+            return
+        fpr_kg = fpr_kg_result["fpr"] if fpr_kg_result else 0.0
+        fpr_nogk = fpr_nogk_result["fpr"] if fpr_nogk_result else 0.0
+        tp_kg = fpr_kg_result["tp"] if fpr_kg_result else 0
+        fp_kg = fpr_kg_result["fp"] if fpr_kg_result else 0
+        tp_n = fpr_nogk_result["tp"] if fpr_nogk_result else 0
+        fp_n = fpr_nogk_result["fp"] if fpr_nogk_result else 0
+        n_kg = fpr_kg_result["total_findings"] if fpr_kg_result else 0
+        m13["estimate"] = fpr_kg - fpr_nogk
+        m13["calculation_status"] = "CALCULATED"
+        m13["reason_code"] = None
+        m = m13.get("method", {})
+        m["fpr_kg"] = fpr_kg
+        m["fpr_nogk"] = fpr_nogk
+        m["tp_kg"] = tp_kg
+        m["fp_kg"] = fp_kg
+        m["fn_kg"] = 0
+        m["tn_kg"] = 0
+        m["tp_n"] = tp_n
+        m["fp_n"] = fp_n
+        m["fn_n"] = 0
+        m["tn_n"] = 0
+        m["formula"] = "FP / (FP + TP)"
+        m["uncertainty"] = None
+        m13["n"] = n_kg
+        m13["ci_lower"] = None
+        m13["ci_upper"] = None
+
+    # 顶层 M13：用挖掘 FPR（告警中心，超集）
+    _update_m13_fpr(report.p0.get("M13"), _ac_fpr_kg, _ac_fpr_nogk, label="顶层")
+    # 分组 M13：挖掘用告警中心 FPR，验证用漏洞中心 FPR
+    for _mg in _metric_groups:
+        _cat = _mg.get("category", "")
+        if _cat == "mining":
+            _update_m13_fpr(_mg.get("p0", {}).get("M13"), _ac_fpr_kg, _ac_fpr_nogk, label=f"挖掘({_mg.get('task_id','')})")
+        elif _cat == "verify":
+            _update_m13_fpr(_mg.get("p0", {}).get("M13"), _e2e_fpr_kg, _e2e_fpr_nogk, label=f"验证({_mg.get('task_id','')})")
+    if _ac_fpr_kg or _e2e_fpr_kg:
+        _parts = []
+        if _ac_fpr_kg: _parts.append(f"mining KG={_ac_fpr_kg['fpr']:.1%}")
+        if _e2e_fpr_kg: _parts.append(f"verify KG={_e2e_fpr_kg['fpr']:.1%}")
+        log("EVAL", f"M13 已更新为 LLM 匹配 FPR: {', '.join(_parts)}")
 
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
