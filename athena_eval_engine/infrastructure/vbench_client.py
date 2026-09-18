@@ -122,8 +122,45 @@ def _extract_source_from_traces(cases: list) -> None:
         c["source_line"] = source_line
 
 
+def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
+    """从 benchmark.zip 提取 false_positives.json，转为 NON_VULNERABLE 基线 case。
+
+    支持两种格式：
+    1. 漏洞中心全量格式 — case 含 id/title/subject 等字段，复用 _case_to_benchmark 归一
+    2. 简版格式 — ``{"false_positives": [{"description": "...", "reason": "..."}]}``
+    """
+    fp_files = [n for n in names if n.endswith("false_positives.json")]
+    if not fp_files:
+        return []
+    from .vuln_center_client import _case_to_benchmark
+    data = json.loads(zf.read(fp_files[0]))
+    fp_cases = data.get("false_positives", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+    result = []
+    for i, c in enumerate(fp_cases):
+        if isinstance(c, dict) and c.get("id"):
+            # 漏洞中心全量格式
+            result.append(_case_to_benchmark(c, "NON_VULNERABLE"))
+        else:
+            # 简版格式：只有 description + reason
+            import hashlib as _hl
+            desc = c.get("description", "") if isinstance(c, dict) else str(c)
+            reason = c.get("reason", "") if isinstance(c, dict) else ""
+            cid = c.get("case_id") or c.get("id") or f"fp-{_hl.md5(desc.encode()).hexdigest()[:12]}"
+            result.append({
+                "case_id": cid,
+                "vulnerability_type": reason or "",
+                "description": desc,
+                "target_finding_id": "",
+                "expected_label": "NON_VULNERABLE",
+                "source_file": "",
+                "source_function": "",
+                "source_line": "",
+            })
+    return result
+
+
 def _read_benchmark_zip(zip_path: str) -> dict:
-    """从 benchmark.zip 提取 benchmark.json + ground_truths（纯本地，无 kubectl）。"""
+    """从 benchmark.zip 提取 benchmark.json + ground_truths + false_positives.json。"""
     with zipfile.ZipFile(zip_path) as zf:
         names = zf.namelist()
         bn = [n for n in names if n.endswith("benchmark.json")]
@@ -135,6 +172,9 @@ def _read_benchmark_zip(zip_path: str) -> dict:
             gt = [n for n in names if n.endswith("ground_truths/" + c["case_id"] + ".json")]
             c["findings"] = json.loads(zf.read(gt[0])).get("findings", []) if gt else []
         _extract_source_from_traces(cases)
+        # 非漏洞基线（false_positives.json）— 与漏洞 case 同构，expected_label=NON_VULNERABLE
+        fp_cases = _read_false_positives(zf, names)
+        cases.extend(fp_cases)
         return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
                 "schema_version": benchmark.get("schema_version"), "cases": cases}
 
@@ -166,6 +206,9 @@ def get_benchmark(benchmark_set_id: str) -> dict:
         "for c in cases:\n"
         "  gt=[n for n in names if n.endswith('ground_truths/'+c['case_id']+'.json')]\n"
         "  c['findings']=json.loads(zf.read(gt[0])).get('findings',[]) if gt else []\n"
+        "fp=[n for n in names if n.endswith('false_positives.json')]\n"
+        "if fp:\n"
+        "  out['false_positives']=json.loads(zf.read(fp[0])).get('false_positives',[])\n"
         "print(json.dumps(out,ensure_ascii=False))\n"
     )
     r = subprocess.run(
@@ -177,5 +220,26 @@ def get_benchmark(benchmark_set_id: str) -> dict:
     benchmark = bm.get("benchmark", {})
     cases = benchmark.get("cases", [])
     _extract_source_from_traces(cases)
+    # 非漏洞基线（false_positives.json）
+    raw_fp = bm.get("false_positives") or []
+    from .vuln_center_client import _case_to_benchmark
+    import hashlib as _hl
+    for i, c in enumerate(raw_fp):
+        if isinstance(c, dict) and c.get("id"):
+            cases.append(_case_to_benchmark(c, "NON_VULNERABLE"))
+        else:
+            desc = c.get("description", "") if isinstance(c, dict) else str(c)
+            reason = c.get("reason", "") if isinstance(c, dict) else ""
+            cid = c.get("case_id") or c.get("id") or f"fp-{_hl.md5(desc.encode()).hexdigest()[:12]}"
+            cases.append({
+                "case_id": cid,
+                "vulnerability_type": reason or "",
+                "description": desc,
+                "target_finding_id": "",
+                "expected_label": "NON_VULNERABLE",
+                "source_file": "",
+                "source_function": "",
+                "source_line": "",
+            })
     return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
             "schema_version": benchmark.get("schema_version"), "cases": cases}

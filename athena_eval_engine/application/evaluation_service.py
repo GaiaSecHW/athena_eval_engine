@@ -478,16 +478,13 @@ def run(evaluation_id: str) -> dict:
     try:
         if _bm_source == "vuln_center":
             from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-            _vc_proj_name = _ingest_manifest.get("vc_source_project_name") or ""
-            _skip_non_vuln = (_vc_proj_name == "huks-蓝区迁移")
-            log("INGEST", f"漏洞中心取基线: project={_ingest_bsid} task={_vc_task_id}"
-                f"{'（跳过非漏洞，从外挂CSV获取）' if _skip_non_vuln else ''}")
-            bm = get_vuln_center_benchmark(_ingest_bsid, _vc_task_id, fetch_non_vuln=not _skip_non_vuln)
+            log("INGEST", f"漏洞中心取基线: project={_ingest_bsid} task={_vc_task_id}")
+            bm = get_vuln_center_benchmark(_ingest_bsid, _vc_task_id)
             n_cases = len(bm.get("cases") or [])
             log("INGEST", f"漏洞中心返回 {n_cases} 条 case")
             if n_cases == 0 and _vc_task_id:
                 log("INGEST", f"task={_vc_task_id} 不是漏洞中心 source_task，不带 task 过滤重试")
-                bm = get_vuln_center_benchmark(_ingest_bsid, None, fetch_non_vuln=not _skip_non_vuln)
+                bm = get_vuln_center_benchmark(_ingest_bsid, None)
                 n_cases = len(bm.get("cases") or [])
                 log("INGEST", f"不带 task 过滤返回 {n_cases} 条 case")
             _total = len(bm.get("cases") or [])
@@ -512,11 +509,13 @@ def run(evaluation_id: str) -> dict:
             from ..infrastructure.vbench_client import get_benchmark
             log("INGEST", f"V-Bench 取基线: set_id={_ingest_bsid}")
             bm = get_benchmark(_ingest_bsid)
-            n_cases = len(bm.get("cases") or [])
-            log("INGEST", f"V-Bench 返回 {n_cases} 条 case")
-            _total = n_cases
+            _all_cases = bm.get("cases") or []
+            _vuln_n = sum(1 for c in _all_cases if (c.get("expected_label") or "VULNERABLE") == "VULNERABLE")
+            _nonvuln_n = sum(1 for c in _all_cases if c.get("expected_label") == "NON_VULNERABLE")
+            log("INGEST", f"V-Bench 返回 {len(_all_cases)} 条 case（漏洞={_vuln_n} 非漏洞={_nonvuln_n}）")
+            _total = len(_all_cases)
             _done = 0
-            for c in (bm.get("cases") or []):
+            for c in _all_cases:
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
                     findings = c.get("findings") or []
@@ -525,6 +524,7 @@ def run(evaluation_id: str) -> dict:
                         "description": desc,
                         "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
                         "target_finding_id": c.get("target_finding_id") or "",
+                        "expected_label": c.get("expected_label") or "VULNERABLE",
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
                         "source_line": c.get("source_line") or "",
@@ -540,32 +540,6 @@ def run(evaluation_id: str) -> dict:
     if not case_details:
         raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
-
-    # huks-蓝区迁移：非漏洞基线从外挂 CSV 获取（漏洞从 API 获取，非漏洞从 CSV 获取）
-    _proj_name = (_ingest_manifest.get("vc_source_project_name")
-                  or _ingest_manifest.get("vbench_project_name") or "")
-    if _proj_name == "huks-蓝区迁移":
-        csv_path = os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
-        if os.path.isfile(csv_path):
-            from .fpr_analysis import load_baseline
-            bl_rows = load_baseline(csv_path)
-            non_vuln_rows = [r for r in bl_rows if r.get("label") == "NON_VULNERABLE"]
-            for r in non_vuln_rows:
-                cid = r.get("case_id", "")
-                if cid and cid not in case_details:
-                    case_details[cid] = {
-                        "description": r.get("title", "") or r.get("content", ""),
-                        "vulnerability_type": r.get("category", ""),
-                        "target_finding_id": "",
-                        "expected_label": "NON_VULNERABLE",
-                        "source_file": "",
-                        "source_function": "",
-                        "source_line": "",
-                    }
-            if non_vuln_rows:
-                log("INGEST", f"huks-蓝区迁移: 从 baseline.csv 补充 {len(non_vuln_rows)} 条非漏洞基线")
-        else:
-            log("INGEST", f"⚠ huks-蓝区迁移: baseline.csv 不存在 ({csv_path})，无非漏洞基线")
 
     # 并行补提取缺失的 source 信息（每个 case 可能调一次 LLM）
     _need_fill = [cd for cd in case_details.values()
@@ -671,7 +645,7 @@ def run(evaluation_id: str) -> dict:
                 conn.close()
             _inserted_ids.add(bid)
 
-    # 插入外挂补充的非漏洞基线（不在 entries item_ids 中的）
+    # 插入非漏洞基线（来自 false_positives.json，不在 entries item_ids 中的）
     _supplemented = [cid for cid, cd in case_details.items()
                      if cd.get("expected_label") == "NON_VULNERABLE" and cid not in _inserted_ids]
     if _supplemented:
@@ -684,7 +658,7 @@ def run(evaluation_id: str) -> dict:
                                                 _task_id, "NON_VULNERABLE", "", cd)
             finally:
                 conn.close()
-        log("INGEST", f"插入 {len(_supplemented)} 条外挂非漏洞基线到 DB")
+        log("INGEST", f"插入 {len(_supplemented)} 条非漏洞基线到 DB（来自 false_positives.json）")
 
     if _alert_center_data:
         _ac_counts = _alert_center_data.get("counts", {})
