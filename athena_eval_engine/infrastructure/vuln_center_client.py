@@ -304,15 +304,20 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
     }
 
 
-def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None) -> dict:
+def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None,
+                              fetch_non_vuln: bool = True) -> dict:
     """返回与 ``vbench_client.get_benchmark`` 同构的基线结构。
 
     拉取两类人工确认 case：
     - ``confirmation_status=vulnerable`` → expected_label=VULNERABLE
     - ``confirmation_status=not_vulnerable`` → expected_label=NON_VULNERABLE
+
+    ``fetch_non_vuln=False`` 时跳过非漏洞 API 调用（huks-蓝区迁移等
+    非漏洞数据从外挂 CSV 获取的场景）。
     """
     vuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="vulnerable")
-    nonvuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="not_vulnerable")
     cases = [_case_to_benchmark(c, "VULNERABLE") for c in vuln_cases]
-    cases += [_case_to_benchmark(c, "NON_VULNERABLE") for c in nonvuln_cases]
+    if fetch_non_vuln:
+        nonvuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="not_vulnerable")
+        cases += [_case_to_benchmark(c, "NON_VULNERABLE") for c in nonvuln_cases]
     return {"benchmark_id": project_id, "name": None, "cases": cases}

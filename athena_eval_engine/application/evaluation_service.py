@@ -478,13 +478,16 @@ def run(evaluation_id: str) -> dict:
     try:
         if _bm_source == "vuln_center":
             from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
-            log("INGEST", f"漏洞中心取基线: project={_ingest_bsid} task={_vc_task_id}")
-            bm = get_vuln_center_benchmark(_ingest_bsid, _vc_task_id)
+            _vc_proj_name = _ingest_manifest.get("vc_source_project_name") or ""
+            _skip_non_vuln = (_vc_proj_name == "huks-蓝区迁移")
+            log("INGEST", f"漏洞中心取基线: project={_ingest_bsid} task={_vc_task_id}"
+                f"{'（跳过非漏洞，从外挂CSV获取）' if _skip_non_vuln else ''}")
+            bm = get_vuln_center_benchmark(_ingest_bsid, _vc_task_id, fetch_non_vuln=not _skip_non_vuln)
             n_cases = len(bm.get("cases") or [])
             log("INGEST", f"漏洞中心返回 {n_cases} 条 case")
             if n_cases == 0 and _vc_task_id:
                 log("INGEST", f"task={_vc_task_id} 不是漏洞中心 source_task，不带 task 过滤重试")
-                bm = get_vuln_center_benchmark(_ingest_bsid, None)
+                bm = get_vuln_center_benchmark(_ingest_bsid, None, fetch_non_vuln=not _skip_non_vuln)
                 n_cases = len(bm.get("cases") or [])
                 log("INGEST", f"不带 task 过滤返回 {n_cases} 条 case")
             _total = len(bm.get("cases") or [])
@@ -538,10 +541,9 @@ def run(evaluation_id: str) -> dict:
         raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
-    # 外挂补充非漏洞基线（huks-蓝区迁移等基线未生成非漏洞数据的场景）
+    # huks-蓝区迁移：非漏洞基线从外挂 CSV 获取（漏洞从 API 获取，非漏洞从 CSV 获取）
     _vc_proj_name = _ingest_manifest.get("vc_source_project_name") or ""
-    _non_vuln_count = sum(1 for cd in case_details.values() if cd.get("expected_label") == "NON_VULNERABLE")
-    if _vc_proj_name == "huks-蓝区迁移" and _non_vuln_count == 0:
+    if _vc_proj_name == "huks-蓝区迁移":
         csv_path = os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
         if os.path.isfile(csv_path):
             from .fpr_analysis import load_baseline
@@ -560,7 +562,9 @@ def run(evaluation_id: str) -> dict:
                         "source_line": "",
                     }
             if non_vuln_rows:
-                log("INGEST", f"从 baseline.csv 补充 {len(non_vuln_rows)} 条非漏洞基线")
+                log("INGEST", f"huks-蓝区迁移: 从 baseline.csv 补充 {len(non_vuln_rows)} 条非漏洞基线")
+        else:
+            log("INGEST", f"⚠ huks-蓝区迁移: baseline.csv 不存在 ({csv_path})，无非漏洞基线")
 
     # 并行补提取缺失的 source 信息（每个 case 可能调一次 LLM）
     _need_fill = [cd for cd in case_details.values()
