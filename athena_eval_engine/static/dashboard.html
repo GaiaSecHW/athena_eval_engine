@@ -243,13 +243,14 @@ function renderEvList(){
   let html=pageItems.length?pageItems.map(function(e){
     var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","STATISTICAL_ANALYSIS":"统计分析","DIAGNOSING":"诊断中","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
-    var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
+    var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
     // REPORTING 时通过 progress 文本区分"知识与记忆介入分析"和"生成报告"
     var phaseLabel=_phaseLabels[e.status]||e.status||'-';
     if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
     var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
+      (!isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--amber)" onclick="cancelEval(\''+e.evaluation_id+'\')">取消</button>':'')+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
       '</span>':'';
     return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="Router.navigate(\'/evaluations/'+e.evaluation_id+'\')">'+
@@ -322,10 +323,11 @@ async function selEv(id){
       });
       stepsHtml+='</div>';
       // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
-      if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button></div>';
+      if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button> <button class="btn" id="cancel-btn" style="font-size:14px;padding:8px 20px;background:var(--amber)">取消任务</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
       $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
+      var cb=$("cancel-btn");if(cb)cb.onclick=function(){cancelEval(id);};
       let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
         try{const st=await jget(`/api/v1/evaluations/${id}`);
@@ -415,6 +417,21 @@ function deleteEval(eid,name){
       alert('删除失败: '+JSON.stringify(d));
     }
   }).catch(e=>alert('删除失败: '+e));
+    }
+  });
+}
+function cancelEval(eid){
+  showConfirm({icon:'⚠️',iconBg:'rgba(245,158,11,.15)',iconColor:'var(--amber)',title:'取消评测',
+    desc:'取消后评测将停止运行，状态设为已取消。此操作不可撤销。',
+    confirmText:'确认取消',confirmColor:'var(--amber)',
+    onConfirm:function(){
+      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='CANCELLED'){
+          renderEvals();
+        }else{
+          alert('取消失败: '+JSON.stringify(d));
+        }
+      }).catch(function(e){alert('取消失败: '+e);});
     }
   });
 }

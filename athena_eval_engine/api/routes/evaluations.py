@@ -326,6 +326,7 @@ def _run_bg_resume(evaluation_id: str):
         es.run(evaluation_id)
     except es.TaskCancelledError:
         log("EVAL", f"{evaluation_id} 续跑被取消（被 force retry 替换）")
+        _mark_cancelled_if_running(evaluation_id)
     except Exception as e:
         import traceback
         traceback.print_exc()
@@ -407,6 +408,7 @@ def create_evaluation(req: CreateRequest):
                 es.run(req.evaluation_id)
             except es.TaskCancelledError:
                 log("EVAL", f"{req.evaluation_id} 被取消（force retry 替换）")
+                _mark_cancelled_if_running(req.evaluation_id)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -575,6 +577,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 es.run(evaluation_id)
             except es.TaskCancelledError:
                 log("EVAL", f"{evaluation_id} retry 被取消（又被 force retry 替换）")
+                _mark_cancelled_if_running(evaluation_id)
             except Exception as e:
                 import traceback
                 traceback.print_exc()
@@ -588,6 +591,83 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         import traceback as _tb
         _tb.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
+
+
+def _mark_cancelled_if_running(evaluation_id: str):
+    """TaskCancelledError 后，如果状态仍是运行中阶段（被线程覆盖），设为 CANCELLED。
+
+    条件 UPDATE：只覆盖运行中阶段状态，不触碰 CREATED/RUNNING（force retry 设的）
+    或已终态（CANCELLED/COMPLETED/FAILED）。
+    """
+    from ...infrastructure.database import connect
+    _RUNNING_PHASES = ('VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING', 'RESOLVING',
+                       'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS', 'DIAGNOSING',
+                       'REPORTING', 'FINALIZING')
+    try:
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            placeholders = ','.join(['%s'] * len(_RUNNING_PHASES))
+            cur.execute(
+                f"UPDATE evaluation SET evaluation_status='CANCELLED', finished_at=NOW(3) "
+                f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
+                (evaluation_id, *_RUNNING_PHASES))
+            if cur.rowcount > 0:
+                log("CANCEL", f"{evaluation_id} 线程退出后状态恢复为 CANCELLED")
+        finally:
+            conn.close()
+    except Exception as e:
+        log("CANCEL", f"{evaluation_id} 设 CANCELLED 失败: {e}")
+
+
+@app.post("/api/v1/evaluations/{evaluation_id}/cancel")
+def cancel_evaluation(evaluation_id: str):
+    """取消运行中的评测任务。
+
+    协作式取消：设置 cancel_requested=1（线程在下一个阶段边界退出），
+    同时立即将状态设为 CANCELLED（API/前端立即可见）。
+
+    如果线程正在长 LLM 调用中，需等调用返回后到下一个 _check_cancel 才真正退出。
+    线程退出后 _mark_cancelled_if_running 会修复可能被覆盖的状态。
+    """
+    from ...infrastructure.database import connect
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
+        status = row[0]
+        if status in _TERMINAL_EVALUATION_STATUSES:
+            raise HTTPException(status_code=409,
+                               detail=f"evaluation {evaluation_id} already terminal (status={status})")
+        # 1. 设 cancel_requested=1（协作取消信号，线程在下一个 _check_cancel 退出）
+        es.set_cancel(evaluation_id)
+        # 2. 立即设状态为 CANCELLED（API/前端可见，防止 watcher 误判僵死）
+        cur.execute(
+            "UPDATE evaluation SET evaluation_status='CANCELLED', finished_at=NOW(3), "
+            "error_message='用户取消' WHERE evaluation_id=%s",
+            (evaluation_id,))
+        log("CANCEL", f"{evaluation_id} 已取消 (was {status})")
+    finally:
+        conn.close()
+
+    # 3. 清理内存中的任务跟踪
+    with _running_lock:
+        _running_futures.pop(evaluation_id, None)
+        _pausing_eids.discard(evaluation_id)
+        try:
+            _paused_evals.remove(evaluation_id)
+        except ValueError:
+            pass
+        for i in range(len(_pending_evals)):
+            if _pending_evals[i][0] == evaluation_id:
+                del _pending_evals[i]
+                break
+    _try_dispatch()
+
+    return {"evaluation_id": evaluation_id, "status": "CANCELLED"}
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}")
