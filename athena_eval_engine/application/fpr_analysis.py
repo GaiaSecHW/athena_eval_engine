@@ -446,19 +446,14 @@ def run_fpr_analysis(project_id: str, task_id: str,
         return None
 
     # 从 case_details 构建基线行（与 benchmark_item 表同源）
+    # vulnerability_type 已由 vbench_client 从 description 第一行提取（去掉 # 前缀）
     baseline_rows = []
     for cid, cd in case_details.items():
         _desc = cd.get("description", "")
         _vuln_type = cd.get("vulnerability_type", "")
-        # false_positives.json 的 NON_VULNERABLE 基线：title 取 description 第一行
-        # 其他基线：title 取 vulnerability_type
-        if cd.get("expected_label") == "NON_VULNERABLE" and _desc:
-            _title = _desc.split("\n")[0].strip() or _vuln_type
-        else:
-            _title = _vuln_type
         baseline_rows.append({
             "case_id": cid,
-            "title": _title,
+            "title": _vuln_type,
             "content": _desc,
             "label": cd.get("expected_label", "VULNERABLE"),
             "category": _vuln_type,

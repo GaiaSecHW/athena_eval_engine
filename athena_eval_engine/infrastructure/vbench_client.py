@@ -146,13 +146,15 @@ def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
             # 漏洞中心全量格式
             result.append(_case_to_benchmark(c, "NON_VULNERABLE"))
         else:
-            # 简版格式：只有 description + reason
+            # 简版格式：description + reason（reason 是研判状态，不是漏洞类型）
             desc = c.get("description", "") if isinstance(c, dict) else str(c)
             reason = c.get("reason", "") if isinstance(c, dict) else ""
             cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
+            # title 取 description 第一行（Markdown 标题），去掉 # 前缀
+            _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
             result.append({
                 "case_id": cid,
-                "vulnerability_type": reason or "",
+                "vulnerability_type": _title or reason or "",
                 "description": desc,
                 "target_finding_id": "",
                 "expected_label": "NON_VULNERABLE",
@@ -241,9 +243,10 @@ def get_benchmark(benchmark_set_id: str) -> dict:
             desc = c.get("description", "") if isinstance(c, dict) else str(c)
             reason = c.get("reason", "") if isinstance(c, dict) else ""
             cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
+            _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
             cases.append({
                 "case_id": cid,
-                "vulnerability_type": reason or "",
+                "vulnerability_type": _title or reason or "",
                 "description": desc,
                 "target_finding_id": "",
                 "expected_label": "NON_VULNERABLE",
