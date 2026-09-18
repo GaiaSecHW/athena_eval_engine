@@ -395,7 +395,7 @@ def _compress_session_actions(session_id: str, actions: list[dict], llm_module) 
         _session_compress_cache[session_id] = _fallback
         return _fallback
     except Exception as e:
-        log("SINK_MATCH", f"session {session_id[-8:]} 压缩失败: {e}")
+        log("SINK_MATCH", f"session {session_id} 压缩失败: {e}")
         _fallback = {"session_id": session_id, "summary": f"压缩失败（{len(actions)} 条行为）", "tool_count": len(actions)}
         _session_compress_cache[session_id] = _fallback
         return _fallback
@@ -416,14 +416,9 @@ def _build_action_lines(chain_actions: list[dict], llm_module,
     def _session_header(sid: str) -> str:
         """构建 session 头部行，标注 sink/finding。
 
-        Dataflow session ID 含 '/'，取最后一段（d01-Func-vuln-judge-...）；
-        UUID 类 session ID 取最后 8 位。
+        session ID = 文件名（去扩展），不含父路径。
         """
-        # Dataflow: dvs_xxx/d01-Func-vuln-judge-param-00 → 取 '/' 后部分
-        if "/" in sid:
-            display = sid.rsplit("/", 1)[-1]
-        else:
-            display = sid[-8:] if len(sid) > 8 else sid
+        display = sid.rsplit("/", 1)[-1]
         meta = _chain_meta.get(sid)
         if not meta:
             return f"--- Session: {display} ---"
@@ -625,13 +620,23 @@ def analyze_chain_llm(chain_actions: list[dict], chain_findings: list[dict],
         ki = result.get("knowledge_intervention") if isinstance(result, dict) else None
         if ki is not None and not isinstance(ki, dict):
             ki = None
+        # 提取 matched_finding_idx（LLM 在有 finding 时返回，用于匹配链上 finding 与基线漏洞）
+        matched_finding_idx = -1
+        if has_finding and isinstance(result, dict):
+            _mfi = result.get("matched_finding_idx", -1)
+            try:
+                matched_finding_idx = int(_mfi)
+            except (ValueError, TypeError):
+                matched_finding_idx = -1
         return {"is_mining": is_mining, "reason": reason,
                 "no_finding_reason": no_finding_reason,
-                "knowledge_intervention": ki}
+                "knowledge_intervention": ki,
+                "matched_finding_idx": matched_finding_idx}
     except Exception as e:
         log("SINK_MATCH", f"LLM 链分析失败: {e}")
         return {"is_mining": False, "reason": f"LLM 分析失败: {e}",
-                "no_finding_reason": "", "knowledge_intervention": None}
+                "no_finding_reason": "", "knowledge_intervention": None,
+                "matched_finding_idx": -1}
 
 
 def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
@@ -781,6 +786,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 _chain_order = [e["session_id"] for e in _sch]
                 chain_actions = collect_chain_actions(chain, events, parser, _chain_order)
                 chain_finds = collect_chain_findings(chain, active_findings)
+                # 回退：findings 在全局聚合 session（如 dvs-intake-result）时按 session_id 找不到
+                if not chain_finds and active_findings:
+                    chain_finds = list(active_findings)
                 chain_kis = collect_chain_knowledge_interactions(chain, events, _chain_order)
                 try:
                     fut = pool.submit(analyze_chain_llm, chain_actions, chain_finds,
@@ -870,6 +878,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
         # 确定链和 finding（先收集 finding，用于构建 session_chain）
         _chain_sessions = mining_chain or (sr["chains"][0] if sr["chains"] else set())
         chain_findings = collect_chain_findings(_chain_sessions, active_findings) if _chain_sessions else []
+        # 回退：findings 在全局聚合 session（如 dvs-intake-result）时按 session_id 找不到
+        if not chain_findings and active_findings:
+            chain_findings = list(active_findings)
         _finding_sessions = [f.get("session_id", "") for f in chain_findings if f.get("session_id")]
 
         # 构建 session 链顺序（按调用关系排序），用于按链序组织行为数据
