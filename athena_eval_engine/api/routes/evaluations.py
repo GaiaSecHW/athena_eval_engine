@@ -200,76 +200,9 @@ def resume_stuck_evaluations():
             conn.close()
     except Exception as e:
         log("STARTUP", f"扫描卡住评测失败（DB 可能未就绪）: {e}")
-    # 启动运行时看门狗（每 5 分钟检查一次）
-    _start_watchdog()
 
 
-# ── 运行时看门狗 ──
-_WATCHDOG_INTERVAL = 300      # 检查间隔：5 分钟
-_WATCHDOG_STUCK_THRESHOLD = 7200  # 卡住阈值：2 小时
-_watchdog_started = False
-
-def _start_watchdog():
-    """启动看门狗线程（只启动一次）。"""
-    global _watchdog_started
-    if _watchdog_started:
-        return
-    _watchdog_started = True
-    t = threading.Thread(target=_watchdog_loop, name="eval-watchdog", daemon=True)
-    t.start()
-    log("WATCHDOG", f"看门狗已启动（间隔 {_WATCHDOG_INTERVAL}s，卡住阈值 {_WATCHDOG_STUCK_THRESHOLD}s）")
-
-def _watchdog_loop():
-    """周期检查：
-    1. RUNNING 超过 2 小时的评测 → 标记 FAILED（线程可能已死或卡死）
-    2. CREATED + 有 snapshot 但未被线程池捡到的评测 → 续跑
-    """
-    import time as _time
-    while True:
-        _time.sleep(_WATCHDOG_INTERVAL)
-        try:
-            _watchdog_check()
-        except Exception as e:
-            log("WATCHDOG", f"检查失败: {e}")
-
-def _watchdog_check():
-    from ...infrastructure.database import connect
-    stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                    'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                    'DIAGNOSING', 'REPORTING', 'FINALIZING')
-    placeholders = ','.join(['%s'] * len(stuck_states))
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
-        # 1. RUNNING 超过阈值的评测 → 标记 FAILED
-        cur.execute(
-            f"SELECT evaluation_id, evaluation_status, started_at FROM evaluation "
-            f"WHERE evaluation_status IN ({placeholders}) "
-            f"AND started_at IS NOT NULL "
-            f"AND TIMESTAMPDIFF(SECOND, started_at, NOW(3)) > %s",
-            (*stuck_states, _WATCHDOG_STUCK_THRESHOLD))
-        stuck = cur.fetchall()
-        for eid, status, started_at in stuck:
-            log("WATCHDOG", f"{eid} (status={status}, started={started_at}) 运行超过 {_WATCHDOG_STUCK_THRESHOLD}s → 标记 FAILED")
-            cur.execute("UPDATE evaluation SET evaluation_status='FAILED', "
-                        "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
-                        (f"[WATCHDOG] 运行超过 {_WATCHDOG_STUCK_THRESHOLD}s 未完成，标记失败（原状态: {status}）", eid))
-        # 2. CREATED + 有 snapshot 但不在 _running_futures 中的评测 → 续跑
-        cur.execute(
-            "SELECT e.evaluation_id FROM evaluation e "
-            "INNER JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
-            "WHERE e.evaluation_status='CREATED'")
-        created_rows = cur.fetchall()
-        for (eid,) in created_rows:
-            with _running_lock:
-                already_running = eid in _running_futures
-            if not already_running:
-                log("WATCHDOG", f"{eid} (CREATED, has snapshot) 不在线程池中 → 续跑")
-                _submit_eval(eid, lambda eid=eid: _run_bg_resume(eid))
-            else:
-                log("WATCHDOG", f"{eid} (CREATED, has snapshot) 已在线程池中，跳过")
-    finally:
-        conn.close()
+def _run_bg_resume(evaluation_id: str):
     """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
     set_eval_ctx(evaluation_id)
     from ...infrastructure.database import connect
