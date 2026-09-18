@@ -136,7 +136,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
 if(DEBUG){var _sb=document.getElementById("sys-btn");if(_sb)_sb.style.display="";}
 const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
-const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0)?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
+const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u.indexOf("/reports")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
