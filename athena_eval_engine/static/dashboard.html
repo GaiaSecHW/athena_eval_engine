@@ -471,7 +471,7 @@ function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M13:{n:"误报率",short:"FPR",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
+  M13:{n:"误报率",short:"误报率",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
      interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(1)}%`,
      formula:"误报率 = 误报数 / (误报数 + 真正数)"},
@@ -529,7 +529,7 @@ function renderReport(d){
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
     const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效","FPR_ANALYSIS_FAILED":"FPR 分析失败（基线与告警中心/漏洞中心数据匹配失败）","PENDING_FPR_ANALYSIS":"等待 FPR 分析","NO_DATA":"无数据","NO_CONFUSION_LABELS":"无混淆矩阵标签"};
+    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效","FPR_ANALYSIS_FAILED":"误报率分析失败（基线与告警中心/漏洞中心数据匹配失败）","PENDING_FPR_ANALYSIS":"等待误报率分析","NO_DATA":"无数据","NO_CONFUSION_LABELS":"无混淆矩阵标签"};
     if(!m||m.calculation_status!=="CALCULATED"){
       const rc=m?m.reason_code||m.calculation_status:"无数据";
       const reason=RC[rc]||rc||"无数据";
@@ -907,7 +907,7 @@ function renderReport(d){
       const srcIcon=isMining?'📈':'📊';
       const srcDesc=isMining?'基线 vs 告警中心数据误报率分析':'基线 vs 漏洞中心数据误报率分析';
       const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">误报率 (FPR)</div></div>
+        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">误报率</div></div>
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--txt)">${totalF}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">${srcLabel}</div></div>
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--acc)">${matched}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">已匹配</div></div>
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--green)">${tp}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">真正(基线=漏洞)</div></div>

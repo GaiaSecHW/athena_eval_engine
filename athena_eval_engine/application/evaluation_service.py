@@ -519,7 +519,7 @@ def run(evaluation_id: str) -> dict:
                 cid = c.get("case_id") or c.get("id") or ""
                 if cid:
                     findings = c.get("findings") or []
-                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("vulnerability_type", "") or c.get("description") or ""
+                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) or c.get("description", "") or c.get("vulnerability_type", "") or ""
                     case_details[cid] = {
                         "description": desc,
                         "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
@@ -1662,11 +1662,11 @@ def run(evaluation_id: str) -> dict:
         if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
             _fpr_tid = _mining_entry.get("task_id", "")
 
-        log("EVAL", f"FPR 分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
-        set_progress(evaluation_id, f"FPR 分析 ({cond_label}): 基线 vs 告警中心数据匹配中...")
+        log("EVAL", f"误报率分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+        set_progress(evaluation_id, f"误报率分析 ({cond_label}): 基线 vs 告警中心数据匹配中...")
         try:
             def _fpr_cb(done, total, _cl=cond_label):
-                set_task_progress(evaluation_id, f"FPR分析{_cl}", f"FPR匹配 {done}/{total}")
+                set_task_progress(evaluation_id, f"误报率分析{_cl}", f"误报率匹配 {done}/{total}")
             _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
                                            source="alert_center", case_details=case_details)
         except Exception as _fpr_err:
@@ -1742,9 +1742,9 @@ def run(evaluation_id: str) -> dict:
             "e2e_fpr_kg": _ac_fpr_kg,
             "e2e_fpr_nogk": _ac_fpr_nogk,
         })
-        set_progress(evaluation_id, "FPR 分析完成，生成报告中...")
+        set_progress(evaluation_id, "误报率分析完成，生成报告中...")
     else:
-        log("EVAL", "FPR 分析无结果（告警中心无数据），跳过误报率 tab")
+        log("EVAL", "误报率分析无结果（告警中心无数据），跳过误报率 tab")
         set_progress(evaluation_id, "生成报告中...")
 
     # ===== 更新 M13 指标：用 LLM 基线匹配 FPR 填充 =====
