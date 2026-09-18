@@ -35,6 +35,7 @@ import json
 import os
 import re
 import glob
+import time
 from typing import Iterator
 from datetime import datetime
 from ..domain.raw_event import RawEvent
@@ -537,7 +538,13 @@ class WebVulnVerifyTraceParser(TraceParser):
             'edges': defaultdict(set),
             'parent_map': {},
         }
-        for ev in events:
+        _n = len(events)
+        _start = time.time()
+        from ..infrastructure.log_util import log as _log
+        for idx, ev in enumerate(events):
+            if _n > 10000 and idx > 0 and idx % 50000 == 0:
+                _log("SINK_MATCH", f"WebVulnVerify build_session_graph {idx}/{_n} events "
+                      f"elapsed={int(time.time()-_start)}s sessions={len(graph['sessions'])}")
             sid = ev.session_id
             if not sid:
                 continue

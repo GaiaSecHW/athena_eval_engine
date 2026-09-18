@@ -1013,6 +1013,8 @@ def run(evaluation_id: str) -> dict:
             _TRACE_TIMEOUT = 7200  # 单条 trace 超时上限 2 小时
             # 提前构建 session_graph，sink_match_baselines 和返回值共用，避免重复遍历百万级 events
             log("MATCH", f"[{_trid}] {cond.value} build_session_graph start (events={len(events)})")
+            set_task_progress(evaluation_id, tr.task_run_id,
+                              f"[{cond.value}] 构建 session_graph ({len(events)} events)")
             session_graph = parser.build_session_graph(events) if parser else {}
             log("MATCH", f"[{_trid}] {cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
                   f"in {int(time.time()-_trace_start)}s")
@@ -1035,7 +1037,12 @@ def run(evaluation_id: str) -> dict:
                     if _trace_project_id:
                         _ac_cases = [c for c in _ac_cases if c.get("project_id") == _trace_project_id]
                     # Step 1: 提取 parser findings
+                    set_task_progress(evaluation_id, tr.task_run_id,
+                                      f"[{cond.value}] 提取 findings ({len(events)} events)")
+                    _extract_start = time.time()
                     _parser_findings = parser.extract_findings(events)
+                    log("MATCH", f"[{_trid}] {cond.value} extract_findings done: {len(_parser_findings)} findings "
+                          f"in {int(time.time()-_extract_start)}s (events={len(events)})")
                     log("MATCH", f"[{_trid}] {cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
                           f"(is_verify={is_verify})")
 

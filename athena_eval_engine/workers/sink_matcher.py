@@ -44,6 +44,9 @@ def build_file_read_index(events: list) -> list[dict]:
     # 构建 call_id → TOOL_RESULT 映射
     result_by_call_id: dict[str, str] = {}
     for idx, e in enumerate(events):
+        if _n > 10000 and idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_file_read_index phase1 {idx}/{_n} events "
+                  f"elapsed={int(time.time()-_start)}s")
         if e.event_type == "TOOL_RESULT" and e.call_id:
             output = e.output_json
             if isinstance(output, str):
@@ -53,6 +56,9 @@ def build_file_read_index(events: list) -> list[dict]:
 
     reads: list[dict] = []
     for idx, e in enumerate(events):
+        if _n > 10000 and idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_file_read_index phase2 {idx}/{_n} events "
+                  f"elapsed={int(time.time()-_start)}s reads={len(reads)}")
         if e.event_type != "TOOL_CALL":
             continue
         tool = e.tool_name or ""

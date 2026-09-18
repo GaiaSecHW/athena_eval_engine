@@ -329,6 +329,9 @@ class ArgoTraceParser(TraceParser):
         _n = len(events)
         _start = _time.time()
         for idx, ev in enumerate(events):
+            if _n > 10000 and idx > 0 and idx % 50000 == 0:
+                _log("SINK_MATCH", f"Argo build_session_graph {idx}/{_n} events "
+                      f"elapsed={int(_time.time()-_start)}s sessions={len(graph['sessions'])}")
             sid = ev.session_id
             if not sid:
                 continue
@@ -768,6 +771,9 @@ class ArgoTraceParser(TraceParser):
         session_meta: dict[str, tuple[str, str, tuple[int, int]]] = {}
 
         for i, e in enumerate(events):
+            if len(events) > 10000 and i > 0 and i % 50000 == 0:
+                _log("SINK_MATCH", f"Argo extract_findings {i}/{len(events)} events "
+                      f"findings={len(findings)}")
             # SYSTEM_EVENT: verify session system prompt，含 finding metadata
             if e.event_type == "SYSTEM_EVENT" and e.output_json:
                 content = str(e.output_json)
