@@ -45,7 +45,8 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
 .b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
-.b-CREATED,.b-QUEUED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
+.b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
@@ -240,7 +241,7 @@ function renderEvList(){
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
-    var _phaseLabels={"CREATED":"创建中","QUEUED":"创建中","RUNNING":"创建中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","STATISTICAL_ANALYSIS":"统计分析","DIAGNOSING":"诊断中","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
+    var _phaseLabels={"CREATED":"创建中","QUEUED":"等待调度","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","STATISTICAL_ANALYSIS":"统计分析","DIAGNOSING":"诊断中","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED';
     // REPORTING 时通过 progress 文本区分"知识与记忆介入分析"和"生成报告"
