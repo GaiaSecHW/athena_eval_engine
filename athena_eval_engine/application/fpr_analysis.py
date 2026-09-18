@@ -448,12 +448,20 @@ def run_fpr_analysis(project_id: str, task_id: str,
     # 从 case_details 构建基线行（与 benchmark_item 表同源）
     baseline_rows = []
     for cid, cd in case_details.items():
+        _desc = cd.get("description", "")
+        _vuln_type = cd.get("vulnerability_type", "")
+        # false_positives.json 的 NON_VULNERABLE 基线：title 取 description 第一行
+        # 其他基线：title 取 vulnerability_type
+        if cd.get("expected_label") == "NON_VULNERABLE" and _desc:
+            _title = _desc.split("\n")[0].strip() or _vuln_type
+        else:
+            _title = _vuln_type
         baseline_rows.append({
             "case_id": cid,
-            "title": cd.get("vulnerability_type", ""),
-            "content": cd.get("description", ""),
+            "title": _title,
+            "content": _desc,
             "label": cd.get("expected_label", "VULNERABLE"),
-            "category": cd.get("vulnerability_type", ""),
+            "category": _vuln_type,
         })
     _vuln_n = sum(1 for r in baseline_rows if r["label"] == "VULNERABLE")
     _nonvuln_n = sum(1 for r in baseline_rows if r["label"] == "NON_VULNERABLE")
