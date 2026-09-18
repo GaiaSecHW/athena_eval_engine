@@ -405,9 +405,7 @@ def run(evaluation_id: str) -> dict:
     set_eval_ctx(evaluation_id)
     clear_cancel(evaluation_id)  # 新线程启动，清除可能的旧取消标记
 
-    # 设置全局 LLM 并发上限（仅首次调用生效）
-    from ..infrastructure.llm import set_max_concurrency
-    set_max_concurrency(20)
+    # LLM 并发上限由 load_system_config() 从 DB 加载，不在 run() 中覆盖
 
     # ===== 重跑前清空所有历史数据（DB + 静态报告文件）=====
     def _clear_all_old_data(cur):
