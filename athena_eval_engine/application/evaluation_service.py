@@ -1747,7 +1747,8 @@ def run(evaluation_id: str) -> dict:
         log("EVAL", "FPR 分析无结果（告警中心无数据），跳过误报率 tab")
         set_progress(evaluation_id, "生成报告中...")
 
-    # ===== 更新 M13 指标：用 LLM 匹配 FPR 替换 sink-point 匹配 FPR =====
+    # ===== 更新 M13 指标：用 LLM 基线匹配 FPR 填充 =====
+    # M13 误报率：KG 和 NOGK 各自独立 vs 基线的误报率
     # 公式：FPR = FP / (FP + TP)，以基线 label 为准
     def _update_m13_fpr(m13, fpr_kg_result, fpr_nogk_result, label=""):
         """用 run_fpr_analysis 的结果更新 M13 指标。FPR 分析失败则标记 NA + 报错。"""
@@ -1759,23 +1760,27 @@ def run(evaluation_id: str) -> dict:
             m13["reason_code"] = "FPR_ANALYSIS_FAILED"
             m13["ci_lower"] = None
             m13["ci_upper"] = None
+            # 清除旧 method 值，避免残留矛盾数据
             m = m13.get("method", {})
-            m["formula"] = "FP / (FP + TP)"
-            log("EVAL", f"⚠ M13 ({label}) FPR 分析失败，标记 NA")
+            m.clear()
+            m["formula"] = "误报率 = 误报数 / (误报数 + 真正数)"
+            log("EVAL", f"⚠ M13 ({label}) FPR 分析失败，标记 NA（KG 和 NOGK 均无结果）")
             return
-        fpr_kg = fpr_kg_result["fpr"] if fpr_kg_result else 0.0
-        fpr_nogk = fpr_nogk_result["fpr"] if fpr_nogk_result else 0.0
+        fpr_kg = fpr_kg_result["fpr"] if fpr_kg_result else None
+        fpr_nogk = fpr_nogk_result["fpr"] if fpr_nogk_result else None
         tp_kg = fpr_kg_result["tp"] if fpr_kg_result else 0
         fp_kg = fpr_kg_result["fp"] if fpr_kg_result else 0
         tp_n = fpr_nogk_result["tp"] if fpr_nogk_result else 0
         fp_n = fpr_nogk_result["fp"] if fpr_nogk_result else 0
         n_kg = fpr_kg_result["total_findings"] if fpr_kg_result else 0
-        m13["estimate"] = fpr_kg - fpr_nogk
+        n_n = fpr_nogk_result["total_findings"] if fpr_nogk_result else 0
+        # estimate = KG 的 FPR（NOGK 的 FPR 在 method.fpr_nogk）
+        m13["estimate"] = fpr_kg if fpr_kg is not None else 0.0
         m13["calculation_status"] = "CALCULATED"
         m13["reason_code"] = None
         m = m13.get("method", {})
-        m["fpr_kg"] = fpr_kg
-        m["fpr_nogk"] = fpr_nogk
+        m["fpr_kg"] = fpr_kg if fpr_kg is not None else 0.0
+        m["fpr_nogk"] = fpr_nogk if fpr_nogk is not None else 0.0
         m["tp_kg"] = tp_kg
         m["fp_kg"] = fp_kg
         m["fn_kg"] = 0
@@ -1784,11 +1789,16 @@ def run(evaluation_id: str) -> dict:
         m["fp_n"] = fp_n
         m["fn_n"] = 0
         m["tn_n"] = 0
-        m["formula"] = "FP / (FP + TP)"
+        m["formula"] = "误报率 = 误报数 / (误报数 + 真正数)"
+        m["formula_kg"] = f"KG: {fp_kg} / ({fp_kg} + {tp_kg}) = {fpr_kg:.4f}" if fpr_kg is not None else "KG: 无数据"
+        m["formula_nogk"] = f"NOGK: {fp_n} / ({fp_n} + {tp_n}) = {fpr_nogk:.4f}" if fpr_nogk is not None else "NOGK: 无数据"
         m["uncertainty"] = None
         m13["n"] = n_kg
         m13["ci_lower"] = None
         m13["ci_upper"] = None
+        # 关键信息日志
+        log("EVAL", f"M13 ({label}) 更新: KG FPR={fpr_kg:.4f} (FP={fp_kg}, TP={tp_kg}, N={n_kg})"
+            + (f", NOGK FPR={fpr_nogk:.4f} (FP={fp_n}, TP={tp_n}, N={n_n})" if fpr_nogk is not None else ", NOGK 无数据"))
 
     # 顶层 M13：用挖掘 FPR（告警中心，超集）
     _update_m13_fpr(report.p0.get("M13"), _ac_fpr_kg, _ac_fpr_nogk, label="顶层")

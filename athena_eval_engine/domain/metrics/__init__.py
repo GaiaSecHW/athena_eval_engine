@@ -72,74 +72,17 @@ class StatisticalResult:
     details: dict = field(default_factory=dict)
 
 
-def _fpr(pairs: list[PairView], kg=True) -> float:
-    """FPR = (FP_sink + FN) / (TP + FP_sink + FN + TN_sink)。
-    分母=sink命中的基线项（chains存在），分子=识别错误项(FP+FN)。
-    分母为 0 时返回 0。"""
-    tp = fp_hit = fn = tn_hit = 0
-    for p in pairs:
-        conf = p.kg_confusion if kg else p.nogk_confusion
-        sink_hit = p.kg_sink_hit if kg else p.nogk_sink_hit
-        if conf == "TP":
-            tp += 1
-        elif conf == "FP" and sink_hit:
-            fp_hit += 1
-        elif conf == "FN":
-            fn += 1
-        elif conf == "TN" and sink_hit:
-            tn_hit += 1
-    denom = tp + fp_hit + fn + tn_hit
-    if denom == 0:
-        return 0.0
-    return (fp_hit + fn) / denom
-
-
-# ===== M13 ΔFPR =====
+# ===== M13 误报率（FPR） =====
 def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    # 无 confusion 标签时（task-level 回退）返回 NA，不静默返回 0
-    if not any(p.kg_confusion or p.nogk_confusion for p in pairs):
-        return (MetricResult("M13", None, "ratio", len(pairs), "primary_analysis",
-                             calculation_status=NA, reason_code="NO_CONFUSION_LABELS",
-                             method={}),
-                [StatisticalResult("M13", "gt_stratified_paired_bootstrap",
-                                   testing_tier="PRIMARY", scope_type="METRIC",
-                                   status=NA, reason_code="NO_CONFUSION_LABELS")])
-    est = _fpr(pairs, True) - _fpr(pairs, False)
-    br = gt_stratified_paired_bootstrap(pairs, lambda ps: _fpr(ps, True) - _fpr(ps, False),
-                                        B=2000, seed=seed)
-    test_name = "gt_stratified_paired_bootstrap"
-    if br.status != "CALCULATED" and br.reason_code == "NO_STRATUM":
-        br = paired_bootstrap(pairs, lambda ps: _fpr(ps, True) - _fpr(ps, False),
-                              B=2000, seed=seed)
-        test_name = "paired_bootstrap"
-    status = CALCULATED if br.status == "CALCULATED" else NA
-    fpr_kg = _fpr(pairs, True); fpr_nogk = _fpr(pairs, False)
-    m13_est = est if status == CALCULATED else None
-    # 统计sink命中的混淆矩阵（用于 method 字典展示）
-    tp_kg = fp_kg = fn_kg = tn_kg = 0
-    tp_n = fp_n = fn_n = tn_n = 0
-    for p in pairs:
-        if p.kg_confusion == "TP": tp_kg += 1
-        elif p.kg_confusion == "FP" and p.kg_sink_hit: fp_kg += 1
-        elif p.kg_confusion == "FN": fn_kg += 1
-        elif p.kg_confusion == "TN" and p.kg_sink_hit: tn_kg += 1
-        if p.nogk_confusion == "TP": tp_n += 1
-        elif p.nogk_confusion == "FP" and p.nogk_sink_hit: fp_n += 1
-        elif p.nogk_confusion == "FN": fn_n += 1
-        elif p.nogk_confusion == "TN" and p.nogk_sink_hit: tn_n += 1
-    return (MetricResult("M13", m13_est, "ratio", len(pairs), "primary_analysis",
-                         calculation_status=status, reason_code=br.reason_code,
-                         method={"uncertainty": test_name, "valid": br.valid,
-                                 "fpr_kg": fpr_kg, "fpr_nogk": fpr_nogk,
-                                 "tp_kg": tp_kg, "fp_kg": fp_kg,
-                                 "fn_kg": fn_kg, "tn_kg": tn_kg,
-                                 "tp_n": tp_n, "fp_n": fp_n,
-                                 "fn_n": fn_n, "tn_n": tn_n}),
-            [StatisticalResult("M13", test_name,
-                               ci_lower=br.ci_lower, ci_upper=br.ci_upper,
+    """M13 误报率占位：实际值由 REPORTING 阶段 _update_m13_fpr 用 LLM 基线匹配结果填充。
+    这里只创建 NA 状态的 M13 对象，不计算 sink-point 匹配 FPR。
+    """
+    return (MetricResult("M13", None, "ratio", len(pairs), "primary_analysis",
+                         calculation_status=NA, reason_code="PENDING_FPR_ANALYSIS",
+                         method={}),
+            [StatisticalResult("M13", "none",
                                testing_tier="PRIMARY", scope_type="METRIC",
-                               status=status, reason_code=br.reason_code,
-                               details={"valid": br.valid, "attempts": br.attempts})])
+                               status=NA, reason_code="PENDING_FPR_ANALYSIS")])
 
 
 # ===== M5 KAR / M6 KDR =====
@@ -279,7 +222,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     为 None 时回退到 pairs（任务级）。"""
     from concurrent.futures import ThreadPoolExecutor
     mrs = []; srs = []
-    cp = confusion_pairs if confusion_pairs is not None else pairs  # M13 用 item 级 pair
+    cp = confusion_pairs if confusion_pairs is not None else pairs  # M1-M4 用 item 级 pair
     # M5/M6 无 bootstrap，瞬时完成，直接算
     # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
@@ -287,7 +230,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M13 用 confusion_pairs；M7-M10 用 pairs（任务级 delta）
+    # M13 占位（实际值由 REPORTING 阶段 _update_m13_fpr 填充）；M7-M10 用 pairs（任务级 delta）
     with ThreadPoolExecutor(max_workers=4) as pool:
         fut_m13 = pool.submit(calc_m13, cp, seed=seed)
         fut_m7 = pool.submit(calc_m7, pairs, seed=seed)

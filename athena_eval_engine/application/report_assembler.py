@@ -58,7 +58,7 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
     p1 = {mid: _entry(mid) for mid in ("M5", "M6", "M7", "M11", "M12")}
     p2 = {mid: _entry(mid) for mid in ("M8", "M9", "M10")}
 
-    raw = {"delta_fpr": None, "delta_tool_calls": None, "kg_query_count": None}
+    raw = {"delta_tool_calls": None, "kg_query_count": None}
 
     return ReportModel(
         evaluation_id=evaluation_id, p0=p0, p1=p1, p2=p2,

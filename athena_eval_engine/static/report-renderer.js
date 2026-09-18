@@ -39,17 +39,17 @@ function fmt(v,u){
 }
 const CONF_LABEL={TP:"真阳性",FP:"假阳性",FN:"假阴性",TN:"真阴性",NA:"未判定"};
 const STATUS_LABEL={CALCULATED:"已计算",NA:"未计算",NO_DATA:"无数据"};
-const RC_ALL={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效"};
+const RC_ALL={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效","FPR_ANALYSIS_FAILED":"FPR 分析失败（基线与告警中心/漏洞中心数据匹配失败）","PENDING_FPR_ANALYSIS":"等待 FPR 分析","NO_DATA":"无数据","NO_CONFUSION_LABELS":"无混淆矩阵标签"};
 function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const a=Math.abs(v);
   if(a>=1e9)return(v/1e9).toFixed(2)+'B';
   if(a>=1e6)return(v/1e6).toFixed(2)+'M';
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
 const MI={
-  M13:{n:"误报率",short:"误报率",d:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，仅统计sink命中的基线项",u:"ratio",
-     range:[{v:0,t:"无误报",c:"green"},{v:0.5,t:"部分误报",c:"amber"},{v:1,t:"全误报",c:"red"}],
-     interp:(v)=>v==null?"无基准":v===0?"无误报":`误报率 ${(v*100).toFixed(1)}%`,
-     formula:"误报率=(假正例+假负例)/(真正例+假正例+假负例+真负例)，分母=sink命中的基线项（finding匹配+sink发现）",
+  M13:{n:"误报率",short:"FPR",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
+     range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
+     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(1)}%`,
+     formula:"误报率 = 误报数 / (误报数 + 真正数)",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
   M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
@@ -129,12 +129,16 @@ function renderReport(d){
     if(m.cm){
       var cmParts=[];
       if(mid==="M13"){
-        cmParts.push("假正例="+m.cm.fp,"假负例="+m.cm.fn,"真正例="+m.cm.tp,"真负例="+m.cm.tn);
-        cmParts.push("→ ("+m.cm.fp+"+"+m.cm.fn+")/("+(m.cm.tp+m.cm.fp+m.cm.fn+m.cm.tn)+")");
+        cmParts.push("误报="+m.cm.fp,"真正="+m.cm.tp);
+        cmParts.push("→ "+m.cm.fp+"/("+m.cm.fp+"+"+m.cm.tp+")");
       }
       if(cmParts.length){
         formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
       }
+    }
+    // M13 额外展示中文公式与具体数值
+    if(mid==="M13"&&m.formulaDetail){
+      formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px;font-family:monospace'>"+m.formulaDetail+"</div>";
     }
     // 原始计算值：从 method 字典提取分量
     if(m.method){
@@ -257,17 +261,17 @@ function renderReport(d){
     kgHtml+="</div>";
   }
 
-  // 混淆矩阵汇总（与 M13 误报率、匹配明细一致）
+  // 混淆矩阵汇总
   var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
   var kgTP=0,kgFP=0,kgFN=0,kgTN=0,kgNA=0;
   caseResults.forEach(function(c){
     var conf=c.confusion||"NA";
-    if(conf==="TP")kgTP++;else if(conf==="FP"&&c.sink_hit)kgFP++;else if(conf==="FN")kgFN++;else if(conf==="TN"&&c.sink_hit)kgTN++;else kgNA++;
+    if(conf==="TP")kgTP++;else if(conf==="FP")kgFP++;else if(conf==="FN")kgFN++;else if(conf==="TN")kgTN++;else kgNA++;
   });
-  var kgFprNum=kgFP+kgFN,kgFprDen=kgTP+kgFP+kgFN+kgTN;
+  var kgFprNum=kgFP,kgFprDen=kgTP+kgFP;
   var kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
-  kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（分子="+kgFprNum+"=假阳性+假阴性 分母="+kgFprDen+"=sink命中的case数）</span></div>";
+  kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（误报数="+kgFprNum+" / (误报数+真正数)="+kgFprDen+"）</span></div>";
 
   // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
   var hasAnyPcAnalysis=pcAnalysis.length>0;
@@ -649,12 +653,15 @@ function renderReport(d){
         const val=method[key];
         if(val==null) return {calculation_status:"NO_DATA",reason_code:"NO_DATA",n:metric.n};
         var cm=null;
+        var formulaDetail="";
         if(key.endsWith("_kg")){
           if(method.tp_kg!=null){cm={tp:method.tp_kg,fp:method.fp_kg,fn:method.fn_kg,tn:method.tn_kg};}
+          formulaDetail=method.formula_kg||"";
         }else{
           if(method.tp_n!=null){cm={tp:method.tp_n,fp:method.fp_n,fn:method.fn_n,tn:method.tn_n};}
+          formulaDetail=method.formula_nogk||"";
         }
-        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm};
+        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm,formulaDetail:formulaDetail};
       }
       const hasNogk=r.has_nogk!==false; // 默认 true（兼容旧报告）
       const groups=[
@@ -746,15 +753,13 @@ function renderReport(d){
         }
       }
       if(!rows.length) return "";
-      const kgDenom=kgTP+kgFP+kgFN+kgTN;
-      const nogkDenom=nogkTP+nogkFP+nogkFN+nogkTN;
-      const kgFprNum=kgFP+kgFN,kgFprDen=kgDenom;
-      const nogkFprNum=nogkFP+nogkFN,nogkFprDen=nogkDenom;
+      const kgFprNum=kgFP,kgFprDen=kgTP+kgFP;
+      const nogkFprNum=nogkFP,nogkFprDen=nogkTP+nogkFP;
       const kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
       const nogkFprStr=nogkFprDen>0?(nogkFprNum/nogkFprDen*100).toFixed(1)+"%":"—";
       const summary=_hasNogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（分子=${kgFprNum}=假阳性${kgFP}+假阴性${kgFN} 分母=${kgFprDen}=sink命中的case数）<span style="margin-left:16px">No-KG 误报率=${nogkFprStr}（分子=${nogkFprNum}=假阳性${nogkFP}+假阴性${nogkFN} 分母=${nogkFprDen}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}（不含sink未命中的未判定）</div></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（分子=${kgFprNum}=假阳性${kgFP}+假阴性${kgFN} 分母=${kgFprDen}=sink命中的case数）<div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}（不含sink未命中的未判定）</div></div>`;
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<span style="margin-left:16px">No-KG 误报率=${nogkFprStr}（误报数=${nogkFprNum} / (误报数+真正数)=${nogkFprDen}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`;
       return `<div class="card" style="margin-bottom:16px">
         <h3>${icon} ${title}</h3>
         ${summary}
@@ -780,6 +785,10 @@ function renderReport(d){
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--green)">${tp}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">真正(基线=漏洞)</div></div>
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--amber)">${fp}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">误报(基线=非漏洞)</div></div>
         <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--txt)">${totalBl}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">基线总数</div></div>
+      </div>
+      <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
+        <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数) = ${fp} / (${fp} + ${tp}) = ${fprPct}<br>
+        <span style="font-size:12px;color:var(--gray)">误报 = 匹配到"非漏洞"基线的漏洞上报；真正 = 匹配到"漏洞"基线的漏洞上报；未匹配的漏洞不参与计算</span>
       </div>`;
       const rows=details.map(d=>{
         const badge=d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
@@ -828,6 +837,10 @@ function renderReport(d){
       }
       const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
         ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(1)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
+      </div>
+      <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
+        <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数)<br>
+        <span style="font-size:12px;color:var(--gray)">误报 = 匹配到"非漏洞"基线的漏洞上报；真正 = 匹配到"漏洞"基线的漏洞上报</span>
       </div>`;
       // 合并 match_details
       let allDetails=[];
