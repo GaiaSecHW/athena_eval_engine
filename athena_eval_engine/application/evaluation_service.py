@@ -748,7 +748,8 @@ def run(evaluation_id: str) -> dict:
             return CVulnVerifyTraceParser()
         if trace_kind == "argo":
             from ..workers.argo_trace_parser import ArgoTraceParser
-            return ArgoTraceParser()
+            from ..infrastructure import llm as _llm_mod
+            return ArgoTraceParser(llm_module=_llm_mod)
         if trace_kind == "turing":
             from ..workers.turing_trace_parser import TuringTraceParser
             return TuringTraceParser()
@@ -771,7 +772,8 @@ def run(evaluation_id: str) -> dict:
             return CVulnVerifyTraceParser()
         if _os.path.isdir(p) and p.endswith(argo_suffix):
             from ..workers.argo_trace_parser import ArgoTraceParser
-            return ArgoTraceParser()
+            from ..infrastructure import llm as _llm_mod
+            return ArgoTraceParser(llm_module=_llm_mod)
         if _os.path.isdir(p) and (p.endswith(dataflow_suffix) or "dataflow_vuln_scan" in p):
             from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
             return DataflowVulnScanTraceParser()
@@ -797,7 +799,8 @@ def run(evaluation_id: str) -> dict:
                 from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
                 return WebVulnVerifyTraceParser()
             from ..workers.argo_trace_parser import ArgoTraceParser
-            return ArgoTraceParser()
+            from ..infrastructure import llm as _llm_mod
+            return ArgoTraceParser(llm_module=_llm_mod)
         from ..workers.turing_trace_parser import TuringTraceParser
         return TuringTraceParser()
 

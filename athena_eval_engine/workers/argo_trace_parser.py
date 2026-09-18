@@ -25,6 +25,7 @@ from typing import Iterator
 from ..domain.raw_event import RawEvent
 from ..domain.resolvers import TraceParser
 from .parse_utils import attach_event_indices, _extract_json_objects_from_text
+from ..infrastructure.log_util import log as _log
 
 
 # Claude Code 工具名 → 小写
@@ -37,8 +38,9 @@ _TOOL_MAP = {
 class ArgoTraceParser(TraceParser):
     """解析 Argo（Claude Code CLI）JSONL session 日志。"""
 
-    def __init__(self, parser_version: str = "argo-1.0"):
+    def __init__(self, parser_version: str = "argo-1.0", llm_module=None):
         self.parser_version = parser_version
+        self._llm = llm_module
 
     @staticmethod
     def _is_finding_tool(tool_name: str) -> bool:
@@ -362,8 +364,6 @@ class ArgoTraceParser(TraceParser):
             if ev.event_type == "TEXT" and ev.output_json:
                 txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
                 if '"accepted"' in txt:
-                    if len(txt) > 100000:
-                        _log("SINK_MATCH", f"argo.build_session_graph: TEXT event too large ({len(txt)} chars at idx={idx}), skipping payload extraction")
                     for payload in self._extract_accepted_payloads(txt):
                         data = payload.get("data", payload)
                         if not isinstance(data, dict):
@@ -561,18 +561,18 @@ class ArgoTraceParser(TraceParser):
                 pass
         return None
 
-    @staticmethod
-    def _extract_accepted_payloads(text: str) -> list[dict]:
+    def _extract_accepted_payloads(self, text: str) -> list[dict]:
         """从文本中提取 JSON payload。
 
         nazhua 平台的 validate_verify_payload 不要求 accepted: true，
         没有 accepted 字段时直接用 payload 本身作为 data。
         因此本方法只过滤 accepted:false，其余全部保留（含裸 payload）。
 
-        两种策略：
+        三种策略：
         1. ```json 代码块中的 JSON 对象（raw_decode + 容错补全）
         2. 文本中直接出现的 JSON 对象（花括号匹配 + 容错补全），
            搜索关键词：accepted, verdict, findings
+        3. LLM 兜底：前两种策略都无法解析时，用 LLM 从文本中提取 JSON
         """
         results: list[dict] = []
         seen: set[str] = set()
@@ -608,11 +608,6 @@ class ArgoTraceParser(TraceParser):
                 _add(obj)
             search_start = close_idx + 3
         if results:
-            return results
-
-        # 策略 2: 直接在文本中搜索关键词并做花括号匹配
-        # 大文本跳过策略 2（O(n²) 字符级扫描会卡死），只用策略 1 的 ```json 块提取
-        if len(text) > 100000:
             return results
 
         # 策略 2: 直接在文本中搜索关键词并做花括号匹配
@@ -687,7 +682,7 @@ class ArgoTraceParser(TraceParser):
                             _add(payload)
                     except json.JSONDecodeError:
                         pass
-                    search_start = end_idx
+                    search_start = max(end_idx, idx + len(keyword))
                 else:
                     close_idx = text.find('```', brace_start)
                     if close_idx < 0:
@@ -696,7 +691,26 @@ class ArgoTraceParser(TraceParser):
                     obj = ArgoTraceParser._try_parse_json_lenient(json_str)
                     if obj:
                         _add(obj)
-                    search_start = close_idx
+                    search_start = max(close_idx + 3, idx + len(keyword))
+
+        # 策略 3: LLM 兜底 — 前两种策略都无法解析时，用 LLM 从文本中提取 JSON
+        if not results and self._llm and self._llm.is_enabled():
+            try:
+                prompt = (
+                    "以下文本是安全分析 agent 的回复，其中包含一个 JSON payload"
+                    "（格式如 {\"accepted\": true, \"data\": {\"findings\": [...], \"facts\": [...]}}）。"
+                    "请从中提取完整的 JSON 对象。只返回 JSON，不要任何额外文字。"
+                    "如果文本中没有 JSON 对象，返回 {}。"
+                )
+                payload = self._llm.chat_json(
+                    [{"role": "user", "content": prompt + "\n\n" + text}],
+                    temperature=0,
+                    max_tokens=8000,
+                )
+                if isinstance(payload, dict):
+                    _add(payload)
+            except Exception as e:
+                _log("ARGO", f"_extract_accepted_payloads LLM fallback failed: {str(e)[:200]}")
 
         return results
 
