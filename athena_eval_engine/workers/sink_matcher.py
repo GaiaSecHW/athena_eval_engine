@@ -718,6 +718,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
 
     from concurrent.futures import ThreadPoolExecutor, as_completed
 
+    log("SINK_MATCH", f"{task_run.condition.value} 开始 sink 覆盖检查: {len(benchmarks)} 基线, "
+          f"events={len(events)}, findings={len(active_findings)}")
+
     # 对每个基线，先做 sink 覆盖检查（确定性，无 LLM）
     sink_results: dict[int, dict] = {}  # baseline_idx → {sink_sessions, chains, has_sink_info}
     for bi, b in enumerate(benchmarks):
@@ -755,7 +758,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
     # 并行分析所有链
     chain_analyses: dict[tuple[int, int], dict] = {}  # (bi, ci) → {is_mining, reason}
     if llm_tasks and llm_mod.is_enabled():
-        _progress(f"Sink 链分析: 0/{len(llm_tasks)} 链完成")
+        _progress(f"Sink 链分析: 0/{len(llm_tasks)} 链完成 (并发=50)")
+        log("SINK_MATCH", f"{task_run.condition.value} 开始 LLM 链分析: {len(llm_tasks)} 条链 (并发=50)")
         with ThreadPoolExecutor(max_workers=50) as pool:
             futures = {}
             for bi, ci, chain in llm_tasks:
@@ -797,7 +801,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                     chain_analyses[(bi, ci)] = {"is_mining": False, "reason": f"分析失败: {e}",
                                                 "no_finding_reason": "", "knowledge_intervention": None}
                 done += 1
-                _progress(f"Sink 链分析: {done}/{len(llm_tasks)} 链完成")
+                if done % 20 == 0 or done == len(llm_tasks):
+                    _progress(f"Sink 链分析: {done}/{len(llm_tasks)} 链完成")
 
     # Step 6: 赋值 confusion
     for bi, b in enumerate(benchmarks):

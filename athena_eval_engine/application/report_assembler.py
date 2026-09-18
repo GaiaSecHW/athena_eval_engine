@@ -783,7 +783,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     _total = len(case_results)
     _pending_llm = []  # (ci, prompt, case_id, kg_judgment, case_interactions, case_mem_interactions, _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, _nogk_no_finding_reason, _nogk_ki)
     for _ci, case in enumerate(case_results):
-        if progress_cb and _ci % 5 == 0:
+        if progress_cb:
             progress_cb(_ci, _total)
         case_id = case.get("case_id", "")
         description = case.get("description", "")
@@ -1034,7 +1034,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         _data_str = json.dumps(data, ensure_ascii=False)
         if len(_data_str) > _char_limit:
-            log("KG_ANALYSIS", f"prompt 数据过大 ({len(_data_str)} chars)，按 session 压缩 mining_actions...")
+            log("KG_ANALYSIS", f"case {_ci+1}/{_total} ({case_id}) prompt 数据过大 ({len(_data_str)} chars)，按 session 压缩 mining_actions...")
             # 1. mining_actions 按 session_id 分组，每组单独用 LLM 压缩成摘要（缓存复用）
             _actions = data.get("mining_actions", [])
             if _actions:
@@ -1251,6 +1251,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
     # 串行准备完成，报告 fast-path 完成数
     _fast_done = _total - len(_pending_llm)
+    log("KG_ANALYSIS", f"Phase 1 完成: {_fast_done} fast-path + {len(_pending_llm)} 待 LLM 分析 (共 {_total} case)")
     if progress_cb:
         progress_cb(_fast_done, _total)
 
@@ -1258,6 +1259,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
     if _pending_llm:
         from concurrent.futures import ThreadPoolExecutor, as_completed
         from .evaluation_service import get_runtime_workers
+        _kg_workers = get_runtime_workers()["kg_analysis"]
+        log("KG_ANALYSIS", f"Phase 2: {_total - _fast_done} 个 case 需要 LLM 分析 (并发={_kg_workers})")
         _done_count = [0]
         import threading as _th
         _count_lock = _th.Lock()

@@ -284,6 +284,10 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
     # 阶段 2：冲突解决 — 1:1 分配
     # 按置信度降序排列所有基线的最佳匹配，贪心分配
+    _matched_count = sum(1 for r in bl_results if r[1] is not None)
+    _conflict_count = sum(1 for r in bl_results if r[1] is not None and any(
+        r[1] == other[1] for other in bl_results if other[0] != r[0] and other[1] is not None))
+    log("FPR", f"阶段 1 完成: {_matched_count}/{len(baseline_rows)} 基线有候选, {_conflict_count} 个冲突待解决")
     bl_results.sort(key=lambda x: x[2], reverse=True)
 
     match_results = [
@@ -476,7 +480,9 @@ def run_fpr_analysis(project_id: str, task_id: str,
         log("FPR", f"{source_label}无数据，跳过 FPR 分析")
         return None
 
-    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE})")
+    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE}, 基线并发={_MAX_BASELINE_WORKERS})")
+    if progress_cb:
+        progress_cb(0, len(baseline_rows))
     match_results = _run_matching(findings, baseline_rows, progress_cb)
 
     fpr, matched, fp = _calculate_fpr(match_results, baseline_rows)
