@@ -315,7 +315,7 @@ def _run_bg_resume(evaluation_id: str):
         try:
             cur = conn.cursor()
             cur.execute(
-                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
                 f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
                 (evaluation_id, *stuck_states))
             if cur.rowcount == 0:
@@ -399,7 +399,7 @@ def create_evaluation(req: CreateRequest):
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
                     "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
                     (req.evaluation_id,))
                 if cur.rowcount == 0:
@@ -516,10 +516,24 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
         # Step 2: 清理全部数据（单连接 + FK off）
         # 基线数据、告警中心数据、benchmark_items 在 run() INGESTING 阶段重新获取/插入
-        tables = ["statistical_result", "metric_result", "pair_derived_fact", "task_pair",
-                  "outcome_fact", "knowledge_interaction_fact", "tool_action_fact", "resource_fact",
-                  "task_run", "trace_source", "evaluation_report",
-                  "evaluation_population_snapshot", "evaluation_calculation_run"]
+        tables = [
+            # 核心计算结果
+            "statistical_result", "metric_result", "pair_derived_fact", "task_pair",
+            "outcome_fact", "knowledge_interaction_fact", "tool_action_fact", "resource_fact",
+            # trace 与 finding
+            "task_run", "trace_source", "extracted_finding", "finding_benchmark_match",
+            "session_graph",
+            # 报告
+            "evaluation_report",
+            # 计算运行记录
+            "evaluation_population_snapshot", "evaluation_calculation_run",
+            # 排除记录与覆盖率
+            "exclusion_record", "evaluation_coverage",
+            # 阶段运行记录
+            "evaluation_stage_run", "evaluation_job",
+            # 状态转换记录
+            "evaluation_state_transition",
+        ]
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
@@ -529,6 +543,14 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             for t in tables:
                 if t in ("evaluation_population_snapshot", "evaluation_calculation_run"):
                     cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}%",))
+                elif t == "evaluation_job":
+                    # evaluation_job 通过 stage_run_id 关联，先查 job_id 再清 job_lease
+                    cur.execute("SELECT job_id FROM evaluation_job WHERE evaluation_id=%s", (evaluation_id,))
+                    job_ids = [r[0] for r in cur.fetchall()]
+                    if job_ids:
+                        placeholders = ",".join(["%s"] * len(job_ids))
+                        cur.execute(f"DELETE FROM job_lease WHERE job_id IN ({placeholders})", job_ids)
+                    cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
                 else:
                     cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
             cur.execute("SET FOREIGN_KEY_CHECKS=1")
@@ -537,12 +559,22 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
-        # Step 2b: 删除固化 HTML 报告文件
+        # Step 2b: 删除固化 HTML + JSON 报告文件
         try:
             p = _static_report_path(evaluation_id)
             if os.path.isfile(p):
                 os.remove(p)
                 log("RETRY", f"删除旧报告: {p}")
+        except Exception:
+            pass
+        # 删除 JSON 报告文件 + 临时 _cr.json 文件
+        try:
+            _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+            for _pattern in [f"{evaluation_id}.json", f"{evaluation_id}_*_cr.json"]:
+                import glob as _glob
+                for _f in _glob.glob(os.path.join(_reports_dir, _pattern)):
+                    os.remove(_f)
+                    log("RETRY", f"删除旧报告: {_f}")
         except Exception:
             pass
 
@@ -551,7 +583,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         try:
             # 清理旧代码残留的 " | FAILED at ..." 名称后缀
             conn.cursor().execute("UPDATE evaluation SET evaluation_status=%s, "
-                                "evaluation_name=SUBSTRING_INDEX(IFNULL(evaluation_name,''),' |',1) "
+                                "evaluation_name=SUBSTRING_INDEX(IFNULL(evaluation_name,''),' |',1), "
+                                "finished_at=NULL, cancel_requested=0, error_message=NULL "
                                 "WHERE evaluation_id=%s",
                                 ("CREATED", evaluation_id))
         finally:
@@ -568,7 +601,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), error_message=NULL "
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
                     "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
                     (evaluation_id,))
                 if cur.rowcount == 0:
