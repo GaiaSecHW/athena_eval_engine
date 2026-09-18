@@ -538,6 +538,29 @@ def run(evaluation_id: str) -> dict:
         raise ValueError("无法获取基线数据（case_details 为空），没有基线的评测无意义。"
                          "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。")
 
+    # 外挂补充非漏洞基线（huks-蓝区迁移等基线未生成非漏洞数据的场景）
+    _non_vuln_count = sum(1 for cd in case_details.values() if cd.get("expected_label") == "NON_VULNERABLE")
+    if _non_vuln_count == 0:
+        csv_path = os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
+        if os.path.isfile(csv_path):
+            from .fpr_analysis import load_baseline
+            bl_rows = load_baseline(csv_path)
+            non_vuln_rows = [r for r in bl_rows if r.get("label") == "NON_VULNERABLE"]
+            for r in non_vuln_rows:
+                cid = r.get("case_id", "")
+                if cid and cid not in case_details:
+                    case_details[cid] = {
+                        "description": r.get("title", "") or r.get("content", ""),
+                        "vulnerability_type": r.get("category", ""),
+                        "target_finding_id": "",
+                        "expected_label": "NON_VULNERABLE",
+                        "source_file": "",
+                        "source_function": "",
+                        "source_line": "",
+                    }
+            if non_vuln_rows:
+                log("INGEST", f"从 baseline.csv 补充 {len(non_vuln_rows)} 条非漏洞基线")
+
     # 并行补提取缺失的 source 信息（每个 case 可能调一次 LLM）
     _need_fill = [cd for cd in case_details.values()
                   if not cd.get("source_file") or not cd.get("source_function") or not cd.get("source_line")]
@@ -619,6 +642,7 @@ def run(evaluation_id: str) -> dict:
         conn.close()
 
     _filter_by_case_details = _bm_source == "vuln_center" and case_details
+    _inserted_ids: set[str] = set()
     for e in _ingest_entries:
         item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
         if _filter_by_case_details:
@@ -639,6 +663,22 @@ def run(evaluation_id: str) -> dict:
                                                 cd)
             finally:
                 conn.close()
+            _inserted_ids.add(bid)
+
+    # 插入外挂补充的非漏洞基线（不在 entries item_ids 中的）
+    _supplemented = [cid for cid, cd in case_details.items()
+                     if cd.get("expected_label") == "NON_VULNERABLE" and cid not in _inserted_ids]
+    if _supplemented:
+        _task_id = _ingest_entries[0]["task_id"] if _ingest_entries else ""
+        for cid in _supplemented:
+            cd = case_details[cid]
+            conn = connect(autocommit=True)
+            try:
+                fact_repo.insert_benchmark_item(conn.cursor(), cid, _ingest_bsid,
+                                                _task_id, "NON_VULNERABLE", "", cd)
+            finally:
+                conn.close()
+        log("INGEST", f"插入 {len(_supplemented)} 条外挂非漏洞基线到 DB")
 
     if _alert_center_data:
         _ac_counts = _alert_center_data.get("counts", {})
