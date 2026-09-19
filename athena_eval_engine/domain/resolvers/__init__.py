@@ -44,7 +44,7 @@ class TraceParser(ABC):
                               finding: dict) -> list[dict]:
         """从指定 finding 出发，反向追踪跨 session 的挖掘分析过程（原则7）。
 
-        利用 session_graph BFS 找到所有相关 session，
+        利用 session_graph parent_map 向上追溯祖先链（最多 10 个 session），
         收集 finding 提交时间点之前的相关 session 事件，
         提取挖掘行为（文件读取、搜索、推理、工具调用）。
 
@@ -80,21 +80,22 @@ class TraceParser(ABC):
 
     @staticmethod
     def _get_related_sessions(session_graph: dict, start_session: str) -> set:
-        """BFS 遍历 session_graph edges，获取所有可达 session（含 start_session）。"""
+        """从 start_session 沿 parent_map 向上追溯祖先链（含 start_session）。
+
+        只走 parent_map（真实调用关系），不做 BFS 连通分量遍历。
+        最多追溯 10 个 session。
+        """
         if not start_session:
             return set()
-        visited = {start_session}
-        if not session_graph:
-            return visited
-        queue = [start_session]
-        edges = session_graph.get('edges', {})
-        while queue:
-            sid = queue.pop(0)
-            for related in edges.get(sid, set()):
-                if related not in visited:
-                    visited.add(related)
-                    queue.append(related)
-        return visited
+        parent_map = session_graph.get('parent_map', {}) if session_graph else {}
+        chain: list[str] = []
+        visited: set[str] = set()
+        sid = start_session
+        while sid and sid not in visited and len(chain) < 10:
+            chain.append(sid)
+            visited.add(sid)
+            sid = parent_map.get(sid)
+        return set(chain)
 
     def _extract_action(self, ev: RawEvent) -> dict | None:
         """从单个 event 提取挖掘行为摘要。子类可覆盖实现平台特定逻辑。

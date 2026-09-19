@@ -158,40 +158,52 @@ def find_sink_sessions(file_reads: list[dict], source_file: str,
     return list(matched_sessions)
 
 
-def group_chains(sink_session_ids: list[str], session_graph: dict) -> list[set[str]]:
-    """将 sink 命中的 session 按 session graph 连通性分组为链。
+_MAX_CHAIN_SESSIONS = 10
 
-    连通的 session（BFS 可达）合并为一条链，不连通的分开。
+
+def trace_ancestor_chain(start_session: str, session_graph: dict,
+                         max_sessions: int = _MAX_CHAIN_SESSIONS) -> set[str]:
+    """从 start_session 出发，沿 parent_map 向上追溯祖先链。
+
+    只走 parent_map（真实调用关系），不做 BFS 连通分量遍历。
+    返回最多 max_sessions 个 session（含 start_session）。
+    """
+    if not start_session:
+        return set()
+    parent_map = session_graph.get("parent_map", {}) if session_graph else {}
+    chain: list[str] = []
+    sid = start_session
+    visited = set()
+    while sid and sid not in visited and len(chain) < max_sessions:
+        chain.append(sid)
+        visited.add(sid)
+        sid = parent_map.get(sid)
+    return set(chain)
+
+
+def group_chains(sink_session_ids: list[str], session_graph: dict) -> list[set[str]]:
+    """将 sink 命中的 session 按 parent_map 向上追溯为链。
+
+    每个 sink session 沿 parent_map 向上追溯最多 _MAX_CHAIN_SESSIONS 个。
+    有交集的链合并为一条。
 
     返回: [set of session_ids, ...] — 每个集合是一条链
     """
     if not sink_session_ids:
         return []
 
-    edges = session_graph.get("edges", {}) if session_graph else {}
-
-    # 对每个 sink 命中 session 做 BFS，获取可达集合
-    reachable_sets = []
+    ancestor_sets = []
     for sid in sink_session_ids:
-        visited = {sid}
-        queue = [sid]
-        while queue:
-            cur = queue.pop(0)
-            for related in edges.get(cur, set()):
-                if related not in visited:
-                    visited.add(related)
-                    queue.append(related)
-        reachable_sets.append(visited)
+        ancestor_sets.append(trace_ancestor_chain(sid, session_graph))
 
-    # 合并相交的集合（两个 sink session 的 BFS 结果有交集 → 同一条链）
-    # 重复合并直到稳定，保证传递性（A∩B, B∩C → A∪B∪C）
-    chains: list[set[str]] = [rs.copy() for rs in reachable_sets]
+    # 合并相交的集合
+    chains: list[set[str]] = [rs.copy() for rs in ancestor_sets]
     changed = True
     while changed:
         changed = False
         for i in range(len(chains)):
             for j in range(i + 1, len(chains)):
-                if chains[i] & chains[j]:  # 有交集
+                if chains[i] & chains[j]:
                     chains[i] = chains[i] | chains[j]
                     chains.pop(j)
                     changed = True
@@ -238,9 +250,10 @@ def build_session_chain(chain_sessions: set[str], events: list,
                         sink_hit_sessions: list[str] | None = None,
                         finding_sessions: list[str] | None = None,
                         session_graph: dict | None = None) -> list[dict]:
-    """构建 session 链，按调用关系（parent_map）排序，标注 sink/finding。
+    """构建 session 链，按 parent_map 调用关系排序，标注 sink/finding。
 
-    有 parent_map 时按父子调用关系排序（根→子→孙），无 parent_map 时退化为时间排序。
+    有 parent_map 时从 finding session 向上追溯排列（根→子→孙），
+    无 parent_map 时退化为时间排序。
     返回: [{session_id, has_sink, has_finding, first_ts}, ...]
     """
     if not chain_sessions:
@@ -251,8 +264,7 @@ def build_session_chain(chain_sessions: set[str], events: list,
 
     # 找每个 session 的最早事件时间戳
     session_first_ts: dict[str, int] = {}
-    _n = len(events)
-    for idx, e in enumerate(events):
+    for e in events:
         sid = e.session_id
         if sid not in chain_sessions:
             continue
@@ -260,21 +272,9 @@ def build_session_chain(chain_sessions: set[str], events: list,
         if sid not in session_first_ts or ts < session_first_ts[sid]:
             session_first_ts[sid] = ts
 
-    # 从 session_graph 提取 parent_map（有方向的父子关系）
     parent_map: dict[str, str] = {}
     if session_graph:
         parent_map = session_graph.get("parent_map", {})
-
-    # 构建链内的 children 映射（仅限 chain_sessions 内的 parent→child）
-    children: dict[str, list[str]] = {}
-    has_parent_in_chain: set[str] = set()
-    for sid in chain_sessions:
-        pid = parent_map.get(sid)
-        if pid and pid in chain_sessions:
-            children.setdefault(pid, []).append(sid)
-            has_parent_in_chain.add(sid)
-
-    result: list[dict] = []
 
     def _make_entry(sid: str) -> dict:
         return {
@@ -284,26 +284,28 @@ def build_session_chain(chain_sessions: set[str], events: list,
             "first_ts": session_first_ts.get(sid, 0),
         }
 
-    def _dfs(sid: str):
-        """前序遍历：父→子→孙，兄弟按时间排序。"""
-        result.append(_make_entry(sid))
-        kids = children.get(sid, [])
-        kids.sort(key=lambda s: session_first_ts.get(s, 0))
-        for k in kids:
-            _dfs(k)
-
-    if children:
-        # 有 parent_map：找根（在链内但 parent 不在链内的 session）
-        roots = [sid for sid in chain_sessions if sid not in has_parent_in_chain]
-        roots.sort(key=lambda s: session_first_ts.get(s, 0))
-        for r in roots:
-            _dfs(r)
+    if parent_map:
+        # 从 finding session 向上追溯祖先，再反转得到根→子→孙顺序
+        ordered: list[str] = []
+        seen: set[str] = set()
+        for fsid in (finding_sessions or []):
+            if fsid not in chain_sessions:
+                continue
+            ancestors: list[str] = []
+            sid = fsid
+            while sid and sid in chain_sessions and sid not in seen:
+                ancestors.append(sid)
+                seen.add(sid)
+                sid = parent_map.get(sid)
+            ordered.extend(reversed(ancestors))  # 根→子→孙
+        # 补上未通过 finding 追溯到的 session（按时间排序）
+        remaining = sorted(chain_sessions - seen, key=lambda s: session_first_ts.get(s, 0))
+        ordered.extend(remaining)
+        return [_make_entry(sid) for sid in ordered]
     else:
         # 无 parent_map：退化为时间排序
-        for sid in sorted(chain_sessions, key=lambda s: session_first_ts.get(s, 0)):
-            result.append(_make_entry(sid))
-
-    return result
+        return [_make_entry(sid)
+                for sid in sorted(chain_sessions, key=lambda s: session_first_ts.get(s, 0))]
 
 
 def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
@@ -519,6 +521,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
         # 收集链数据（供报告展示用）
         if sr.get("has_sink_info") and sr.get("chains"):
             _chain_sessions = sr["chains"][0]
+            # 有 matched finding 时，从 finding session 向上追溯最多 10 个 session
+            if finding_session:
+                _chain_sessions = trace_ancestor_chain(finding_session, session_graph)
             _finding_sessions = [f.get("session_id", "") for f in active_findings if f.get("session_id")]
             _session_chain = build_session_chain(_chain_sessions, events, sr["sink_sessions"],
                                                   _finding_sessions, session_graph) if _chain_sessions else []
