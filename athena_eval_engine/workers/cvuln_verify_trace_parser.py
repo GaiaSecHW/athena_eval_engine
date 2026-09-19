@@ -367,10 +367,50 @@ class CVulnVerifyTraceParser(TraceParser):
         }
         return sess
 
+    def _fetch_predecessor_map(self) -> dict[str, str]:
+        """从 CVulnVerify PostgreSQL 查询 predecessor_attempt_id 映射。
+
+        CVulnVerify 的 session 父子关系（重试链）存储在 vuln_verify_attempt 表的
+        predecessor_attempt_id 列中，不在 JSONL trace 文件里。
+        JSONL 文件名 = attempt_id（UUID），与 DB id 列直接对应。
+
+        连接失败时返回空 dict（graceful degradation）。
+        """
+        try:
+            import psycopg2
+        except ImportError:
+            return {}
+
+        host = os.environ.get("EVAL_CVULN_DB_HOST", "secflow-app-vuln-verify-v2-postgres")
+        port = int(os.environ.get("EVAL_CVULN_DB_PORT", "5432"))
+        user = os.environ.get("EVAL_CVULN_DB_USER", "postgres")
+        password = os.environ.get("EVAL_CVULN_DB_PASSWORD", "secflow123")
+        database = os.environ.get("EVAL_CVULN_DB_NAME", "secflow_vuln_verify_v2")
+
+        try:
+            conn = psycopg2.connect(
+                host=host, port=port, user=user, password=password, database=database,
+                connect_timeout=5,
+            )
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT id, predecessor_attempt_id FROM vuln_verify_attempt "
+                "WHERE predecessor_attempt_id IS NOT NULL"
+            )
+            mapping = {str(r[0]): str(r[1]) for r in cur.fetchall()}
+            conn.close()
+            return mapping
+        except Exception:
+            return {}
+
     def build_session_graph(self, events):
         """构建 CVulnVerify session 关系图。
 
-        只建 SESSION_START parent_id 父子边（真实调用关系）。
+        Session 父子关系（重试链）来源：
+        1. CVulnVerify PostgreSQL vuln_verify_attempt.predecessor_attempt_id（主要）
+           — JSONL 文件名 = attempt_id，与 DB id 直接对应
+        2. JSONL session 行 parent_id（备选，当前 CVulnVerify 不写此字段）
+
         不建共享文件/fact 边——共享不是调用关系，会导致 BFS 误连。
         """
         import re
@@ -393,7 +433,7 @@ class CVulnVerifyTraceParser(TraceParser):
                                           'session_type': 'verify', 'memory_reads': [], 'case_id': ''}
             sg = graph['sessions'][sid]
 
-            # SESSION_START: 提取 parent_id → parent_map
+            # SESSION_START: 提取 parent_id → parent_map（备选机制）
             if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
                 pid = str(ev.input_json.get("parent_id") or "")
                 if pid:
@@ -435,6 +475,24 @@ class CVulnVerifyTraceParser(TraceParser):
                 cmd = str(inp.get("command", ""))
                 for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
                     sg['memory_reads'].append(m.group(1))
+
+        # 从 CVulnVerify DB 查询 predecessor 链（主要机制）
+        # session_id = attempt_id = JSONL 文件名，与 DB id 直接对应
+        if not graph['parent_map']:
+            predecessor_map = self._fetch_predecessor_map()
+            if predecessor_map:
+                session_ids = set(graph['sessions'].keys())
+                from ..infrastructure.log_util import log as _log
+                _matched = 0
+                for sid, pid in predecessor_map.items():
+                    if sid in session_ids and pid in session_ids:
+                        graph['parent_map'][sid] = pid
+                        graph['edges'][sid].add(pid)
+                        graph['edges'][pid].add(sid)
+                        _matched += 1
+                _log("CVULN", f"build_session_graph: predecessor_attempt_id → "
+                      f"{_matched} session edges (DB has {len(predecessor_map)}, "
+                      f"sessions={len(session_ids)})")
 
         graph['finding_to_session'] = finding_to_session
         return graph

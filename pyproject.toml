@@ -14,6 +14,7 @@ dependencies = [
     "scipy>=1.11",
     "uvicorn[standard]>=0.27",
     "python-dotenv>=1",
+    "psycopg2-binary>=2.9",
 ]
 
 [tool.pytest.ini_options]
