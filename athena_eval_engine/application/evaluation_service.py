@@ -1751,6 +1751,17 @@ def run(evaluation_id: str) -> dict:
             _fpr_match = (_fpr_match_lookup or {}).get("kg", {}).get(_g_case_id, {})
             _fpr_ac_title = _fpr_match.get("ac_title", "")
             _fpr_ac_summary = _fpr_match.get("ac_summary", "")
+            # FPR 匹配已找到 finding → 更新 matched/mined/confusion（sink_matcher 未匹配时）
+            _fpr_judgment = _fpr_match.get("judgment", "")
+            if _fpr_judgment and _fpr_judgment != "未匹配" and not _kg_case_data.get("matched"):
+                _kg_case_data["matched"] = True
+                _kg_case_data["mined"] = True
+                _kg_case_data["confusion"] = "TP" if _fpr_judgment == "真正" else "FP"
+                if not _kg_case_data.get("matched_finding_id"):
+                    _kg_case_data["matched_finding_id"] = _fpr_match.get("ac_case_id", "")
+                if not _kg_case_data.get("finding_title"):
+                    _kg_case_data["finding_title"] = _fpr_ac_title
+                _kg_case_data["ac_case_id"] = _fpr_match.get("ac_case_id", "")
             _kg_ac_match_method = ""
             if _fpr_ac_title:
                 _fpr_finding, _match_method = _match_ac_to_finding_by_title(
@@ -1789,6 +1800,14 @@ def run(evaluation_id: str) -> dict:
                     log("EVAL", f"步骤2: case={_g_case_id} AC title='{_fpr_ac_title}' "
                         f"未找到 finding 关系 ({_match_method})")
             _kg_case_data["ac_match_method"] = _kg_ac_match_method
+            # 候选 finding：matched 时不带；未匹配时只保留 1 条 + 总数（不往 HTML 放多余数据）
+            _kg_cands = _kg_case_data.get("candidate_findings") or []
+            if _kg_case_data.get("matched"):
+                _kg_case_data["candidate_findings"] = []
+                _kg_case_data["candidate_count"] = 0
+            else:
+                _kg_case_data["candidate_count"] = len(_kg_cands)
+                _kg_case_data["candidate_findings"] = _kg_cands[:1]
             # 步骤 3：无 FPR 匹配 → 用 sink_match 结果（已在 _kg_case_data 中）
             # 步骤 4：无 finding → chain_actions 为空，LLM 分析走 fast-path
 
@@ -1796,6 +1815,17 @@ def run(evaluation_id: str) -> dict:
             _nogk_fpr_match = (_fpr_match_lookup or {}).get("nogk", {}).get(_g_case_id, {})
             _nogk_ac_title = _nogk_fpr_match.get("ac_title", "")
             _nogk_ac_summary = _nogk_fpr_match.get("ac_summary", "")
+            # FPR 匹配已找到 finding → 更新 matched/mined/confusion（sink_matcher 未匹配时）
+            _nogk_fpr_judgment = _nogk_fpr_match.get("judgment", "")
+            if _nogk_fpr_judgment and _nogk_fpr_judgment != "未匹配" and not _nogk_case_data.get("matched"):
+                _nogk_case_data["matched"] = True
+                _nogk_case_data["mined"] = True
+                _nogk_case_data["confusion"] = "TP" if _nogk_fpr_judgment == "真正" else "FP"
+                if not _nogk_case_data.get("matched_finding_id"):
+                    _nogk_case_data["matched_finding_id"] = _nogk_fpr_match.get("ac_case_id", "")
+                if not _nogk_case_data.get("finding_title"):
+                    _nogk_case_data["finding_title"] = _nogk_ac_title
+                _nogk_case_data["ac_case_id"] = _nogk_fpr_match.get("ac_case_id", "")
             _nogk_ac_match_method = ""
             if _nogk_ac_title:
                 _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(
@@ -1831,6 +1861,14 @@ def run(evaluation_id: str) -> dict:
                     log("EVAL", f"步骤2(NOGK): case={_g_case_id} AC title='{_nogk_ac_title}' "
                         f"未找到 finding 关系 ({_nogk_match_method})")
             _nogk_case_data["ac_match_method"] = _nogk_ac_match_method
+            # 候选 finding：matched 时不带；未匹配时只保留 1 条 + 总数
+            _nogk_cands = _nogk_case_data.get("candidate_findings") or []
+            if _nogk_case_data.get("matched"):
+                _nogk_case_data["candidate_findings"] = []
+                _nogk_case_data["candidate_count"] = 0
+            else:
+                _nogk_case_data["candidate_count"] = len(_nogk_cands)
+                _nogk_case_data["candidate_findings"] = _nogk_cands[:1]
 
             _g_case_results.append({
                 **_kg_case_data,
@@ -1853,6 +1891,7 @@ def run(evaluation_id: str) -> dict:
                 "nogk_finding_session": _nogk_case_data.get("finding_session", ""),
                 "nogk_session_chain": _nogk_case_data.get("session_chain", []),
                 "nogk_candidate_findings": _nogk_case_data.get("candidate_findings", []),
+                "nogk_candidate_count": _nogk_case_data.get("candidate_count", 0),
                 "nogk_sink_info": _nogk_case_data.get("sink_info", ""),
                 "nogk_sink_analysis": _nogk_case_data.get("sink_analysis", ""),
                 "nogk_no_finding_reason": _nogk_case_data.get("no_finding_reason", ""),

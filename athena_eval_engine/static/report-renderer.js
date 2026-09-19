@@ -424,10 +424,11 @@ function renderReport(d){
         h+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+(c.matched?confBadge("KG",conf):"")+(_hasNogk&&c.nogk_matched?confBadge("No-KG",nogkConf):"")+"</div>";
       }
       // 候选 finding（预筛选认为可能匹配但未最终匹配的 agent finding，以基线为中心）
-      function _renderCands(label,cands){
+      function _renderCands(label,cands,totalCount){
         if(!cands||!cands.length) return "";
+        var tc=totalCount||cands.length;
         var hh="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
-        hh+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>📋 "+label+" 候选 Finding（"+cands.length+" 条，预筛选匹配但未最终匹配）</summary>";
+        hh+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>📋 "+label+" 候选 Finding（"+tc+" 条，预筛选匹配但未最终匹配）</summary>";
         // 基线漏洞信息（供人工对比）
         var blType=c.vulnerability_type||"";
         var blDesc=c.description||"";
@@ -462,11 +463,14 @@ function renderReport(d){
           hh+="<div style='font-size:11px;color:var(--gray);font-family:monospace;margin-top:2px'>"+String(cf.finding_id||"").replace(/</g,"&lt;")+"</div>";
           hh+="</div>";
         });
+        if(tc>cands.length){
+          hh+="<div style='font-size:12px;color:var(--sub);padding:6px 8px'>…还有 "+(tc-cands.length)+" 条候选未展示</div>";
+        }
         hh+="</details>";
         return hh;
       }
-      if(!c.matched) h+=_renderCands("KG",c.candidate_findings);
-      if(_hasNogk&&!c.nogk_matched) h+=_renderCands("No-KG",c.nogk_candidate_findings);
+      if(!c.matched) h+=_renderCands("KG",c.candidate_findings,c.candidate_count);
+      if(_hasNogk&&!c.nogk_matched) h+=_renderCands("No-KG",c.nogk_candidate_findings,c.nogk_candidate_count);
       // 知识与记忆交互明细
       if(pcKa&&kgActive){
         // 知识图谱交互
@@ -696,7 +700,8 @@ function renderReport(d){
           const expLabel=c.expected_label||"";
           const expBadge=expLabel==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:10px'>漏洞</span>":expLabel==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:10px'>非漏洞</span>":"";
           const kgCands=c.candidate_findings||[];
-          const kgCandNote=(!c.matched&&kgCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCands.length} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
+          const kgCandCount=c.candidate_count||kgCands.length;
+          const kgCandNote=(!c.matched&&kgCandCount)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCandCount} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
           let kgCell;
           function _chainHtml(chain){
