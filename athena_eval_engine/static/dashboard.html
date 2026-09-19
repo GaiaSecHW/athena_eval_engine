@@ -164,17 +164,15 @@ async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type"
 // 返回列表的全局函数（避免 onclick 内单引号转义问题）
 function goBack(){Router.navigate('/');}
 
-// ===== 客户端路由器（History API） =====
+// ===== 页面路由器（整页跳转，一个功能一个 URL） =====
 const Router={
   base:'',
   init(){
     this.base=_INGRESS;
-    window.addEventListener('popstate',function(){Router.handle();});
     this.handle();
   },
   navigate(path){
-    history.pushState(null,'',this.base+path);
-    this.handle();
+    window.location.href=this.base+path;
   },
   handle(){
     var path=location.pathname.substring(this.base.length)||'/';
