@@ -408,6 +408,10 @@ def _try_repair_backslash_quote(text):
     当 LLM 漏掉 ], 或漏掉逗号时，解析器报 "Expecting ',' delimiter"。
     逐个尝试在错误位置插入 ], ],} 等修复方案。
 
+    Step 2b: 修复未转义引号。当 "Expecting ',' delimiter" 不是缺逗号
+    而是字符串值中含未转义的 " 导致字符串提前关闭时，从错误位置向前
+    找到提前关闭字符串的 " 并转义为 \"。迭代修复多个未转义引号。
+
     Step 3: 花括号+方括号补全。在 repaired 文本上统计深度并补全缺失的 } 和 ]。
     """
     _valid_escapes = set('"\\/bfnrtu')
@@ -479,6 +483,26 @@ def _try_repair_backslash_quote(text):
                 break  # 结构修复无法命中，跳出
             else:
                 break
+    # Step 2b: 修复未转义引号（"Expecting ',' delimiter" 由未转义 " 导致）
+    for _ in range(50):
+        try:
+            obj, _ = decoder.raw_decode(repaired)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError as e:
+            if not e.msg.startswith("Expecting ',' delimiter"):
+                break
+            # 从错误位置向前跳过空白，找到提前关闭字符串的 "
+            i = e.pos - 1
+            while i >= 0 and repaired[i] in ' \t\n\r':
+                i -= 1
+            if i < 0 or repaired[i] != '"':
+                break
+            # 已转义的 " 不是问题所在
+            if i > 0 and repaired[i - 1] == '\\':
+                break
+            # 转义这个引号
+            repaired = repaired[:i] + '\\"' + repaired[i + 1:]
+            continue
     # Step 3: 花括号+方括号补全（在 repaired 文本上统计深度）
     brace_depth = 0
     bracket_depth = 0

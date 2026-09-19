@@ -71,6 +71,7 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
     Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
     Step 1b: 修复无效 escape（backslash + 非 JSON 转义字符）。
     Step 2: 结构修复（在错误位置插入缺失的分隔符/闭合符）。
+    Step 2b: 修复未转义引号（"Expecting ',' delimiter" 由未转义 " 导致）。
     Step 3: 花括号+方括号补全（在 repaired 文本上统计深度并补全缺失的 } 和 ]）。
     """
     _valid_escapes = set('"\\/bfnrtu')
@@ -133,7 +134,23 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
                 break
             else:
                 break
-    # Step 3: 花括号+方括号补全
+    # Step 2b: 修复未转义引号（"Expecting ',' delimiter" 由未转义 " 导致）
+    for _ in range(50):
+        try:
+            obj, _ = decoder.raw_decode(repaired)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError as e:
+            if not e.msg.startswith("Expecting ',' delimiter"):
+                break
+            i = e.pos - 1
+            while i >= 0 and repaired[i] in ' \t\n\r':
+                i -= 1
+            if i < 0 or repaired[i] != '"':
+                break
+            if i > 0 and repaired[i - 1] == '\\':
+                break
+            repaired = repaired[:i] + '\\"' + repaired[i + 1:]
+            continue
     brace_depth = 0
     bracket_depth = 0
     in_str = False
