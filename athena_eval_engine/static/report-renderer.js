@@ -864,15 +864,16 @@ function renderReport(d){
       const isAc=g.category==='mining_fpr';
       const srcLabel=isAc?'告警中心':'漏洞中心';
       const srcIcon=isAc?'📈':'📊';
-      function _fprStr(r){return r&&r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';}
-      function _fprLine(label,r){
-        if(!r) return '';
-        const p=label?label+' ':'';
-        return `${p}误报率=${_fprStr(r)}（误报数=${r.fp||0} / (误报数+真正数)=${(r.tp||0)+(r.fp||0)}）`;
+      function _fprStat(r){
+        if(!r) return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">M13</span> 误报率</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">无数据</div></div>`;
+        const fprPct=(r.fpr*100).toFixed(2)+'%';
+        const tp=r.tp||0,fp=r.fp||0;
+        const formulaHtml=`<div style="font-size:12px;color:var(--sub);margin-top:4px">误报=${fp}，真正=${tp}，→ ${fp}/(${fp}+${tp})</div><div style="font-size:12px;color:var(--sub);margin-top:2px;font-family:monospace">${fprPct}</div>`;
+        return `<div class="mcard"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--acc)">M13</span> 误报率</div><div class="mc-val" style="color:var(--red)">${fprPct}</div><div style="font-size:13px;color:var(--sub);margin-top:4px">误报数=${fp} / (误报数+真正数)=${tp+fp}</div>${formulaHtml}</div>`;
       }
       const stats=kg&&nogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('KG',kg)}<span style="margin-left:16px">${_fprLine('No-KG',nogk)}</span></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('',kg||nogk)}</div>`;
+        ? `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">${_fprStat(kg)}${_fprStat(nogk)}</div>`
+        : `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">${_fprStat(kg||nogk)}</div>`;
       // 合并 match_details，检查告警中心 finding 是否被漏洞验证否决（不在漏洞中心 case ID 集合中 = 被否决）
       let allDetails=[];
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
@@ -899,13 +900,13 @@ function renderReport(d){
           <td>${badge}</td>
         </tr>`;
       }).join('');
-      return `${isAc?'':`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
+      return `${`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
       ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
       <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`:''}`;
     }
     const tabs=mg.length>1?`<div role="tablist" aria-label="报告类别" style="display:grid;grid-template-columns:repeat(${mg.length},minmax(0,1fr));gap:12px;margin:0 0 20px">${mg.map((g,i)=>{const mfpr=g.category==='mining_fpr';const mining=g.category!=="verify"&&!mfpr;const icon=mfpr?'📈':mining?'🔎':'✅';const desc=mfpr?'告警中心 case 与基线漏洞匹配对比':mining?'发现与提交潜在漏洞':'验证候选漏洞是否成立';return`<button class="btn" role="tab" data-report-tab-btn aria-selected="${i===0?'true':'false'}" style="text-align:left;display:flex;gap:10px;align-items:center;padding:13px 15px;border:1px solid ${i===0?'var(--acc)':'var(--bd)'};background:${i===0?'var(--acc)':'var(--panel)'};color:${i===0?'#fff':'var(--sub)'};${i===0?'box-shadow:0 8px 20px rgba(124,58,237,.28);transform:translateY(-2px)':''}" onclick="selectReportTab(this,'report-tab-${i}')"><span style="font-size:24px">${icon}</span><span><b style="display:block;font-size:16px">${g.label}</b><small style="display:block;margin-top:3px;opacity:.82">${desc}</small></span></button>`}).join("")}</div><div style="font-size:14px;color:var(--sub);margin:-8px 0 16px;padding:8px 10px;background:var(--p2);border-radius:8px">当前选中的类别决定下方全部统计、效果指标和诊断的范围。</div>`:"";
-    const panes=mg.map((g,i)=>{if(g.category==='mining_fpr'){return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">${_buildE2eFprInVerify(g)}</div>`;}return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
+    const panes=mg.map((g,i)=>{if(g.category==='mining_fpr'){return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}"><div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">📈</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>${_buildE2eFprInVerify(g)}</div>`;}return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
       ${_statsTable(g.task_id,g.label)}
       ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
