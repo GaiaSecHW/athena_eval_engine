@@ -774,7 +774,8 @@ class ArgoTraceParser(TraceParser):
             _add(obj)
 
         # 策略 3: LLM 兜底 — 前两种策略都无法解析时，用 LLM 从文本中提取 JSON
-        if not results and self._llm and self._llm.is_enabled():
+        # 文本中无 { 则不可能包含 JSON，跳过 LLM 调用
+        if not results and '{' in text and self._llm and self._llm.is_enabled():
             try:
                 prompt = (
                     "以下文本是安全分析 agent 的回复，其中包含一个 JSON payload"
