@@ -1107,7 +1107,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 + _nogk_desc
                 + "# 知识与记忆的识别规则\n"
                 "knowledge_interactions 中的 tool 是知识图谱查询工具（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等。\n"
-                "memory_interactions 中的 tool 是记忆系统访问工具（如 mem recall、read /app/memory），用于读取历史挖掘经验。\n"
+                "memory_interactions 中的 tool 是记忆系统访问工具（命令路径包含 memengine），用于读取历史挖掘经验。\n"
                 "两者都是知识/记忆介入，需分别分析其影响。\n\n"
                 "# impact 判定规则\n"
                 + "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
