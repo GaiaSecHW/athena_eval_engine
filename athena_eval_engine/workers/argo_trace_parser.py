@@ -392,7 +392,7 @@ class ArgoTraceParser(TraceParser):
             if ev.event_type == "TEXT" and ev.output_json:
                 txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
                 if '"accepted"' in txt:
-                    for payload in self._extract_accepted_payloads(txt):
+                    for payload in self._extract_accepted_payloads(txt, use_llm=False):
                         data = payload.get("data", payload)
                         if not isinstance(data, dict):
                             continue
@@ -720,7 +720,7 @@ class ArgoTraceParser(TraceParser):
             return a[0] - b[1]
         return 0  # 重叠
 
-    def _extract_accepted_payloads(self, text: str) -> list[dict]:
+    def _extract_accepted_payloads(self, text: str, *, use_llm: bool = True) -> list[dict]:
         """从文本中提取 JSON payload。
 
         nazhua 平台的 validate_verify_payload 不要求 accepted: true，
@@ -732,6 +732,7 @@ class ArgoTraceParser(TraceParser):
         2. 文本中直接出现的 JSON 对象（花括号匹配 + 容错补全），
            搜索关键词：accepted, verdict, findings
         3. LLM 兜底：前两种策略都无法解析时，用 LLM 从文本中提取 JSON
+           （use_llm=False 时跳过，用于 build_session_graph 等纯 CPU 场景）
         """
         results: list[dict] = []
         seen: set[str] = set()
@@ -775,7 +776,8 @@ class ArgoTraceParser(TraceParser):
 
         # 策略 3: LLM 兜底 — 前两种策略都无法解析时，用 LLM 从文本中提取 JSON
         # 文本中无 { 则不可能包含 JSON，跳过 LLM 调用
-        if not results and '{' in text and self._llm and self._llm.is_enabled():
+        # use_llm=False 时跳过（build_session_graph 等纯 CPU 场景）
+        if use_llm and not results and '{' in text and self._llm and self._llm.is_enabled():
             try:
                 prompt = (
                     "以下文本是安全分析 agent 的回复，其中包含一个 JSON payload"
