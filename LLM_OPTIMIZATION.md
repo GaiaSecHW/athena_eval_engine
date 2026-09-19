@@ -4,7 +4,7 @@
 
 ## 总览
 
-共 **8 个活跃 LLM 调用点**（已删除 #5/#6，合并到 #7-#11 统一层；已删除 4 个死代码）。
+共 **8 个活跃 LLM 调用点**（已删除 #5/#6，合并到 #7-#11 统一层；已删除 4 个死代码）。**全部优化完成 ✅**
 
 | 编号 | 阶段 | 文件:行号 | 函数 | 用途 | 调用频率 | 类型 | 状态 |
 |------|------|-----------|------|------|----------|------|------|
@@ -14,8 +14,8 @@
 | 4 | PARSING | `ai_matcher.py:191` | `match_alert_center_to_findings` 1vs1 | 告警中心 case vs 候选 finding 详细对比 | 每对 (case, 候选) 1 次 | 直接有效 | ✅ 已优化 |
 | ~~5~~ | ~~PARSING~~ | ~~`sink_matcher.py`~~ | ~~`_compress_session_actions`~~ | ~~压缩 session 工具调用序列~~ | — | — | ❌ 已删除（合并到 #7-#10 统一压缩层） |
 | ~~6~~ | ~~PARSING~~ | ~~`sink_matcher.py`~~ | ~~`analyze_chain_llm`~~ | ~~LLM 判断 is_mining + matched_finding_idx~~ | — | — | ❌ 已删除（confusion 改为确定性，分析合并到 #11） |
-| 7-10 | REPORTING | `report_assembler.py` | `_compress_one` / `_compress_batch` | 统一压缩层：逐 session 压缩 → 分段 → 合并 → 批量再压缩 | 每个 uncached session 1 次（有缓存） | 中间产物→#11 | ⬜ 待统一 prompt |
-| 11 | REPORTING | `report_assembler.py` | `_run_llm` 主分析 | 统一分析层：挖掘过程总结 + KG 归因分析 | 每个非 fast-path 的 case 1 次 | 直接有效 | ⬜ 待增加 mining_summary 输出 |
+| 7-10 | REPORTING | `report_assembler.py:920/1033` | `_compress_one` / `_compress_batch` | 统一压缩层：逐 session 压缩 → 分段 → 合并 → 批量再压缩 | 每个 uncached session 1 次（有缓存） | 中间产物→#11 | ✅ 已优化 |
+| 11 | REPORTING | `report_assembler.py:1122` | `_run_llm` 主分析 | 统一分析层：挖掘过程总结 + KG 归因分析 | 每个非 fast-path 的 case 1 次 | 直接有效 | ✅ 已优化 |
 | 12 | REPORTING | `fpr_analysis.py:112` | `_llm_match_batch` 1vs1 | 基线 vs 单条 finding 判断是否同一漏洞 | 每对 1 次 | 直接有效 | ✅ 已优化 |
 | 13 | REPORTING | `fpr_analysis.py:161` | `_llm_match_batch` 批量 | 基线 vs 多条 finding 批量找出匹配 | 每批 1 次（超限时减半到 1vs1） | 直接有效 | ✅ 已优化 |
 
@@ -26,10 +26,8 @@
 | #1 source 提取 | ~数十次 | 短 | 低 |
 | #2 Argo JSON 兜底 | 少量 | 中 | 低 |
 | #3-#4 AC 匹配 | 数十~上百次 | 中 | 中 |
-| #5 session 压缩 | 数十~上百次（有缓存） | 中~长 | 中 |
-| #6 sink 链分析 | 基线数 × 链数 × 2 条件 | 长 | **高** |
-| #7-#10 KG 分析压缩 | case 数 × session 数（多轮） | 中~长 | **最高** |
-| #11 KG 主分析 | case 数（并发 26） | 很长 | **最高** |
+| #7-#10 统一压缩层 | session 数（有缓存） | 中~长 | 中 |
+| #11 KG 主分析 | case 数（并发 kg_analysis_workers） | 很长 | **最高** |
 | #12-#13 FPR 匹配 | 数十次 | 中 | 中 |
 
 ## 优化记录
@@ -91,6 +89,47 @@
 **效果**：
 - Argo parser 的 LLM 兜底触发频率降低（策略 1+2 的 JSON 解析能力增强，更多 case 在走 LLM 前就能解析成功）
 - 其他 parser 之前 `json.loads` 失败直接 `pass` 丢数据，现在有 `raw_decode` + 花括号补全兜底，减少数据丢失
+
+---
+
+### #7-#10 统一压缩层（REPORTING）— ✅ 已完成
+
+**问题**：旧 #5（`sink_matcher._compress_session_actions`）和旧 #6（`sink_matcher.analyze_chain_llm`）各自独立压缩 session、独立调 LLM 判断 is_mining，调用频率高（基线数 × 链数 × 2 条件），且 #6 的 LLM 判定结果已被确定性 confusion 逻辑替代。
+
+**修复**：删除 #5/#6（`sink_matcher.py` 中已无 `_compress_session_actions` / `analyze_chain_llm`），在 `report_assembler.py` 新增统一压缩层：
+
+1. **`_compress_one`（L920）**：逐 session 压缩，统一 system prompt（L903-917），输出 `{"session_id", "mining_summary", "knowledge_queries", "key_actions"}`。
+   - 单 session 过大时分段压缩（`_SEGMENT_CHAR_LIMIT=60000`），各段独立调 LLM，再合并（L929-969）。
+   - 合并 prompt 也统一输出 `mining_summary`（L958-966）。
+   - 结果缓存到 `_session_compress_cache`，跨 case 复用（L971/974/978）。
+2. **`_compress_batch`（L1033）**：压缩后仍超限时，分批聚合再压缩，统一 prompt（L1000-1009），输出 `mining_summary`。
+   - 多轮循环直到 fit（L1011-1055）。
+3. 并行执行：ThreadPoolExecutor，worker 数从 `get_runtime_workers()["kg_analysis"]` 获取（L983-988, L1046-1052）。
+
+**效果**：
+- #5/#6 删除 → LLM 调用次数减少（confusion 改为确定性，is_mining 判定不再调 LLM）
+- 统一 prompt → 所有压缩输出格式一致，可直接作为 #11 的输入
+- 缓存复用 → 同一 session 在多个 case 中只压缩一次
+
+**文件**：`athena_eval_engine/application/report_assembler.py` L900-1055
+
+---
+
+### #11 主分析层（REPORTING）— ✅ 已完成
+
+**问题**：主分析（`_run_llm`）的 prompt 需要接收 #7-#10 压缩层产出的 `mining_summary` 作为输入，用于 KG 归因分析的挖掘过程描述。
+
+**修复**：
+1. `data["mining_actions"]` 存储 #7-#10 的压缩结果（L989），每条包含 `mining_summary`、`knowledge_queries`、`key_actions`。
+2. 主分析 prompt（L1062-1098）描述 `mining_actions` 字段："完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表"。
+3. `_run_llm`（L1122）并行执行主分析，输出 `{"kg_judgment", "query_summary", "knowledge_summary", "impact", "reason"}`，并附加 `interactions`、`sink_analysis`、`knowledge_intervention` 等结构化字段。
+4. LLM 不可用时规则降级（L1140-1159）。
+
+**效果**：
+- 主分析直接使用压缩层产出的 `mining_summary`，无需重复压缩
+- 挖掘过程描述从原始工具调用序列（可能数万行）压缩到 ≤2000 字摘要，fit 进 LLM context
+
+**文件**：`athena_eval_engine/application/report_assembler.py` L1062-1180
 
 ---
 

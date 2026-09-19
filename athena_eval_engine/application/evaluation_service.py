@@ -1753,9 +1753,10 @@ def run(evaluation_id: str) -> dict:
             _fpr_match = (_fpr_match_lookup or {}).get("kg", {}).get(_g_case_id, {})
             _fpr_ac_title = _fpr_match.get("ac_title", "")
             _fpr_ac_summary = _fpr_match.get("ac_summary", "")
-            # FPR 匹配已找到 finding → 更新 matched/mined/confusion（sink_matcher 未匹配时）
+            # FPR 为权威来源：匹配 → TP/FP，未匹配 → FN/TN（与误报率统计一致）
             _fpr_judgment = _fpr_match.get("judgment", "")
-            if _fpr_judgment and _fpr_judgment != "未匹配" and not _kg_case_data.get("matched"):
+            if _fpr_judgment and _fpr_judgment != "未匹配":
+                # FPR 匹配 → TP/FP（FPR 为权威来源，覆盖 sink_matcher）
                 _kg_case_data["matched"] = True
                 _kg_case_data["mined"] = True
                 _kg_case_data["confusion"] = "TP" if _fpr_judgment == "真正" else "FP"
@@ -1764,6 +1765,12 @@ def run(evaluation_id: str) -> dict:
                 if not _kg_case_data.get("finding_title"):
                     _kg_case_data["finding_title"] = _fpr_ac_title
                 _kg_case_data["ac_case_id"] = _fpr_match.get("ac_case_id", "")
+            elif "kg" in (_fpr_match_lookup or {}):
+                # FPR 数据可用但未匹配此基线 → FN/TN（与误报率统计一致）
+                _expected = (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA")
+                _kg_case_data["confusion"] = "FN" if _expected == "VULNERABLE" else ("TN" if _expected == "NON_VULNERABLE" else "NA")
+                _kg_case_data["matched"] = False
+                _kg_case_data["mined"] = False
             _kg_ac_match_method = ""
             if _fpr_ac_title:
                 _fpr_finding, _match_method = _match_ac_to_finding_by_title(
@@ -1817,9 +1824,10 @@ def run(evaluation_id: str) -> dict:
             _nogk_fpr_match = (_fpr_match_lookup or {}).get("nogk", {}).get(_g_case_id, {})
             _nogk_ac_title = _nogk_fpr_match.get("ac_title", "")
             _nogk_ac_summary = _nogk_fpr_match.get("ac_summary", "")
-            # FPR 匹配已找到 finding → 更新 matched/mined/confusion（sink_matcher 未匹配时）
+            # FPR 为权威来源：匹配 → TP/FP，未匹配 → FN/TN（与误报率统计一致）
             _nogk_fpr_judgment = _nogk_fpr_match.get("judgment", "")
-            if _nogk_fpr_judgment and _nogk_fpr_judgment != "未匹配" and not _nogk_case_data.get("matched"):
+            if _nogk_fpr_judgment and _nogk_fpr_judgment != "未匹配":
+                # FPR 匹配 → TP/FP（FPR 为权威来源，覆盖 sink_matcher）
                 _nogk_case_data["matched"] = True
                 _nogk_case_data["mined"] = True
                 _nogk_case_data["confusion"] = "TP" if _nogk_fpr_judgment == "真正" else "FP"
@@ -1828,6 +1836,12 @@ def run(evaluation_id: str) -> dict:
                 if not _nogk_case_data.get("finding_title"):
                     _nogk_case_data["finding_title"] = _nogk_ac_title
                 _nogk_case_data["ac_case_id"] = _nogk_fpr_match.get("ac_case_id", "")
+            elif "nogk" in (_fpr_match_lookup or {}):
+                # FPR 数据可用但未匹配此基线 → FN/TN（与误报率统计一致）
+                _expected = (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA")
+                _nogk_case_data["confusion"] = "FN" if _expected == "VULNERABLE" else ("TN" if _expected == "NON_VULNERABLE" else "NA")
+                _nogk_case_data["matched"] = False
+                _nogk_case_data["mined"] = False
             _nogk_ac_match_method = ""
             if _nogk_ac_title:
                 _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(

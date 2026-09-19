@@ -96,6 +96,28 @@ function selectReportTab(button,paneId){
   button.style.background='var(--acc)';button.style.color='#fff';button.style.borderColor='var(--acc)';button.style.boxShadow='0 8px 20px rgba(124,58,237,.28)';button.style.transform='translateY(-2px)';button.setAttribute('aria-selected','true');
 }
 
+function filterKgCases(btn,filter){
+  var container=btn.closest('details')||btn.closest('.card')||btn.parentElement;
+  if(!container)return;
+  var btns=container.querySelectorAll('.kg-filter-btn');
+  btns.forEach(function(b){b.style.opacity=b===btn?'1':'0.5';b.style.fontWeight=b===btn?'700':'400';});
+  var cards=container.querySelectorAll('.kg-case-card');
+  cards.forEach(function(card){
+    var impact=card.getAttribute('data-impact');
+    card.style.display=(filter==='ALL'||impact===filter)?'':'none';
+  });
+  var headers=container.querySelectorAll('.kg-group-header');
+  headers.forEach(function(header){
+    var next=header.nextElementSibling;
+    var hasVisible=false;
+    while(next&&!next.classList.contains('kg-group-header')){
+      if(next.classList.contains('kg-case-card')&&next.style.display!=='none'){hasVisible=true;break;}
+      next=next.nextElementSibling;
+    }
+    header.style.display=hasVisible?'':'none';
+  });
+}
+
 
 function renderReport(d){
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{},mc=p0.m2_m3_mcnemar||{};
@@ -254,24 +276,37 @@ function renderReport(d){
     var posCount=pcAnalysis.filter(p=>p.impact==="POSITIVE").length;
     var negCount=pcAnalysis.filter(p=>p.impact==="NEGATIVE").length;
     var neuCount=pcAnalysis.filter(p=>p.impact==="NEUTRAL").length;
-    kgHtml+="<div style='display:flex;gap:12px;margin-bottom:12px'>";
-    kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>正向 "+posCount+"</span>";
-    kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>负向 "+negCount+"</span>";
-    kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>中性 "+neuCount+"</span>";
+    kgHtml+="<div style='display:flex;gap:8px;margin-bottom:12px'>";
+    kgHtml+="<button class='bdg b-COMPLETED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"POSITIVE\")'>正向 "+posCount+"</button>";
+    kgHtml+="<button class='bdg b-FAILED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEGATIVE\")'>负向 "+negCount+"</button>";
+    kgHtml+="<button class='bdg b-CREATED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEUTRAL\")'>中性 "+neuCount+"</button>";
+    kgHtml+="<button class='bdg kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;background:var(--p2);color:var(--sub);opacity:1;font-weight:700' onclick='filterKgCases(this,\"ALL\")'>全部 "+pcAnalysis.length+"</button>";
     kgHtml+="</div>";
   }
 
   // 混淆矩阵汇总
   var memActive=(memAccess!==null&&memAccess>0)||memStats.callCount>0;
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
+  var _hasNogkStats=r.has_nogk!==false;
   var kgTP=0,kgFP=0,kgFN=0,kgTN=0,kgNA=0;
+  var nogkTP=0,nogkFP=0,nogkFN=0,nogkTN=0,nogkNA=0;
   caseResults.forEach(function(c){
     var conf=c.confusion||"NA";
     if(conf==="TP")kgTP++;else if(conf==="FP")kgFP++;else if(conf==="FN")kgFN++;else if(conf==="TN")kgTN++;else kgNA++;
+    if(_hasNogkStats){
+      var nconf=c.nogk_confusion||"NA";
+      if(nconf==="TP")nogkTP++;else if(nconf==="FP")nogkFP++;else if(nconf==="FN")nogkFN++;else if(nconf==="TN")nogkTN++;else nogkNA++;
+    }
   });
   var kgFprNum=kgFP,kgFprDen=kgTP+kgFP;
   var kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(2)+"%":"—";
-  kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（误报数="+kgFprNum+" / (误报数+真正数)="+kgFprDen+"）</span></div>";
+  var nogkFprNum=nogkFP,nogkFprDen=nogkTP+nogkFP;
+  var nogkFprStr=nogkFprDen>0?(nogkFprNum/nogkFprDen*100).toFixed(2)+"%":"—";
+  if(_hasNogkStats){
+    kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>KG 混淆矩阵：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>KG 误报率="+kgFprStr+"（误报数="+kgFprNum+" / (误报数+真正数)="+kgFprDen+"）</span><span style='margin-left:16px'>No-KG 混淆矩阵：真阳性="+nogkTP+" 假阳性="+nogkFP+" 假阴性="+nogkFN+" 真阴性="+nogkTN+(nogkNA?" 未判定="+nogkNA:"")+"</span><span style='margin-left:16px'>No-KG 误报率="+nogkFprStr+"（误报数="+nogkFprNum+" / (误报数+真正数)="+nogkFprDen+"）</span></div>";
+  }else{
+    kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（误报数="+kgFprNum+" / (误报数+真正数)="+kgFprDen+"）</span></div>";
+  }
 
   // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
   var hasAnyPcAnalysis=pcAnalysis.length>0;
@@ -289,7 +324,9 @@ function renderReport(d){
         var correctness=isCorrect?"正确":"错误";
         return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+judgment+" ("+correctness+")</span>";
       }
-      h+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
+      var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
+      var _impact=(pcKa&&pcKa.impact)?pcKa.impact:"NEUTRAL";
+      h+="<div class='kg-case-card' data-impact='"+_impact+"' style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
       h+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
       h+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
       var _exp=c.expected_label||"";
@@ -312,15 +349,18 @@ function renderReport(d){
       var _confColor=conf==="TP"||conf==="TN"?"var(--green)":conf==="FP"||conf==="FN"?"var(--red)":"var(--gray)";
       h+="<span style='font-size:11px;font-weight:600;color:"+_confColor+"'>"+(CONF_LABEL[conf]||conf)+"</span>";
       h+="</div>";
+      // per-case 知识介入分析
+      // sink 匹配分析 + finding 匹配分析（分开渲染）
+      var _hasNogk=r.has_nogk!==false;
       // sink 命中 session（不显示 session 链，只显示命中 sink 的 session）
       if(c.sink_hit&&c.sink_hit_sessions&&c.sink_hit_sessions.length&&!c.matched){
         var _sns=c.sink_hit_sessions.map(function(s){return "<code style='font-size:11px;color:var(--acc)'>🎯"+sessionDisplayName(s)+"</code>";});
-        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'>"+_sns.join(", ")+"</div>";
+        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'><span style='color:var(--acc);font-size:10px;font-weight:600'>KG:</span> "+_sns.join(", ")+"</div>";
       }
-      // per-case 知识介入分析
-      var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
-      // sink 匹配分析 + finding 匹配分析（分开渲染）
-      var _hasNogk=r.has_nogk!==false;
+      if(_hasNogk&&c.nogk_sink_hit&&c.nogk_sink_hit_sessions&&c.nogk_sink_hit_sessions.length&&!c.nogk_matched){
+        var _nogkSns=c.nogk_sink_hit_sessions.map(function(s){return "<code style='font-size:11px;color:var(--acc)'>🎯"+sessionDisplayName(s)+"</code>";});
+        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'><span style='color:var(--sub);font-size:10px;font-weight:600'>No-KG:</span> "+_nogkSns.join(", ")+"</div>";
+      }
       var _sinkInfo=c.sink_info||"";
       var _sinkAnalysis=c.sink_analysis||"";
       var _noFindReason=c.no_finding_reason||"";
@@ -536,11 +576,11 @@ function renderReport(d){
     var vulnCases=caseResults.filter(function(c){return c.expected_label==="VULNERABLE";});
     var nonVulnCases=caseResults.filter(function(c){return c.expected_label==="NON_VULNERABLE";});
     if(vulnCases.length){
-      kgHtml+="<div style='font-size:15px;margin:12px 0 8px;font-weight:600'>🔴 漏洞基线（<b>"+vulnCases.length+"</b> 个）</div>";
+      kgHtml+="<div class='kg-group-header' style='font-size:15px;margin:12px 0 8px;font-weight:600'>🔴 漏洞基线（<b>"+vulnCases.length+"</b> 个）</div>";
       vulnCases.forEach(function(c,i){kgHtml+=_renderCaseCard(c,i);});
     }
     if(nonVulnCases.length){
-      kgHtml+="<div style='font-size:15px;margin:12px 0 8px;font-weight:600'>🟢 非漏洞基线（<b>"+nonVulnCases.length+"</b> 个）</div>";
+      kgHtml+="<div class='kg-group-header' style='font-size:15px;margin:12px 0 8px;font-weight:600'>🟢 非漏洞基线（<b>"+nonVulnCases.length+"</b> 个）</div>";
       nonVulnCases.forEach(function(c,i){kgHtml+=_renderCaseCard(c,i);});
     }
   }
@@ -720,7 +760,7 @@ function renderReport(d){
           var kgConf=c.confusion||"NA";
           var kgConfColor=kgConf==="TP"||kgConf==="TN"?"var(--green)":kgConf==="FP"||kgConf==="FN"?"var(--red)":"var(--gray)";
           var kgConfBadge=`<span style="font-size:11px;font-weight:600;color:${kgConfColor}">${CONF_LABEL[kgConf]||kgConf}</span>`;
-          if(kgConf==="TP")kgTP++;else if(kgConf==="FP"&&c.sink_hit)kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN"&&c.sink_hit)kgTN++;else kgNA++;
+          if(kgConf==="TP")kgTP++;else if(kgConf==="FP")kgFP++;else if(kgConf==="FN")kgFN++;else if(kgConf==="TN")kgTN++;else kgNA++;
           let nogkCell="";
           if(_hasNogk){
             const nogkCands=c.nogk_candidate_findings||[];
@@ -739,7 +779,7 @@ function renderReport(d){
             }
             var nogkConf=c.nogk_confusion||"NA";
             var nogkConfColor=nogkConf==="TP"||nogkConf==="TN"?"var(--green)":nogkConf==="FP"||nogkConf==="FN"?"var(--red)":"var(--gray)";
-            if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP"&&c.nogk_sink_hit)nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN"&&c.nogk_sink_hit)nogkTN++;else nogkNA++;
+            if(nogkConf==="TP")nogkTP++;else if(nogkConf==="FP")nogkFP++;else if(nogkConf==="FN")nogkFN++;else if(nogkConf==="TN")nogkTN++;else nogkNA++;
             nogkCell=nogkCell.replace(/<\/td>$/,` ${nogkConfColor?`<span style="font-size:11px;font-weight:600;color:${nogkConfColor}">${CONF_LABEL[nogkConf]||nogkConf}</span>`:""}</td>`);
           }
           rows.push(`<tr>

@@ -35,14 +35,37 @@ def _extract_json_objects_from_text(text: str) -> list[dict]:
     return results
 
 
+def _try_repair_backslash_quote(text: str) -> dict | None:
+    """修复 \\" 转义错误：escaped backslash + unescaped quote → escaped quote。
+
+    当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
+    未转义引号，提前终止字符串。此函数利用 json 解析器的错误位置逐个修复。
+    """
+    decoder = json.JSONDecoder()
+    repaired = text
+    for _ in range(50):
+        try:
+            obj, _ = decoder.raw_decode(repaired)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError as e:
+            if (e.pos >= 3
+                    and repaired[e.pos - 1] == '"'
+                    and repaired[e.pos - 3:e.pos - 1] == '\\\\'):
+                repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
+            else:
+                break
+    return None
+
+
 def parse_json_lenient(text: str) -> dict | None:
-    """尽力解析单个 JSON 对象，三层策略递进。
+    """尽力解析单个 JSON 对象，四层策略递进。
 
     1. json.loads（严格解析）
     2. raw_decode（从首个 { 解析，容忍尾部额外内容）
     3. 花括号补全（补全缺失的闭合 }，修复被截断的 JSON）
+    4. \\" 转义修复（修复 escaped backslash + unescaped quote）
 
-    Agent 输出的 JSON 可能：尾部带额外文字、被 max_tokens 截断、缺少闭合括号。
+    Agent 输出的 JSON 可能：尾部带额外文字、被 max_tokens 截断、缺少闭合括号、转义错误。
     """
     if not text:
         return None
@@ -90,7 +113,8 @@ def parse_json_lenient(text: str) -> dict | None:
             return obj if isinstance(obj, dict) else None
         except json.JSONDecodeError:
             pass
-    return None
+    # 策略 4: \\" 转义修复
+    return _try_repair_backslash_quote(text)
 
 
 def extract_json_payloads(text: str, keywords: list[str] | None = None) -> list[dict]:

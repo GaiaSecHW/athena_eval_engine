@@ -355,6 +355,30 @@ def chat(messages, **kwargs) -> str:
     raise RuntimeError(f"LLM 调用失败（{retries} 次重试后）: {last_err}")
 
 
+def _try_repair_backslash_quote(text):
+    """修复 \\" 转义错误：escaped backslash + unescaped quote → escaped quote。
+
+    当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
+    未转义引号，提前终止字符串。此函数利用 json 解析器的错误位置逐个修复。
+    """
+    decoder = json.JSONDecoder()
+    repaired = text
+    for _ in range(50):
+        try:
+            obj, _ = decoder.raw_decode(repaired)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError as e:
+            # e.pos 指向导致错误的字符，e.pos-1 是提前终止字符串的 "
+            if (e.pos >= 3
+                    and repaired[e.pos - 1] == '"'
+                    and repaired[e.pos - 3:e.pos - 1] == '\\\\'):
+                # 将 \\ 替换为 \，使后面的 " 变成 \"
+                repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
+            else:
+                break
+    return None
+
+
 def chat_json(messages, **kwargs) -> dict:
     """chat 但要求 JSON 输出，自动解析。JSON 解析失败时将错误反馈给 LLM 让其自我修正。"""
     if not is_enabled():
@@ -417,6 +441,11 @@ def chat_json(messages, **kwargs) -> dict:
                     json_err = je
         if parsed is not None and isinstance(parsed, dict):
             return parsed
+        # 尝试修复 \\" 转义错误（LLM 无法修复此类问题，原样复制）
+        repaired = _try_repair_backslash_quote(raw)
+        if repaired is not None:
+            log("LLM", f"chat_json JSON 转义修复成功 content_len={len(raw)}")
+            return repaired
         # parsed 是 list 或 None → 视为解析失败
         # finish_reason=length 意味着 max_tokens 截断了输出，correction 重试只会重复截断
         if _fr == "length":
@@ -425,7 +454,10 @@ def chat_json(messages, **kwargs) -> dict:
             break
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
         err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
-        log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail}, feeding back to LLM")
+        _head = raw[:200].replace("\n", "\\n")
+        _tail = raw[-200:].replace("\n", "\\n")
+        log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail} "
+              f"finish_reason={_fr} content_len={len(raw)} | head: {_head} | tail: {_tail}")
         msgs.append({"role": "assistant", "content": raw})
         msgs.append({"role": "user", "content": f"你返回的 JSON 有语法错误：{err_detail}。请修复并只返回完整正确的 JSON。"})
         last_err = f"JSON 解析失败: {err_detail}"

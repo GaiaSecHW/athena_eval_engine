@@ -1056,6 +1056,10 @@ td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
 .ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
 .na{color:var(--red);font-style:italic;font-size:16px}
 .dp{color:var(--green)}.dn{color:var(--red)}
+details>summary::-webkit-details-marker{display:none}
+details>summary{list-style:none;cursor:pointer}
+details>summary:hover{color:var(--acc)}
+details[open]>summary{margin-bottom:0}
 .diag{background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:12px 14px;margin:8px 0}
 .diag .rid{color:var(--amber);font-weight:600;font-size:14px;font-family:monospace}
 .diag .ob{font-weight:500;font-size:17px}.diag .ip{color:var(--sub);font-size:15px;margin-top:4px}

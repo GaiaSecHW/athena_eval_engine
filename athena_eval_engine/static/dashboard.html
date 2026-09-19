@@ -517,6 +517,28 @@ function selectReportTab(button,paneId){
   button.style.background='var(--acc)';button.style.color='#fff';button.style.borderColor='var(--acc)';button.style.boxShadow='0 8px 20px rgba(124,58,237,.28)';button.style.transform='translateY(-2px)';button.setAttribute('aria-selected','true');
 }
 
+function filterKgCases(btn,filter){
+  var container=btn.closest('details')||btn.closest('.card')||btn.parentElement;
+  if(!container)return;
+  var btns=container.querySelectorAll('.kg-filter-btn');
+  btns.forEach(function(b){b.style.opacity=b===btn?'1':'0.5';b.style.fontWeight=b===btn?'700':'400';});
+  var cards=container.querySelectorAll('.kg-case-card');
+  cards.forEach(function(card){
+    var impact=card.getAttribute('data-impact');
+    card.style.display=(filter==='ALL'||impact===filter)?'':'none';
+  });
+  var headers=container.querySelectorAll('.kg-group-header');
+  headers.forEach(function(header){
+    var next=header.nextElementSibling;
+    var hasVisible=false;
+    while(next&&!next.classList.contains('kg-group-header')){
+      if(next.classList.contains('kg-case-card')&&next.style.display!=='none'){hasVisible=true;break;}
+      next=next.nextElementSibling;
+    }
+    header.style.display=hasVisible?'':'none';
+  });
+}
+
 function renderReport(d){
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
   var rep=$("rep-content");
@@ -640,17 +662,18 @@ function renderReport(d){
     var posCount=pcAnalysis.filter(p=>p.impact==="POSITIVE").length;
     var negCount=pcAnalysis.filter(p=>p.impact==="NEGATIVE").length;
     var neuCount=pcAnalysis.filter(p=>p.impact==="NEUTRAL").length;
-    kgHtml+="<div style='display:flex;gap:12px;margin-bottom:12px'>";
-    kgHtml+="<span class='bdg b-COMPLETED' style='font-size:14px'>正向 "+posCount+"</span>";
-    kgHtml+="<span class='bdg b-FAILED' style='font-size:14px'>负向 "+negCount+"</span>";
-    kgHtml+="<span class='bdg b-CREATED' style='font-size:14px'>中性 "+neuCount+"</span>";
+    kgHtml+="<div style='display:flex;gap:8px;margin-bottom:12px'>";
+    kgHtml+="<button class='bdg b-COMPLETED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"POSITIVE\")'>正向 "+posCount+"</button>";
+    kgHtml+="<button class='bdg b-FAILED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEGATIVE\")'>负向 "+negCount+"</button>";
+    kgHtml+="<button class='bdg b-CREATED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEUTRAL\")'>中性 "+neuCount+"</button>";
+    kgHtml+="<button class='bdg kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;background:var(--p2);color:var(--sub);opacity:1;font-weight:700' onclick='filterKgCases(this,\"ALL\")'>全部 "+pcAnalysis.length+"</button>";
     kgHtml+="</div>";
   }
 
   // 基线漏洞 per-case 分析
   var caseResults=group?(group.case_results||[]):(d.case_results||[]);
   if(caseResults.length){
-    kgHtml+="<div style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
+    kgHtml+="<div class='kg-group-header' style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
     caseResults.forEach(function(c,idx){
       var conf=c.confusion||"NA";
       var nogkConf=c.nogk_confusion||"NA";
@@ -663,7 +686,9 @@ function renderReport(d){
         var correctness=isCorrect?"正确":"错误";
         return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+judgment+" ("+correctness+")</span>";
       }
-      kgHtml+="<div style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
+      var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
+      var _impact=(pcKa&&pcKa.impact)?pcKa.impact:"NEUTRAL";
+      kgHtml+="<div class='kg-case-card' data-impact='"+_impact+"' style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
       kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
       kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
       var _exp=c.expected_label||"";
@@ -673,7 +698,6 @@ function renderReport(d){
       kgHtml+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
       kgHtml+="</div>";
       // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
-      var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
       // AI 分析结论放最前面
       if(pcKa&&kgActive&&(pcKa.reason||pcKa.query_summary)){
         var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
