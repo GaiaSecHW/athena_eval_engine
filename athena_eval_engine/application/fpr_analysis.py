@@ -16,6 +16,7 @@ from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
 
 _BATCH_SIZE = 5
+_MAX_BASELINE_WORKERS = 20
 
 
 def _get_baseline_path() -> str:
@@ -230,8 +231,6 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
     返回与 findings 等长的列表，每个元素含:
       match_idx (基线索引, -1=未匹配), reason, baseline 信息
     """
-    _MAX_BASELINE_WORKERS = 20
-
     # 阶段 1：所有基线并行匹配
     # 每个基线的结果: (bl_idx, best_fidx | None, best_conf, all_matches)
     bl_results: list[tuple[int, int | None, float, list[tuple[int, float]]]] = []
