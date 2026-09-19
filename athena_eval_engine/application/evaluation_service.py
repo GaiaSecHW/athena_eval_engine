@@ -658,15 +658,24 @@ def run(evaluation_id: str) -> dict:
             _fill_done = [0]
             import threading as _th
             _fill_lock = _th.Lock()
-            with ThreadPoolExecutor(max_workers=min(len(_need_fill), 8)) as pool:
-                futures = [pool.submit(_fill_missing_source, cd) for cd in _need_fill]
+            _fill_had_timeout = False
+            try:
+                _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), 8))
+                futures = [_fill_pool.submit(_fill_missing_source, cd) for cd in _need_fill]
                 for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST"), per_task_timeout=1800):
-                    if not _timeout:
+                    if _timeout:
+                        _fill_had_timeout = True
+                    else:
                         fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
                         if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
                             set_progress(evaluation_id, f"补提取 source: {_fill_done[0]}/{len(_need_fill)}")
+            except Exception:
+                _fill_pool.shutdown(wait=False, cancel_futures=True)
+                raise
+            else:
+                _fill_pool.shutdown(wait=not _fill_had_timeout, cancel_futures=_fill_had_timeout)
 
     # 0c. 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
     _ac_pairs: list[tuple[str, str]] = []

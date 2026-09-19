@@ -127,6 +127,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
     pre_pool = ThreadPoolExecutor(max_workers=20)
+    _pre_had_timeout = False
     try:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
@@ -135,6 +136,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800):
             ai = pre_futures[fut]
             if _timeout:
+                _pre_had_timeout = True
                 prefilter_candidates[ai] = list(range(len(active_findings)))
                 log("AC_MATCH", f"prefilter TIMEOUT (ac{ai}): fallback all")
             else:
@@ -150,7 +152,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         pre_pool.shutdown(wait=False, cancel_futures=True)
         raise
     else:
-        pre_pool.shutdown(wait=True)
+        # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
+        pre_pool.shutdown(wait=not _pre_had_timeout, cancel_futures=_pre_had_timeout)
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
     log("AC_MATCH", f"prefilter: {len(alert_center_cases)} ac_cases, {total_cand} candidates "
@@ -200,6 +203,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     pair_results: dict[tuple[int, int], bool] = {}
     if all_pairs:
         pool = ThreadPoolExecutor(max_workers=20)
+        _pair_had_timeout = False
         try:
             futures = {}
             for ai, fi in all_pairs:
@@ -212,6 +216,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                 ai, fi = futures[fut]
                 if _timeout:
+                    _pair_had_timeout = True
                     pair_results[(ai, fi)] = False
                     log("AC_MATCH", f"LLM 超时 (ac{ai},f{fi}): fallback false")
                 else:
@@ -227,7 +232,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            pool.shutdown(wait=True)
+            # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
+            pool.shutdown(wait=not _pair_had_timeout, cancel_futures=_pair_had_timeout)
 
     # 串行冲突解决：按 AC case 顺序分配，先到先得（一对一约束）
     for ai in range(len(alert_center_cases)):

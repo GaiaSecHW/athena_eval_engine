@@ -981,13 +981,21 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
-                    with ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"]) as pool:
-                        futures = [pool.submit(_compress_one, item) for item in _uncached]
+                    _comp_had_timeout = False
+                    try:
+                        _comp_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
+                        futures = [_comp_pool.submit(_compress_one, item) for item in _uncached]
                         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                             if _timeout:
+                                _comp_had_timeout = True
                                 _compressed.append({"mining_summary": "压缩超时"})
                                 continue
                             _compressed.append(fut.result())
+                    except Exception:
+                        _comp_pool.shutdown(wait=False, cancel_futures=True)
+                        raise
+                    else:
+                        _comp_pool.shutdown(wait=not _comp_had_timeout, cancel_futures=_comp_had_timeout)
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
                 del _uncached, _by_session
@@ -1046,14 +1054,22 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
-                    with ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"]) as pool:
-                        futures = [pool.submit(_compress_batch, batch) for batch in _batches]
+                    _batch_had_timeout = False
+                    try:
+                        _batch_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
+                        futures = [_batch_pool.submit(_compress_batch, batch) for batch in _batches]
                         _compressed = []
                         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                             if _timeout:
+                                _batch_had_timeout = True
                                 _compressed.append({"mining_summary": "压缩超时"})
                                 continue
                             _compressed.append(fut.result())
+                    except Exception:
+                        _batch_pool.shutdown(wait=False, cancel_futures=True)
+                        raise
+                    else:
+                        _batch_pool.shutdown(wait=not _batch_had_timeout, cancel_futures=_batch_had_timeout)
                     data["mining_actions"] = _compressed
                     _data_str = json.dumps(data, ensure_ascii=False)
                     log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
@@ -1181,6 +1197,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
         pool = ThreadPoolExecutor(max_workers=_workers)
+        _had_timeout = False
         try:
             _fut_to_task = {}
             for t in _pending_llm:
@@ -1190,6 +1207,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 _fut_to_task, cancel_cb=cancel_cb, per_task_timeout=_LLM_PER_CASE_TIMEOUT
             ):
                 if _timeout:
+                    _had_timeout = True
                     _ci, result = _build_fallback(
                         _fut_to_task[fut], reason=f"LLM 超时（{_LLM_PER_CASE_TIMEOUT}s），规则生成")
                     log("KG_ANALYSIS", f"LLM 调用超时（{_LLM_PER_CASE_TIMEOUT}s），case {_ci} 使用规则降级")
@@ -1204,6 +1222,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            pool.shutdown(wait=True)
+            # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
+            # 线程结束后自行清理（_chat_once 的 finally 释放信号量+计数器）
+            pool.shutdown(wait=not _had_timeout, cancel_futures=_had_timeout)
 
     return [r for r in results if r is not None]

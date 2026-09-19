@@ -236,16 +236,25 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             batches.append(batch)
 
         all_matches: list[tuple[int, float]] = []
-        with ThreadPoolExecutor(max_workers=min(10, len(batches))) as pool:
+        _bl_had_timeout = False
+        try:
+            _bl_pool2 = ThreadPoolExecutor(max_workers=min(10, len(batches)))
             future_to_batch: dict = {}
             for batch in batches:
-                fut = pool.submit(_llm_match_batch, bl_content, batch)
+                fut = _bl_pool2.submit(_llm_match_batch, bl_content, batch)
                 future_to_batch[fut] = batch
             for fut, _timeout in iter_completed(future_to_batch, per_task_timeout=1800):
                 if _timeout:
+                    _bl_had_timeout = True
                     continue
                 matched_pairs, _ = fut.result()
                 all_matches.extend(matched_pairs)
+        except Exception:
+            _bl_pool2.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
+            _bl_pool2.shutdown(wait=not _bl_had_timeout, cancel_futures=_bl_had_timeout)
 
         if all_matches:
             all_matches.sort(key=lambda x: x[1], reverse=True)
@@ -263,17 +272,20 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
         return bl_idx, best_fidx, best_conf, all_matches
 
     bl_pool = ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows)))
+    _bl_had_timeout = False
     try:
         futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
             if _timeout:
+                _bl_had_timeout = True
                 continue
             bl_results.append(fut.result())
     except Exception:
         bl_pool.shutdown(wait=False, cancel_futures=True)
         raise
     else:
-        bl_pool.shutdown(wait=True)
+        # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
+        bl_pool.shutdown(wait=not _bl_had_timeout, cancel_futures=_bl_had_timeout)
 
     # 阶段 2：冲突解决 — 1:1 分配
     # 按置信度降序排列所有基线的最佳匹配，贪心分配

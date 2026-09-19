@@ -414,9 +414,8 @@ def create_evaluation(req: CreateRequest):
                 _mark_cancelled_if_running(req.evaluation_id)
             except Exception as e:
                 if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
-                    # Pod 正在终止（Python 解释器关闭），不标记 FAILED
-                    # 保留 RUNNING 子状态，resume_stuck_evaluations 会在 pod 重启后自动续跑
-                    log("EVAL", f"{req.evaluation_id} 跳过：解释器正在关闭（pod 终止），不标记 FAILED")
+                    log("EVAL", f"{req.evaluation_id} 续跑失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
+                    _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
                 else:
                     import traceback
                     traceback.print_exc()
@@ -622,7 +621,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                 _mark_cancelled_if_running(evaluation_id)
             except Exception as e:
                 if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
-                    log("EVAL", f"{evaluation_id} retry 跳过：解释器正在关闭（pod 终止），不标记 FAILED")
+                    log("EVAL", f"{evaluation_id} retry 续跑失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
+                    _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
                 else:
                     import traceback
                     traceback.print_exc()

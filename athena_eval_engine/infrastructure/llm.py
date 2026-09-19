@@ -186,11 +186,13 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
     if _sem is not None:
         _sem.acquire()
     global _active_count
-    with _active_lock:
-        _active_count += 1
     conn = None
     first_token = True
+    _counted = False
     try:
+        with _active_lock:
+            _active_count += 1
+            _counted = True
         # ── Phase 1: 发请求，429 限流 / 500 服务端错误有限重试，拿到 200 响应头 ──
         _req_ts = time.time()
         _429_count = 0
@@ -331,8 +333,9 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
     finally:
         if conn:
             conn.close()
-        with _active_lock:
-            _active_count -= 1
+        if _counted:
+            with _active_lock:
+                _active_count -= 1
         if _sem is not None:
             _sem.release()
 
