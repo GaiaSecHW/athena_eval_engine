@@ -1173,13 +1173,23 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "sink_hit_sessions": _sink_hit_sessions,
             }
 
-        def _run_llm(task):
+        def _run_llm(task, cancel_event=None):
             _ci, prompt, case_id, kg_judgment, confusion, case_interactions, case_mem_interactions, \
                 _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, \
                 _nogk_no_finding_reason, _nogk_ki, _finding_session, _sink_hit_sessions = task
+            # 超时取消检查：cancel_event 被 set 后，chat_json 在重试前检查并立即退出
+            _cancel_fn = None
+            if cancel_event is not None:
+                def _cancel_fn():
+                    if cancel_event.is_set():
+                        raise TimeoutError("LLM 调用被超时取消")
+                    if cancel_cb:
+                        cancel_cb()
+            else:
+                _cancel_fn = cancel_cb
             try:
                 # retries=3：限制重试次数，防止 20 次重试 × (300s+600s) ≈ 5 小时卡死
-                result = llm_mod.chat_json(prompt, temperature=0, retries=3)
+                result = llm_mod.chat_json(prompt, temperature=0, retries=3, cancel_cb=_cancel_fn)
                 result["case_id"] = case_id
                 result["interactions"] = case_interactions
                 result["memory_interactions"] = case_mem_interactions
@@ -1198,16 +1208,20 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
         pool = ThreadPoolExecutor(max_workers=_workers)
         _had_timeout = False
+        _task_events = {}  # fut → threading.Event（超时后 set，通知线程退出）
         try:
             _fut_to_task = {}
             for t in _pending_llm:
-                fut = pool.submit(_run_llm, t)
+                _ev = _th.Event()
+                fut = pool.submit(_run_llm, t, cancel_event=_ev)
                 _fut_to_task[fut] = t
+                _task_events[fut] = _ev
             for fut, _timeout in iter_completed(
                 _fut_to_task, cancel_cb=cancel_cb, per_task_timeout=_LLM_PER_CASE_TIMEOUT
             ):
                 if _timeout:
                     _had_timeout = True
+                    _task_events[fut].set()  # 通知超时线程停止重试
                     _ci, result = _build_fallback(
                         _fut_to_task[fut], reason=f"LLM 超时（{_LLM_PER_CASE_TIMEOUT}s），规则生成")
                     log("KG_ANALYSIS", f"LLM 调用超时（{_LLM_PER_CASE_TIMEOUT}s），case {_ci} 使用规则降级")

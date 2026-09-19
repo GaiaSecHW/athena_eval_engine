@@ -548,9 +548,13 @@ def chat_json(messages, **kwargs) -> dict:
         msgs.append({"role": "user", "content": "只返回 JSON，不要任何额外文字。"})
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
+    _cancel_cb = kwargs.get("cancel_cb")
     _prev_raw = None
     _repeat_count = 0
     for attempt in range(retries):
+        # 取消检查：外部超时后立即停止重试，释放信号量
+        if _cancel_cb:
+            _cancel_cb()
         # ── LLM 调用（网络/超时错误走原重试逻辑）──
         try:
             raw, _fr = _chat_once(msgs, **{k: v for k, v in kwargs.items() if k != "retries"})
