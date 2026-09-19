@@ -1349,12 +1349,18 @@ def run(evaluation_id: str) -> dict:
                 log("MATCH", f"[{_trid}] {cond.value} waiting for results (elapsed={int(_elapsed)}s, timeout={int(_remaining)}s)...")
                 oc, case_results = fut_outcome.result(timeout=_remaining)
                 log("MATCH", f"[{_trid}] {cond.value} sink_match done (elapsed={int(time.time()-_trace_start)}s)")
+                set_task_progress(evaluation_id, tr.task_run_id,
+                                  f"[{cond.value}] 知识交互解析中...")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 kn = fut_kn.result(timeout=_remaining)
                 log("MATCH", f"[{_trid}] {cond.value} KN resolver done (elapsed={int(time.time()-_trace_start)}s)")
+                set_task_progress(evaluation_id, tr.task_run_id,
+                                  f"[{cond.value}] 工具行为解析中...")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 ta = fut_ta.result(timeout=_remaining)
                 log("MATCH", f"[{_trid}] {cond.value} TA resolver done (elapsed={int(time.time()-_trace_start)}s)")
+                set_task_progress(evaluation_id, tr.task_run_id,
+                                  f"[{cond.value}] 资源消耗解析中...")
                 _remaining = max(1, _TRACE_TIMEOUT - (time.time() - _trace_start))
                 rs = fut_rs.result(timeout=_remaining)
                 log("MATCH", f"[{_trid}] {cond.value} RS resolver done (elapsed={int(time.time()-_trace_start)}s)")
