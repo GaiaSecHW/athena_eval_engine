@@ -69,14 +69,16 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
 
     Step 0: 修复字符串值中的字面控制字符（原始换行符/制表符 → 转义）。
     Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
+    Step 1b: 修复无效 escape（backslash + 非 JSON 转义字符）。
     Step 2: 结构修复（在错误位置插入缺失的分隔符/闭合符）。
     Step 3: 花括号+方括号补全（在 repaired 文本上统计深度并补全缺失的 } 和 ]）。
     """
+    _valid_escapes = set('"\\/bfnrtu')
     decoder = json.JSONDecoder()
     # Step 0: 修复字符串值中的字面控制字符
     repaired = _escape_control_chars_in_strings(text)
-    # Step 1: 修复 \\" 转义错误
-    for _ in range(50):
+    # Step 1: 修复 \\" 转义错误 + Step 1b: 修复无效 \escape
+    for _ in range(100):
         try:
             obj, _ = decoder.raw_decode(repaired)
             return obj if isinstance(obj, dict) else None
@@ -85,8 +87,15 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
                     and repaired[e.pos - 1] == '"'
                     and repaired[e.pos - 3:e.pos - 1] == '\\\\'):
                 repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
-            else:
-                break
+                continue
+            if (e.msg.startswith("Invalid \\escape")
+                    and e.pos < len(repaired)
+                    and repaired[e.pos] == '\\'
+                    and e.pos + 1 < len(repaired)
+                    and repaired[e.pos + 1] not in _valid_escapes):
+                repaired = repaired[:e.pos] + '\\' + repaired[e.pos:]
+                continue
+            break
     # Step 2: 结构修复（在错误位置插入缺失的分隔符/闭合符）
     for _ in range(50):
         try:

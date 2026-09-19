@@ -400,29 +400,42 @@ def _try_repair_backslash_quote(text):
     当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
     未转义引号，提前终止字符串。利用 json 解析器的错误位置逐个修复。
 
+    Step 1b: 修复无效 escape（backslash + 非 JSON 转义字符）。
+    LLM 在字符串值中输出正则表达式、路径等含反斜杠的内容时，反斜杠
+    后跟非 JSON 转义字符导致解析失败。修复：在反斜杠前再插入一个反斜杠。
+
     Step 2: 结构修复。在错误位置尝试插入缺失的分隔符（逗号、闭合括号）。
     当 LLM 漏掉 ], 或漏掉逗号时，解析器报 "Expecting ',' delimiter"。
     逐个尝试在错误位置插入 ], ],} 等修复方案。
 
     Step 3: 花括号+方括号补全。在 repaired 文本上统计深度并补全缺失的 } 和 ]。
     """
+    _valid_escapes = set('"\\/bfnrtu')
     decoder = json.JSONDecoder()
     # Step 0: 修复字符串值中的字面控制字符
     repaired = _escape_control_chars_in_strings(text)
-    # Step 1: 修复 \\" 转义错误
-    for _ in range(50):
+    # Step 1: 修复 \\" 转义错误 + Step 1b: 修复无效 \escape
+    for _ in range(100):
         try:
             obj, _ = decoder.raw_decode(repaired)
             return obj if isinstance(obj, dict) else None
         except json.JSONDecodeError as e:
-            # e.pos 指向导致错误的字符，e.pos-1 是提前终止字符串的 "
+            # Step 1: \\" 转义错误
             if (e.pos >= 3
                     and repaired[e.pos - 1] == '"'
                     and repaired[e.pos - 3:e.pos - 1] == '\\\\'):
-                # 将 \\ 替换为 \，使后面的 " 变成 \"
                 repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
-            else:
-                break
+                continue
+            # Step 1b: 无效 \escape（\d \s \w 等）
+            if (e.msg.startswith("Invalid \\escape")
+                    and e.pos < len(repaired)
+                    and repaired[e.pos] == '\\'
+                    and e.pos + 1 < len(repaired)
+                    and repaired[e.pos + 1] not in _valid_escapes):
+                # 在反斜杠前插入另一个反斜杠：\d → \\d
+                repaired = repaired[:e.pos] + '\\' + repaired[e.pos:]
+                continue
+            break
     # Step 2: 结构修复（在错误位置插入缺失的分隔符/闭合符）
     for _ in range(50):
         try:
