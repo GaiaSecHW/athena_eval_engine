@@ -250,14 +250,22 @@ def _load_config_from_db() -> dict:
 def get_system_config():
     """获取系统参数（从 DB 读取，确保多 worker 一致）。"""
     from ...infrastructure import llm
-    from .evaluations import get_max_concurrent_evals
+    from .evaluations import get_max_concurrent_evals, _running_futures, _pending_evals, _paused_evals, _pausing_eids, _running_lock
     from ...application.evaluation_service import get_runtime_workers
     db_cfg = _load_config_from_db()
+    with _running_lock:
+        running = len(_running_futures) - len(_pausing_eids)
+        pending = len(_pending_evals)
+        paused = len(_paused_evals)
     return {
         "llm_max_concurrency": int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency())),
         "max_concurrent_evals": int(db_cfg.get("max_concurrent_evals", get_max_concurrent_evals())),
         "parse_workers": int(db_cfg.get("parse_workers", get_runtime_workers().get("parse", 4))),
         "kg_analysis_workers": int(db_cfg.get("kg_analysis_workers", get_runtime_workers().get("kg_analysis", 8))),
+        "running_tasks": running,
+        "queued_tasks": pending + paused,
+        "paused_tasks": paused,
+        "llm_active": llm.get_active_concurrency(),
     }
 
 

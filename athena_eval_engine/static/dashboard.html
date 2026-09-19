@@ -1271,10 +1271,10 @@ async function runEval(){
 
 // ===== ④ 系统参数设置 =====
 async function renderSystem(){
-  var c=null,h=null;
-  try{c=await jget("/api/v1/system/config");h=await jget("/health");}catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="card">加载失败</div>';return;}
-  var llmActive=h.llm_active||0,llmMax=h.llm_max||c.llm_max_concurrency||50,rt=h.running_tasks||0;
-  var evalMax=h.max_concurrent_evals||c.max_concurrent_evals||3,queued=h.queued_tasks||0,paused=h.paused_tasks||0;
+  var c=null;
+  try{c=await jget("/api/v1/system/config");}catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="card">加载失败</div>';return;}
+  var llmActive=c.llm_active||0,llmMax=c.llm_max_concurrency||50,rt=c.running_tasks||0;
+  var evalMax=c.max_concurrent_evals||3,queued=c.queued_tasks||0,paused=c.paused_tasks||0;
   var llmPct=Math.round(llmActive/llmMax*100);
   var llmColor=llmPct>80?'var(--red)':llmPct>50?'var(--amber)':'var(--green)';
   var h=`<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="max-width:600px;flex:1;overflow-y:auto">
