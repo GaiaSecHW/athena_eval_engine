@@ -93,7 +93,7 @@ def _llm_match_batch(baseline_content: str,
             },
         ]
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+            result = llm_mod.chat_json(prompt, temperature=0)
             is_same = result.get("is_same", False)
             reason = result.get("reason", "")
             if not isinstance(is_same, bool):
@@ -142,7 +142,7 @@ def _llm_match_batch(baseline_content: str,
             },
         ]
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+            result = llm_mod.chat_json(prompt, temperature=0)
             matched_raw = result.get("matched", [])
             reason = result.get("reason", "")
             # 解析为 [(fidx, confidence), ...]

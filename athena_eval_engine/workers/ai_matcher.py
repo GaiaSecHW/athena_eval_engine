@@ -115,7 +115,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             {"role": "system", "content": _prefilter_sys},
             {"role": "user", "content": user_msg},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+        result = llm_mod.chat_json(prompt, temperature=0)
         indices = []
         if isinstance(result, dict):
             raw_ids = result.get("possible_ids", [])
@@ -176,7 +176,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 "告警中心案例": ac_desc, "漏洞报告": fd_desc,
             }, ensure_ascii=False, indent=2)},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=2000)
+        result = llm_mod.chat_json(prompt, temperature=0)
         is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
         return ai, fi, is_same
 

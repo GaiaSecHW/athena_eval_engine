@@ -272,7 +272,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "",
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+        result = llm_mod.chat_json(prompt, temperature=0)
         return result.get("source_file", ""), result.get("source_function", ""), str(result.get("source_line", ""))
     except Exception as e:
         log("CREATE", f"AI 提取 source_file/source_function/source_line 失败: {e}")
@@ -315,7 +315,7 @@ def _ai_identify_finding(ac_title: str, ac_summary: str,
             f"找出与告警中心漏洞是同一个漏洞的候选编号（1-{len(candidates)}）。"
         )},
     ]
-    result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+    result = llm_mod.chat_json(prompt, temperature=0)
     no = result.get("no", 0)
     try:
         no = int(no)
