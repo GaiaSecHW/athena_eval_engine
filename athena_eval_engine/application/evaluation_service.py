@@ -2039,7 +2039,7 @@ def run(evaluation_id: str) -> dict:
         _metric_groups.append({
             "task_id": "",
             "category": "mining_fpr",
-            "label": "漏洞挖掘误报率",
+            "label": "告警中心vs基线对比",
             "agent_name": "",
             "p0": {}, "p1": {}, "p2": {},
             "diagnostic_hits": [],
