@@ -371,8 +371,8 @@ function renderReport(d){
       var _nogkKi=c.nogk_knowledge_intervention||null;
       var _hasKgSinkInfo=_sinkInfo||_sinkAnalysis;
       var _hasNogkSinkInfo=_hasNogk&&(_nogkSinkInfo||_nogkSinkAnalysis);
-      var _hasKgFinding=!c.matched&&(_noFindReason||_ki||(pcKa&&(pcKa.reason||pcKa.query_summary)));
-      var _hasNogkFinding=_hasNogk&&!c.nogk_matched&&(_nogkNoFindReason||_nogkKi);
+      var _hasKgFinding=(_noFindReason||_ki||(pcKa&&(pcKa.reason||pcKa.query_summary)));
+      var _hasNogkFinding=_hasNogk&&(_nogkNoFindReason||_nogkKi);
       // 🎯 Sink 匹配分析（仅有 Finding 匹配分析时不显示，Finding 匹配不上才显示 Sink）
       var _kgShowSink=_hasKgSinkInfo&&!_hasKgFinding;
       var _nogkShowSink=_hasNogkSinkInfo&&!_hasNogkFinding;
