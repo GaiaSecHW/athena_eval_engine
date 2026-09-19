@@ -940,11 +940,14 @@ def run(evaluation_id: str) -> dict:
             _fpr_pool.shutdown(wait=True)
 
         # 持久化 FPR 匹配结果到文件（供后续环节使用）
+        # 优先使用漏洞中心 FPR（与验证误报率 tab 同源），回退到告警中心 FPR
         _fpr_match_data = {}
-        if _ac_fpr_kg:
-            _fpr_match_data["kg"] = {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)}
-        if _ac_fpr_nogk:
-            _fpr_match_data["nogk"] = {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)}
+        _kg_fpr_for_match = _e2e_fpr_kg or _ac_fpr_kg
+        _nogk_fpr_for_match = _e2e_fpr_nogk or _ac_fpr_nogk
+        if _kg_fpr_for_match:
+            _fpr_match_data["kg"] = {**_kg_fpr_for_match, "vc_ids": list(_vc_ids_kg)}
+        if _nogk_fpr_for_match:
+            _fpr_match_data["nogk"] = {**_nogk_fpr_for_match, "vc_ids": list(_vc_ids_nogk)}
         if _fpr_match_data:
             import os as _fpr_os
             _fpr_dir = _fpr_os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
