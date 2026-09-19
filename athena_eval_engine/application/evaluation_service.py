@@ -984,6 +984,8 @@ def run(evaluation_id: str) -> dict:
             "e2e_fpr_nogk": _e2e_fpr_nogk,
             "ac_fpr_kg": _ac_fpr_kg,
             "ac_fpr_nogk": _ac_fpr_nogk,
+            "vc_ids_kg": _vc_ids_kg,
+            "vc_ids_nogk": _vc_ids_nogk,
             "fpr_match_data": _fpr_match_data,
             "fpr_match_lookup": _fpr_match_lookup,
         }
@@ -1651,6 +1653,7 @@ def run(evaluation_id: str) -> dict:
         _fpr_res = {
             "e2e_fpr_kg": None, "e2e_fpr_nogk": None,
             "ac_fpr_kg": None, "ac_fpr_nogk": None,
+            "vc_ids_kg": set(), "vc_ids_nogk": set(),
             "fpr_match_data": {}, "fpr_match_lookup": {},
         }
     _bg_executor.shutdown(wait=False)
@@ -2002,6 +2005,8 @@ def run(evaluation_id: str) -> dict:
     _e2e_fpr_nogk = _fpr_res["e2e_fpr_nogk"]
     _ac_fpr_kg = _fpr_res["ac_fpr_kg"]
     _ac_fpr_nogk = _fpr_res["ac_fpr_nogk"]
+    _vc_ids_kg = _fpr_res.get("vc_ids_kg", set())
+    _vc_ids_nogk = _fpr_res.get("vc_ids_nogk", set())
     _fpr_match_data = _fpr_res["fpr_match_data"]
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
