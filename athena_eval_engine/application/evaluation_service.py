@@ -2062,8 +2062,8 @@ def run(evaluation_id: str) -> dict:
             "diagnostic_hits": [],
             "case_results": [],
             "pair_count": 0,
-            "e2e_fpr_kg": _ac_fpr_kg,
-            "e2e_fpr_nogk": _ac_fpr_nogk,
+            "e2e_fpr_kg": {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)} if _ac_fpr_kg else None,
+            "e2e_fpr_nogk": {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)} if _ac_fpr_nogk else None,
         })
         set_progress(evaluation_id, "误报率分析完成，生成报告中...")
     else:

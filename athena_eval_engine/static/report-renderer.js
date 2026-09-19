@@ -873,14 +873,15 @@ function renderReport(d){
       const stats=kg&&nogk
         ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('KG',kg)}<span style="margin-left:16px">${_fprLine('No-KG',nogk)}</span></div>`
         : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('',kg||nogk)}</div>`;
-      // 合并 match_details
+      // 合并 match_details，检查告警中心 finding 是否被漏洞验证否决（不在漏洞中心 case ID 集合中 = 被否决）
       let allDetails=[];
-      if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG'})));
-      if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG'})));
+      if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
+      if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG',verified:(nogk.vc_ids||[]).includes(d.finding_id)})));
       const rows=allDetails.map(d=>{
-        const badge=d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
+        const rejectBadge=isAc&&d.verified===false?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
+        const badge=(d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
           :d.match_status==="已匹配"?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(22,163,74,.18);color:var(--green)'>真正</span>"
-          :"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:var(--gray)'>未匹配</span>";
+          :"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:var(--gray)'>未匹配</span>")+rejectBadge;
         const blLabel=d.bl_label==="VULNERABLE"?"<span style='font-size:11px;color:var(--red)'>漏洞</span>":d.bl_label==="NON_VULNERABLE"?"<span style='font-size:11px;color:var(--gray)'>非漏洞</span>":"-";
         const condBadge=d.condition==='KG'?"<span style='font-size:11px;font-weight:600;color:var(--acc)'>KG</span>":"<span style='font-size:11px;font-weight:600;color:var(--gray)'>No-KG</span>";
         const summary=String(d.finding_summary||'').slice(0,200);
