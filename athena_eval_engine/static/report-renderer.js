@@ -312,15 +312,10 @@ function renderReport(d){
       var _confColor=conf==="TP"||conf==="TN"?"var(--green)":conf==="FP"||conf==="FN"?"var(--red)":"var(--gray)";
       h+="<span style='font-size:11px;font-weight:600;color:"+_confColor+"'>"+(CONF_LABEL[conf]||conf)+"</span>";
       h+="</div>";
-      // session 链（与匹配明细表一致）
-      if(c.session_chain&&c.session_chain.length){
-        var _parts=c.session_chain.map(function(s){
-          var sid=sessionDisplayName(s.session_id);
-          var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
-          var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
-          return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
-        });
-        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'>"+_parts.join(" → ")+"</div>";
+      // sink 命中 session（不显示 session 链，只显示命中 sink 的 session）
+      if(c.sink_hit&&c.sink_hit_sessions&&c.sink_hit_sessions.length&&!c.matched){
+        var _sns=c.sink_hit_sessions.map(function(s){return "<code style='font-size:11px;color:var(--acc)'>🎯"+sessionDisplayName(s)+"</code>";});
+        h+="<div style='font-size:11px;margin-top:2px;margin-bottom:6px;word-break:break-all'>"+_sns.join(", ")+"</div>";
       }
       // per-case 知识介入分析
       var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
@@ -704,23 +699,21 @@ function renderReport(d){
           const kgCandNote=(!c.matched&&kgCandCount)?`<div style="font-size:11px;color:var(--amber)">候选 ${kgCandCount} 条${kgCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
           const kgAc=c.ac_case_id?`（${c.ac_case_id}）`:"";
           let kgCell;
-          function _chainHtml(chain){
-            if(!chain||!chain.length)return "";
-            var parts=chain.map(function(s){
-              var sid=sessionDisplayName(s.session_id);
-              var mark=s.has_finding?"📝":s.has_sink?"🎯":"";
-              var color=s.has_finding?"var(--green)":s.has_sink?"var(--acc)":"var(--gray)";
-              return "<code style='font-size:11px;color:"+color+"'>"+mark+sid+"</code>";
-            });
-            return "<div style='font-size:11px;margin-top:2px;word-break:break-all'>"+parts.join(" → ")+"</div>";
+          // sink 命中 session（不显示 session 链，只显示命中 sink 的 session）
+          function _sinkSnsHtml(sessions){
+            if(!sessions||!sessions.length)return "";
+            var parts=sessions.map(function(s){return "<code style='font-size:11px;color:var(--acc)'>🎯"+sessionDisplayName(s)+"</code>";});
+            return "<div style='font-size:11px;margin-top:2px;word-break:break-all'>"+parts.join(", ")+"</div>";
           }
-          const _kgSessInfo=_chainHtml(c.session_chain);
+          const _kgSinkSns=_sinkSnsHtml(c.sink_hit_sessions);
           if(c.matched){
-            kgCell=`<span style="color:var(--green)">✓命中</span> ${(c.finding_title||c.matched_finding_id||"-").replace(/</g,"&lt;")}`+(_kgSessInfo||kgCandNote);
+            var _findingText=(c.finding_title||c.matched_finding_id||"").replace(/</g,"&lt;");
+            kgCell=_findingText?`<span style="color:var(--green)">✓命中</span> ${_findingText}`:`<span style="color:var(--green)">✓命中</span>`;
+            kgCell+=kgCandNote;
           }else if(c.mined){
-            kgCell=`<span style="color:var(--amber)">sink命中·挖掘无报</span>`+kgCandNote+_kgSessInfo;
+            kgCell=`<span style="color:var(--amber)">sink命中·挖掘无报</span>`+kgCandNote;
           }else if(c.sink_hit){
-            kgCell=`<span style="color:var(--amber)">sink命中·非挖掘</span>`+kgCandNote+_kgSessInfo;
+            kgCell=`<span style="color:var(--amber)">sink命中·非挖掘</span>`+kgCandNote+_kgSinkSns;
           }else{
             kgCell=`<span style="color:var(--gray)">sink未命中</span>`;
           }
@@ -733,13 +726,14 @@ function renderReport(d){
             const nogkCands=c.nogk_candidate_findings||[];
             const nogkCandNote=(!c.nogk_matched&&nogkCands.length)?`<div style="font-size:11px;color:var(--amber)">候选 ${nogkCands.length} 条${nogkCands.some(f=>f.validation_result==="FALSE_POSITIVE")?"（含判为非漏洞）":""}</div>`:"";
             const nogkAc=c.nogk_ac_case_id?`（${c.nogk_ac_case_id}）`:"";
-            const _nogkSessInfo=_chainHtml(c.nogk_session_chain);
+            const _nogkSinkSns=_sinkSnsHtml(c.nogk_sink_hit_sessions);
             if(c.nogk_matched){
-              nogkCell=`<td><span style="color:var(--green)">✓命中</span> ${(c.nogk_finding_title||"-").replace(/</g,"&lt;")}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}${_nogkSessInfo||nogkCandNote}</td>`;
+              var _nogkFinding=(c.nogk_finding_title||"").replace(/</g,"&lt;");
+              nogkCell=`<td><span style="color:var(--green)">✓命中</span> ${_nogkFinding||"-"}${nogkAc?`<span style="font-size:12px;color:var(--acc)">${nogkAc}</span>`:""}${nogkCandNote}</td>`;
             }else if(c.nogk_mined){
-              nogkCell=`<td><span style="color:var(--amber)">sink命中·挖掘无报</span>${nogkCandNote}${_nogkSessInfo}</td>`;
+              nogkCell=`<td><span style="color:var(--amber)">sink命中·挖掘无报</span>${nogkCandNote}</td>`;
             }else if(c.nogk_sink_hit){
-              nogkCell=`<td><span style="color:var(--amber)">sink命中·非挖掘</span>${nogkCandNote}${_nogkSessInfo}</td>`;
+              nogkCell=`<td><span style="color:var(--amber)">sink命中·非挖掘</span>${nogkCandNote}${_nogkSinkSns}</td>`;
             }else{
               nogkCell=`<td><span style="color:var(--gray)">sink未命中</span></td>`;
             }
@@ -765,13 +759,15 @@ function renderReport(d){
       const summary=_hasNogk
         ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<span style="margin-left:16px">No-KG 误报率=${nogkFprStr}（误报数=${nogkFprNum} / (误报数+真正数)=${nogkFprDen}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`
         : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`;
-      return `<div class="card" style="margin-bottom:16px">
-        <h3>${icon} ${title}</h3>
+      return `<details class="card" style="margin-bottom:16px">
+        <summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">${icon} ${title} <span style="font-size:12px;color:var(--gray)">（点击展开）</span></summary>
+        <div style="margin-top:16px">
         ${summary}
         <table><tr><th>序号</th><th>基线</th><th>KG 结果</th>${_hasNogk?'<th>No-KG 结果</th>':''}</tr>
         ${rows.join("")}
         </table>
-      </div>`;
+        </div>
+      </details>`;
     }
     function _buildFprHtml(g){
       const fpr=g.fpr_analysis||{};
@@ -828,25 +824,15 @@ function renderReport(d){
       const isAc=g.category==='mining_fpr';
       const srcLabel=isAc?'告警中心':'漏洞中心';
       const srcIcon=isAc?'📈':'📊';
-      function _row(label,r){
-        if(!r) return `<div style="text-align:center;min-width:120px;opacity:.4"><div style="font-size:14px;color:var(--sub)">—</div><div style="font-size:14px;color:var(--gray);margin-top:4px">${label}</div></div>`;
-        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';
-        return `<div style="text-align:center;min-width:120px"><div style="font-size:28px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:2px">${label} 误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${r.matched||0} / ${srcLabel}${r.total_findings||0} / 真正${r.tp||0} / 误报${r.fp||0}</div></div>`;
+      function _fprStr(r){return r&&r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';}
+      function _fprLine(label,r){
+        if(!r) return '';
+        const p=label?label+' ':'';
+        return `${p}误报率=${_fprStr(r)}（误报数=${r.fp||0} / (误报数+真正数)=${(r.tp||0)+(r.fp||0)}）`;
       }
-      // 合并
-      let merged=null;
-      if(kg&&nogk){
-        const m=(kg.matched||0)+(nogk.matched||0);
-        const fp=(kg.fp||0)+(nogk.fp||0);
-        merged={fpr:m>0?fp/m:0,matched:m,fp:fp,tp:(kg.tp||0)+(nogk.tp||0),total_findings:(kg.total_findings||0)+(nogk.total_findings||0),total_baseline:kg.total_baseline||nogk.total_baseline||0};
-      }
-      const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
-        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(2)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
-      </div>
-      <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
-        <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数)<br>
-        <span style="font-size:12px;color:var(--gray)">误报 = 匹配到"非漏洞"基线的漏洞上报；真正 = 匹配到"漏洞"基线的漏洞上报</span>
-      </div>`;
+      const stats=kg&&nogk
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('KG',kg)}<span style="margin-left:16px">${_fprLine('No-KG',nogk)}</span></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('',kg||nogk)}</div>`;
       // 合并 match_details
       let allDetails=[];
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG'})));
@@ -883,14 +869,16 @@ function renderReport(d){
       ${_statsTable(g.task_id,g.label)}
       ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
       <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
-      <div class="card" style="margin-bottom:16px">
-        <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
+      <details class="card" style="margin-bottom:16px">
+        <summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">🧠 ${g.label} — 知识图谱与记忆介入分析 <span style="font-size:12px;color:var(--gray)">（点击展开）</span></summary>
+        <div style="margin-top:16px">
         ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
           ?buildKnowledgeHtml(g)
           :mg.length===1
             ?buildKnowledgeHtml(null)
             :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
-      </div>
+        </div>
+      </details>
       ${_buildMatchTable([g],g.category==='verify'?"基线与 Agent 验证匹配明细":g.category==='mining'?"基线与 Agent 发现匹配明细":"基线与 Agent 发现漏洞匹配明细",g.category==='verify'?"✅":g.category==='mining'?"🔎":"📋")}
     </div>`;}).join("");
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;

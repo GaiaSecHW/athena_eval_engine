@@ -949,24 +949,15 @@ function renderReport(d){
       const isAc=g.category==='mining_fpr';
       const srcLabel=isAc?'告警中心':'漏洞中心';
       const srcIcon=isAc?'📈':'📊';
-      function _row(label,r){
-        if(!r) return `<div style="text-align:center;min-width:120px;opacity:.4"><div style="font-size:14px;color:var(--sub)">—</div><div style="font-size:14px;color:var(--gray);margin-top:4px">${label}</div></div>`;
-        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';
-        return `<div style="text-align:center;min-width:120px"><div style="font-size:28px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:2px">${label} 误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${r.matched||0} / ${srcLabel}${r.total_findings||0} / 真正${r.tp||0} / 误报${r.fp||0}</div></div>`;
+      function _fprStr(r){return r&&r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';}
+      function _fprLine(label,r){
+        if(!r) return '';
+        const p=label?label+' ':'';
+        return `${p}误报率=${_fprStr(r)}（误报数=${r.fp||0} / (误报数+真正数)=${(r.tp||0)+(r.fp||0)}）`;
       }
-      let merged=null;
-      if(kg&&nogk){
-        const m=(kg.matched||0)+(nogk.matched||0);
-        const fp=(kg.fp||0)+(nogk.fp||0);
-        merged={fpr:m>0?fp/m:0,matched:m,fp:fp,tp:(kg.tp||0)+(nogk.tp||0),total_findings:(kg.total_findings||0)+(nogk.total_findings||0),total_baseline:kg.total_baseline||nogk.total_baseline||0};
-      }
-      const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
-        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(2)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
-      </div>
-      <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
-        <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数)<br>
-        <span style="font-size:12px;color:var(--gray)">误报 = 匹配到"非漏洞"基线的漏洞上报；真正 = 匹配到"漏洞"基线的漏洞上报</span>
-      </div>`;
+      const stats=kg&&nogk
+        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('KG',kg)}<span style="margin-left:16px">${_fprLine('No-KG',nogk)}</span></div>`
+        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('',kg||nogk)}</div>`;
       let allDetails=[];
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG'})));
       if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG'})));
@@ -1003,14 +994,16 @@ function renderReport(d){
       ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
       <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
       ${_diagnostics(g.diagnostic_hits||h)}
-      <div class="card" style="margin-bottom:16px">
-        <h3>🧠 ${g.label} — 知识图谱与记忆介入分析</h3>
+      <details class="card" style="margin-bottom:16px">
+        <summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">🧠 ${g.label} — 知识图谱与记忆介入分析 <span style="font-size:12px;color:var(--gray)">（点击展开）</span></summary>
+        <div style="margin-top:16px">
         ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
           ?buildKnowledgeHtml(g)
           :mg.length===1
             ?buildKnowledgeHtml(null)
             :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
-      </div>
+        </div>
+      </details>
     </div>`;}).join("");
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
   })()}
