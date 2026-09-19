@@ -356,13 +356,18 @@ def chat(messages, **kwargs) -> str:
 
 
 def _try_repair_backslash_quote(text):
-    """修复 \\" 转义错误：escaped backslash + unescaped quote → escaped quote。
+    """修复 JSON 转义错误 + 花括号补全。
 
+    Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
     当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
-    未转义引号，提前终止字符串。此函数利用 json 解析器的错误位置逐个修复。
+    未转义引号，提前终止字符串。利用 json 解析器的错误位置逐个修复。
+
+    Step 2: 花括号补全。修复 \\" 后可能仍缺闭合 }，在 repaired 文本上
+    统计花括号深度并补全。
     """
     decoder = json.JSONDecoder()
     repaired = text
+    # Step 1: 修复 \\" 转义错误
     for _ in range(50):
         try:
             obj, _ = decoder.raw_decode(repaired)
@@ -376,6 +381,33 @@ def _try_repair_backslash_quote(text):
                 repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
             else:
                 break
+    # Step 2: 花括号补全（在 repaired 文本上统计深度）
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in repaired:
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+    if depth > 0:
+        fixed = repaired + '}' * depth
+        try:
+            obj = json.loads(fixed)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            pass
     return None
 
 
