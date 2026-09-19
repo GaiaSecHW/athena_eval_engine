@@ -463,26 +463,29 @@ class SecMateTraceParser(TraceParser):
     def build_session_graph(self, events):
         """构建 session 关系图。
 
-        SecMate session 关联机制（从源码与 trace 论证）：
-        1. SEED_ID 共享：planner prompt 含 SEED_ID=xxx，sessions 共享同一 seed 关联
-        2. finding_id 共享：store_finding/query_finding 工具调用中的 finding_id
-        3. source_task_id/source_session_id：store_finding 的 input 含 source_task_id
-           和 source_session_id，用于跨 session 关联（从 findings_db/server.py 论证）
-        4. 共享文件（与基类默认实现相同）
+        SecMate session 关联机制（从源码与 trace 数据验证）：
+        1. finding_edges（findings.db）：finding 级别的 parent/derived_from 关系，
+           通过 findings.source_session_id 映射到 session 级别边
+        2. SEED_ID 共享：planner prompt 含 SEED_ID=xxx，sessions 共享同一 seed
+        3. finding_id 共享：store_finding/query_finding 工具调用中的 finding_id
+        4. 共享文件（仅收集不建边——共享不是调用关系，会导致 BFS 误连）
+
+        注意：source_session_id 是 agent_spawner 从 AGENTFL_SESSION_ID 环境变量注入的
+        （agent_spawner/server.py line 986），不在 store_finding 的 input 参数中
+        （findings_db/server.py store_finding 函数签名无此参数）。
+        因此不能从 tool call input 中提取，必须从 findings.db 读取。
         """
         import re
         import os
+        import sqlite3
         from collections import defaultdict
 
-        _MAX_SESSIONS_PER_LINK = 5
         _SEED_ID_RE = re.compile(r'SEED_ID=(\d+)')
 
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
             'seed_to_sessions': defaultdict(set),
             'finding_id_to_sessions': defaultdict(set),
-            'source_task_to_sessions': defaultdict(set),
-            'source_session_to_sessions': defaultdict(set),
             'edges': defaultdict(set),
             'parent_map': {},
         }
@@ -497,8 +500,7 @@ class SecMateTraceParser(TraceParser):
             if not sid:
                 continue
             if sid not in graph['sessions']:
-                graph['sessions'][sid] = {'files': set(), 'seeds': set(), 'finding_ids': set(),
-                                           'source_task_ids': set(), 'source_session_ids': set()}
+                graph['sessions'][sid] = {'files': set(), 'seeds': set(), 'finding_ids': set()}
             sg = graph['sessions'][sid]
 
             # TEXT 事件：提取 SEED_ID（来自 planner prompt）
@@ -513,8 +515,7 @@ class SecMateTraceParser(TraceParser):
             tool = ev.tool_name or ""
             inp = ev.input_json or {}
 
-            # store_finding/query_finding：提取 finding_id + source_task_id + source_session_id
-            # 从源码论证：findings_store 的 store_finding input 含 source_task_id 和 source_session_id
+            # store_finding/query_finding：提取 finding_id（用于 finding_id_to_sessions）
             if "store_finding" in tool or "query_finding" in tool or "store_tiered_finding" in tool \
                     or tool in ("mcp__findings-store__query", "mcp__findings-store__query_finding_overview"):
                 fid = str(inp.get("finding_id") or inp.get("parent_id") or "")
@@ -527,18 +528,8 @@ class SecMateTraceParser(TraceParser):
                     for m in re.finditer(r'"finding_id"\s*:\s*"?(\d+)', out_str):
                         sg['finding_ids'].add(m.group(1))
                         graph['finding_id_to_sessions'][m.group(1)].add(sid)
-                # source_task_id / source_session_id 关联
-                stid = str(inp.get("source_task_id", "") or "")
-                ssid = str(inp.get("source_session_id", "") or "")
-                if stid:
-                    sg['source_task_ids'].add(stid)
-                    graph['source_task_to_sessions'][stid].add(sid)
-                if ssid:
-                    sg['source_session_ids'].add(ssid)
-                    graph['source_session_to_sessions'][ssid].add(sid)
-                    graph['parent_map'][sid] = ssid
 
-            # 共享文件（与基类默认实现相同）
+            # 共享文件（仅收集不建边——共享不是调用关系）
             if tool == "bash":
                 cmd = str(inp.get("command", ""))
                 for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
@@ -554,14 +545,39 @@ class SecMateTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：只建真实调用关系边
-        # source_session_id → parent_map（store_finding input 的 source_session_id）
-        for ssid, sids in graph['source_session_to_sessions'].items():
-            for sid in sids:
-                if sid != ssid:
-                    graph['parent_map'][sid] = ssid
-                    graph['edges'][sid].add(ssid)
-                    graph['edges'][ssid].add(sid)
+        # 构建边：从 findings.db 的 finding_edges 表读取 finding 级别关系，
+        # 通过 findings.source_session_id 映射到 session 级别边。
+        # source_session_id 是 agent_spawner 从 AGENTFL_SESSION_ID 环境变量注入的
+        # （agent_spawner/server.py line 986），不在 store_finding 的 input 参数中。
+        db_path = self._find_findings_db()
+        if db_path and os.path.isfile(db_path):
+            try:
+                conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+                # finding_id → source_session_id 映射
+                finding_to_session = {}
+                for r in conn.execute(
+                    "SELECT id, source_session_id FROM findings "
+                    "WHERE source_session_id IS NOT NULL AND source_session_id != ''"
+                ).fetchall():
+                    finding_to_session[str(r[0])] = r[1]
+                # finding_edges → session 级别边
+                # source_id 是 parent finding（先创建），target_id 是 child finding（derived）
+                for r in conn.execute(
+                    "SELECT source_id, target_id FROM finding_edges"
+                ).fetchall():
+                    src_sid = finding_to_session.get(str(r[0]))
+                    tgt_sid = finding_to_session.get(str(r[1]))
+                    if src_sid and tgt_sid and src_sid != tgt_sid:
+                        graph['parent_map'][tgt_sid] = src_sid
+                        graph['edges'][tgt_sid].add(src_sid)
+                        graph['edges'][src_sid].add(tgt_sid)
+                conn.close()
+                _log("SINK_MATCH", f"SecMate build_session_graph: finding_edges → "
+                      f"{len(graph['parent_map'])} session edges, "
+                      f"{sum(len(v) for v in graph['edges'].values()) // 2} total edges")
+            except Exception as e:
+                _log("SINK_MATCH", f"SecMate build_session_graph: findings.db read failed: {e}")
+
         return graph
 
     @staticmethod

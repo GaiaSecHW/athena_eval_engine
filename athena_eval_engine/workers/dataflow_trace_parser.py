@@ -451,24 +451,25 @@ class DataflowVulnScanTraceParser(TraceParser):
         # Format: dvs_xxx/d{depth}-{func}-{analysisType}-{param}-{index}[-TaintFunctionGuess][-error{N}]
         #
         # Analysis types (in flow order):
-        #   taint/track (initial, parallel) → vuln-judge → vuln-pattern-enhancement
+        #   taint/track/fptrack (initial, parallel) → vuln-judge → vuln-pattern-enhancement
         #   → vuln-false-positive-judge → vuln-report
         #
-        # Four dimensions of parent-child:
+        # Five dimensions of parent-child:
         # 1. Cross-depth: d00→d01→d02 (function call chain)
-        # 2. Same-depth analysis flow: taint/track → vuln-judge → ...
+        # 2. Same-depth analysis flow: taint/track/fptrack → vuln-judge → ...
         # 3. Error retry: -errorN → original (non-error)
         # 4. TaintFunctionGuess: sub-analysis of taint (same depth/func/param)
+        # 5. Initial fork: track/fptrack fork from taint at same depth
         #
         # Error patterns differ by type:
         # - taint: error in param position: taint-error{N}-{index}
-        # - track/vuln-*: error at end: ...-error{N}$
+        # - track/fptrack/vuln-*: error at end: ...-error{N}$
         # - TaintFunctionGuess: error at end: ...-TaintFunctionGuess-error{N}
         if 'parent_map' not in graph:
             graph['parent_map'] = {}
-        _ANALYSIS_FLOW = ['taint', 'track', 'vuln-judge',
+        _ANALYSIS_FLOW = ['taint', 'track', 'fptrack', 'vuln-judge',
                           'vuln-pattern-enhancement', 'vuln-false-positive-judge', 'vuln-report']
-        _INITIAL_TYPES = {'taint', 'track'}
+        _INITIAL_TYPES = {'taint', 'track', 'fptrack'}
 
         _session_meta: dict[str, dict] = {}
         _depth_groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
@@ -582,22 +583,54 @@ class DataflowVulnScanTraceParser(TraceParser):
                 continue
 
             # 3. Same-depth analysis flow → parent is previous analysis type
+            #    vuln-report forks from same parent as vuln-false-positive-judge
+            #    (report_parent_session), not from vuln-false-positive-judge itself
             if info['analysis_type'] and info['analysis_type'] not in _INITIAL_TYPES:
                 at_idx = _ANALYSIS_FLOW.index(info['analysis_type'])
+                _skip_types = set()
+                if info['analysis_type'] == 'vuln-report':
+                    _skip_types.add('vuln-false-positive-judge')
                 for prev_idx in range(at_idx - 1, -1, -1):
                     prev_at = _ANALYSIS_FLOW[prev_idx]
-                    for other_sid, other_info in _session_meta.items():
-                        if (other_info['dvs_run'] == dvs_run and
-                            other_info['depth'] == depth and
-                            other_info['func'] == info['func'] and
-                            other_info['analysis_type'] == prev_at and
-                            other_info['error_num'] == 0 and
-                            not other_info['is_tfg']):
-                            graph['parent_map'][sid] = other_sid
+                    if prev_at in _skip_types:
+                        continue
+                    # Two passes: prefer non-error, fall back to error
+                    for _accept_error in (False, True):
+                        for other_sid, other_info in _session_meta.items():
+                            if (other_info['dvs_run'] == dvs_run and
+                                other_info['depth'] == depth and
+                                other_info['func'] == info['func'] and
+                                other_info['analysis_type'] == prev_at and
+                                not other_info['is_tfg'] and
+                                bool(other_info['error_num']) == _accept_error):
+                                graph['parent_map'][sid] = other_sid
+                                break
+                        if sid in graph['parent_map']:
                             break
                     if sid in graph['parent_map']:
                         break
                 if sid in graph['parent_map']:
+                    continue
+
+            # 3b. Initial fork: track/fptrack → taint session at same depth
+            if info['analysis_type'] in _INITIAL_TYPES and info['analysis_type'] != 'taint':
+                best_parent = None
+                best_count = -1
+                for other_sid, other_info in _session_meta.items():
+                    if (other_info['dvs_run'] == dvs_run and
+                        other_info['depth'] == depth and
+                        other_info['func'] == info['func'] and
+                        other_info['analysis_type'] == 'taint' and
+                        not other_info['is_tfg']):
+                        shared = 0
+                        for _fid, f_sids in graph.get('file_to_sessions', {}).items():
+                            if sid in f_sids and other_sid in f_sids:
+                                shared += 1
+                        if shared > best_count:
+                            best_count = shared
+                            best_parent = other_sid
+                if best_parent is not None:
+                    graph['parent_map'][sid] = best_parent
                     continue
 
             # 4. Cross-depth → parent is at depth N-1
