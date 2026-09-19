@@ -28,7 +28,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
       matched: {finding_idx: ac_case_idx} — 匹配上的 finding → 告警中心 case
       unmatched_ac_indices: set[int] — 未匹配上任何 finding 的告警中心 case 索引
     """
-    from concurrent.futures import ThreadPoolExecutor, as_completed
+    from concurrent.futures import ThreadPoolExecutor
+    from ..infrastructure.parallel import iter_completed
 
     def _progress(text):
         if progress_cb:
@@ -131,16 +132,18 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(_prefilter_one, ai)
             pre_futures[fut] = ai
-        for fut in as_completed(pre_futures):
-            if cancel_cb:
-                cancel_cb()
+        for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800):
             ai = pre_futures[fut]
-            try:
-                _, indices = fut.result()
-                prefilter_candidates[ai] = indices
-            except Exception as e:
+            if _timeout:
                 prefilter_candidates[ai] = list(range(len(active_findings)))
-                log("AC_MATCH", f"prefilter FAILED (ac{ai}): {e}, fallback all")
+                log("AC_MATCH", f"prefilter TIMEOUT (ac{ai}): fallback all")
+            else:
+                try:
+                    _, indices = fut.result()
+                    prefilter_candidates[ai] = indices
+                except Exception as e:
+                    prefilter_candidates[ai] = list(range(len(active_findings)))
+                    log("AC_MATCH", f"prefilter FAILED (ac{ai}): {e}, fallback all")
             prefilter_done += 1
             _progress(f"告警中心匹配 预筛选: {prefilter_done}/{len(alert_center_cases)} 完成")
     except Exception:
@@ -206,16 +209,18 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 }, finding_list[fi])
                 futures[fut] = (ai, fi)
             done = 0
-            for fut in as_completed(futures):
-                if cancel_cb:
-                    cancel_cb()
+            for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                 ai, fi = futures[fut]
-                try:
-                    _, _, is_same = fut.result()
-                    pair_results[(ai, fi)] = is_same
-                except Exception as e:
+                if _timeout:
                     pair_results[(ai, fi)] = False
-                    log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
+                    log("AC_MATCH", f"LLM 超时 (ac{ai},f{fi}): fallback false")
+                else:
+                    try:
+                        _, _, is_same = fut.result()
+                        pair_results[(ai, fi)] = is_same
+                    except Exception as e:
+                        pair_results[(ai, fi)] = False
+                        log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
                 done += 1
                 _progress(f"告警中心匹配 详细对比: {done}/{len(all_pairs)} LLM 调用完成")
         except Exception:

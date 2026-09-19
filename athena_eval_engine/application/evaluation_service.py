@@ -652,16 +652,17 @@ def run(evaluation_id: str) -> dict:
     if _need_fill:
         from ..infrastructure import llm as llm_mod
         if llm_mod.is_enabled():
-            from concurrent.futures import ThreadPoolExecutor, as_completed
+            from concurrent.futures import ThreadPoolExecutor
+            from ..infrastructure.parallel import iter_completed
             log("INGEST", f"并行补提取 source 信息: {len(_need_fill)} 条 case")
             _fill_done = [0]
             import threading as _th
             _fill_lock = _th.Lock()
             with ThreadPoolExecutor(max_workers=min(len(_need_fill), 8)) as pool:
                 futures = [pool.submit(_fill_missing_source, cd) for cd in _need_fill]
-                for fut in as_completed(futures):
-                    _check_cancel(evaluation_id, "INGEST")
-                    fut.result()
+                for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST"), per_task_timeout=1800):
+                    if not _timeout:
+                        fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
                         if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
@@ -1153,7 +1154,8 @@ def run(evaluation_id: str) -> dict:
         set_progress(evaluation_id, "解析 Trace: 准备中...")
         _set_status_short(evaluation_id, "PARSING")
         _check_cancel(evaluation_id, "PARSING")
-        from concurrent.futures import ThreadPoolExecutor, as_completed
+        from concurrent.futures import ThreadPoolExecutor
+        from ..infrastructure.parallel import iter_completed
 
         def _parse_trace(e):
             """Phase 1: 解析 trace → events + session（无 LLM，快）。"""
@@ -1403,7 +1405,7 @@ def run(evaluation_id: str) -> dict:
             _parse_futures = {pool.submit(_parse_trace, e): i for i, e in enumerate(entries)}
             parsed = [None] * len(entries)
             _parse_done = 0
-            for _fut in as_completed(_parse_futures):
+            for _fut, _timeout in iter_completed(_parse_futures, cancel_cb=lambda: _check_cancel(evaluation_id, "PARSING")):
                 parsed[_parse_futures[_fut]] = _fut.result()
                 _parse_done += 1
                 set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")

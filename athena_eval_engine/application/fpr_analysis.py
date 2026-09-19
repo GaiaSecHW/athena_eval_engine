@@ -7,7 +7,8 @@
 基线数据来源：case_details（benchmark_item 表），不再使用 CSV。
 """
 from __future__ import annotations
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
+from ..infrastructure.parallel import iter_completed
 
 from ..infrastructure import vuln_center_client
 from ..infrastructure import llm as llm_mod
@@ -240,7 +241,9 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             for batch in batches:
                 fut = pool.submit(_llm_match_batch, bl_content, batch)
                 future_to_batch[fut] = batch
-            for fut in as_completed(future_to_batch):
+            for fut, _timeout in iter_completed(future_to_batch, per_task_timeout=1800):
+                if _timeout:
+                    continue
                 matched_pairs, _ = fut.result()
                 all_matches.extend(matched_pairs)
 
@@ -262,9 +265,9 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
     bl_pool = ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows)))
     try:
         futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
-        for fut in as_completed(futures):
-            if cancel_cb:
-                cancel_cb()
+        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
+            if _timeout:
+                continue
             bl_results.append(fut.result())
     except Exception:
         bl_pool.shutdown(wait=False, cancel_futures=True)
