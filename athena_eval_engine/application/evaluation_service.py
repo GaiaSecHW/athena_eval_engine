@@ -1721,7 +1721,7 @@ def run(evaluation_id: str) -> dict:
         _nogk_findings = _g_nogk_facts.get("findings", [])
         _nogk_session_graph = _g_nogk_facts.get("session_graph", {})
         _nogk_events = _g_nogk_facts.get("events", [])
-        _nogk_parser = _nogk_facts.get("parser")
+        _nogk_parser = _g_nogk_facts.get("parser")
         _g_case_results = []
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
