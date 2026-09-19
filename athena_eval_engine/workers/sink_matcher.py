@@ -185,7 +185,8 @@ def group_chains(sink_session_ids: list[str], session_graph: dict) -> list[set[s
     """将 sink 命中的 session 按 parent_map 向上追溯为链。
 
     每个 sink session 沿 parent_map 向上追溯最多 _MAX_CHAIN_SESSIONS 个。
-    有交集的链合并为一条。
+    有交集的链合并为一条。合并后超过 _MAX_CHAIN_SESSIONS 时，
+    从第一个 sink session 重新追溯截取。
 
     返回: [set of session_ids, ...] — 每个集合是一条链
     """
@@ -210,6 +211,11 @@ def group_chains(sink_session_ids: list[str], session_graph: dict) -> list[set[s
                     break
             if changed:
                 break
+
+    # 合并后超过限制时，从第一个 sink session 重新追溯
+    for i, chain in enumerate(chains):
+        if len(chain) > _MAX_CHAIN_SESSIONS:
+            chains[i] = trace_ancestor_chain(sink_session_ids[0], session_graph)
 
     return chains
 
