@@ -356,14 +356,17 @@ def chat(messages, **kwargs) -> str:
 
 
 def _try_repair_backslash_quote(text):
-    """修复 JSON 转义错误 + 花括号补全。
+    """修复 JSON 常见错误 + 结构补全。
 
     Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
     当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
     未转义引号，提前终止字符串。利用 json 解析器的错误位置逐个修复。
 
-    Step 2: 花括号补全。修复 \\" 后可能仍缺闭合 }，在 repaired 文本上
-    统计花括号深度并补全。
+    Step 2: 结构修复。在错误位置尝试插入缺失的分隔符（逗号、闭合括号）。
+    当 LLM 漏掉 ], 或漏掉逗号时，解析器报 "Expecting ',' delimiter"。
+    逐个尝试在错误位置插入 ], ],} 等修复方案。
+
+    Step 3: 花括号+方括号补全。在 repaired 文本上统计深度并补全缺失的 } 和 ]。
     """
     decoder = json.JSONDecoder()
     repaired = text
@@ -381,8 +384,52 @@ def _try_repair_backslash_quote(text):
                 repaired = repaired[:e.pos - 3] + '\\' + repaired[e.pos - 1:]
             else:
                 break
-    # Step 2: 花括号补全（在 repaired 文本上统计深度）
-    depth = 0
+    # Step 2: 结构修复（在错误位置插入缺失的分隔符/闭合符）
+    for _ in range(50):
+        try:
+            obj, _ = decoder.raw_decode(repaired)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError as e:
+            if e.msg.startswith("Expecting ',' delimiter") or e.msg.startswith("Expecting ':' delimiter"):
+                # 尝试在错误位置插入各种修复字符
+                fixes = []
+                if e.msg.startswith("Expecting ',' delimiter"):
+                    # 解析器在数组/对象中期望逗号，但找到了 } 或其他字符
+                    # 可能是缺逗号、缺 ]、或缺 ]},
+                    fixes = [
+                        repaired[:e.pos] + ',' + repaired[e.pos:],      # 缺逗号
+                        repaired[:e.pos] + ']' + repaired[e.pos:],      # 缺 ]（数组未闭合）
+                        repaired[:e.pos] + ']}' + repaired[e.pos:],     # 缺 ]}（数组+对象未闭合）
+                        repaired[:e.pos] + ']},' + repaired[e.pos:],    # 缺 ]},（数组+对象+逗号）
+                    ]
+                elif e.msg.startswith("Expecting ':' delimiter"):
+                    fixes = [
+                        repaired[:e.pos] + ':' + repaired[e.pos:],      # 缺冒号
+                    ]
+                fixed_one = False
+                for fixed in fixes:
+                    try:
+                        obj, _ = decoder.raw_decode(fixed)
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        pass
+                # 如果没有快速修复命中，尝试逐步插入 ] 直到解析成功
+                # （处理多层嵌套数组未闭合的情况）
+                for extra_brackets in [']', ']]', ']]]', ']', ']}', ']]}']:
+                    fixed = repaired[:e.pos] + extra_brackets + repaired[e.pos:]
+                    try:
+                        obj, _ = decoder.raw_decode(fixed)
+                        if isinstance(obj, dict):
+                            return obj
+                    except json.JSONDecodeError:
+                        pass
+                break  # 结构修复无法命中，跳出
+            else:
+                break
+    # Step 3: 花括号+方括号补全（在 repaired 文本上统计深度）
+    brace_depth = 0
+    bracket_depth = 0
     in_str = False
     esc = False
     for ch in repaired:
@@ -398,11 +445,16 @@ def _try_repair_backslash_quote(text):
         if in_str:
             continue
         if ch == '{':
-            depth += 1
+            brace_depth += 1
         elif ch == '}':
-            depth -= 1
-    if depth > 0:
-        fixed = repaired + '}' * depth
+            brace_depth -= 1
+        elif ch == '[':
+            bracket_depth += 1
+        elif ch == ']':
+            bracket_depth -= 1
+    if brace_depth > 0 or bracket_depth > 0:
+        suffix = ']' * max(bracket_depth, 0) + '}' * max(brace_depth, 0)
+        fixed = repaired + suffix
         try:
             obj = json.loads(fixed)
             return obj if isinstance(obj, dict) else None
