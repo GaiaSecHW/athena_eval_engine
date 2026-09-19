@@ -812,6 +812,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             "knowledge_interactions": [{"tool": iv.get("tool",""),
                                         "question": iv.get("command_parsed") or iv.get("command",""),
                                         "answer": iv.get("output_parsed") or iv.get("answer","")} for iv in case_interactions],
+            "memory_interactions": [{"tool": iv.get("tool",""),
+                                         "command": iv.get("command",""),
+                                         "answer": (iv.get("output_parsed") or iv.get("answer",""))[:500]} for iv in case_mem_interactions],
             "mining_actions": mining_actions,
             "sink_analysis": _sink_analysis,
             "no_finding_reason": _no_finding_reason,
@@ -1075,10 +1078,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _data_str = json.dumps(data, ensure_ascii=False)
                     log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
 
-        _nogk_desc = ("11. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
-                       "12. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
-                       "13. nogk_knowledge_intervention：No-KG 条件下同 knowledge_intervention\n"
-                       "14. nogk_ac_case_match：No-KG 条件下同 ac_case_match\n\n"
+        _nogk_desc = ("12. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
+                       "13. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
+                       "14. nogk_knowledge_intervention：No-KG 条件下同 knowledge_intervention\n"
+                       "15. nogk_ac_case_match：No-KG 条件下同 ac_case_match\n\n"
                        if has_nogk else "\n")
         prompt = [
             {"role": "system", "content": (
@@ -1091,17 +1094,22 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "   - agent_validation：Agent 自身的判定，CONFIRMED=确认是漏洞，FALSE_POSITIVE=判定不是漏洞\n"
                 "3. matched_finding：Agent 提交的漏洞报告中与基线匹配的那条（Agent 没找到时为 null）\n"
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
-                "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录，每条包含：tool（工具名）、question（查询命令/内容）、answer（知识返回内容摘要，≤500字）\n"
-                "6. mining_actions：完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：\n"
+                "5. knowledge_interactions：Agent 向知识图谱发起的查询记录，每条包含：tool（工具名）、question（查询命令/内容）、answer（知识返回内容摘要，≤500字）\n"
+                "6. memory_interactions：Agent 向记忆系统发起的查询记录，每条包含：tool（工具名）、command（记忆检索命令）、answer（记忆返回内容摘要，≤500字）\n"
+                "7. mining_actions：完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：\n"
                 "   - mining_summary：该会话的挖掘过程摘要（时间线描述，重点标注知识/记忆查询时机和后续行为变化）\n"
                 "   - knowledge_queries：知识/记忆问答记录列表，每条含 question（查询内容）、answer（回答要点）、follow_up（得到回答后 Agent 做了什么）\n"
                 "   - key_actions：关键操作列表\n"
-                "7. sink_analysis：sink 点 LLM 链分析结论（判断 session 链是否是基线漏洞的挖掘过程）\n"
-                "8. no_finding_reason：当 agent 接触了漏洞代码但未提交 finding 时，LLM 分析的未提交原因\n"
-                "9. knowledge_intervention：当 agent 接触了漏洞代码但未提交 finding 时，知识/记忆介入的结构化分析（query=问了什么，response=回答了什么，decision=Agent 做了什么决策，impact=正向/负向/中性）。为 null 表示无知识介入\n"
-                "10. ac_case_match：告警中心匹配到的对应漏洞案例（ac_title=案例标题，ac_summary=案例摘要，judgment=误报/真正/未匹配，is_fp=是否误报）。为空表示无匹配\n"
+                "8. sink_analysis：sink 点 LLM 链分析结论（判断 session 链是否是基线漏洞的挖掘过程）\n"
+                "9. no_finding_reason：当 agent 接触了漏洞代码但未提交 finding 时，LLM 分析的未提交原因\n"
+                "10. knowledge_intervention：当 agent 接触了漏洞代码但未提交 finding 时，知识/记忆介入的结构化分析（query=问了什么，response=回答了什么，decision=Agent 做了什么决策，impact=正向/负向/中性）。为 null 表示无知识介入\n"
+                "11. ac_case_match：告警中心匹配到的对应漏洞案例（ac_title=案例标题，ac_summary=案例摘要，judgment=误报/真正/未匹配，is_fp=是否误报）。为空表示无匹配\n"
                 + _nogk_desc
-                + "# impact 判定规则\n"
+                + "# 知识与记忆的识别规则\n"
+                "knowledge_interactions 中的 tool 是知识图谱查询工具（如 athena ask），用于查询项目代码结构、组件依赖、已知漏洞模式等。\n"
+                "memory_interactions 中的 tool 是记忆系统访问工具（如 mem recall、read /app/memory），用于读取历史挖掘经验。\n"
+                "两者都是知识/记忆介入，需分别分析其影响。\n\n"
+                "# impact 判定规则\n"
                 + "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"
                 + "- NEGATIVE（负向）：知识误导 Agent，导致漏报或误报\n"
                 + "- NEUTRAL（中性）：知识未产生影响，或无知识交互\n\n"
