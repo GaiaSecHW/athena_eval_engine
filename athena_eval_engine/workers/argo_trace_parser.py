@@ -24,7 +24,8 @@ import glob
 from typing import Iterator
 from ..domain.raw_event import RawEvent
 from ..domain.resolvers import TraceParser
-from .parse_utils import attach_event_indices, _extract_json_objects_from_text
+from .parse_utils import (attach_event_indices, _extract_json_objects_from_text,
+                           parse_json_lenient, extract_json_payloads)
 from ..infrastructure.log_util import log as _log
 
 
@@ -315,7 +316,7 @@ class ArgoTraceParser(TraceParser):
         from collections import defaultdict as _dd
         import time as _time
         from ..infrastructure.log_util import log as _log
-        _MAX_SESSIONS_PER_LINK = 5
+        _MAX_SESSIONS_PER_LINK = 5  # 保留用于 session 元数据收集，不再用于建边
         graph = {
             'sessions': {},
             'file_to_sessions': _dd(set),
@@ -413,25 +414,9 @@ class ArgoTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边
-        # 不建 finding investigate↔verify 边：挖掘与验证是独立评测，无交叉分析场景。
-        # 1. 共享 fact 的 session 关联
-        for fid, sids in graph['fact_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-
-        # 2. 共享文件的 session 关联
-        for fm, sids in graph['file_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-
-        # 3. parent_map: investigate session 是 verify session 的上级
+        # 构建边：只建真实调用关系边
+        # 不建共享文件/fact 边——共享不是调用关系，会导致 BFS 误连
+        # parent_map: investigate session 是 verify session 的上级
         #    同一 finding_key 出现在 investigate 和 verify → investigate 是父
         for key, inv_sids in graph['finding_to_investigate'].items():
             ver_sids = graph['finding_to_verify'].get(key, set())
@@ -440,6 +425,8 @@ class ArgoTraceParser(TraceParser):
             inv_first = sorted(inv_sids)[0]
             for vsid in ver_sids:
                 graph['parent_map'][vsid] = inv_first
+                graph['edges'][vsid].add(inv_first)
+                graph['edges'][inv_first].add(vsid)
 
         return graph
 
@@ -520,48 +507,6 @@ class ArgoTraceParser(TraceParser):
             return a[0] - b[1]
         return 0  # 重叠
 
-    @staticmethod
-    def _try_parse_json_lenient(text: str) -> dict | None:
-        """尝试解析 JSON，自动补全缺失的闭合花括号。
-
-        Agent 输出的 JSON 有时会少一个闭合 }（如 entry_reachability 对象未关闭），
-        导致 json.loads 失败。此方法检测花括号不匹配并自动补全。
-        """
-        text = text.strip()
-        try:
-            obj = json.loads(text)
-            return obj if isinstance(obj, dict) else None
-        except json.JSONDecodeError:
-            pass
-        # 统计未匹配的花括号
-        depth = 0
-        in_str = False
-        esc = False
-        for ch in text:
-            if esc:
-                esc = False
-                continue
-            if ch == '\\':
-                esc = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == '{':
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-        if depth > 0:
-            fixed = text + '}' * depth
-            try:
-                obj = json.loads(fixed)
-                return obj if isinstance(obj, dict) else None
-            except json.JSONDecodeError:
-                pass
-        return None
-
     def _extract_accepted_payloads(self, text: str) -> list[dict]:
         """从文本中提取 JSON payload。
 
@@ -604,95 +549,16 @@ class ArgoTraceParser(TraceParser):
             if close_idx < 0:
                 close_idx = len(text)
             json_str = text[brace_idx:close_idx]
-            obj = ArgoTraceParser._try_parse_json_lenient(json_str)
+            obj = parse_json_lenient(json_str)
             if obj:
                 _add(obj)
             search_start = close_idx + 3
         if results:
             return results
 
-        # 策略 2: 直接在文本中搜索关键词并做花括号匹配
-        # 预计算所有顶层 { 的位置（depth=0），用于找到包含关键词的最外层对象
-        top_level_opens: list[int] = []
-        depth = 0
-        in_str = False
-        esc = False
-        for j, ch in enumerate(text):
-            if esc:
-                esc = False
-                continue
-            if ch == '\\':
-                esc = True
-                continue
-            if ch == '"':
-                in_str = not in_str
-                continue
-            if in_str:
-                continue
-            if ch == '{':
-                if depth == 0:
-                    top_level_opens.append(j)
-                depth += 1
-            elif ch == '}':
-                depth -= 1
-
-        for keyword in ('"verdict"', '"findings"'):
-            search_start = 0
-            while True:
-                idx = text.find(keyword, search_start)
-                if idx < 0:
-                    break
-                # 找到关键词之前的最后一个顶层 {
-                brace_start = -1
-                for tb in top_level_opens:
-                    if tb <= idx:
-                        brace_start = tb
-                    else:
-                        break
-                if brace_start < 0:
-                    search_start = idx + 1
-                    continue
-                depth = 0
-                in_string = False
-                escape = False
-                end_idx = -1
-                for j in range(brace_start, len(text)):
-                    ch = text[j]
-                    if escape:
-                        escape = False
-                        continue
-                    if ch == '\\':
-                        escape = True
-                        continue
-                    if ch == '"':
-                        in_string = not in_string
-                        continue
-                    if in_string:
-                        continue
-                    if ch == '{':
-                        depth += 1
-                    elif ch == '}':
-                        depth -= 1
-                        if depth == 0:
-                            end_idx = j + 1
-                            break
-                if end_idx > 0:
-                    try:
-                        payload = json.loads(text[brace_start:end_idx])
-                        if isinstance(payload, dict):
-                            _add(payload)
-                    except json.JSONDecodeError:
-                        pass
-                    search_start = max(end_idx, idx + len(keyword))
-                else:
-                    close_idx = text.find('```', brace_start)
-                    if close_idx < 0:
-                        close_idx = len(text)
-                    json_str = text[brace_start:close_idx]
-                    obj = ArgoTraceParser._try_parse_json_lenient(json_str)
-                    if obj:
-                        _add(obj)
-                    search_start = max(close_idx + 3, idx + len(keyword))
+        # 策略 2: 关键词+花括号匹配（用共享函数）
+        for obj in extract_json_payloads(text, keywords=['"verdict"', '"findings"']):
+            _add(obj)
 
         # 策略 3: LLM 兜底 — 前两种策略都无法解析时，用 LLM 从文本中提取 JSON
         if not results and self._llm and self._llm.is_enabled():

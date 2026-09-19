@@ -20,6 +20,7 @@ from ..domain.enums import (
     CanonicalAction,
 )
 from ..infrastructure.log_util import log
+from .parse_utils import parse_json_lenient, extract_json_payloads
 
 _LOG_INTERVAL = 50000  # 每 5 万条事件输出一次进度
 
@@ -92,17 +93,13 @@ class OutcomeResolverImpl:
             if e.event_type == "TEXT" and e.output_json:
                 text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
                 if '"findings"' in text:
-                    m = re.search(r'```json\s*(\{.*?\})\s*```', text, re.DOTALL)
-                    if m:
-                        try:
-                            data = json.loads(m.group(1))
-                            finds = data.get("findings", [])
-                            if finds:
-                                candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
-                            else:
-                                candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
-                        except (json.JSONDecodeError, TypeError):
-                            pass
+                    for obj in extract_json_payloads(text, keywords=['"findings"']):
+                        finds = obj.get("findings", [])
+                        if finds:
+                            candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
+                        else:
+                            candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
+                        break
                 continue
             # Argo: TOOL_RESULT 中含 findings JSON（findings.json 的 cat 结果）
             if e.event_type == "TOOL_RESULT" and e.output_json:
@@ -110,14 +107,19 @@ class OutcomeResolverImpl:
                 if '"verdict"' in out_str and '"finding_id"' in out_str:
                     try:
                         data = json.loads(out_str)
-                        if isinstance(data, list):
-                            for f in data:
-                                vr = f.get("verdict", "")
-                                if vr in ("CONFIRMED", "FALSE_POSITIVE", "MANUAL_REVIEW"):
-                                    mapped = "CONFIRMED" if vr in ("CONFIRMED", "MANUAL_REVIEW") else "FALSE_POSITIVE"
-                                    candidates.append((e.timestamp_ms or 0, mapped))
                     except (json.JSONDecodeError, TypeError):
-                        pass
+                        data = parse_json_lenient(out_str)
+                    if isinstance(data, list):
+                        for f in data:
+                            vr = f.get("verdict", "")
+                            if vr in ("CONFIRMED", "FALSE_POSITIVE", "MANUAL_REVIEW"):
+                                mapped = "CONFIRMED" if vr in ("CONFIRMED", "MANUAL_REVIEW") else "FALSE_POSITIVE"
+                                candidates.append((e.timestamp_ms or 0, mapped))
+                    elif isinstance(data, dict):
+                        vr = data.get("verdict", "")
+                        if vr in ("CONFIRMED", "FALSE_POSITIVE", "MANUAL_REVIEW"):
+                            mapped = "CONFIRMED" if vr in ("CONFIRMED", "MANUAL_REVIEW") else "FALSE_POSITIVE"
+                            candidates.append((e.timestamp_ms or 0, mapped))
                 continue
             if not (e.tool_name and e.is_tool_call()):
                 continue
@@ -148,15 +150,13 @@ class OutcomeResolverImpl:
                 if "vuln_verify_final_verdict" in fp:
                     content = d.get("content", "")
                     if isinstance(content, str):
-                        try:
-                            vdata = json.loads(content)
+                        vdata = parse_json_lenient(content)
+                        if vdata:
                             verdict = vdata.get("verdict", "")
                             if verdict == "confirmed":
                                 candidates.append((e.timestamp_ms or 0, "CONFIRMED"))
                             elif verdict == "ruled_out":
                                 candidates.append((e.timestamp_ms or 0, "FALSE_POSITIVE"))
-                        except (json.JSONDecodeError, TypeError):
-                            pass
             # SecMate: mcp__workflow-tools__store_tracer_verdict（outcome 字段）
             elif e.tool_name == "mcp__workflow-tools__store_tracer_verdict":
                 outcome = d.get("outcome", "")

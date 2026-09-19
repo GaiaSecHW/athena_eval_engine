@@ -908,6 +908,7 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 "matched": True, "matched_finding_id": matched_fid, "finding_title": finding_title,
                 "confusion": confusion, "session_id": finding_session, "agent_validation": matched_vr,
                 "finding_ts": finding_ts,
+                "ac_case_id": f.get("ac_case_id", ""),
                 "candidate_findings": [{
                     "finding_id": f.get("display_id") or f.get("finding_id", ""),
                     "title": f.get("title") or f.get("vuln_type") or "",

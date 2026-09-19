@@ -1,0 +1,118 @@
+# LLM 调用梳理与优化
+
+> 逐个梳理所有活跃的 LLM 调用点，完成一个打一个钩。
+
+## 总览
+
+共 **13 个活跃 LLM 调用点**（已删除 4 个死代码：`ai_match_outcome`、`ai_summary`、`ai_knowledge_analysis`）。
+
+| 编号 | 阶段 | 文件:行号 | 函数 | 用途 | 调用频率 | 类型 | 状态 |
+|------|------|-----------|------|------|----------|------|------|
+| 1 | INGEST | `evaluation_service.py:266` | `_ai_extract_source_info` | 从漏洞描述提取 source_file/function/line | 每个缺失 source 的 case 1 次 | 直接有效 | ✅ 已优化 |
+| 2 | PARSING | `argo_trace_parser.py:706` | `_extract_accepted_payloads` | 正则解析失败后用 LLM 从文本提取 JSON payload | 每个 verify session 最多 1 次（仅前两种策略失败时） | 直接有效 | ✅ 已优化 |
+| 3 | PARSING | `ai_matcher.py:128` | `match_alert_center_to_findings` 预筛选 | 告警中心 case vs 全部 finding，返回候选 ID | 每个告警中心 case 1 次 | 直接有效 | ✅ 已优化 |
+| 4 | PARSING | `ai_matcher.py:191` | `match_alert_center_to_findings` 1vs1 | 告警中心 case vs 候选 finding 详细对比 | 每对 (case, 候选) 1 次 | 直接有效 | ✅ 已优化 |
+| 5 | PARSING | `sink_matcher.py:371` | `_compress_session_actions` | 压缩单个 session 的工具调用序列成摘要 | 每个 session 1 次（有缓存，跨 case 复用） | 中间产物→#6 | ⬜ 待优化 |
+| 6 | PARSING | `sink_matcher.py:610` | `analyze_chain_llm` | 分析 session 链是否是基线漏洞的挖掘过程 | 每个基线漏洞 × 每条链 × 2 条件 | 直接有效 | ⬜ 待优化 |
+| 7 | REPORTING | `report_assembler.py:1077` | `_compress_one`（单段） | 单 session 行为 ≤60K chars 时直接压缩 | 每个 uncached session 1 次 | 中间产物→#11 | ⬜ 待优化 |
+| 8 | REPORTING | `report_assembler.py:1099` | `_compress_one`（分段） | 单 session 行为 >60K chars 时分段压缩 | 每个超长 session 的每段 1 次 | 中间产物→#9 | ⬜ 待优化 |
+| 9 | REPORTING | `report_assembler.py:1119` | `_compress_one`（合并） | 将多段压缩结果合并成一个完整摘要 | 每个超长 session 1 次 | 中间产物→#11 | ⬜ 待优化 |
+| 10 | REPORTING | `report_assembler.py:1185` | `_compress_batch` | 多 session 摘要再聚合压缩（数据仍超限时） | 每轮每批 1 次 | 中间产物→#11 | ⬜ 待优化 |
+| 11 | REPORTING | `report_assembler.py:1273` | `_run_llm` 主分析 | 逐漏洞 KG 归因分析：impact/reason/kg_judgment | 每个非 fast-path 的 case 1 次 | 直接有效 | ⬜ 待优化 |
+| 12 | REPORTING | `fpr_analysis.py:112` | `_llm_match_batch` 1vs1 | 基线 vs 单条 finding 判断是否同一漏洞 | 每对 1 次 | 直接有效 | ⬜ 待优化 |
+| 13 | REPORTING | `fpr_analysis.py:161` | `_llm_match_batch` 批量 | 基线 vs 多条 finding 批量找出匹配 | 每批 1 次（超限时减半到 1vs1） | 直接有效 | ⬜ 待优化 |
+
+## 耗时分布
+
+| 场景 | 典型调用次数 | 单次耗时 | 总耗时占比 |
+|------|-------------|----------|------------|
+| #1 source 提取 | ~数十次 | 短 | 低 |
+| #2 Argo JSON 兜底 | 少量 | 中 | 低 |
+| #3-#4 AC 匹配 | 数十~上百次 | 中 | 中 |
+| #5 session 压缩 | 数十~上百次（有缓存） | 中~长 | 中 |
+| #6 sink 链分析 | 基线数 × 链数 × 2 条件 | 长 | **高** |
+| #7-#10 KG 分析压缩 | case 数 × session 数（多轮） | 中~长 | **最高** |
+| #11 KG 主分析 | case 数（并发 26） | 很长 | **最高** |
+| #12-#13 FPR 匹配 | 数十次 | 中 | 中 |
+
+## 优化记录
+
+### #1 source 提取（INGEST）— ✅ 已完成
+
+**问题**：漏洞中心 API 返回的 `subject.locator` 字段已包含结构化 sink 信息（`path:func:line` 格式），但 `_case_to_benchmark` 未解析，直接把整个 locator 字符串赋给 `source_file`，`source_function` 用错误的 basename+splitext 猜，`source_line` 始终为空。导致所有漏洞中心 case 都触发 `_fill_missing_source` → LLM 调用。
+
+**修复**：`vuln_center_client.py` 新增 `_parse_locator` 函数，用 `rsplit(":", 2)` 从右向左解析 locator，支持以下格式：
+- `path/to/file.c` → 仅文件路径
+- `path/to/file.c:func_name` → 文件+函数
+- `path/to/file.c:func_name:414` → 文件+函数+行号
+- `path/to/file.c:func_name:414-420` → 文件+函数+行号区间（取起始行号）
+- `path/to/file.c:414` → 文件+行号
+- `path/to/file.c:414-420` → 文件+行号区间
+
+**效果**：locator 完整的 case 不再触发 LLM 调用。locator 不完整的 case（如仅文件路径）仍走 LLM fallback，但 LLM prompt 中包含原始 locator 字符串作为 sink 点位置提示，提高提取准确率。
+
+**文件**：`athena_eval_engine/infrastructure/vuln_center_client.py` — 删除 `_extract_function_name`，新增 `_parse_locator`，更新 `_case_to_benchmark`
+
+---
+
+### #3+#4 告警中心匹配（PARSING）— ✅ 已完成
+
+**问题**：
+1. **#4 串行瓶颈**：Phase 2 的 1vs1 对比按 AC case 串行处理（一对一约束），每个 case 内候选并行。100 个 case = 100 轮串行，每轮等 LLM 返回才能进下一个 case。
+2. **匹配结果误用**：匹配上的 finding 被 AC 的 `validation_result` 覆盖，未匹配的 AC case 作为兜底 finding 加入列表 → 影响 TP/FP/FN/TN 指标计算。但匹配的真正目的只是建立 AC case ↔ finding 的关联，用于报告展示漏洞挖掘发现过程。
+
+**修复**：
+1. **#4 全量并行 + 串行冲突解决**：所有 (AC case, 候选 finding) 对一次性并行提交（max_workers=20），LLM 调用结果全部回来后，按 AC case 顺序串行分配（先到先得，一对一约束）。LLM 调用次数不变，每次 prompt 不变（1vs1），准确率不变，但墙钟时间从 M 轮串行降到 1 轮并行。
+2. **#3 并发降低**：预筛选 ThreadPoolExecutor 从 max_workers=50 降到 20，与 #4 一致。
+3. **匹配结果只建关联**：Step 3 只记 `ac_case_id`，不改 `validation_result`。Step 4（兜底 finding）删除。指标计算只用 agent 自己上报的 finding。
+
+**文件**：
+- `athena_eval_engine/workers/ai_matcher.py` — Phase 2 改为全量并行 + 串行冲突解决；#3 和 #4 的 max_workers 从 50 降到 20
+- `athena_eval_engine/application/evaluation_service.py` — 删除 Step 3 的 `validation_result` 覆盖和 Step 4 的兜底 finding；`_analyze_count` 改为基于 agent 自己的 finding 数
+
+---
+### #2 Argo JSON 兜底（PARSING）— ✅ 已完成
+
+**问题**：`_extract_accepted_payloads` 的策略 1（```json 块）和策略 2（关键词+花括号匹配）解析失败时直接走 LLM 兜底。但这两个策略的 JSON 解析能力不足——`_try_parse_json_lenient`（花括号补全）只被 Argo parser 用了，其他 parser（Turing/SecMate/CVulnVerify/Dataflow）解析失败直接 `pass` 丢数据。
+
+**修复**：在 `parse_utils.py` 新增两个共享函数，推广到所有 JSON 解析点：
+
+1. **`parse_json_lenient(text)`** — 单个 JSON 对象，三层递进：`json.loads` → `raw_decode`（容忍尾部内容）→ 花括号补全（修复截断）
+2. **`extract_json_payloads(text, keywords)`** — 从文本提取多个 JSON：```json 块 → 关键词+花括号匹配 → 裸 `raw_decode`
+
+**迁移的文件**（7 个）：
+| 文件 | 修改 |
+|---|---|
+| `argo_trace_parser.py` | 删除 `_try_parse_json_lenient`（40 行），`_extract_accepted_payloads` 策略 2 改用 `extract_json_payloads`（删除 70 行手写花括号匹配） |
+| `cvuln_verify_trace_parser.py` | `_parse_verdict_json` 策略 1+2 合并为 `parse_json_lenient`（删除 15 行） |
+| `turing_trace_parser.py` | `_part_to_event` 用 `parse_json_lenient` 替代 `json.loads`（增加 `raw_decode`+花括号补全），`_extract_finding_params_from_cmd` 和 `_normalize_submit_artifact` 也迁移 |
+| `resolvers.py` | 3 处迁移：DataflowVulnScan TEXT 用 `extract_json_payloads`，Argo TOOL_RESULT 和 CVulnVerify write 用 `parse_json_lenient` |
+| `report_assembler.py` | 4 处迁移：3 个 SecMate 块 + CVulnVerify write content + `_parse_kg_command` |
+| `secmate_trace_parser.py` | payload 解析用 `parse_json_lenient` |
+| `dataflow_trace_parser.py` | 3 处 `_extract_json_objects_from_text` 升级为 `extract_json_payloads`（增加花括号补全 + 关键词匹配） |
+
+**效果**：
+- Argo parser 的 LLM 兜底触发频率降低（策略 1+2 的 JSON 解析能力增强，更多 case 在走 LLM 前就能解析成功）
+- 其他 parser 之前 `json.loads` 失败直接 `pass` 丢数据，现在有 `raw_decode` + 花括号补全兜底，减少数据丢失
+
+---
+
+### 附：fpr_analysis.py 死代码清理
+
+**问题**：`_get_baseline_path()` 和 `load_baseline()` 两个函数从基线 CSV 时代遗留，基线数据已改为从 `case_details`（benchmark_item 表）获取，这两个函数无任何调用方。
+
+**修复**：删除 `_get_baseline_path()`、`load_baseline()`、`import csv`、`import os`，更新模块 docstring 去掉"基线 CSV"引用。
+
+**文件**：`athena_eval_engine/application/fpr_analysis.py`
+
+---
+
+### 附：sink_matcher.py ac_case_id 传播修复
+
+**问题**：`sink_match_baselines` 构建 `case_results` 时没有从 finding 拷贝 `ac_case_id` 字段，导致报告渲染器读 `c.ac_case_id` 一直是空值。这是 #3/#4 匹配结果用途变更后暴露的预先存在 bug — 之前 AC 匹配覆盖 `validation_result` 时不需要传播 `ac_case_id`。
+
+**修复**：在 matched case_result 中添加 `"ac_case_id": f.get("ac_case_id", "")`。
+
+**文件**：`athena_eval_engine/workers/sink_matcher.py`
+
+---

@@ -28,84 +28,17 @@ class TraceParser(ABC):
         ...
 
     def build_session_graph(self, events):
-        """构建 session 关系图。子类可覆盖实现 agent 专有逻辑。
+        """构建 session 关系图。各 agent parser 必须自己实现。
 
-        默认实现：按共享文件名和 fact ID 关联 session。
-        高频文件（如 package.json、README.md）被过多 session 共享时不建边，
-        避免全连通图导致 BFS 返回所有 session。
+        session 关系必须精准——只有真实调用关系（parent_id、source_session_id 等）
+        才能建边。共享文件/fact/ID 不是调用关系，不建边。
         """
-        import re
-        import os
-        import time
         from collections import defaultdict
-        from ...infrastructure.log_util import log
-        # 文件/fact 被 >此数量的 session 共享时不建边（防止常见文件产生噪声边）
-        _MAX_SESSIONS_PER_LINK = 5
-        graph = {
+        return {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
             'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
             'parent_map': {},
         }
-        _n = len(events)
-        _start = time.time()
-        for idx, ev in enumerate(events):
-            if idx > 0 and idx % 50000 == 0:
-                log("SINK_MATCH", f"build_session_graph {idx}/{_n} events elapsed={int(time.time()-_start)}s")
-            sid = ev.session_id
-            if not sid:
-                continue
-            if sid not in graph['sessions']:
-                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
-            sg = graph['sessions'][sid]
-            if not ev.is_tool_call():
-                if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
-                    for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
-                        # f001 通常是系统初始化 fact（如 opencode session 初始化），
-                        # 几乎所有 session 都引用，不作为关联依据。
-                        # 下方频率过滤器也会自动过滤此类高频 fact。
-                        if fid != 'f001':
-                            sg['facts'].add(fid)
-                            graph['fact_to_sessions'][fid].add(sid)
-                continue
-            tool = ev.tool_name or ""
-            inp = ev.input_json or {}
-            if tool == "bash":
-                cmd = str(inp.get("command", ""))
-                for fid in re.findall(r'f\d{3,5}', cmd):
-                    if fid != 'f001':
-                        sg['facts'].add(fid)
-                        graph['fact_to_sessions'][fid].add(sid)
-                if 'athena' in cmd.lower() and 'ask' in cmd:
-                    m = re.search(r'ask\s+"([^"]{0,50})', cmd)
-                    if m:
-                        sg['athena_qs'].append(m.group(1))
-                for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
-                    basename = os.path.basename(fm)
-                    if basename and len(basename) < 80 and not basename.startswith('.'):
-                        sg['files'].add(basename)
-                        graph['file_to_sessions'][basename].add(sid)
-            elif tool == "read":
-                fp = str(inp.get("file_path") or inp.get("filePath") or "")
-                if fp:
-                    basename = os.path.basename(fp)
-                    if basename and len(basename) < 80:
-                        sg['files'].add(basename)
-                        graph['file_to_sessions'][basename].add(sid)
-        # 构建边：共享 fact 或文件的 session 互相关联
-        # 频率过滤：被 >_MAX_SESSIONS_PER_LINK 个 session 共享的项不建边（防止噪声）
-        for fid, sids in graph['fact_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        for fm, sids in graph['file_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        return graph
 
     def trace_finding_process(self, events: list[RawEvent], session_graph: dict,
                               finding: dict) -> list[dict]:

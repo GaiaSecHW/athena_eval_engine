@@ -1,14 +1,12 @@
-"""FPR（误报率）分析模块 — 基线 CSV vs 漏洞中心/告警中心数据，批量 LLM 匹配。
+"""FPR（误报率）分析模块 — 基线集 vs 漏洞中心/告警中心数据，批量 LLM 匹配。
 
 在 REPORTING 阶段被调用，结果作为 tab 展示：
 - source="vuln_center"  → 漏洞E2E分析 tab
 - source="alert_center" → 漏洞挖掘误报率 tab
 
-基线 CSV 来源：run8_reports_full.zip 生成的 run8_baseline.csv（含 VULNERABLE + NON_VULNERABLE）。
+基线数据来源：case_details（benchmark_item 表），不再使用 CSV。
 """
 from __future__ import annotations
-import csv
-import os
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
 from ..infrastructure import vuln_center_client
@@ -17,21 +15,6 @@ from ..infrastructure.log_util import log
 
 _BATCH_SIZE = 5
 _MAX_BASELINE_WORKERS = 20
-
-
-def _get_baseline_path() -> str:
-    """从环境变量获取基线 CSV 路径，默认 /data/logs/baseline.csv。"""
-    return os.environ.get("FPR_BASELINE_CSV", "/data/logs/baseline.csv")
-
-
-def load_baseline(csv_path: str) -> list[dict]:
-    """加载基线 CSV。"""
-    rows: list[dict] = []
-    with open(csv_path, "r", encoding="utf-8-sig") as f:
-        reader = csv.DictReader(f)
-        for row in reader:
-            rows.append(row)
-    return rows
 
 
 def _build_finding_desc(case: dict) -> str:

@@ -268,39 +268,60 @@ def _normalize_case_description(case: dict) -> str:
     )
 
 
-def _extract_function_name(locator: str, subject_name: str) -> str:
-    """从文件路径或 subject.name 中提取函数名/方法名。"""
-    # 1) 文件名去扩展名就是函数名（如 devdrv_manager_ioctl.c → devdrv_manager_ioctl）
-    import os as _os
-    if locator:
-        basename = _os.path.basename(locator)
-        name = _os.path.splitext(basename)[0]
-        if name and name not in ("main", "index", "init", "config"):
-            return name
-    # 2) 从 subject.name 开头提取函数名（到第一个空格/中文/标点）
-    if subject_name:
-        import re as _re
-        m = _re.match(r'([a-zA-Z_][a-zA-Z0-9_]*)', subject_name)
-        if m:
-            return m.group(1)
-    return ""
+def _parse_locator(locator: str) -> tuple[str, str, str]:
+    """解析 locator 字符串，返回 (source_file, source_function, source_line)。
+
+    locator 格式可能为：
+    - path/to/file.c                        (仅文件路径)
+    - path/to/file.c:func_name              (文件+函数)
+    - path/to/file.c:func_name:414          (文件+函数+行号)
+    - path/to/file.c:func_name:414-420      (文件+函数+行号区间)
+    - path/to/file.c:414                    (文件+行号)
+    - path/to/file.c:414-420                (文件+行号区间)
+    """
+    if not locator:
+        return "", "", ""
+
+    def _is_line(s: str) -> bool:
+        if s.isdigit():
+            return True
+        if "-" in s:
+            nums = s.split("-")
+            return len(nums) == 2 and all(n.isdigit() for n in nums)
+        return False
+
+    def _extract_line(s: str) -> str:
+        return s.split("-")[0] if "-" in s and s.split("-")[0].isdigit() else (s if s.isdigit() else "")
+
+    parts = locator.rsplit(":", 2)
+    if len(parts) == 1:
+        return parts[0], "", ""
+    if len(parts) == 2:
+        if _is_line(parts[1]):
+            return parts[0], "", _extract_line(parts[1])
+        return parts[0], parts[1], ""
+    # 3 段：path:func:line
+    source_file, source_function, source_line = parts
+    if _is_line(source_line):
+        return source_file, source_function, _extract_line(source_line)
+    return source_file, source_function, ""
 
 
 def _case_to_benchmark(c: dict, expected_label: str) -> dict:
     """单条 case 归一成基线结构。"""
     subject = c.get("subject") or {}
     locator = subject.get("locator") or ""
-    subj_name = subject.get("name") or ""
-    func_name = _extract_function_name(locator, subj_name)
+    source_file, source_function, source_line = _parse_locator(locator)
     return {
         "case_id": c.get("id") or "",
         "vulnerability_type": c.get("title") or subject.get("type") or "",
         "description": _normalize_case_description(c),
         "target_finding_id": (c.get("source_task") or {}).get("finding_id"),
         "expected_label": expected_label,
-        "source_file": locator,            # 基线漏洞所在文件路径
-        "source_function": func_name,      # 基线漏洞所在函数名/方法名
-        "source_line": "",                 # 漏洞中心 API 无行号字段，由 _fill_missing_source 用 LLM 从描述提取
+        "source_file": source_file,
+        "source_function": source_function,
+        "source_line": source_line,
+        "locator": locator,
     }
 
 

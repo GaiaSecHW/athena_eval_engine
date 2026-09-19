@@ -246,21 +246,29 @@ def _set_status_short(evaluation_id, status):
             raise
 
 
-def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> tuple[str, str, str]:
+def _ai_extract_source_info(description: str, vulnerability_type: str = "",
+                             locator: str = "") -> tuple[str, str, str]:
     """用 LLM 从漏洞描述中提取 source_file、source_function 和 source_line（行号）。
 
     当结构化数据（V-Bench traces 或漏洞中心 subject.locator）无法提取时作为 fallback。
+    locator 是漏洞中心返回的 sink 点位置字符串，作为提示传给 LLM。
     """
     from ..infrastructure import llm as llm_mod
     if not description or not llm_mod.is_enabled():
         return "", "", ""
+    user_parts = [f"漏洞类型: {vulnerability_type}"]
+    if locator:
+        user_parts.append(f"sink 点位置（locator）: {locator}")
+    user_parts.append(f"漏洞描述: {description}")
     prompt = [
         {"role": "system", "content": (
-            "从漏洞描述中提取漏洞所在的源文件路径、函数/方法名和行号。\n"
-            "只返回 JSON: {\"source_file\": \"文件路径\", \"source_function\": \"函数名\", \"source_line\": \"行号\"}\n"
+            "从漏洞描述和 sink 点位置信息中提取漏洞所在的源文件路径、函数/方法名和行号。\n"
+            "locator 字段是漏洞中心提供的 sink 点位置，格式可能为 文件路径:函数名:行号 或其中部分。\n"
+            "优先从 locator 中提取，描述中补充。只返回 JSON: "
+            "{\"source_file\": \"文件路径\", \"source_function\": \"函数名\", \"source_line\": \"行号\"}\n"
             "行号只填数字，如 872。如果无法确定，对应字段返回空字符串。不要输出其他内容。"
         )},
-        {"role": "user", "content": f"漏洞类型: {vulnerability_type}\n漏洞描述: {description}"},
+        {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:
         result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
@@ -273,7 +281,9 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "") -> t
 def _fill_missing_source(case: dict) -> None:
     """如果 case 的 source_file、source_function 或 source_line 为空，用 AI 从 description 补提取。"""
     if not case.get("source_file") or not case.get("source_function") or not case.get("source_line"):
-        sf, sfn, sln = _ai_extract_source_info(case.get("description", ""), case.get("vulnerability_type", ""))
+        sf, sfn, sln = _ai_extract_source_info(
+            case.get("description", ""), case.get("vulnerability_type", ""),
+            case.get("locator", ""))
         if not case.get("source_file"):
             case["source_file"] = sf
         if not case.get("source_function"):
@@ -498,6 +508,7 @@ def run(evaluation_id: str) -> dict:
                         "source_file": c.get("source_file") or "",
                         "source_function": c.get("source_function") or "",
                         "source_line": c.get("source_line") or "",
+                        "locator": c.get("locator") or "",
                     }
                     _fill_missing_source(case_details[cid])
                 _done += 1
@@ -1053,45 +1064,16 @@ def run(evaluation_id: str) -> dict:
                             evaluation_id, tr.task_run_id,
                             f"[{tr.condition.value}] {text}"))
 
-                    # Step 3: 匹配上的 finding 用告警中心 validation_result 更新
+                    # Step 3: 匹配上的 finding 记录 AC 关联（不改 validation_result，不参与指标计算）
                     for fi, ai in _matched.items():
                         ac = _ac_cases[ai]
-                        vr = ac.get("validation_result")
                         _parser_findings[fi]["ac_case_id"] = ac.get("case_id", "")
-                        if is_verify:
-                            # T002: validation_result 映射
-                            _parser_findings[fi]["validation_result"] = (
-                                "CONFIRMED" if vr == "vulnerable" else "FALSE_POSITIVE")
-                        else:
-                            # T001: 告警中心全部 = agent 认为是漏洞
-                            _parser_findings[fi]["validation_result"] = "CONFIRMED"
-                        log("MATCH", f"[{_trid}] {cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')} "
-                              f"vr={vr} → {_parser_findings[fi]['validation_result']}")
-
-                    # Step 4: 未匹配上 finding 的告警中心 case 作为兜底 finding
-                    for ai in _unmatched_ac:
-                        ac = _ac_cases[ai]
-                        vr = ac.get("validation_result")
-                        if is_verify:
-                            finding_vr = "CONFIRMED" if vr == "vulnerable" else "FALSE_POSITIVE"
-                        else:
-                            finding_vr = "CONFIRMED"
-                        _parser_findings.append({
-                            "validation_result": finding_vr,
-                            "title": ac.get("title") or "",
-                            "vuln_type": "",
-                            "description": ac.get("summary") or "",
-                            "source": "",
-                            "sink": "",
-                            "display_id": ac.get("case_id", ""),
-                            "finding_id": ac.get("case_id", ""),
-                            "ac_case_id": ac.get("case_id", ""),
-                        })
+                        log("MATCH", f"[{_trid}] {cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')}")
 
                     _findings_override = _parser_findings
                     _ac_confirmed = sum(1 for f in _parser_findings if f.get("validation_result") == "CONFIRMED")
                     _ac_fp = sum(1 for f in _parser_findings if f.get("validation_result") == "FALSE_POSITIVE")
-                    log("MATCH", f"[{_trid}] {cond.value} 三方匹配完成: findings={len(_parser_findings)} "
+                    log("MATCH", f"[{_trid}] {cond.value} 告警中心匹配完成: findings={len(_parser_findings)} "
                           f"matched={len(_matched)} unmatched_ac={len(_unmatched_ac)} "
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
@@ -1139,7 +1121,7 @@ def run(evaluation_id: str) -> dict:
                 _findings = _findings_override
                 _confirmed = _ac_confirmed
                 _fp = _ac_fp
-                _analyze_count = len(_ac_cases) if _alert_center_data else (_ac_confirmed + _ac_fp)
+                _analyze_count = _ac_confirmed + _ac_fp
             else:
                 log("MATCH", f"[{_trid}] {cond.value} extract_findings start (events={len(events)})")
                 _findings = parser.extract_findings(events)

@@ -21,6 +21,7 @@ from datetime import datetime
 from ..domain.raw_event import RawEvent
 from ..domain.resolvers import TraceParser
 from ..infrastructure.log_util import log
+from .parse_utils import parse_json_lenient
 
 
 class CVulnVerifyTraceParser(TraceParser):
@@ -517,24 +518,12 @@ class CVulnVerifyTraceParser(TraceParser):
 
     @staticmethod
     def _parse_verdict_json(content: str) -> dict | None:
-        """解析 verdict JSON，三级回退：json.loads → raw_decode → regex。"""
-        # 1. json.loads（严格）
-        try:
-            v = json.loads(content)
-            if isinstance(v, dict) and v.get("case_id"):
-                return v
-        except (json.JSONDecodeError, TypeError):
-            pass
-        # 2. raw_decode（容忍尾部多余内容）
-        brace = content.find("{")
-        if brace != -1:
-            try:
-                v, _ = json.JSONDecoder().raw_decode(content, brace)
-                if isinstance(v, dict) and v.get("case_id"):
-                    return v
-            except (json.JSONDecodeError, TypeError):
-                pass
-        # 3. regex 回退：提取 case_id + verdict（最小必要字段）
+        """解析 verdict JSON，两级回退：parse_json_lenient → regex。"""
+        # 1. parse_json_lenient（json.loads → raw_decode → 花括号补全）
+        v = parse_json_lenient(content)
+        if v and v.get("case_id"):
+            return v
+        # 2. regex 回退：提取 case_id + verdict（最小必要字段）
         cid_m = re.search(r'"case_id"\s*:\s*"([^"]+)"', content)
         v_m = re.search(r'"verdict"\s*:\s*"([^"]+)"', content)
         if cid_m:

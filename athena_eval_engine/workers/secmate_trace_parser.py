@@ -22,7 +22,7 @@ from typing import Iterator
 
 from ..domain.raw_event import RawEvent
 from ..domain.resolvers import TraceParser
-from .parse_utils import attach_event_indices
+from .parse_utils import attach_event_indices, parse_json_lenient
 
 
 _TOOL_MAP = {
@@ -696,11 +696,7 @@ class SecMateTraceParser(TraceParser):
                 vr = None
 
             # payload 是 JSON 字符串，含 title/severity/judgment/final_strength 等
-            payload = {}
-            try:
-                payload = json.loads(row_dict.get("payload") or "{}")
-            except (json.JSONDecodeError, TypeError):
-                pass
+            payload = parse_json_lenient(row_dict.get("payload") or "{}") or {}
 
             finding_id = str(row_dict["id"])
             findings.append({

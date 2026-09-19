@@ -35,6 +35,216 @@ def _extract_json_objects_from_text(text: str) -> list[dict]:
     return results
 
 
+def parse_json_lenient(text: str) -> dict | None:
+    """尽力解析单个 JSON 对象，三层策略递进。
+
+    1. json.loads（严格解析）
+    2. raw_decode（从首个 { 解析，容忍尾部额外内容）
+    3. 花括号补全（补全缺失的闭合 }，修复被截断的 JSON）
+
+    Agent 输出的 JSON 可能：尾部带额外文字、被 max_tokens 截断、缺少闭合括号。
+    """
+    if not text:
+        return None
+    text = text.strip()
+    # 策略 1: 严格解析
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except json.JSONDecodeError:
+        pass
+    # 策略 2: raw_decode（容忍尾部内容）
+    decoder = json.JSONDecoder()
+    start = text.find('{')
+    if start >= 0:
+        try:
+            obj, _ = decoder.raw_decode(text, start)
+            if isinstance(obj, dict):
+                return obj
+        except json.JSONDecodeError:
+            pass
+    # 策略 3: 花括号补全
+    depth = 0
+    in_str = False
+    esc = False
+    for ch in text:
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+    if depth > 0:
+        fixed = text + '}' * depth
+        try:
+            obj = json.loads(fixed)
+            return obj if isinstance(obj, dict) else None
+        except json.JSONDecodeError:
+            pass
+    return None
+
+
+def extract_json_payloads(text: str, keywords: list[str] | None = None) -> list[dict]:
+    """从文本中提取 JSON 对象，多层策略递进。
+
+    策略：
+    1. ```json 代码块（raw_decode + 花括号补全兜底）
+    2. 关键词+花括号匹配（搜索 keywords，找到外层 JSON 对象）
+    3. 裸 raw_decode（从每个顶层 { 尝试解析）
+
+    Args:
+        text: 包含 JSON 的文本
+        keywords: 策略 2 的搜索关键词列表（如 ['"verdict"', '"findings"']），
+                  None 时跳过策略 2
+    """
+    if not text:
+        return []
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(obj: dict) -> None:
+        sig = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+        if sig not in seen:
+            seen.add(sig)
+            results.append(obj)
+
+    # 策略 1: ```json 代码块
+    for obj in _extract_json_objects_from_text(text):
+        _add(obj)
+    # 策略 1b: ```json 块用花括号补全兜底
+    marker = '```json'
+    search_start = 0
+    while True:
+        idx = text.find(marker, search_start)
+        if idx == -1:
+            break
+        brace_idx = text.find('{', idx + len(marker))
+        if brace_idx == -1:
+            search_start = idx + len(marker)
+            continue
+        close_idx = text.find('```', brace_idx)
+        if close_idx < 0:
+            close_idx = len(text)
+        json_str = text[brace_idx:close_idx]
+        obj = parse_json_lenient(json_str)
+        if obj:
+            _add(obj)
+        search_start = close_idx + 3
+
+    if results:
+        return results
+
+    # 策略 2: 关键词+花括号匹配
+    if keywords:
+        # 预计算所有顶层 { 的位置（depth=0）
+        top_level_opens: list[int] = []
+        depth = 0
+        in_str = False
+        esc = False
+        for j, ch in enumerate(text):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                if depth == 0:
+                    top_level_opens.append(j)
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+
+        for keyword in keywords:
+            kw_search = 0
+            while True:
+                idx = text.find(keyword, kw_search)
+                if idx < 0:
+                    break
+                # 找到关键词之前的最后一个顶层 {
+                brace_start = -1
+                for tb in top_level_opens:
+                    if tb <= idx:
+                        brace_start = tb
+                    else:
+                        break
+                if brace_start < 0:
+                    kw_search = idx + 1
+                    continue
+                # 花括号匹配找到外层 JSON
+                d = 0
+                in_s = False
+                esc2 = False
+                end_idx = -1
+                for j in range(brace_start, len(text)):
+                    ch = text[j]
+                    if esc2:
+                        esc2 = False
+                        continue
+                    if ch == '\\':
+                        esc2 = True
+                        continue
+                    if ch == '"':
+                        in_s = not in_s
+                        continue
+                    if in_s:
+                        continue
+                    if ch == '{':
+                        d += 1
+                    elif ch == '}':
+                        d -= 1
+                        if d == 0:
+                            end_idx = j + 1
+                            break
+                if end_idx > 0:
+                    obj = parse_json_lenient(text[brace_start:end_idx])
+                    if obj:
+                        _add(obj)
+                    kw_search = max(end_idx, idx + len(keyword))
+                else:
+                    close_idx = text.find('```', brace_start)
+                    if close_idx < 0:
+                        close_idx = len(text)
+                    json_str = text[brace_start:close_idx]
+                    obj = parse_json_lenient(json_str)
+                    if obj:
+                        _add(obj)
+                    kw_search = max(close_idx + 3, idx + len(keyword))
+
+    if results:
+        return results
+
+    # 策略 3: 裸 raw_decode（从每个顶层 { 尝试）
+    decoder = json.JSONDecoder()
+    for i in top_level_opens if keywords else range(len(text)):
+        ch = text[i] if keywords else text[i]
+        if ch != '{':
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, i)
+            if isinstance(obj, dict):
+                _add(obj)
+        except json.JSONDecodeError:
+            pass
+
+    return results
+
+
 def attach_event_indices(findings: dict[str, dict], events: list) -> None:
     """为每个 finding 关联提交事件索引（用于后续提取挖掘过程上下文）。
 

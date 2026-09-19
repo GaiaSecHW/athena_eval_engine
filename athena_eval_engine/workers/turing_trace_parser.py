@@ -59,7 +59,7 @@ import sqlite3
 from typing import Iterator
 from ..domain.raw_event import RawEvent, EVENT_TYPES, detect_memory_flags
 from ..domain.resolvers import TraceParser
-from .parse_utils import attach_event_indices
+from .parse_utils import attach_event_indices, parse_json_lenient
 # part.type → event_type 映射
 TYPE_MAP = {
     "tool": None,  # 需看 input/output 判 TOOL_CALL / TOOL_RESULT，由 _classify_tool 决定
@@ -249,39 +249,47 @@ class TuringTraceParser(TraceParser):
     # ==================================================================
 
     def build_session_graph(self, events):
-        """Turing (opencode) 特有：在基类图基础上加 parent_id 父子边 + agent 角色。
+        """Turing (opencode) session 关系图：parent_id 父子边 + agent 角色。
 
-        不建 finding_id 边（insert_finding session ↔ update_finding session）：
-        挖掘与验证是独立评测，无交叉分析场景。finding_id 边会把验证 session
-        拉入挖掘的 chain_actions，导致数据膨胀和 LLM 分析噪音。
-
-        三层关联：
-        1. parent_id 父子边（session 表）+ agent 角色标注
-        2. 基类共享文件/fact 边
+        只建 parent_id 父子边（SQLite session 表的真实调用关系）。
+        不建共享文件/fact 边——共享文件不是调用关系，会导致 BFS 误连。
         """
-        graph = super().build_session_graph(events)
+        import sqlite3
+        import time
+        from collections import defaultdict
+        from ...infrastructure.log_util import log
 
-        # === parent_id 父子边 + agent 角色标注（从 SQLite session 表）===
+        graph = {
+            'sessions': {}, 'file_to_sessions': defaultdict(set),
+            'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
+            'parent_map': {},
+        }
+
+        # 收集 session 元数据
+        for ev in events:
+            sid = ev.session_id
+            if not sid:
+                continue
+            if sid not in graph['sessions']:
+                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+
+        # parent_id 父子边 + agent 角色（从 SQLite session 表）
         uri = getattr(self, '_source_uri', None)
         if not uri:
             return graph
         try:
             conn = self._connect(uri)
             conn.row_factory = sqlite3.Row
-            # parent_id 父子边
             for row in conn.execute("SELECT id, parent_id, agent FROM session WHERE parent_id IS NOT NULL"):
                 sid = row["id"]
                 pid = row["parent_id"]
                 agent = row["agent"] if "agent" in row.keys() else ""
-                # 标注 session 的 agent 角色
                 if sid in graph['sessions']:
                     graph['sessions'][sid]['agent'] = agent
-                # 父子边
                 if sid in graph['sessions'] and pid in graph['sessions']:
                     graph['edges'][sid].add(pid)
                     graph['edges'][pid].add(sid)
                     graph['parent_map'][sid] = pid
-            # 补充标注所有 session 的 agent 角色（非仅 parent_id 非空的）
             for row in conn.execute("SELECT id, agent FROM session"):
                 sid = row["id"]
                 agent = row["agent"] if "agent" in row.keys() else ""
@@ -367,19 +375,18 @@ class TuringTraceParser(TraceParser):
         parse_error = None
         raw_data = row["data"]
         if isinstance(raw_data, str):
-            try:
-                data = json.loads(raw_data)
-            except json.JSONDecodeError as e:
+            data = parse_json_lenient(raw_data)
+            if data is None:
                 parse_status = "PARTIAL"
-                parse_error = f"json_decode: {e}"
+                parse_error = "json_decode: parse_json_lenient failed"
                 data = self._regex_extract_partial(raw_data)
         elif isinstance(raw_data, (bytes, bytearray)):
-            try:
-                data = json.loads(raw_data.decode("utf-8"))
-            except Exception as e:
+            decoded = raw_data.decode("utf-8", errors="replace")
+            data = parse_json_lenient(decoded)
+            if data is None:
                 parse_status = "PARTIAL"
-                parse_error = f"json_decode_bytes: {e}"
-                data = self._regex_extract_partial(raw_data.decode("utf-8", errors="replace"))
+                parse_error = "json_decode_bytes: parse_json_lenient failed"
+                data = self._regex_extract_partial(decoded)
         elif raw_data is not None and isinstance(raw_data, dict):
             data = raw_data
 
@@ -564,14 +571,12 @@ class TuringTraceParser(TraceParser):
         # 方法1：寻找 JSON 对象
         json_match = re.search(r'\{[^{}]*"vuln_type"[^{}]*\}', cmd, re.DOTALL)
         if json_match:
-            try:
-                body = json.loads(json_match.group(0))
+            body = parse_json_lenient(json_match.group(0))
+            if body:
                 for k in ("title", "vuln_type", "severity", "description",
                           "detection_id", "source", "sink", "url", "call_chain"):
                     if k in body:
                         params[k] = body[k]
-            except json.JSONDecodeError:
-                pass
 
         # 方法2：正则逐字段提取
         if not params:
@@ -600,10 +605,7 @@ class TuringTraceParser(TraceParser):
         artifact_type = str(inp.get("artifact_type", "")).strip().lower()
         data = inp.get("data", {})
         if isinstance(data, str):
-            try:
-                data = json.loads(data)
-            except (json.JSONDecodeError, TypeError):
-                data = {}
+            data = parse_json_lenient(data) or {}
         if not isinstance(data, dict):
             data = {}
 

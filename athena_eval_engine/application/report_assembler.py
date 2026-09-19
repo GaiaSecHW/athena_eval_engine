@@ -9,7 +9,7 @@ import re
 from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
-from ..workers.parse_utils import _extract_json_objects_from_text
+from ..workers.parse_utils import _extract_json_objects_from_text, parse_json_lenient
 from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser as _WebVVParser
 _extract_webvv_task_data = _WebVVParser._extract_webvv_task_data
 _extract_webvv_title = _WebVVParser._extract_webvv_title
@@ -75,78 +75,6 @@ def assemble(evaluation_id: str, metrics: list, stats: list,
 
 def render_json(model: ReportModel) -> str:
     return json.dumps(model.__dict__, default=lambda o: o.__dict__, ensure_ascii=False, indent=2)
-
-
-def ai_summary(eval_name, baseline_count, outcomes, metrics, tool_stats, kg_interactions_count):
-    """AI generates evaluation summary from basic data."""
-    kg_oc = next((o for o in outcomes if "KG" in o.get("task_run_id", "") and "NOGK" not in o.get("task_run_id", "")), {})
-    nogk_oc = next((o for o in outcomes if "NOGK" in o.get("task_run_id", "")), {})
-    kg_tool = next((t for t in tool_stats if "KG" in t.get("task_run_id", "") and "NOGK" not in t.get("task_run_id", "")), {})
-    nogk_tool = next((t for t in tool_stats if "NOGK" in t.get("task_run_id", "")), {})
-    p1 = metrics.get("p1", {})
-    p2 = metrics.get("p2", {})
-    m5 = p1.get("M5", {})
-    m7 = p1.get("M7", {})
-    m8 = p2.get("M8", {})
-    m9 = p2.get("M9", {})
-    m10 = p2.get("M10", {})
-
-    data = {
-        "eval_name": eval_name or "unnamed",
-        "baseline_count": baseline_count,
-        "kg": {"outcome": kg_oc.get("outcome"), "prediction": kg_oc.get("prediction"),
-               "resolver_status": kg_oc.get("resolver_status"), "validation": kg_oc.get("validation"),
-               "finding_count": kg_tool.get("finding_count", 0), "total_tools": kg_tool.get("total_tools", 0)},
-        "nogk": {"outcome": nogk_oc.get("outcome"), "prediction": nogk_oc.get("prediction"),
-                 "resolver_status": nogk_oc.get("resolver_status"), "validation": nogk_oc.get("validation"),
-                 "finding_count": nogk_tool.get("finding_count", 0), "total_tools": nogk_tool.get("total_tools", 0)},
-        "knowledge": {"interventions": kg_interactions_count,
-                      "kar": m5.get("estimate"), "jsd": m7.get("estimate")},
-        "cost": {"delta_token": m8.get("estimate"), "delta_steps": m9.get("estimate"), "delta_time_ms": m10.get("estimate")},
-        "raw_stats": metrics.get("raw_stats", {}),
-    }
-
-    prompt = [
-        {"role": "system", "content": (
-            "# 角色\n"
-            "你是知识图谱与记忆安全评测的摘要撰写员。\n\n"
-            "# 背景\n"
-            "评测方法：同一漏洞挖掘任务执行两次——实验组开启知识图谱与记忆(KG)、对照组不开启(No-KG)，对比差异。\n"
-            "下方数据中 outcome=SUCCESS/FAIL 表示该组 Agent 是否成功找到漏洞，prediction=POSITIVE/NEGATIVE 表示 Agent 判定有无漏洞。\n\n"
-            "# 任务\n"
-            "基于输入数据，写一段 200-300 字的中文评测摘要。纯文本输出，不要 JSON。\n\n"
-            "# 内容要求\n"
-            "1. 评测范围：基线漏洞数、评测名称\n"
-            "2. 漏洞发现：KG 与 No-KG 各发现多少漏洞报告、outcome 是成功还是失败\n"
-            "3. 知识图谱与记忆介入：介入次数(interventions)、知识访问率(kar)、行为偏移(jsd)\n"
-            "4. 成本对比：token 差值(delta_token)、步数差值(delta_steps)、时长差值(delta_time_ms)，正值=KG 更耗\n"
-            "5. 结论：知识图谱与记忆是否有帮助？"
-        )},
-        {"role": "user", "content": (
-            "评测数据：\n" + json.dumps(data, ensure_ascii=False, indent=2)
-        )},
-    ]
-
-    try:
-        result = llm_mod.chat(prompt, temperature=0)
-        return result.strip()
-    except Exception as e:
-        import traceback as _tb
-        log("REPORT", f"ai_summary LLM 失败，降级规则生成: {e}")
-        _tb.print_exc()
-        parts = []
-        parts.append("基准漏洞 " + str(baseline_count) + " 个")
-        if kg_oc.get("outcome"):
-            parts.append("KG 结果: " + kg_oc["outcome"])
-        if nogk_oc.get("outcome"):
-            parts.append("No-KG 结果: " + nogk_oc["outcome"])
-        if kg_interactions_count:
-            parts.append("知识图谱与记忆介入 " + str(kg_interactions_count) + " 次")
-        if m8.get("estimate") is not None:
-            parts.append("KG " + ("少用" if m8["estimate"] < 0 else "多用") + " " + str(abs(m8["estimate"])) + " token")
-        if m7.get("estimate") is not None:
-            parts.append("行为偏移 " + str(round(m7["estimate"]*100, 1)) + "%")
-        return "; ".join(parts) + "(LLM 不可用，规则生成)"
 
 
 def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = "",
@@ -241,74 +169,6 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
     return result
 
 
-def ai_knowledge_analysis(interactions, outcome=None, baseline_count=0):
-    """AI analyzes knowledge interventions' impact on vulnerability detection.
-
-    分析知识图谱与记忆介入是否帮助 Agent 找到了正确的漏洞（TRUSTED）还是被忽略（IGNORED）。
-    不依赖 follow_up 窗口，直接取所有 CALL 交互的完整 command+output 给 LLM 批量分析。
-    """
-    if not interactions:
-        return {"analysis": "未检测到知识图谱与记忆介入行为。",
-                "suggestion": "建议确认 KG 组运行记录是否开启了知识图谱与记忆配置。",
-                "interactions_analysis": []}
-
-    # 取所有 CALL 交互（知识查询），按 command 非空过滤
-    call_interactions = [(i, iv) for i, iv in enumerate(interactions)
-                         if iv.get("type") == "CALL" and (iv.get("command") or "").strip()]
-    total_calls = len(call_interactions)
-
-    # 取前 5 个 CALL 交互做详细分析（控制 prompt 大小）
-    sampled = call_interactions
-
-    # 构建每个交互的数据（command + 对应 RESULT output，截断控制大小）
-    interactions_data = []
-    for idx, iv in sampled:
-        # 找对应的 RESULT（同 tool，紧随其后的 RESULT）
-        result_output = ""
-        for j in range(idx + 1, min(idx + 5, len(interactions))):
-            r = interactions[j]
-            if r.get("type") == "RESULT" and r.get("tool") == iv.get("tool"):
-                result_output = r.get("output") or ""
-                break
-        interactions_data.append({
-            "index": len(interactions_data),
-            "tool": iv.get("tool", ""),
-            "command": (iv.get("command") or ""),
-            "output": result_output,
-        })
-
-    # 构建一次 LLM 调用，批量分析所有交互
-    data = {
-        "knowledge_interactions": [{"tool": iv.get("tool",""), "question": (iv.get("command") or ""), "answer": (iv.get("output") or "")} for _, iv in sampled],
-        "outcome": outcome.get("outcome") if outcome else None,
-        "prediction": outcome.get("prediction") if outcome else None,
-        "baseline_count": baseline_count,
-        "total_knowledge_queries": total_calls,
-        "case_results": outcome.get("case_results", []) if outcome else [],
-    }
-
-    prompt = [
-        {"role": "system", "content": "你是知识图谱与记忆介入效果分析员。分析 Agent 从知识图谱获取了什么知识，以及这些知识是否帮助发现了正确的漏洞。\n\n判断标准：\n- TRUSTED：Agent 信任并利用知识图谱的信息，直接帮助发现了漏洞\n- QUESTIONED：Agent 查询了知识但对结果有疑问，未直接利用\n- IGNORED：Agent 查询了知识但完全忽略了返回的内容\n\n只返回 JSON，不要任何额外文字。"},
-        {"role": "user", "content": json.dumps(data, ensure_ascii=False, indent=2) + '\n\n对每个知识交互分析：\n1. Agent 请求了什么知识？（从 command 字段分析）\n2. 知识图谱返回了什么？（从 output 字段分析）\n3. 这次知识介入对漏洞发现的影响是什么？\n\n返回 JSON:\n{"interactions_analysis": [{"index": 0, "tool": "工具名", "command_summary": "<=50字中文", "output_summary": "<=50字中文", "impact": "TRUSTED|QUESTIONED|IGNORED", "reason": "<=100字中文"}], "overall_analysis": "<=200字中文总体分析", "suggestion": "<=100字中文建议"}'},
-    ]
-
-    try:
-        result = llm_mod.chat_json(prompt, temperature=0)
-        return {
-            "analysis": result.get("overall_analysis", ""),
-            "suggestion": result.get("suggestion", ""),
-            "interactions_analysis": result.get("interactions_analysis", []),
-        }
-    except Exception as e:
-        import traceback as _tb
-        log("REPORT", f"ai_per_case_kg_analysis LLM 失败，降级规则生成: {e}")
-        _tb.print_exc()
-        oc = outcome.get("outcome") if outcome else "UNKNOWN"
-        analysis = "知识查询 " + str(total_calls) + " 次，结果为 " + oc + "（LLM 不可用，规则生成）"
-        return {"analysis": analysis, "suggestion": "检查知识内容是否与漏洞检测目标相关。",
-                "interactions_analysis": []}
-
-
 def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
@@ -350,13 +210,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 return f"查询知识: {m.group(1)}"
             return f"查询知识: {cmd_str}"
         # JSON 格式
-        try:
-            d = json.loads(cmd_str) if isinstance(cmd_str, str) else cmd_str
-            if not isinstance(d, dict):
-                return str(d)
+        d = parse_json_lenient(cmd_str) if isinstance(cmd_str, str) else cmd_str
+        if isinstance(d, dict):
             return json.dumps(d, ensure_ascii=False)
-        except Exception:
-            return cmd_str
+        return str(cmd_str)
     def _parse_kg_output(out_str):
         """将 athena CLI 输出解析成可读的'回答'文本。"""
         out_str = out_str or ""
@@ -516,15 +373,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             # SecMate: mcp__findings-store__store_finding（旧格式）
             elif tool == "mcp__findings-store__store_finding":
                 finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
+                result = parse_json_lenient(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = parse_json_lenient(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
                 finding_id = finding_id or str(inp.get("finding_id", "")) or f"secmate-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
@@ -543,15 +397,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             # SecMate 新格式: store_tiered_finding（中间 finding）
             elif tool.startswith("mcp__workflow-tools__store_tiered_fing"):
                 finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
+                result = parse_json_lenient(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = parse_json_lenient(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
                 finding_id = finding_id or f"secmate-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
@@ -573,15 +424,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 vr = "CONFIRMED" if outcome in ("confirmed", "conditional") \
                     else ("FALSE_POSITIVE" if outcome == "refuted" else None)
                 finding_id = ""
-                try:
-                    result = json.loads(out_str)
-                    nested = result.get("result", result) if isinstance(result, dict) else result
-                    if isinstance(nested, str):
-                        nested = json.loads(nested)
-                    if isinstance(nested, dict):
-                        finding_id = str(nested.get("finding_id", ""))
-                except (TypeError, ValueError, json.JSONDecodeError):
-                    pass
+                result = parse_json_lenient(out_str)
+                nested = result.get("result", result) if isinstance(result, dict) else result
+                if isinstance(nested, str):
+                    nested = parse_json_lenient(nested)
+                if isinstance(nested, dict):
+                    finding_id = str(nested.get("finding_id", ""))
                 finding_id = finding_id or f"secmate-verdict-{ev.event_id}"
                 info = {
                     "finding_id": finding_id, "display_id": finding_id,
@@ -636,8 +484,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 if "vuln_verify_final_verdict" in fp:
                     content = inp.get("content", "")
                     if isinstance(content, str):
-                        try:
-                            vdata = json.loads(content)
+                        vdata = parse_json_lenient(content)
+                        if vdata:
                             case_id = str(vdata.get("case_id", "")) or f"cvv-{ev.event_id}"
                             verdict = vdata.get("verdict", "")
                             vr = "CONFIRMED" if verdict == "confirmed" \
@@ -657,8 +505,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             if case_id not in _seen_fids:
                                 _seen_fids.add(case_id)
                                 agent_findings_list.append(info)
-                        except (json.JSONDecodeError, TypeError):
-                            pass
         # DataflowVulnScan: assistant 文本中的 findings JSON（TEXT 事件，非 tool call）
         _dvs_ra_counter = 0
         _dvs_ra_fn_lines: set[str] = set()

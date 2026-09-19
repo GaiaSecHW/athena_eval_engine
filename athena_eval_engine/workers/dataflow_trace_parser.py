@@ -27,7 +27,7 @@ from typing import Iterator
 from datetime import datetime
 from ..domain.raw_event import RawEvent
 from ..domain.resolvers import TraceParser
-from .parse_utils import _extract_json_objects_from_text, attach_event_indices
+from .parse_utils import _extract_json_objects_from_text, attach_event_indices, extract_json_payloads
 
 
 class DataflowVulnScanTraceParser(TraceParser):
@@ -418,7 +418,7 @@ class DataflowVulnScanTraceParser(TraceParser):
             if sid == 'dvs-intake-result' and ev.event_type == "TEXT" and ev.output_json:
                 text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
                 if '"case_id"' in text:
-                    for data in _extract_json_objects_from_text(text):
+                    for data in extract_json_payloads(text, keywords=['"case_id"', '"findings"']):
                         for f in (data.get("findings") or []):
                             case_id = str(f.get("case_id", ""))
                             if case_id:
@@ -659,7 +659,7 @@ class DataflowVulnScanTraceParser(TraceParser):
             text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
             if '"findings"' not in text:
                 continue
-            for data in _extract_json_objects_from_text(text):
+            for data in extract_json_payloads(text, keywords=['"findings"']):
                 for f in (data.get("findings") or []):
                     _dvs_counter += 1
                     title = str(f.get("title", ""))
@@ -691,7 +691,7 @@ class DataflowVulnScanTraceParser(TraceParser):
                 text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
                 if '"candidates"' not in text:
                     continue
-                for data in _extract_json_objects_from_text(text):
+                for data in extract_json_payloads(text, keywords=['"candidates"']):
                     for f in (data.get("candidates") or []):
                         if f.get("judgment") != "confirmed":
                             continue
