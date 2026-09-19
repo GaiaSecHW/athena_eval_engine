@@ -257,7 +257,7 @@ class TuringTraceParser(TraceParser):
         import sqlite3
         import time
         from collections import defaultdict
-        from ...infrastructure.log_util import log
+        from ..infrastructure.log_util import log
 
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
