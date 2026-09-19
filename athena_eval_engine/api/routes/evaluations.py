@@ -350,22 +350,9 @@ def _run_bg_resume(evaluation_id: str):
 
 @app.get("/health")
 async def health():
-    # async 走事件循环不走线程池；加锁读取一致快照
-    from ...infrastructure import llm as _llm
-    with _running_lock:
-        running = len(_running_futures) - len(_pausing_eids)
-        pending = len(_pending_evals)
-        paused = len(_paused_evals)
-        max_evals = _max_concurrent_evals
-    return {
-        "status": "ok",
-        "running_tasks": running,
-        "max_concurrent_evals": max_evals,
-        "queued_tasks": pending + paused,
-        "paused_tasks": paused,
-        "llm_active": _llm.get_active_concurrency(),
-        "llm_max": _llm.get_max_concurrency(),
-    }
+    # liveness probe 端点：不加锁、不做 I/O，避免 GIL 竞争时事件循环被阻塞
+    # 详细运行状态请用 /api/v1/evaluations/running
+    return {"status": "ok"}
 
 
 @app.get("/api/v1/evaluations/running")
