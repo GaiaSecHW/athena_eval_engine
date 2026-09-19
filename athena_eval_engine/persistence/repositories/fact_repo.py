@@ -103,14 +103,14 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     ev_data = {"case_results_uri": _cr_path}
     sql = """INSERT INTO outcome_fact
         (outcome_fact_id, task_run_id, evaluation_id, `condition`, condition_source, condition_conflict,
-         benchmark_item_id, gt_label, prediction, outcome, confusion_label, target_finding_id,
+         benchmark_item_id, gt_label, prediction, outcome, target_finding_id,
          validation_result, resolver_status, resolver_version, evidence_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
     return _upsert(cur, sql, (
         f.outcome_fact_id, f.task_run_id, f.evaluation_id, f.condition.value,
         f.condition_source.value, f.condition_conflict, f.benchmark_item_id,
         f.gt_label.value if f.gt_label else None, f.prediction.value if f.prediction else None,
-        f.outcome.value, f.confusion_label.value if f.confusion_label else None,
+        f.outcome.value,
         f.target_finding_id, f.validation_result, f.resolver_status, f.resolver_version,
         _json.dumps(ev_data, ensure_ascii=False),
     ), "IDEMPOTENT_REPLAY")

@@ -380,31 +380,29 @@ class DataflowVulnScanTraceParser(TraceParser):
     def build_session_graph(self, events):
         """构建 DVS session 关系图。
 
-        每个 dvs_run_id 是一组独立的函数分析运行（按调用链深度 d00→d01→d02
-        关联）。不同 dvs_run_id 之间无调用链关系，不应建边。
-
-        基类按共享文件/fact 建边，但不同 dvs_run 可能分析同一源文件
-        （如 hks_core.c），产生跨 dvs_run 的传递性边，导致 BFS 全连通。
-        因此在基类建边后，按 dvs_run_id 过滤：只保留同 dvs_run 内的边。
-
-        dvs-intake-result 是虚拟 session（汇总 events.jsonl 提交记录），
-        不属于任何分析链，不参与建边。
+        只建 session_id 命名规则推导的 parent_map 父子边（真实调用关系）。
+        不建共享文件/fact 边——共享不是调用关系，会导致 BFS 误连。
         """
         import re
+        import os
         from collections import defaultdict
-        graph = super().build_session_graph(events)
+
+        graph = {
+            'sessions': {}, 'file_to_sessions': defaultdict(set),
+            'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
+            'parent_map': {},
+        }
         finding_to_session = {}
 
-        # 第一遍：标注 session_type、dvs_run_id，提取 intake case_id
+        # 第一遍：收集 session 元数据
         for ev in events:
             sid = ev.session_id
-            if not sid or sid not in graph.get('sessions', {}):
+            if not sid:
                 continue
+            if sid not in graph['sessions']:
+                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': [],
+                                          'session_type': 'scan', 'memory_reads': []}
             sg = graph['sessions'][sid]
-            if 'session_type' not in sg:
-                sg['session_type'] = 'scan'
-            if 'memory_reads' not in sg:
-                sg['memory_reads'] = []
 
             # 从 session_id 路径提取 dvs_run_id（如 dvs_xxx/d00-func-judge-00）
             if 'dvs_run_id' not in sg:
@@ -424,41 +422,30 @@ class DataflowVulnScanTraceParser(TraceParser):
                             if case_id:
                                 finding_to_session[case_id] = sid
 
-            # 记忆读取路径
-            if ev.is_tool_call() and ev.is_memory_interaction:
+            # 收集文件（仅用于多候选父消歧，不建边）
+            if ev.is_tool_call():
                 tool = ev.tool_name or ""
                 inp = ev.input_json or {}
                 if tool in ("bash", "bash_tool", "shell"):
                     cmd = str(inp.get("command", ""))
+                    for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
+                        basename = os.path.basename(fm)
+                        if basename and len(basename) < 80 and not basename.startswith('.'):
+                            sg['files'].add(basename)
+                            graph['file_to_sessions'][basename].add(sid)
+                elif tool == "read":
+                    fp = str(inp.get("file_path") or inp.get("filePath") or "")
+                    if fp:
+                        basename = os.path.basename(fp)
+                        if basename and len(basename) < 80:
+                            sg['files'].add(basename)
+                            graph['file_to_sessions'][basename].add(sid)
+
+                # 记忆读取路径
+                if ev.is_memory_interaction:
+                    cmd = str(inp.get("command", ""))
                     for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
                         sg['memory_reads'].append(m.group(1))
-
-        # 第二遍：按 dvs_run_id 过滤边，只保留同 dvs_run 内的连接
-        # 基类可能因跨 dvs_run 共享文件产生噪声边，这里重建
-        _MAX_SESSIONS_PER_LINK = 5
-        filtered_edges = defaultdict(set)
-
-        for fid, sids in graph.get('fact_to_sessions', {}).items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            r1 = graph['sessions'].get(s1, {}).get('dvs_run_id', '')
-                            r2 = graph['sessions'].get(s2, {}).get('dvs_run_id', '')
-                            if r1 and r2 and r1 == r2:
-                                filtered_edges[s1].add(s2)
-
-        for fm, sids in graph.get('file_to_sessions', {}).items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            r1 = graph['sessions'].get(s1, {}).get('dvs_run_id', '')
-                            r2 = graph['sessions'].get(s2, {}).get('dvs_run_id', '')
-                            if r1 and r2 and r1 == r2:
-                                filtered_edges[s1].add(s2)
-
-        graph['edges'] = filtered_edges
 
         # ---- Build parent_map from session_id naming rules ----
         # Format: dvs_xxx/d{depth}-{func}-{analysisType}-{param}-{index}[-TaintFunctionGuess][-error{N}]
@@ -632,6 +619,11 @@ class DataflowVulnScanTraceParser(TraceParser):
                             best_parent = p_sid
                     if best_parent and best_count > 0:
                         graph['parent_map'][sid] = best_parent
+
+        # 从 parent_map 构建 edges
+        for sid, pid in graph['parent_map'].items():
+            graph['edges'][sid].add(pid)
+            graph['edges'][pid].add(sid)
 
         graph['finding_to_session'] = finding_to_session
         return graph

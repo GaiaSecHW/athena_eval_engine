@@ -42,6 +42,7 @@ class ArgoTraceParser(TraceParser):
     def __init__(self, parser_version: str = "argo-1.0", llm_module=None):
         self.parser_version = parser_version
         self._llm = llm_module
+        self._session_parents: dict[str, str] = {}  # child_sid -> parent_sid（从 JSONL sessionId 字段提取）
 
     @staticmethod
     def _is_finding_tool(tool_name: str) -> bool:
@@ -112,6 +113,7 @@ class ArgoTraceParser(TraceParser):
 
         for fpath in files:
             sid = os.path.splitext(os.path.basename(fpath))[0]
+            _parent_sid = None
             with open(fpath, "r", encoding="utf-8") as f:
                 for line_no, line in enumerate(f, 1):
                     line = line.strip()
@@ -121,8 +123,17 @@ class ArgoTraceParser(TraceParser):
                         d = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    # 从 JSONL 元数据推断 session 父子关系
+                    # 子 session 的 sessionId 字段 = 父 session ID（与文件名 sid 不同）
+                    # 根 session 的 sessionId = 自己的 ID（与文件名相同）
+                    if _parent_sid is None:
+                        _jsonl_sid = d.get("sessionId", "")
+                        if _jsonl_sid and _jsonl_sid != sid:
+                            _parent_sid = _jsonl_sid
                     for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_use_kg, tool_use_mem, tool_use_names):
                         yield ev
+            if _parent_sid:
+                self._session_parents[sid] = _parent_sid
 
     def _obj_to_events(self, d: dict, trace_id: str, session_id: str, line_no: int, tool_use_kg: dict = None, tool_use_mem: dict = None, tool_use_names: dict = None) -> list[RawEvent]:
         """把一个 JSONL 行转成 RawEvent（可能多个）。"""
@@ -304,25 +315,22 @@ class ArgoTraceParser(TraceParser):
     def build_session_graph(self, events):
         """构建 session 关系图（Argo 特有逻辑）。
 
-        Argo (Claude Code) 的 session 结构：
-        - investigate session：挖掘代码，提交 finding（TEXT 事件 {"accepted": true, "data": {"findings": [...]}}）
-        - verify session：验证 finding，给出 verdict（SYSTEM_EVENT 含 finding metadata + TEXT 事件含 verdict）
-        - 通过共享文件、fact ID、finding 提交/验证关联
+        Argo (Claude Code) 的 session 结构——分段挖掘：
+        - 根 session：漏洞挖掘主 session，spawn 多个子 agent session 按模块/功能分段
+        - 子 agent session：在 subagents/ 子目录下，JSONL 的 sessionId 字段 = 父 session ID
+        - 根 session 的 sessionId = 自己的 ID（与文件名相同）
 
-        Session 关系：
-        - investigate → verify：通过 finding key (cwe, file, line_range) 匹配
-        - session ↔ session：通过共享文件/fact 关联
+        Session 父子关系来源：JSONL 的 sessionId 字段
+        - parse() 中提取：子 session 的 sessionId != 文件名 → sessionId 是父
+        - 这是真实调用关系，不是共享文件/fact 等弱关联
         """
         from collections import defaultdict as _dd
         import time as _time
         from ..infrastructure.log_util import log as _log
-        _MAX_SESSIONS_PER_LINK = 5  # 保留用于 session 元数据收集，不再用于建边
         graph = {
             'sessions': {},
             'file_to_sessions': _dd(set),
             'fact_to_sessions': _dd(set),
-            'finding_to_investigate': _dd(set),  # finding_key -> investigate session_ids
-            'finding_to_verify': _dd(set),        # finding_key -> verify session_ids
             'edges': _dd(set),
             'parent_map': {},
         }
@@ -354,7 +362,6 @@ class ArgoTraceParser(TraceParser):
                         key = self._finding_key(meta)
                         if key and key != "(,,)":
                             sg['finding_keys'].add(key)
-                            graph['finding_to_verify'][key].add(sid)
                 # fact 引用
                 for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
                     if fid != 'f001':
@@ -378,7 +385,6 @@ class ArgoTraceParser(TraceParser):
                                 key = self._finding_key(f)
                                 if key and key != "(,,)":
                                     sg['finding_keys'].add(key)
-                                    graph['finding_to_investigate'][key].add(sid)
 
             if not ev.is_tool_call():
                 continue
@@ -414,19 +420,14 @@ class ArgoTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：只建真实调用关系边
-        # 不建共享文件/fact 边——共享不是调用关系，会导致 BFS 误连
-        # parent_map: investigate session 是 verify session 的上级
-        #    同一 finding_key 出现在 investigate 和 verify → investigate 是父
-        for key, inv_sids in graph['finding_to_investigate'].items():
-            ver_sids = graph['finding_to_verify'].get(key, set())
-            if not inv_sids or not ver_sids:
-                continue
-            inv_first = sorted(inv_sids)[0]
-            for vsid in ver_sids:
-                graph['parent_map'][vsid] = inv_first
-                graph['edges'][vsid].add(inv_first)
-                graph['edges'][inv_first].add(vsid)
+        # 构建边：从 JSONL session 数据推断真实调用关系
+        # parse() 中从 JSONL 的 sessionId 字段提取了 parent→child 关系
+        # 子 session 的 sessionId 字段 = 父 session ID（与文件名 sid 不同）
+        # 根 session 的 sessionId = 自己的 ID（与文件名相同，不记录）
+        for child_sid, parent_sid in self._session_parents.items():
+            graph['parent_map'][child_sid] = parent_sid
+            graph['edges'][child_sid].add(parent_sid)
+            graph['edges'][parent_sid].add(child_sid)
 
         return graph
 

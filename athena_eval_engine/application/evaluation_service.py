@@ -438,17 +438,18 @@ def run(evaluation_id: str) -> dict:
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
         log("RUN", f"清理旧数据（重跑）: evaluation_id={evaluation_id} 含 benchmark_item")
     _db_query(_clear_all_old_data)
-    # 删除旧的静态报告 HTML 文件
+    # 删除旧的静态报告 HTML 文件 + FPR 匹配结果文件
     import os as _os_clear
     try:
         _reports_dir = _os_clear.environ.get("EVAL_REPORTS_DIR") or _os_clear.path.join(
             _os_clear.path.dirname(_os_clear.path.dirname(_os_clear.path.abspath(__file__))), "reports")
-        _html_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}.html")
-        if _os_clear.path.isfile(_html_path):
-            _os_clear.remove(_html_path)
-            log("RUN", f"删除旧静态报告: {_html_path}")
+        for _old_suffix in (".html", "_fpr_match.json"):
+            _old_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}{_old_suffix}")
+            if _os_clear.path.isfile(_old_path):
+                _os_clear.remove(_old_path)
+                log("RUN", f"删除旧文件: {_old_path}")
     except Exception as _e:
-        log("RUN", f"删除旧静态报告失败（不影响重跑）: {_e}")
+        log("RUN", f"删除旧报告文件失败（不影响重跑）: {_e}")
 
     # ===== Phase 0: INGESTING — 取基线 + 告警中心数据 + 写 benchmark_items =====
     _set_status_short(evaluation_id, "INGESTING")
@@ -853,13 +854,13 @@ def run(evaluation_id: str) -> dict:
         def _load_facts_from_db(cur):
             for t in task_runs:
                 facts[t.task_run_id] = {"_task_id": t.task_id}
-            # outcomes（含 confusion_label + case_results from evidence_json）
+            # outcomes（含 case_results from evidence_json）
             cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result, "
-                        "confusion_label, benchmark_item_id, target_finding_id, gt_label, evidence_json "
+                        "benchmark_item_id, target_finding_id, gt_label, evidence_json "
                         "FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
             for r in cur.fetchall():
-                from ..domain.enums import Outcome, Prediction, Confusion
-                _ev = json.loads(r[9]) if r[9] and isinstance(r[9], str) else (r[9] or {})
+                from ..domain.enums import Outcome, Prediction
+                _ev = json.loads(r[8]) if r[8] and isinstance(r[8], str) else (r[8] or {})
                 # case_results 存文件时从文件读
                 _cr_uri = _ev.get("case_results_uri") if isinstance(_ev, dict) else None
                 if _cr_uri and os.path.isfile(_cr_uri):
@@ -872,9 +873,8 @@ def run(evaluation_id: str) -> dict:
                     'outcome': Outcome(r[1]) if r[1] else Outcome.UNDETERMINED,
                     'prediction': Prediction(r[2]) if r[2] else Prediction.UNDETERMINED,
                     'resolver_status': r[3], 'validation_result': r[4],
-                    'confusion_label': Confusion(r[5]) if r[5] else None,
-                    'benchmark_item_id': r[6], 'target_finding_id': r[7],
-                    'gt_label': ExpectedLabel(r[8]) if r[8] else None,
+                    'benchmark_item_id': r[5], 'target_finding_id': r[6],
+                    'gt_label': ExpectedLabel(r[7]) if r[7] else None,
                     'case_results': _cr,
                 })()
                 facts[r[0]] = {"outcome": _oc, "case_results": _cr, "_task_id": facts.get(r[0], {}).get("_task_id", "")}
@@ -1008,7 +1008,7 @@ def run(evaluation_id: str) -> dict:
             2. 告警中心 case ↔ finding AI 匹配（跟基线一样的方案，告警中心为锚点）
             3. 匹配上的 finding 用告警中心 validation_result 更新 verdict
             4. 未匹配上 finding 的告警中心 case 作为兜底 finding（直接参与 finding↔基线匹配）
-            5. sink_match_baselines 做 sink 点匹配 + session 链 LLM 分析 → TP/FP/FN/TN
+            5. sink_match_baselines 做确定性 sink 点匹配 + finding 匹配 → TP/FP/FN/TN
             """
             from concurrent.futures import ThreadPoolExecutor
             tr = parsed["tr"]; events = parsed["events"]; session = parsed["session"]
@@ -1077,7 +1077,7 @@ def run(evaluation_id: str) -> dict:
                           f"matched={len(_matched)} unmatched_ac={len(_unmatched_ac)} "
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
-                # sink_match_baselines: sink 点匹配 + session 链 LLM 分析 → TP/FP/FN/TN
+                # sink_match_baselines: 确定性 sink 点匹配 + finding 匹配 → TP/FP/FN/TN
                 try:
                     fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
                                                     progress_cb=lambda text, tr=tr: set_task_progress(
@@ -1112,7 +1112,7 @@ def run(evaluation_id: str) -> dict:
                 raise
             else:
                 inner_pool.shutdown(wait=True)
-            log("MATCH", f"[{_trid}] {cond.value} DONE outcome={oc.outcome.value} confusion={oc.confusion_label.value if oc.confusion_label else 'NA'} "
+            log("MATCH", f"[{_trid}] {cond.value} DONE outcome={oc.outcome.value} "
                   f"prediction={oc.prediction.value if oc.prediction else 'NA'} resolver={oc.resolver_status} "
                   f"knowledge={len(kn.interactions)} tool_calls={ta.total_tool_calls} "
                   f"tokens_in={rs.input_tokens} tokens_out={rs.output_tokens} steps={rs.steps}")
@@ -1583,45 +1583,6 @@ def run(evaluation_id: str) -> dict:
                       pair_views=pair_views, has_nogk=has_nogk)
     report.metric_groups = _metric_groups
 
-    from ..infrastructure.llm import is_enabled as _llm_enabled
-    if _llm_enabled():
-        from concurrent.futures import ThreadPoolExecutor as _TP
-        # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
-        log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
-        set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
-        with _TP(max_workers=max(1, len(_metric_groups))) as kg_pool:
-            fut_group_pcka = {}
-            for group in _metric_groups:
-                (_g_cases, _g_interactions, _g_session_graph,
-                 _g_nogk_cases, _g_events, _g_mem_interactions,
-                 _g_parser) = _group_kg_inputs[group["task_id"]]
-                _g_label = group.get("label", group["task_id"])
-                def _cb(done, total, _label=_g_label):
-                    set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
-                fut_group_pcka[group["task_id"]] = kg_pool.submit(
-                    ai_per_case_kg_analysis, _g_cases, _g_interactions,
-                    bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions, group["category"], _g_parser, _cb,
-                    has_nogk=has_nogk)
-            for group in _metric_groups:
-                group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
-                _group_kg_inputs.pop(group["task_id"], None)
-        log("EVAL", f"知识与记忆介入分析完成")
-        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
-    else:
-        log("EVAL", f"LLM 未启用，跳过 AI 请求并使用规则化报告")
-        set_progress(evaluation_id, "知识与记忆介入分析: 规则化分析...")
-        for group in _metric_groups:
-            _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
-            group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
-                group["case_results"], group["category"], _g_nogk_cases)
-        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
-    # per_case_kg_analysis 已在 metric_groups 中，顶层不再重复（避免 report JSON 体积翻倍导致 max_allowed_packet 溢出）
-    for group in _metric_groups:
-        for item in group["per_case_kg_analysis"]:
-            item.setdefault("task_id", group["task_id"])
-            item.setdefault("category", group["category"])
-
     # ===== Phase 6b+6c: FPR 分析（统一：告警中心匹配 → 派生漏洞中心 FPR）=====
     # 跑一次告警中心匹配，按 case ID 筛选派生漏洞中心 FPR，保证一致性。
     # 漏洞中心 case ID 是告警中心的真子集（128/158），无需独立 LLM 匹配。
@@ -1629,6 +1590,8 @@ def run(evaluation_id: str) -> dict:
     _e2e_fpr_nogk = None
     _ac_fpr_kg = None        # 告警中心 FPR（挖掘，直接）
     _ac_fpr_nogk = None
+    _vc_ids_kg: set[str] = set()
+    _vc_ids_nogk: set[str] = set()
     _fpr_cache: dict = {}   # (project_id, task_id) → (alert_result, vc_ids)
 
     def _run_fpr_for_cond(cond_label, cond_val):
@@ -1696,12 +1659,90 @@ def run(evaluation_id: str) -> dict:
                 if _cond_val == "KG":
                     _ac_fpr_kg = _ac_result
                     _e2e_fpr_kg = _vc_result
+                    _vc_ids_kg = _vc_ids
                 else:
                     _ac_fpr_nogk = _ac_result
                     _e2e_fpr_nogk = _vc_result
+                    _vc_ids_nogk = _vc_ids
             else:
                 _cond_label = "KG" if _cond_val == "KG" else "NOGK"
                 log("EVAL", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
+
+    # 持久化 FPR 匹配结果到文件（供后续环节使用）
+    _fpr_match_data = {}
+    if _ac_fpr_kg:
+        _fpr_match_data["kg"] = {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)}
+    if _ac_fpr_nogk:
+        _fpr_match_data["nogk"] = {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)}
+    if _fpr_match_data:
+        import os as _fpr_os
+        _fpr_dir = _fpr_os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _fpr_os.makedirs(_fpr_dir, exist_ok=True)
+        _fpr_match_path = _fpr_os.path.join(_fpr_dir, f"{evaluation_id}_fpr_match.json")
+        try:
+            with open(_fpr_match_path, "w", encoding="utf-8") as _f:
+                json.dump(_fpr_match_data, _f, ensure_ascii=False)
+            log("FPR", f"FPR 匹配结果已写入: {_fpr_match_path}")
+        except Exception as _fpr_write_err:
+            log("FPR", f"FPR 匹配结果写入失败: {_fpr_write_err}")
+
+    # 构建 FPR 匹配查找表（供 KG 分析使用）
+    _fpr_match_lookup = {}
+    if _fpr_match_data:
+        for _cond_key in ("kg", "nogk"):
+            _cond_fpr = _fpr_match_data.get(_cond_key)
+            if _cond_fpr:
+                _cond_lookup = {}
+                for _d in _cond_fpr.get("match_details", []):
+                    if _d.get("bl_case_id"):
+                        _cond_lookup[_d["bl_case_id"]] = {
+                            "ac_case_id": _d.get("finding_id", ""),
+                            "ac_title": _d.get("finding_title", ""),
+                            "ac_summary": _d.get("finding_summary", ""),
+                            "judgment": _d.get("judgment", ""),
+                            "is_fp": _d.get("is_fp", False),
+                        }
+                _fpr_match_lookup[_cond_key] = _cond_lookup
+    log("FPR", f"FPR 查找表: KG={len(_fpr_match_lookup.get('kg', {}))} NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
+
+    from ..infrastructure.llm import is_enabled as _llm_enabled
+    if _llm_enabled():
+        from concurrent.futures import ThreadPoolExecutor as _TP
+        # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
+        log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
+        set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
+        with _TP(max_workers=max(1, len(_metric_groups))) as kg_pool:
+            fut_group_pcka = {}
+            for group in _metric_groups:
+                (_g_cases, _g_interactions, _g_session_graph,
+                 _g_nogk_cases, _g_events, _g_mem_interactions,
+                 _g_parser) = _group_kg_inputs[group["task_id"]]
+                _g_label = group.get("label", group["task_id"])
+                def _cb(done, total, _label=_g_label):
+                    set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
+                fut_group_pcka[group["task_id"]] = kg_pool.submit(
+                    ai_per_case_kg_analysis, _g_cases, _g_interactions,
+                    bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
+                    _g_mem_interactions, group["category"], _g_parser, _cb,
+                    has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup)
+            for group in _metric_groups:
+                group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
+                _group_kg_inputs.pop(group["task_id"], None)
+        log("EVAL", f"知识与记忆介入分析完成")
+        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
+    else:
+        log("EVAL", f"LLM 未启用，跳过 AI 请求并使用规则化报告")
+        set_progress(evaluation_id, "知识与记忆介入分析: 规则化分析...")
+        for group in _metric_groups:
+            _g_nogk_cases = _group_kg_inputs[group["task_id"]][3] if group["task_id"] in _group_kg_inputs else None
+            group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
+                group["case_results"], group["category"], _g_nogk_cases)
+        set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
+    # per_case_kg_analysis 已在 metric_groups 中，顶层不再重复（避免 report JSON 体积翻倍导致 max_allowed_packet 溢出）
+    for group in _metric_groups:
+        for item in group["per_case_kg_analysis"]:
+            item.setdefault("task_id", group["task_id"])
+            item.setdefault("category", group["category"])
 
     # 将 E2E FPR 结果挂到 verify metric_group
     if _e2e_fpr_kg or _e2e_fpr_nogk:

@@ -5,7 +5,7 @@ Fact 永久归属 TaskRun，不依赖 Pair。Pairing 不回写 Fact。
 from __future__ import annotations
 from pydantic import BaseModel, Field
 from ..enums import (
-    Condition, ConditionSource, Outcome, Prediction, Confusion,
+    Condition, ConditionSource, Outcome, Prediction,
     ExpectedLabel, CalculationStatus,
 )
 
@@ -33,7 +33,6 @@ class OutcomeFact(BaseModel):
     gt_label: ExpectedLabel | None = None
     prediction: Prediction | None = None
     outcome: Outcome
-    confusion_label: Confusion | None = None
     target_finding_id: str | None = None
     validation_result: str | None = None  # CONFIRMED / FALSE_POSITIVE / NA
     resolver_status: str  # RESOLVED / NO_FINDING / NO_UPDATE / NO_GT / BENCHMARK_UNMATCHED / PARSE_ERROR / AI_MATCHED / AI_MATCH_ERROR / AI_AMBIGUOUS / AI_UNMATCHED / NO_VALIDATION

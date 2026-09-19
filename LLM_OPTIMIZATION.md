@@ -4,7 +4,7 @@
 
 ## 总览
 
-共 **13 个活跃 LLM 调用点**（已删除 4 个死代码：`ai_match_outcome`、`ai_summary`、`ai_knowledge_analysis`）。
+共 **8 个活跃 LLM 调用点**（已删除 #5/#6，合并到 #7-#11 统一层；已删除 4 个死代码）。
 
 | 编号 | 阶段 | 文件:行号 | 函数 | 用途 | 调用频率 | 类型 | 状态 |
 |------|------|-----------|------|------|----------|------|------|
@@ -12,15 +12,12 @@
 | 2 | PARSING | `argo_trace_parser.py:706` | `_extract_accepted_payloads` | 正则解析失败后用 LLM 从文本提取 JSON payload | 每个 verify session 最多 1 次（仅前两种策略失败时） | 直接有效 | ✅ 已优化 |
 | 3 | PARSING | `ai_matcher.py:128` | `match_alert_center_to_findings` 预筛选 | 告警中心 case vs 全部 finding，返回候选 ID | 每个告警中心 case 1 次 | 直接有效 | ✅ 已优化 |
 | 4 | PARSING | `ai_matcher.py:191` | `match_alert_center_to_findings` 1vs1 | 告警中心 case vs 候选 finding 详细对比 | 每对 (case, 候选) 1 次 | 直接有效 | ✅ 已优化 |
-| 5 | PARSING | `sink_matcher.py:371` | `_compress_session_actions` | 压缩单个 session 的工具调用序列成摘要 | 每个 session 1 次（有缓存，跨 case 复用） | 中间产物→#6 | ⬜ 待优化 |
-| 6 | PARSING | `sink_matcher.py:610` | `analyze_chain_llm` | 分析 session 链是否是基线漏洞的挖掘过程 | 每个基线漏洞 × 每条链 × 2 条件 | 直接有效 | ⬜ 待优化 |
-| 7 | REPORTING | `report_assembler.py:1077` | `_compress_one`（单段） | 单 session 行为 ≤60K chars 时直接压缩 | 每个 uncached session 1 次 | 中间产物→#11 | ⬜ 待优化 |
-| 8 | REPORTING | `report_assembler.py:1099` | `_compress_one`（分段） | 单 session 行为 >60K chars 时分段压缩 | 每个超长 session 的每段 1 次 | 中间产物→#9 | ⬜ 待优化 |
-| 9 | REPORTING | `report_assembler.py:1119` | `_compress_one`（合并） | 将多段压缩结果合并成一个完整摘要 | 每个超长 session 1 次 | 中间产物→#11 | ⬜ 待优化 |
-| 10 | REPORTING | `report_assembler.py:1185` | `_compress_batch` | 多 session 摘要再聚合压缩（数据仍超限时） | 每轮每批 1 次 | 中间产物→#11 | ⬜ 待优化 |
-| 11 | REPORTING | `report_assembler.py:1273` | `_run_llm` 主分析 | 逐漏洞 KG 归因分析：impact/reason/kg_judgment | 每个非 fast-path 的 case 1 次 | 直接有效 | ⬜ 待优化 |
-| 12 | REPORTING | `fpr_analysis.py:112` | `_llm_match_batch` 1vs1 | 基线 vs 单条 finding 判断是否同一漏洞 | 每对 1 次 | 直接有效 | ⬜ 待优化 |
-| 13 | REPORTING | `fpr_analysis.py:161` | `_llm_match_batch` 批量 | 基线 vs 多条 finding 批量找出匹配 | 每批 1 次（超限时减半到 1vs1） | 直接有效 | ⬜ 待优化 |
+| ~~5~~ | ~~PARSING~~ | ~~`sink_matcher.py`~~ | ~~`_compress_session_actions`~~ | ~~压缩 session 工具调用序列~~ | — | — | ❌ 已删除（合并到 #7-#10 统一压缩层） |
+| ~~6~~ | ~~PARSING~~ | ~~`sink_matcher.py`~~ | ~~`analyze_chain_llm`~~ | ~~LLM 判断 is_mining + matched_finding_idx~~ | — | — | ❌ 已删除（confusion 改为确定性，分析合并到 #11） |
+| 7-10 | REPORTING | `report_assembler.py` | `_compress_one` / `_compress_batch` | 统一压缩层：逐 session 压缩 → 分段 → 合并 → 批量再压缩 | 每个 uncached session 1 次（有缓存） | 中间产物→#11 | ⬜ 待统一 prompt |
+| 11 | REPORTING | `report_assembler.py` | `_run_llm` 主分析 | 统一分析层：挖掘过程总结 + KG 归因分析 | 每个非 fast-path 的 case 1 次 | 直接有效 | ⬜ 待增加 mining_summary 输出 |
+| 12 | REPORTING | `fpr_analysis.py:112` | `_llm_match_batch` 1vs1 | 基线 vs 单条 finding 判断是否同一漏洞 | 每对 1 次 | 直接有效 | ✅ 已优化 |
+| 13 | REPORTING | `fpr_analysis.py:161` | `_llm_match_batch` 批量 | 基线 vs 多条 finding 批量找出匹配 | 每批 1 次（超限时减半到 1vs1） | 直接有效 | ✅ 已优化 |
 
 ## 耗时分布
 
@@ -114,5 +111,38 @@
 **修复**：在 matched case_result 中添加 `"ac_case_id": f.get("ac_case_id", "")`。
 
 **文件**：`athena_eval_engine/workers/sink_matcher.py`
+
+---
+
+### #12+#13 FPR 匹配（REPORTING）— ✅ 已完成
+
+**核心逻辑**：baseline 漏洞描述 ↔ AC case 漏洞描述的 LLM 匹配是核心，确认是同一个漏洞。传递链 `baseline → (sink_match) → agent_finding → (#3/#4 ac_case_id) → AC case` 是补充，用户自行实现。
+
+**问题**：
+1. 漏洞中心 FPR 和告警中心 FPR 分别独立跑 LLM 匹配，但漏洞中心 case ID 是告警中心的真子集（case ID 一致），独立匹配导致结果可能不一致。
+2. LLM 匹配结果只存在内存中，后续环节无法复用。
+
+**修复**：
+1. **只跑一次告警中心 LLM 匹配**：`run_fpr_analysis(source="alert_center")` 拿到全部告警中心 case 的 LLM 匹配结果。
+2. **漏洞中心 FPR 从告警中心结果派生**：`derive_fpr_from_subset(_ac_result, _vc_ids)` 按 case ID 从告警中心结果中筛选子集，保证一致性。无需独立 LLM 匹配。
+3. **结果持久化到文件**：FPR 匹配结果（含 match_details + vc_ids）写入 `{evaluation_id}_fpr_match.json`，供后续环节（传递链等）使用。
+4. **文件不被报告瘦身删除**：瘦身阶段只删 `_cr.json` 临时文件，`_fpr_match.json` 持久保留。
+
+**文件格式**：
+```json
+{
+  "kg": {"fpr": 0.12, "matched": 6, "fp": 1, "tp": 5, "total_findings": 50, "total_baseline": 10, "match_details": [...], "vc_ids": ["case-id-1", "case-id-2"]},
+  "nogk": {"fpr": 0.20, "matched": 8, "fp": 2, "tp": 6, "total_findings": 50, "total_baseline": 10, "match_details": [...], "vc_ids": ["case-id-1", "case-id-2"]}
+}
+```
+
+**效果**：
+- 漏洞中心 LLM 匹配调用次数 → 0（从告警中心结果按 case ID 筛选派生）
+- 告警中心 LLM 匹配保持不变（N×ceil(M/5) 批调用）
+- 结果一致性保证：漏洞中心是告警中心的子集，case ID 一致
+- 后续环节可直接读取 `_fpr_match.json` 获取匹配结果
+
+**文件**：
+- `athena_eval_engine/application/evaluation_service.py` — KG/NOGK 并行 FPR 分析后，将 `_ac_fpr_kg`/`_ac_fpr_nogk` + `vc_ids` 写入 `{evaluation_id}_fpr_match.json`
 
 ---

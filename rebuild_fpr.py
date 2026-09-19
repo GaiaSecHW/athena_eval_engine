@@ -90,6 +90,8 @@ _e2e_fpr_kg = None
 _e2e_fpr_nogk = None
 _ac_fpr_kg = None
 _ac_fpr_nogk = None
+_vc_ids_kg = set()
+_vc_ids_nogk = set()
 
 def _extract_source_task_id(entry):
     return entry.get("task_id_actual") or ""
@@ -117,6 +119,7 @@ for cond_label, cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
         print(f"  ({cond_label}): 告警中心 FPR={_ac_result['fpr']:.1%} "
               f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']})")
         # 派生漏洞中心 FPR
+        _vc_ids = set()
         try:
             _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
             _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
@@ -134,11 +137,28 @@ for cond_label, cond_val in (("KG", "KG"), ("NOGK", "NOGK")):
         if cond_val == "KG":
             _ac_fpr_kg = _ac_result
             _e2e_fpr_kg = _vc_result
+            _vc_ids_kg = _vc_ids
         else:
             _ac_fpr_nogk = _ac_result
             _e2e_fpr_nogk = _vc_result
+            _vc_ids_nogk = _vc_ids
     else:
         print(f"  ({cond_label}): 告警中心无数据")
+
+# Step 3b: 持久化 FPR 匹配结果到文件（供后续环节使用）
+_fpr_match_data = {}
+if _ac_fpr_kg:
+    _fpr_match_data["kg"] = {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)}
+if _ac_fpr_nogk:
+    _fpr_match_data["nogk"] = {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)}
+if _fpr_match_data:
+    _fpr_match_path = os.path.join(REPORTS_DIR, f"{EVAL_ID}_fpr_match.json")
+    try:
+        with open(_fpr_match_path, "w", encoding="utf-8") as _f:
+            json.dump(_fpr_match_data, _f, ensure_ascii=False)
+        print(f"\n[3b] FPR 匹配结果已写入: {_fpr_match_path}")
+    except Exception as _e:
+        print(f"\n[3b] ⚠ FPR 匹配结果写入失败: {_e}")
 
 # Step 4: 更新 M13 指标
 print("\n[4] 更新 M13 指标...")

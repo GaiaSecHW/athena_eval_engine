@@ -16,7 +16,7 @@ from ..domain.facts import (
     OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact, Evidence,
 )
 from ..domain.enums import (
-    Condition, ConditionSource, Outcome, Prediction, Confusion, ExpectedLabel,
+    Condition, ConditionSource, Outcome, Prediction, ExpectedLabel,
     CanonicalAction,
 )
 from ..infrastructure.log_util import log
@@ -62,7 +62,7 @@ class OutcomeResolverImpl:
                 benchmark_item_id=benchmark.benchmark_item_id,
             )
         pred = "POSITIVE" if validation == "CONFIRMED" else "NEGATIVE"
-        confusion, outcome = self._classify(benchmark.expected_label.value, pred)
+        outcome = self._classify(benchmark.expected_label.value, pred)
         evs = [e for e in events if e.tool_name and (e.tool_name.startswith("vuln-hunt_") or e.tool_name.startswith("vuln_hunt_") or e.tool_name == "ReportFindings" or e.tool_name in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"))][:1]
         return OutcomeFact(
             outcome_fact_id=f"ocf-{task_run.task_run_id}",
@@ -70,7 +70,7 @@ class OutcomeResolverImpl:
             condition=task_run.condition, condition_source=task_run.condition_source,
             benchmark_item_id=benchmark.benchmark_item_id,
             gt_label=benchmark.expected_label, prediction=Prediction(pred),
-            outcome=outcome, confusion_label=confusion,
+            outcome=outcome,
             target_finding_id=benchmark.target_finding_id,
             validation_result=validation, resolver_status="RESOLVED",
             evidence=[_ev(e, "$.validation_result") for e in evs],
@@ -200,14 +200,12 @@ class OutcomeResolverImpl:
         return False
 
     @staticmethod
-    def _classify(gt: str, pred: str) -> tuple[Confusion, Outcome]:
-        """GT×Prediction → TP/FP/FN/TN → SUCCESS/FAIL（§8.6 映射）。"""
+    def _classify(gt: str, pred: str) -> Outcome:
+        """GT×Prediction → SUCCESS/FAIL（§8.6 映射）。"""
         if pred == "POSITIVE":
-            c = Confusion.TP if gt == "VULNERABLE" else Confusion.FP
+            return Outcome.SUCCESS if gt == "VULNERABLE" else Outcome.FAIL
         else:
-            c = Confusion.FN if gt == "VULNERABLE" else Confusion.TN
-        o = Outcome.SUCCESS if c in (Confusion.TP, Confusion.TN) else Outcome.FAIL
-        return c, o
+            return Outcome.FAIL if gt == "VULNERABLE" else Outcome.SUCCESS
 
 
 # ===== KnowledgeResolver（§8.7/§8.8）=====

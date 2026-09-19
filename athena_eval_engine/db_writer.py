@@ -36,7 +36,6 @@ def main(pickle_path):
             'gt_label': oc.gt_label.value if oc.gt_label else None,
             'prediction': oc.prediction.value if oc.prediction else None,
             'outcome': oc.outcome.value,
-            'confusion_label': oc.confusion_label.value if oc.confusion_label else None,
             'target_finding_id': oc.target_finding_id,
             'validation_result': repr(oc.validation_result),  # repr 看类型
             'resolver_status': oc.resolver_status,

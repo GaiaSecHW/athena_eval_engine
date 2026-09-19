@@ -169,7 +169,7 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
     return result
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True, fpr_match_lookup: dict | None = None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -797,6 +797,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "agent_validation": _agent_vr,
                 "finding_session": _finding_session,
             },
+            "ac_case_match": ((fpr_match_lookup or {}).get("kg") or {}).get(case_id, {}) if fpr_match_lookup else {},
             "matched_finding": ({
                 "title": finding_info["title"],
                 "vuln_type": finding_info["vuln_type"],
@@ -819,7 +820,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "nogk_sink_info": _nogk_sink_info,
                 "nogk_sink_analysis": _nogk_sink_analysis,
                 "nogk_no_finding_reason": _nogk_no_finding_reason,
-                "nogk_knowledge_intervention": _nogk_ki} if has_nogk else {}),
+                "nogk_knowledge_intervention": _nogk_ki,
+                "nogk_ac_case_match": ((fpr_match_lookup or {}).get("nogk") or {}).get(case_id, {}) if fpr_match_lookup else {}} if has_nogk else {}),
         }
 
         # 根据 confusion + agent_validation 构建场景特定的问题
@@ -1048,9 +1050,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _data_str = json.dumps(data, ensure_ascii=False)
                     log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
 
-        _nogk_desc = ("10. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
-                       "11. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
-                       "12. nogk_knowledge_intervention：No-KG 条件下同 knowledge_intervention\n\n"
+        _nogk_desc = ("11. nogk_confusion：未启用知识图谱与记忆时同一漏洞的判定结果\n"
+                       "12. nogk_sink_info/nogk_sink_analysis/nogk_no_finding_reason：No-KG 条件下的 sink 匹配状态、链分析结论、未提交 finding 原因\n"
+                       "13. nogk_knowledge_intervention：No-KG 条件下同 knowledge_intervention\n"
+                       "14. nogk_ac_case_match：No-KG 条件下同 ac_case_match\n\n"
                        if has_nogk else "\n")
         prompt = [
             {"role": "system", "content": (
@@ -1068,6 +1071,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "7. sink_analysis：sink 点 LLM 链分析结论（判断 session 链是否是基线漏洞的挖掘过程）\n"
                 "8. no_finding_reason：当 agent 接触了漏洞代码但未提交 finding 时，LLM 分析的未提交原因\n"
                 "9. knowledge_intervention：当 agent 接触了漏洞代码但未提交 finding 时，知识/记忆介入的结构化分析（query=问了什么，response=回答了什么，decision=Agent 做了什么决策，impact=正向/负向/中性）。为 null 表示无知识介入\n"
+                "10. ac_case_match：告警中心匹配到的对应漏洞案例（ac_title=案例标题，ac_summary=案例摘要，judgment=误报/真正/未匹配，is_fp=是否误报）。为空表示无匹配\n"
                 + _nogk_desc
                 + "# impact 判定规则\n"
                 + "- POSITIVE（正向）：知识引导 Agent 到正确区域，帮助发现或排除漏洞\n"

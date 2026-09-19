@@ -370,40 +370,36 @@ class CVulnVerifyTraceParser(TraceParser):
     def build_session_graph(self, events):
         """构建 CVulnVerify session 关系图。
 
-        CVulnVerify 的 session 结构：
-        - 每个 session = 一个漏洞验证 case（一个 JSONL 文件）
-        - verdict 通过 bash cat > heredoc 写 vuln_verify_final_verdict.json
-        - KG 查询：python3 athena.py ask '...'
-        - 记忆读取：cat/head memengine 路径
-        - session 间通过共享源码文件关联
-
-        在基类（共享文件/fact/athena 查询）基础上增加：
-        - case_id → session 映射（finding-session 关系）
-        - 记忆读取路径记录
-        - session_type = 'verify'
+        只建 SESSION_START parent_id 父子边（真实调用关系）。
+        不建共享文件/fact 边——共享不是调用关系，会导致 BFS 误连。
         """
-        graph = super().build_session_graph(events)
+        import re
+        import json
+        from collections import defaultdict
+
+        graph = {
+            'sessions': {}, 'file_to_sessions': defaultdict(set),
+            'fact_to_sessions': defaultdict(set), 'edges': defaultdict(set),
+            'parent_map': {},
+        }
 
         finding_to_session = {}
         for ev in events:
             sid = ev.session_id
-            if not sid or sid not in graph.get('sessions', {}):
+            if not sid:
                 continue
+            if sid not in graph['sessions']:
+                graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': [],
+                                          'session_type': 'verify', 'memory_reads': [], 'case_id': ''}
             sg = graph['sessions'][sid]
-
-            # 默认 session_type
-            if 'session_type' not in sg:
-                sg['session_type'] = 'verify'
-            if 'memory_reads' not in sg:
-                sg['memory_reads'] = []
-            if 'case_id' not in sg:
-                sg['case_id'] = ''
 
             # SESSION_START: 提取 parent_id → parent_map
             if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
                 pid = str(ev.input_json.get("parent_id") or "")
                 if pid:
                     graph['parent_map'][sid] = pid
+                    graph['edges'][sid].add(pid)
+                    graph['edges'][pid].add(sid)
 
             if not ev.is_tool_call():
                 continue
@@ -411,7 +407,6 @@ class CVulnVerifyTraceParser(TraceParser):
             inp = ev.input_json or {}
 
             # verdict 提交：提取 case_id
-            # 方式1: write 工具写 vuln_verify_final_verdict.json
             if tool == "write":
                 fp = str(inp.get("file_path") or inp.get("path") or "")
                 if "vuln_verify_final_verdict" in fp:
@@ -425,7 +420,6 @@ class CVulnVerifyTraceParser(TraceParser):
                                 finding_to_session[case_id] = sid
                         except (json.JSONDecodeError, TypeError):
                             pass
-            # 方式2: bash cat > heredoc 写 verdict JSON
             elif tool in ("bash", "bash_tool", "shell"):
                 cmd = str(inp.get("command", ""))
                 if "vuln_verify_final_verdict" in cmd:
@@ -439,7 +433,6 @@ class CVulnVerifyTraceParser(TraceParser):
             # 记忆读取路径
             if ev.is_memory_interaction and tool in ("bash", "bash_tool", "shell"):
                 cmd = str(inp.get("command", ""))
-                # 提取 memengine 路径
                 for m in re.finditer(r'(?:cat|head|tail|grep)\s+(\S*memengine\S+|/\S*app/memory\S*)', cmd):
                     sg['memory_reads'].append(m.group(1))
 

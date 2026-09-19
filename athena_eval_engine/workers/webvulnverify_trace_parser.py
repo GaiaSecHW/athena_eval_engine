@@ -599,19 +599,9 @@ class WebVulnVerifyTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：共享 vulnerability_id 或文件的 session 互相关联
-        for vid, sids in graph['vuln_id_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        for fm, sids in graph['file_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
+        # 构建边：只建真实调用关系边
+        # 不建共享 vulnerability_id/文件 边——共享不是调用关系，会导致 BFS 误连
+        # parent_id 父子边已在 SESSION_START 处理中建立
         return graph
 
     # vulnerability_verify status → validation_result 映射

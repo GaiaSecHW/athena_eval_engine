@@ -261,7 +261,6 @@ CREATE TABLE outcome_fact (
     gt_label              VARCHAR(32) CHECK (gt_label IN ('VULNERABLE','NON_VULNERABLE','NA')),
     prediction            VARCHAR(32) CHECK (prediction IN ('POSITIVE','NEGATIVE','UNDETERMINED')),
     outcome               VARCHAR(32) NOT NULL CHECK (outcome IN ('SUCCESS','FAIL','UNDETERMINED')),
-    confusion_label       VARCHAR(8) CHECK (confusion_label IN ('TP','FP','FN','TN','NA')),
     target_finding_id     VARCHAR(256),
     validation_result     VARCHAR(64) CHECK (validation_result IN ('CONFIRMED','FALSE_POSITIVE','NA')),
     resolver_status       VARCHAR(32) NOT NULL CHECK (resolver_status IN

@@ -28,10 +28,6 @@ class Prediction(str, Enum):
     UNDETERMINED = "UNDETERMINED"
 
 
-class Confusion(str, Enum):
-    TP = "TP"; FP = "FP"; FN = "FN"; TN = "TN"; NA = "NA"
-
-
 class ExpectedLabel(str, Enum):
     VULNERABLE = "VULNERABLE"
     NON_VULNERABLE = "NON_VULNERABLE"

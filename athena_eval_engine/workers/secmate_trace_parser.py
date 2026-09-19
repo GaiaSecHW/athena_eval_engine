@@ -554,37 +554,14 @@ class SecMateTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：共享 SEED_ID / finding_id / source_task_id / source_session_id 的 session 互相关联
-        for seed, sids in graph['seed_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        for fid, sids in graph['finding_id_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        for stid, sids in graph['source_task_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
+        # 构建边：只建真实调用关系边
+        # source_session_id → parent_map（store_finding input 的 source_session_id）
         for ssid, sids in graph['source_session_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
-        for fm, sids in graph['file_to_sessions'].items():
-            if 1 < len(sids) <= _MAX_SESSIONS_PER_LINK:
-                for s1 in sids:
-                    for s2 in sids:
-                        if s1 != s2:
-                            graph['edges'][s1].add(s2)
+            for sid in sids:
+                if sid != ssid:
+                    graph['parent_map'][sid] = ssid
+                    graph['edges'][sid].add(ssid)
+                    graph['edges'][ssid].add(sid)
         return graph
 
     @staticmethod
