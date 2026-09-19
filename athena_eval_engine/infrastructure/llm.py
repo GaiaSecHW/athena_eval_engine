@@ -548,6 +548,8 @@ def chat_json(messages, **kwargs) -> dict:
         msgs.append({"role": "user", "content": "只返回 JSON，不要任何额外文字。"})
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
+    _prev_raw = None
+    _repeat_count = 0
     for attempt in range(retries):
         # ── LLM 调用（网络/超时错误走原重试逻辑）──
         try:
@@ -618,8 +620,31 @@ def chat_json(messages, **kwargs) -> dict:
         _tail = raw[-200:].replace("\n", "\\n")
         log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail} "
               f"finish_reason={_fr} content_len={len(raw)} | head: {_head} | tail: {_tail}")
+        # 检测 LLM 是否连续返回相同内容（correction 无效）
+        if raw == _prev_raw:
+            _repeat_count += 1
+            if _repeat_count >= 3:
+                log("LLM", f"chat_json LLM 连续 {_repeat_count} 次返回相同内容，correction 无效，停止重试")
+                last_err = f"JSON 解析失败（LLM 连续 {_repeat_count} 次返回相同内容）: {err_detail}"
+                break
+        else:
+            _repeat_count = 0
+        _prev_raw = raw
+        # 提取出错位置附近的上下文，帮 LLM 定位具体问题
+        _err_ctx = ""
+        if json_err:
+            _lines = raw.split("\n")
+            _el = json_err.lineno - 1
+            if 0 <= _el < len(_lines):
+                _err_ctx = _lines[_el].strip()[:300]
         msgs.append({"role": "assistant", "content": raw})
-        msgs.append({"role": "user", "content": f"你返回的 JSON 有语法错误：{err_detail}。请修复并只返回完整正确的 JSON。"})
+        _ctx_hint = f"出错行内容：{_err_ctx}。" if _err_ctx else ""
+        msgs.append({"role": "user", "content": (
+            f"你返回的 JSON 有语法错误：{err_detail}。"
+            f"{_ctx_hint}"
+            "常见原因：字符串值中包含未转义的双引号、反斜杠或换行符。"
+            "请修复后只返回完整正确的 JSON。"
+        )})
         last_err = f"JSON 解析失败: {err_detail}"
     log("LLM", f"chat_json exhausted {retries} retries: {last_err}")
     raise RuntimeError(f"chat_json 失败（{retries} 次重试后）: {last_err}")
