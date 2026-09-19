@@ -873,7 +873,7 @@ class ArgoTraceParser(TraceParser):
             # TEXT 事件: investigate findings 和 verify verdicts
             if e.event_type == "TEXT" and e.output_json:
                 txt = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-                for payload in self._extract_accepted_payloads(txt):
+                for payload in self._extract_accepted_payloads(txt, use_llm=False):
                     data = payload.get("data", payload)
                     if not isinstance(data, dict):
                         continue
