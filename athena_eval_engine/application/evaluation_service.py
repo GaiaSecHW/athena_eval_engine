@@ -2080,6 +2080,14 @@ def run(evaluation_id: str) -> dict:
         if _e2e_fpr_kg: _parts.append(f"verify KG={_e2e_fpr_kg['fpr']:.1%}")
         log("EVAL", f"M13 已更新为 LLM 匹配 FPR: {', '.join(_parts)}")
 
+    # 同步 M13 状态到 out["metric_results"]（告警检查读 out，不读 report 模型）
+    _m13_report = report.p0.get("M13") or {}
+    for _m in out["metric_results"]:
+        if _m.metric_id == "M13":
+            _m.calculation_status = _m13_report.get("calculation_status", "NA")
+            _m.reason_code = _m13_report.get("reason_code")
+            break
+
     # AI 评测摘要
     outcomes_list = [{"task_run_id": tr.task_run_id,
                       "outcome": facts[tr.task_run_id]["outcome"].outcome.value,
