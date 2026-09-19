@@ -320,9 +320,12 @@ class ArgoTraceParser(TraceParser):
         - 子 agent session：在 subagents/ 子目录下，JSONL 的 sessionId 字段 = 父 session ID
         - 根 session 的 sessionId = 自己的 ID（与文件名相同）
 
-        Session 父子关系来源：JSONL 的 sessionId 字段
-        - parse() 中提取：子 session 的 sessionId != 文件名 → sessionId 是父
-        - 这是真实调用关系，不是共享文件/fact 等弱关联
+        Session 父子关系来源（优先级从高到低）：
+        1. JSONL 的 sessionId 字段：子 session 的 sessionId != 文件名 → sessionId 是父
+        2. Fact 引用链：session B 引用 fact f → B 依赖创建 f 的 session A → A 是 B 的父
+           - verified_finding → verify session：通过 original_finding_id 链可靠匹配
+           - finding → investigate session：通过 description 中的 fact 引用 + 时间排序间接推断
+           - module → 无创建 session（root）
         """
         from collections import defaultdict as _dd
         import time as _time
@@ -331,6 +334,7 @@ class ArgoTraceParser(TraceParser):
             'sessions': {},
             'file_to_sessions': _dd(set),
             'fact_to_sessions': _dd(set),
+            'fact_details': {},  # fact_id -> {type, description, original_finding_id}
             'edges': _dd(set),
             'parent_map': {},
         }
@@ -348,28 +352,43 @@ class ArgoTraceParser(TraceParser):
                 graph['sessions'][sid] = {
                     'files': set(), 'facts': set(), 'athena_qs': [],
                     'session_type': None,  # 'investigate' / 'verify'
+                    'task_type': None,     # 'investigate' / 'verify' / 'reason'
                     'finding_keys': set(),
+                    'time_created': None,
+                    'time_updated': None,
                 }
             sg = graph['sessions'][sid]
+            # 追踪 session 时间范围（用于 fact→creator 时间排序）
+            if ev.timestamp_ms:
+                ts = ev.timestamp_ms
+                if sg['time_created'] is None or ts < sg['time_created']:
+                    sg['time_created'] = ts
+                if sg['time_updated'] is None or ts > sg['time_updated']:
+                    sg['time_updated'] = ts
 
-            # SYSTEM_EVENT: verify session system prompt，含 finding metadata
+            # SYSTEM_EVENT: queue-operation prompt，含任务类型和 fact 引用
             if ev.event_type == "SYSTEM_EVENT" and ev.output_json:
                 content = str(ev.output_json)
+                # 提取任务类型
+                if sg['task_type'] is None:
+                    if content.startswith("# Investigate") or "# Investigate" in content[:50]:
+                        sg['task_type'] = 'investigate'
+                    elif content.startswith("# Verify") or "# Verify" in content[:50]:
+                        sg['task_type'] = 'verify'
+                    elif content.startswith("# Reason") or "# Reason" in content[:50]:
+                        sg['task_type'] = 'reason'
+                # verify session 标记
                 if "## Finding to Verify" in content or "# Verify:" in content:
                     sg['session_type'] = 'verify'
-                    meta = self._extract_finding_meta_from_sysprompt(content)
-                    if meta:
-                        key = self._finding_key(meta)
-                        if key and key != "(,,)":
-                            sg['finding_keys'].add(key)
-                # fact 引用
-                for fid in re.findall(r'(f\d{3,5})\s+(?:found|concluded|reported|discovered|noted|observed|identified)', str(ev.output_json)):
+                # fact 引用（prompt 文本中引用的 fact ID）
+                # 用 negative lookbehind 避免 hex 字符串（如项目 ID 中的 f58851）误匹配
+                for fid in re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', content):
                     if fid != 'f001':
                         sg['facts'].add(fid)
                         graph['fact_to_sessions'][fid].add(sid)
                 continue
 
-            # TEXT 事件: investigate finding 提交
+            # TEXT 事件: investigate finding 提交 + verify verdict 提交
             if ev.event_type == "TEXT" and ev.output_json:
                 txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
                 if '"accepted"' in txt:
@@ -379,14 +398,30 @@ class ArgoTraceParser(TraceParser):
                             continue
                         if "findings" in data:
                             sg['session_type'] = 'investigate'
+                            if sg['task_type'] is None:
+                                sg['task_type'] = 'investigate'
                             for f in data.get("findings", []):
                                 if not isinstance(f, dict):
                                     continue
                                 key = self._finding_key(f)
                                 if key and key != "(,,)":
                                     sg['finding_keys'].add(key)
+                        # verify verdict: 存 verdict description 用于后续匹配 verified_finding
+                        if "verdict" in data:
+                            sg['session_type'] = 'verify'
+                            verdict_desc = data.get("description", "")
+                            if verdict_desc:
+                                sg['verdict_desc'] = verdict_desc
 
             if not ev.is_tool_call():
+                # TOOL_RESULT: 解析 argo.memory get 结果
+                if ev.event_type == "TOOL_RESULT" and ev.output_json:
+                    result = str(ev.output_json)
+                    if 'id: f' in result or '- id: f' in result:
+                        parsed = self._parse_memory_get_result(result)
+                        for fid, details in parsed.items():
+                            if fid not in graph['fact_details']:
+                                graph['fact_details'][fid] = details
                 continue
 
             tool = ev.tool_name or ""
@@ -396,10 +431,11 @@ class ArgoTraceParser(TraceParser):
                 cmd = str(inp.get("command", ""))
                 # argo.memory get fXXX → fact 关联
                 if "argo.memory" in cmd and " get" in cmd:
-                    for fid in re.findall(r'f\d{3,5}', cmd):
-                        if fid != 'f001':
-                            sg['facts'].add(fid)
-                            graph['fact_to_sessions'][fid].add(sid)
+                    fact_ids = re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', cmd)
+                    fact_ids = [f for f in fact_ids if f != 'f001']
+                    for fid in fact_ids:
+                        sg['facts'].add(fid)
+                        graph['fact_to_sessions'][fid].add(sid)
                 # athena 查询
                 if 'athena' in cmd.lower() and 'ask' in cmd:
                     m = re.search(r'ask\s+"([^"]{0,50})', cmd)
@@ -420,16 +456,192 @@ class ArgoTraceParser(TraceParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
+        # 构建 fact_to_creator 映射
+        fact_to_creator = self._build_fact_to_creator(graph)
+
         # 构建边：从 JSONL session 数据推断真实调用关系
-        # parse() 中从 JSONL 的 sessionId 字段提取了 parent→child 关系
-        # 子 session 的 sessionId 字段 = 父 session ID（与文件名 sid 不同）
-        # 根 session 的 sessionId = 自己的 ID（与文件名相同，不记录）
+        # 来源 1: sessionId 字段（子 agent → 父 session）
         for child_sid, parent_sid in self._session_parents.items():
-            graph['parent_map'][child_sid] = parent_sid
+            if child_sid not in graph['parent_map']:
+                graph['parent_map'][child_sid] = parent_sid
             graph['edges'][child_sid].add(parent_sid)
             graph['edges'][parent_sid].add(child_sid)
 
+        # 来源 2: Fact 引用链（session B 引用 fact f → B 依赖创建 f 的 session A）
+        # 时间约束：creator 必须在 child 之前完成，避免循环依赖
+        for sid, sg_data in graph['sessions'].items():
+            if not sg_data.get('facts'):
+                continue
+            child_start = sg_data.get('time_created') or 0
+            best_parent = None
+            best_parent_time = 0
+            for fid in sg_data['facts']:
+                creator = fact_to_creator.get(fid)
+                if not creator or creator == sid:
+                    continue
+                creator_sg = graph['sessions'].get(creator)
+                if not creator_sg:
+                    continue
+                # creator 必须在 child 开始前完成（避免循环依赖）
+                creator_end = creator_sg.get('time_updated') or 0
+                if creator_end == 0 or creator_end >= child_start:
+                    continue
+                # 选完成时间最接近 child 开始的 creator（最直接的依赖）
+                if creator_end > best_parent_time:
+                    best_parent = creator
+                    best_parent_time = creator_end
+            if best_parent and sid not in graph['parent_map']:
+                graph['parent_map'][sid] = best_parent
+                graph['edges'][sid].add(best_parent)
+                graph['edges'][best_parent].add(sid)
+
         return graph
+
+    @staticmethod
+    def _parse_memory_get_result(result: str) -> dict:
+        """解析 argo.memory get 的 TOOL_RESULT（YAML 格式）。
+
+        格式：
+          facts:
+          - id: f004
+            type: module
+            description: 'Module ...'
+            metadata:
+              path: services/...
+            created_at: '2026-09-12T11:25:34Z'
+          - id: f031
+            type: verified_finding
+            description: 已确认：...
+            metadata:
+              verdict: CONFIRMED
+              original_finding_id: f011
+
+        或 results: 前缀（search 命令）。
+
+        返回 {fact_id: {type, description, original_finding_id}}。
+        """
+        parsed = {}
+        # 分割 fact block：每个 block 以 "- id: fXXX" 开头
+        blocks = re.split(r'\n- id: ', result)
+        for block in blocks[1:]:  # 跳过前导文本
+            fid_m = re.match(r'(f\d+)', block)
+            if not fid_m:
+                continue
+            fid = fid_m.group(1)
+            ftype_m = re.search(r'type:\s*(\w+)', block)
+            ftype = ftype_m.group(1) if ftype_m else 'unknown'
+            # description: 取到下一个 2-space 缩进 key 为止
+            desc_m = re.search(
+                r'description:\s*(.+?)(?=\n  \w+:|\n- id:|\nmetadata:|\ncreated_at:|\nsuggestions:|\ntotal:|\nshown:|\ntruncated:|\Z)',
+                block, re.DOTALL,
+            )
+            desc = desc_m.group(1).strip() if desc_m else ''
+            # 去除 YAML 引号
+            if desc.startswith("'") and desc.endswith("'"):
+                desc = desc[1:-1].replace("''", "'")
+            elif desc.startswith('"') and desc.endswith('"'):
+                desc = desc[1:-1]
+            # 折叠多行 description 为单行
+            desc = re.sub(r'\s+', ' ', desc).strip()
+            # original_finding_id（verified_finding 专有）
+            orig_m = re.search(r'original_finding_id:\s*(f\d+)', block)
+            orig_fid = orig_m.group(1) if orig_m else None
+            parsed[fid] = {
+                'type': ftype,
+                'description': desc,
+                'original_finding_id': orig_fid,
+            }
+        return parsed
+
+    def _build_fact_to_creator(self, graph: dict) -> dict:
+        """构建 fact_id → creating_session_id 映射。
+
+        策略：
+        A. verified_finding → verify session（可靠）
+           通过 original_finding_id 找到原始 finding，查 fact_to_sessions 找 verify session。
+        B. finding → investigate session（间接推断）
+           从 description 中提取 fact ID 引用，查 fact_to_sessions 找 investigate session。
+        C. module → 无创建 session（dispatcher 创建，不是 session 输出）
+        E. verified_finding → verify session（语义匹配）
+           当策略 A 失败时，用 verified_finding description 与 verify session 的 verdict_desc 前缀匹配。
+        """
+        fact_to_creator: dict[str, str] = {}
+        fact_details = graph.get('fact_details', {})
+        fact_to_sessions = graph.get('fact_to_sessions', {})
+        sessions = graph.get('sessions', {})
+
+        for fid, details in fact_details.items():
+            ftype = details.get('type', '')
+            if ftype == 'module':
+                continue  # module fact 由 dispatcher 创建，不是 session 输出
+
+            if ftype == 'verified_finding':
+                # 策略 A: 通过 original_finding_id 找创建该 verified_finding 的 verify session
+                orig_fid = details.get('original_finding_id')
+                if not orig_fid:
+                    # original_finding_id 不在 trace YAML 中（DB-only metadata）
+                    # Argo 复用原始 finding ID 作为 verified_finding ID，用 fact 自身 ID 查找
+                    orig_fid = fid
+                # 查引用原始 finding 的 session，筛选 verify 类型
+                ref_sessions = fact_to_sessions.get(orig_fid, set())
+                for ref_sid in ref_sessions:
+                    sg = sessions.get(ref_sid, {})
+                    if sg.get('task_type') == 'verify' or sg.get('session_type') == 'verify':
+                        fact_to_creator[fid] = ref_sid
+                        break
+                # 策略 E: 通过 verdict_desc 匹配 verified_finding description
+                # verify session 的 verdict 输出包含 description，与 verified_finding 的 description 一致
+                if fid not in fact_to_creator:
+                    vf_desc = details.get('description', '')[:100]
+                    if vf_desc:
+                        for sid_key, sg_data in sessions.items():
+                            if sg_data.get('task_type') != 'verify' and sg_data.get('session_type') != 'verify':
+                                continue
+                            vd = sg_data.get('verdict_desc', '')[:100]
+                            if vd and vf_desc == vd:
+                                fact_to_creator[fid] = sid_key
+                                break
+
+            elif ftype == 'finding':
+                # 策略 B: 从 description 中提取 fact ID 引用，找 investigate session
+                desc = details.get('description', '')
+                # 提取 description 中的 fact ID（如 "per prior finding f095"）
+                ref_fids = re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', desc)
+                ref_fids = [f for f in ref_fids if f != 'f001' and f != fid]
+                if ref_fids:
+                    # 找引用了这些 fact 的 investigate session
+                    candidates: set[str] = set()
+                    for ref_fid in ref_fids:
+                        for ref_sid in fact_to_sessions.get(ref_fid, set()):
+                            sg = sessions.get(ref_sid, {})
+                            if sg.get('task_type') == 'investigate' or sg.get('session_type') == 'investigate':
+                                candidates.add(ref_sid)
+                    # 取时间最早的 investigate session（最可能是创建者）
+                    if candidates:
+                        best = min(
+                            candidates,
+                            key=lambda s: sessions[s].get('time_updated') or 0,
+                        )
+                        fact_to_creator[fid] = best
+
+            elif ftype == 'fact':
+                # 普通观察 fact：同样从 description 中提取引用
+                desc = details.get('description', '')
+                ref_fids = re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', desc)
+                ref_fids = [f for f in ref_fids if f != 'f001' and f != fid]
+                if ref_fids:
+                    candidates: set[str] = set()
+                    for ref_fid in ref_fids:
+                        for ref_sid in fact_to_sessions.get(ref_fid, set()):
+                            candidates.add(ref_sid)
+                    if candidates:
+                        best = min(
+                            candidates,
+                            key=lambda s: sessions[s].get('time_updated') or 0,
+                        )
+                        fact_to_creator[fid] = best
+
+        return fact_to_creator
 
     def _extract_action(self, ev):
         """Argo 平台挖掘行为：TEXT 事件含 accepted=true payload 为结论点。"""

@@ -18,7 +18,8 @@ from ..workers.resolvers import (
     OutcomeResolverImpl, KnowledgeResolverImpl, ToolActionResolverImpl, ResourceResolverImpl,
 )
 from ..workers.ai_matcher import match_alert_center_to_findings
-from ..workers.sink_matcher import sink_match_baselines
+from ..workers.sink_matcher import (sink_match_baselines,
+                                    group_chains, collect_chain_actions, collect_chain_findings)
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
@@ -290,6 +291,98 @@ def _fill_missing_source(case: dict) -> None:
             case["source_function"] = sfn
         if not case.get("source_line"):
             case["source_line"] = sln
+
+
+def _ai_identify_finding(ac_title: str, ac_summary: str,
+                         candidates: list[dict]) -> int | None:
+    """用 LLM 从多个候选 finding 中识别正确的 finding（1:N 场景）。"""
+    lines = []
+    for i, f in enumerate(candidates):
+        f_title = f.get("title", "") or f.get("vuln_type", "")
+        f_desc = f.get("description", "") or ""
+        lines.append(f"--- 候选{i+1} ---\n标题: {f_title}\n描述: {f_desc}")
+    prompt = [
+        {"role": "system", "content": (
+            "你是漏洞匹配判定器。给定一个告警中心漏洞和多个候选 finding，"
+            "找出与告警中心漏洞是同一个漏洞的候选编号。\n"
+            "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
+            '只返回 JSON：{"no": 候选编号, "confidence": 0.0-1.0, "reason": "简要理由"}\n'
+            '如果没有匹配的候选，返回 {"no": 0, "confidence": 0.0, "reason": "无匹配"}'
+        )},
+        {"role": "user", "content": (
+            f"告警中心漏洞:\n标题: {ac_title}\n描述: {ac_summary}\n\n"
+            f"候选 finding:\n{chr(10).join(lines)}\n\n"
+            f"找出与告警中心漏洞是同一个漏洞的候选编号（1-{len(candidates)}）。"
+        )},
+    ]
+    result = llm_mod.chat_json(prompt, temperature=0, max_tokens=500)
+    no = result.get("no", 0)
+    try:
+        no = int(no)
+    except (ValueError, TypeError):
+        return None
+    if 1 <= no <= len(candidates):
+        return no - 1
+    return None
+
+
+def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
+                                  findings: list[dict], events: list
+                                  ) -> tuple[dict | None, str]:
+    """用 AC case 漏洞标题匹配 finding，找不到则搜索 trace 全文。
+
+    匹配流程：
+    1. 标题匹配 finding — 唯一直接匹配，一对多用 AI 识别
+    2. 未匹配 → 标题搜索 trace 全文 → 找到 session → 检查 session 内 finding
+    3. 无 finding → 返回 None
+
+    返回 (finding or None, match_method)
+    match_method: "title_unique" | "title_ai" | "title_multiple_fallback" | "trace_search" | "no_relationship"
+    """
+    if not ac_title:
+        return None, "no_title"
+
+    # Step 1: 标题匹配 finding
+    matched_findings = []
+    for f in findings:
+        f_title = f.get("title", "") or f.get("vuln_type", "")
+        if ac_title and ac_title in f_title:
+            matched_findings.append(f)
+
+    if len(matched_findings) == 1:
+        return matched_findings[0], "title_unique"
+
+    if len(matched_findings) > 1:
+        # 1:N → 用 AI 从漏洞描述识别
+        if ac_summary and llm_mod.is_enabled():
+            try:
+                _best_idx = _ai_identify_finding(ac_title, ac_summary, matched_findings)
+                if _best_idx is not None:
+                    return matched_findings[_best_idx], "title_ai"
+            except Exception as _e:
+                log("MATCH", f"AI 识别 finding 失败: {_e}")
+        # AI 不可用或失败 → 取第一个
+        return matched_findings[0], "title_multiple_fallback"
+
+    # Step 2: 标题搜索 trace 全文
+    ac_sessions: set[str] = set()
+    for e in events:
+        text = ""
+        if e.input_json:
+            text += json.dumps(e.input_json, ensure_ascii=False)
+        if e.output_json:
+            text += json.dumps(e.output_json, ensure_ascii=False)
+        if ac_title in text:
+            ac_sessions.add(e.session_id)
+
+    if ac_sessions:
+        # Step 3: 在找到的 session 里看有没有 finding
+        session_findings = [f for f in findings if f.get("session_id", "") in ac_sessions]
+        if session_findings:
+            return session_findings[0], "trace_search"
+
+    # Step 4: 没有找到关系
+    return None, "no_relationship"
 
 
 def create(req: CreateRequest):
@@ -751,6 +844,139 @@ def run(evaluation_id: str) -> dict:
     cfg, entries, bench_by_task = _db_query(_load_config)
 
     # 告警中心数据已在 Phase 0 (INGESTING) 获取，直接使用 _alert_center_data
+
+    # ===== FPR 分析提前到 INGEST 后，和 PARSING 并行 =====
+    # FPR 只依赖 case_details + entries（INGEST 产物），不依赖 trace 解析
+    from concurrent.futures import ThreadPoolExecutor as _BG_TP
+    _bg_executor = _BG_TP(max_workers=1)
+
+    def _run_fpr_bg():
+        """FPR 分析（后台并行）：baseline ↔ AC case LLM 匹配 + 持久化 + 查找表。"""
+        _e2e_fpr_kg = None
+        _e2e_fpr_nogk = None
+        _ac_fpr_kg = None
+        _ac_fpr_nogk = None
+        _vc_ids_kg: set[str] = set()
+        _vc_ids_nogk: set[str] = set()
+
+        def _run_fpr_for_cond(cond_label, cond_val):
+            """单个条件的 FPR 分析（可并行调用）。"""
+            _mining_entry = next((e for e in entries
+                                  if e.get("category", "") != "verify"
+                                  and e.get("condition") == cond_val
+                                  and e.get("project_id")), None)
+            if not _mining_entry:
+                return cond_val, None, None
+            _fpr_pid = _mining_entry["project_id"]
+            _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
+            if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
+                _fpr_tid = _mining_entry.get("task_id", "")
+
+            log("FPR", f"误报率分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+            try:
+                def _fpr_cb(done, total, _cl=cond_label):
+                    set_task_progress(evaluation_id, f"误报率分析{_cl}", f"误报率匹配 {done}/{total}")
+                _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
+                                               source="alert_center", case_details=case_details)
+            except Exception as _fpr_err:
+                log("FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
+                _ac_result = None
+
+            _vc_ids: set[str] = set()
+            if _ac_result:
+                try:
+                    from ..infrastructure.vuln_center_client import list_vuln_cases
+                    _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
+                    _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
+                    log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
+                except Exception as _vc_err:
+                    log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
+
+            return cond_val, _ac_result, _vc_ids
+
+        from concurrent.futures import ThreadPoolExecutor as _FPR_TP
+        with _FPR_TP(max_workers=2) as _fpr_pool:
+            _fpr_futures = {
+                _fpr_pool.submit(_run_fpr_for_cond, label, val): val
+                for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
+            }
+            for _fut in _fpr_futures:
+                _cond_val, _ac_result, _vc_ids = _fut.result()
+                if _ac_result:
+                    if _vc_ids:
+                        _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids)
+                    else:
+                        _vc_result = None
+                        log("FPR", "漏洞中心 case ID 为空，无法派生验证 FPR")
+
+                    _cond_label = "KG" if _cond_val == "KG" else "NOGK"
+                    log("FPR", f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%} "
+                        f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']}), "
+                        f"验证 FPR={_vc_result['fpr']:.1%} "
+                        f"(匹配 {_vc_result['matched']}/{_vc_result['total_findings']})"
+                        if _vc_result else
+                        f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%}, 验证 FPR 未能派生")
+
+                    if _cond_val == "KG":
+                        _ac_fpr_kg = _ac_result
+                        _e2e_fpr_kg = _vc_result
+                        _vc_ids_kg = _vc_ids
+                    else:
+                        _ac_fpr_nogk = _ac_result
+                        _e2e_fpr_nogk = _vc_result
+                        _vc_ids_nogk = _vc_ids
+                else:
+                    _cond_label = "KG" if _cond_val == "KG" else "NOGK"
+                    log("FPR", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
+
+        # 持久化 FPR 匹配结果到文件（供后续环节使用）
+        _fpr_match_data = {}
+        if _ac_fpr_kg:
+            _fpr_match_data["kg"] = {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)}
+        if _ac_fpr_nogk:
+            _fpr_match_data["nogk"] = {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)}
+        if _fpr_match_data:
+            import os as _fpr_os
+            _fpr_dir = _fpr_os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+            _fpr_os.makedirs(_fpr_dir, exist_ok=True)
+            _fpr_match_path = _fpr_os.path.join(_fpr_dir, f"{evaluation_id}_fpr_match.json")
+            try:
+                with open(_fpr_match_path, "w", encoding="utf-8") as _f:
+                    json.dump(_fpr_match_data, _f, ensure_ascii=False)
+                log("FPR", f"FPR 匹配结果已写入: {_fpr_match_path}")
+            except Exception as _fpr_write_err:
+                log("FPR", f"FPR 匹配结果写入失败: {_fpr_write_err}")
+
+        # 构建 FPR 匹配查找表（供 KG 分析使用）
+        _fpr_match_lookup = {}
+        if _fpr_match_data:
+            for _cond_key in ("kg", "nogk"):
+                _cond_fpr = _fpr_match_data.get(_cond_key)
+                if _cond_fpr:
+                    _cond_lookup = {}
+                    for _d in _cond_fpr.get("match_details", []):
+                        if _d.get("bl_case_id"):
+                            _cond_lookup[_d["bl_case_id"]] = {
+                                "ac_case_id": _d.get("finding_id", ""),
+                                "ac_title": _d.get("finding_title", ""),
+                                "ac_summary": _d.get("finding_summary", ""),
+                                "judgment": _d.get("judgment", ""),
+                                "is_fp": _d.get("is_fp", False),
+                            }
+                    _fpr_match_lookup[_cond_key] = _cond_lookup
+        log("FPR", f"FPR 查找表: KG={len(_fpr_match_lookup.get('kg', {}))} NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
+
+        return {
+            "e2e_fpr_kg": _e2e_fpr_kg,
+            "e2e_fpr_nogk": _e2e_fpr_nogk,
+            "ac_fpr_kg": _ac_fpr_kg,
+            "ac_fpr_nogk": _ac_fpr_nogk,
+            "fpr_match_data": _fpr_match_data,
+            "fpr_match_lookup": _fpr_match_lookup,
+        }
+
+    _fpr_future = _bg_executor.submit(_run_fpr_bg)
+    log("EVAL", "FPR 分析已提交后台（与 PARSING 并行）")
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
     facts_already_exist = False
@@ -1397,6 +1623,22 @@ def run(evaluation_id: str) -> dict:
     for i, pv in enumerate(item_pair_views):
         tid = _item_pv_task_ids[i] if i < len(_item_pv_task_ids) else "T001"
         _groups_item_pv[tid].append(pv)
+    # ===== 等待 FPR 后台分析完成（与 PARSING 并行执行，此时应已完成）=====
+    # 提前检索 FPR 结果：per-task 循环中的传递链条件分支需要 _fpr_match_lookup
+    try:
+        _fpr_res = _fpr_future.result()
+    except Exception as _fpr_err:
+        log("FPR", f"FPR 后台分析失败: {_fpr_err}")
+        _fpr_res = {
+            "e2e_fpr_kg": None, "e2e_fpr_nogk": None,
+            "ac_fpr_kg": None, "ac_fpr_nogk": None,
+            "fpr_match_data": {}, "fpr_match_lookup": {},
+        }
+    _bg_executor.shutdown(wait=False)
+    _fpr_match_lookup = _fpr_res["fpr_match_lookup"]
+    log("FPR", f"FPR 查找表已就绪: KG={len(_fpr_match_lookup.get('kg', {}))} "
+          f"NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
+
     # 为每组计算指标
     _metric_groups: list[dict] = []
     _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict], object]] = {}
@@ -1471,36 +1713,136 @@ def run(evaluation_id: str) -> dict:
         _g_kg_cases = _g_kg_facts.get("case_results", [])
         _g_nogk_by_case = {c.get("case_id"): c for c in _g_nogk_facts.get("case_results", [])}
         _g_bench_by_case = {b.benchmark_item_id: b for b in bench_by_task.get(tid, [])}
+        # 传递链条件分支：FPR 匹配结果（步骤 1）决定起始 session（步骤 2-4）
+        _kg_findings = _g_kg_facts.get("findings", [])
+        _kg_session_graph = _g_kg_facts.get("session_graph", {})
+        _kg_events = _g_kg_facts.get("events", [])
+        _kg_parser = _g_kg_facts.get("parser")
+        _nogk_findings = _g_nogk_facts.get("findings", [])
+        _nogk_session_graph = _g_nogk_facts.get("session_graph", {})
+        _nogk_events = _g_nogk_facts.get("events", [])
+        _nogk_parser = _nogk_facts.get("parser")
         _g_case_results = []
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
             _g_bench = _g_bench_by_case.get(_g_case_id)
             _g_meta = (_g_bench.metadata or {}) if _g_bench else {}
             _g_nogk_case = _g_nogk_by_case.get(_g_case_id, {})
+
+            # 步骤 2-4：根据 FPR 匹配结果确定挖掘过程
+            _kg_case_data = dict(_g_case)
+            _nogk_case_data = dict(_g_nogk_case)
+
+            # KG 条件：步骤 2（有 AC case 对应）→ 用 AC 标题匹配 finding → 重建链
+            _fpr_match = (_fpr_match_lookup or {}).get("kg", {}).get(_g_case_id, {})
+            _fpr_ac_title = _fpr_match.get("ac_title", "")
+            _fpr_ac_summary = _fpr_match.get("ac_summary", "")
+            _kg_ac_match_method = ""
+            if _fpr_ac_title:
+                _fpr_finding, _match_method = _match_ac_to_finding_by_title(
+                    _fpr_ac_title, _fpr_ac_summary, _kg_findings, _kg_events)
+                _kg_ac_match_method = _match_method
+                if _fpr_finding:
+                    _fpr_session = _fpr_finding.get("session_id", "")
+                    _sink_session = _g_case.get("session_id", "") or _g_case.get("finding_session", "")
+                    if _fpr_session and _fpr_session != _sink_session:
+                        # FPR 指向不同 session → 重建挖掘链
+                        _new_chains = group_chains([_fpr_session], _kg_session_graph)
+                        if _new_chains:
+                            _kg_case_data.update({
+                                "chain_actions": collect_chain_actions(_new_chains[0], _kg_events, _kg_parser),
+                                "matched_finding_id": _fpr_finding.get("display_id") or _fpr_finding.get("finding_id", ""),
+                                "session_id": _fpr_session,
+                                "finding_session": _fpr_session,
+                                "ac_case_id": _fpr_match.get("ac_case_id", ""),
+                                "candidate_findings": [{
+                                    "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                                    "title": f.get("title") or f.get("vuln_type") or "",
+                                    "vuln_type": f.get("vuln_type", ""),
+                                    "description": f.get("description") or "",
+                                    "source": f.get("source") or "",
+                                    "sink": f.get("sink") or "",
+                                    "validation_result": f.get("validation_result"),
+                                    "session_id": f.get("session_id", ""),
+                                } for f in collect_chain_findings(_new_chains[0], _kg_findings)],
+                                "sink_sessions": sorted(_new_chains[0]),
+                            })
+                            log("EVAL", f"步骤2: case={_g_case_id} AC title='{_fpr_ac_title}' "
+                                f"method={_match_method} 重建链 session={_fpr_session} "
+                                f"actions={len(_kg_case_data['chain_actions'])}")
+                    # else: 同 session → 交叉验证通过，保留 sink_match 链
+                else:
+                    log("EVAL", f"步骤2: case={_g_case_id} AC title='{_fpr_ac_title}' "
+                        f"未找到 finding 关系 ({_match_method})")
+            _kg_case_data["ac_match_method"] = _kg_ac_match_method
+            # 步骤 3：无 FPR 匹配 → 用 sink_match 结果（已在 _kg_case_data 中）
+            # 步骤 4：无 finding → chain_actions 为空，LLM 分析走 fast-path
+
+            # NOGK 条件：同上逻辑
+            _nogk_fpr_match = (_fpr_match_lookup or {}).get("nogk", {}).get(_g_case_id, {})
+            _nogk_ac_title = _nogk_fpr_match.get("ac_title", "")
+            _nogk_ac_summary = _nogk_fpr_match.get("ac_summary", "")
+            _nogk_ac_match_method = ""
+            if _nogk_ac_title:
+                _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(
+                    _nogk_ac_title, _nogk_ac_summary, _nogk_findings, _nogk_events)
+                _nogk_ac_match_method = _nogk_match_method
+                if _nogk_fpr_finding:
+                    _nogk_fpr_session = _nogk_fpr_finding.get("session_id", "")
+                    _nogk_sink_session = _g_nogk_case.get("session_id", "") or _g_nogk_case.get("finding_session", "")
+                    if _nogk_fpr_session and _nogk_fpr_session != _nogk_sink_session:
+                        _nogk_new_chains = group_chains([_nogk_fpr_session], _nogk_session_graph)
+                        if _nogk_new_chains:
+                            _nogk_case_data.update({
+                                "chain_actions": collect_chain_actions(_nogk_new_chains[0], _nogk_events, _nogk_parser),
+                                "matched_finding_id": _nogk_fpr_finding.get("display_id") or _nogk_fpr_finding.get("finding_id", ""),
+                                "session_id": _nogk_fpr_session,
+                                "finding_session": _nogk_fpr_session,
+                                "ac_case_id": _nogk_fpr_match.get("ac_case_id", ""),
+                                "candidate_findings": [{
+                                    "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                                    "title": f.get("title") or f.get("vuln_type") or "",
+                                    "vuln_type": f.get("vuln_type", ""),
+                                    "description": f.get("description") or "",
+                                    "source": f.get("source") or "",
+                                    "sink": f.get("sink") or "",
+                                    "validation_result": f.get("validation_result"),
+                                    "session_id": f.get("session_id", ""),
+                                } for f in collect_chain_findings(_nogk_new_chains[0], _nogk_findings)],
+                                "sink_sessions": sorted(_nogk_new_chains[0]),
+                            })
+                            log("EVAL", f"步骤2(NOGK): case={_g_case_id} AC title='{_nogk_ac_title}' "
+                                f"method={_nogk_match_method} 重建链 session={_nogk_fpr_session}")
+                else:
+                    log("EVAL", f"步骤2(NOGK): case={_g_case_id} AC title='{_nogk_ac_title}' "
+                        f"未找到 finding 关系 ({_nogk_match_method})")
+            _nogk_case_data["ac_match_method"] = _nogk_ac_match_method
+
             _g_case_results.append({
-                **_g_case,
-                "expected_label": _g_case.get("expected_label") or (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA"),
+                **_kg_case_data,
+                "expected_label": _kg_case_data.get("expected_label") or (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA"),
                 "description": _g_meta.get("description", ""),
                 "vulnerability_type": _g_meta.get("vulnerability_type", ""),
                 "source_file": _g_meta.get("source_file", ""),
                 "source_function": _g_meta.get("source_function", ""),
                 "source_line": _g_meta.get("source_line", ""),
-                "nogk_matched": _g_nogk_case.get("matched", False),
-                "nogk_mined": _g_nogk_case.get("mined", False),
-                "nogk_sink_hit": _g_nogk_case.get("sink_hit", False),
-                "nogk_confusion": _g_nogk_case.get("confusion", "NA"),
-                "nogk_finding_title": _g_nogk_case.get("finding_title", ""),
-                "nogk_ac_case_id": _g_nogk_case.get("ac_case_id", ""),
-                "nogk_session_id": _g_nogk_case.get("session_id", ""),
-                "nogk_sink_sessions": _g_nogk_case.get("sink_sessions", []),
-                "nogk_sink_hit_sessions": _g_nogk_case.get("sink_hit_sessions", []),
-                "nogk_finding_session": _g_nogk_case.get("finding_session", ""),
-                "nogk_session_chain": _g_nogk_case.get("session_chain", []),
-                "nogk_candidate_findings": _g_nogk_case.get("candidate_findings", []),
-                "nogk_sink_info": _g_nogk_case.get("sink_info", ""),
-                "nogk_sink_analysis": _g_nogk_case.get("sink_analysis", ""),
-                "nogk_no_finding_reason": _g_nogk_case.get("no_finding_reason", ""),
-                "nogk_knowledge_intervention": _g_nogk_case.get("knowledge_intervention"),
+                "nogk_matched": _nogk_case_data.get("matched", False),
+                "nogk_mined": _nogk_case_data.get("mined", False),
+                "nogk_sink_hit": _nogk_case_data.get("sink_hit", False),
+                "nogk_confusion": _nogk_case_data.get("confusion", "NA"),
+                "nogk_finding_title": _nogk_case_data.get("finding_title", ""),
+                "nogk_ac_case_id": _nogk_case_data.get("ac_case_id", ""),
+                "nogk_ac_match_method": _nogk_case_data.get("ac_match_method", ""),
+                "nogk_session_id": _nogk_case_data.get("session_id", ""),
+                "nogk_sink_sessions": _nogk_case_data.get("sink_sessions", []),
+                "nogk_sink_hit_sessions": _nogk_case_data.get("sink_hit_sessions", []),
+                "nogk_finding_session": _nogk_case_data.get("finding_session", ""),
+                "nogk_session_chain": _nogk_case_data.get("session_chain", []),
+                "nogk_candidate_findings": _nogk_case_data.get("candidate_findings", []),
+                "nogk_sink_info": _nogk_case_data.get("sink_info", ""),
+                "nogk_sink_analysis": _nogk_case_data.get("sink_analysis", ""),
+                "nogk_no_finding_reason": _nogk_case_data.get("no_finding_reason", ""),
+                "nogk_knowledge_intervention": _nogk_case_data.get("knowledge_intervention"),
                 "kg_source_uri": _g_kg_facts.get("_source_uri", ""),
                 "nogk_source_uri": _g_nogk_facts.get("_source_uri", ""),
             })
@@ -1583,127 +1925,12 @@ def run(evaluation_id: str) -> dict:
                       pair_views=pair_views, has_nogk=has_nogk)
     report.metric_groups = _metric_groups
 
-    # ===== Phase 6b+6c: FPR 分析（统一：告警中心匹配 → 派生漏洞中心 FPR）=====
-    # 跑一次告警中心匹配，按 case ID 筛选派生漏洞中心 FPR，保证一致性。
-    # 漏洞中心 case ID 是告警中心的真子集（128/158），无需独立 LLM 匹配。
-    _e2e_fpr_kg = None       # 漏洞中心 FPR（E2E，派生）
-    _e2e_fpr_nogk = None
-    _ac_fpr_kg = None        # 告警中心 FPR（挖掘，直接）
-    _ac_fpr_nogk = None
-    _vc_ids_kg: set[str] = set()
-    _vc_ids_nogk: set[str] = set()
-    _fpr_cache: dict = {}   # (project_id, task_id) → (alert_result, vc_ids)
-
-    def _run_fpr_for_cond(cond_label, cond_val):
-        """单个条件的 FPR 分析（可并行调用）。"""
-        _mining_entry = next((e for e in entries
-                              if e.get("category", "") != "verify"
-                              and e.get("condition") == cond_val
-                              and e.get("project_id")), None)
-        if not _mining_entry:
-            return cond_val, None, None
-        _fpr_pid = _mining_entry["project_id"]
-        _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
-        if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
-            _fpr_tid = _mining_entry.get("task_id", "")
-
-        log("EVAL", f"误报率分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
-        set_progress(evaluation_id, f"误报率分析 ({cond_label}): 基线 vs 告警中心数据匹配中...")
-        try:
-            def _fpr_cb(done, total, _cl=cond_label):
-                set_task_progress(evaluation_id, f"误报率分析{_cl}", f"误报率匹配 {done}/{total}")
-            _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
-                                           source="alert_center", case_details=case_details)
-        except Exception as _fpr_err:
-            log("FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
-            _ac_result = None
-
-        # 获取漏洞中心 case ID 集合（用于派生子集）
-        _vc_ids: set[str] = set()
-        if _ac_result:
-            try:
-                from ..infrastructure.vuln_center_client import list_vuln_cases
-                _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
-                _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
-                log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
-            except Exception as _vc_err:
-                log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
-
-        return cond_val, _ac_result, _vc_ids
-
-    # KG/NOGK 并行 FPR 分析
-    from concurrent.futures import ThreadPoolExecutor as _FPR_TP
-    with _FPR_TP(max_workers=2) as _fpr_pool:
-        _fpr_futures = {
-            _fpr_pool.submit(_run_fpr_for_cond, label, val): val
-            for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
-        }
-        for _fut in _fpr_futures:
-            _cond_val, _ac_result, _vc_ids = _fut.result()
-            if _ac_result:
-                # 派生漏洞中心 FPR（从告警中心结果按 case ID 筛选）
-                if _vc_ids:
-                    _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids)
-                else:
-                    _vc_result = None
-                    log("FPR", "漏洞中心 case ID 为空，无法派生验证 FPR")
-
-                _cond_label = "KG" if _cond_val == "KG" else "NOGK"
-                log("EVAL", f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%} "
-                    f"(匹配 {_ac_result['matched']}/{_ac_result['total_findings']}), "
-                    f"验证 FPR={_vc_result['fpr']:.1%} "
-                    f"(匹配 {_vc_result['matched']}/{_vc_result['total_findings']})"
-                    if _vc_result else
-                    f"FPR ({_cond_label}): 挖掘 FPR={_ac_result['fpr']:.1%}, 验证 FPR 未能派生")
-
-                if _cond_val == "KG":
-                    _ac_fpr_kg = _ac_result
-                    _e2e_fpr_kg = _vc_result
-                    _vc_ids_kg = _vc_ids
-                else:
-                    _ac_fpr_nogk = _ac_result
-                    _e2e_fpr_nogk = _vc_result
-                    _vc_ids_nogk = _vc_ids
-            else:
-                _cond_label = "KG" if _cond_val == "KG" else "NOGK"
-                log("EVAL", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
-
-    # 持久化 FPR 匹配结果到文件（供后续环节使用）
-    _fpr_match_data = {}
-    if _ac_fpr_kg:
-        _fpr_match_data["kg"] = {**_ac_fpr_kg, "vc_ids": list(_vc_ids_kg)}
-    if _ac_fpr_nogk:
-        _fpr_match_data["nogk"] = {**_ac_fpr_nogk, "vc_ids": list(_vc_ids_nogk)}
-    if _fpr_match_data:
-        import os as _fpr_os
-        _fpr_dir = _fpr_os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-        _fpr_os.makedirs(_fpr_dir, exist_ok=True)
-        _fpr_match_path = _fpr_os.path.join(_fpr_dir, f"{evaluation_id}_fpr_match.json")
-        try:
-            with open(_fpr_match_path, "w", encoding="utf-8") as _f:
-                json.dump(_fpr_match_data, _f, ensure_ascii=False)
-            log("FPR", f"FPR 匹配结果已写入: {_fpr_match_path}")
-        except Exception as _fpr_write_err:
-            log("FPR", f"FPR 匹配结果写入失败: {_fpr_write_err}")
-
-    # 构建 FPR 匹配查找表（供 KG 分析使用）
-    _fpr_match_lookup = {}
-    if _fpr_match_data:
-        for _cond_key in ("kg", "nogk"):
-            _cond_fpr = _fpr_match_data.get(_cond_key)
-            if _cond_fpr:
-                _cond_lookup = {}
-                for _d in _cond_fpr.get("match_details", []):
-                    if _d.get("bl_case_id"):
-                        _cond_lookup[_d["bl_case_id"]] = {
-                            "ac_case_id": _d.get("finding_id", ""),
-                            "ac_title": _d.get("finding_title", ""),
-                            "ac_summary": _d.get("finding_summary", ""),
-                            "judgment": _d.get("judgment", ""),
-                            "is_fp": _d.get("is_fp", False),
-                        }
-                _fpr_match_lookup[_cond_key] = _cond_lookup
-    log("FPR", f"FPR 查找表: KG={len(_fpr_match_lookup.get('kg', {}))} NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
+    # FPR 结果已在 per-task 循环前检索（传递链条件分支需要 _fpr_match_lookup）
+    _e2e_fpr_kg = _fpr_res["e2e_fpr_kg"]
+    _e2e_fpr_nogk = _fpr_res["e2e_fpr_nogk"]
+    _ac_fpr_kg = _fpr_res["ac_fpr_kg"]
+    _ac_fpr_nogk = _fpr_res["ac_fpr_nogk"]
+    _fpr_match_data = _fpr_res["fpr_match_data"]
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
     if _llm_enabled():
