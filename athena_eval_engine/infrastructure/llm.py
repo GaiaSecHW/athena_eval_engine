@@ -358,9 +358,44 @@ def chat(messages, **kwargs) -> str:
     raise RuntimeError(f"LLM 调用失败（{retries} 次重试后）: {last_err}")
 
 
+def _escape_control_chars_in_strings(text: str) -> str:
+    """将 JSON 字符串值中的字面控制字符转义。
+
+    LLM 有时在 JSON 字符串值中输出原始换行符/制表符等控制字符，
+    导致 json.loads 报 "Invalid control character at"。
+    遍历文本，跟踪字符串状态，将字符串内的控制字符替换为转义形式。
+    """
+    _escape_map = {
+        '\n': '\\n', '\r': '\\r', '\t': '\\t',
+        '\b': '\\b', '\f': '\\f',
+    }
+    out: list[str] = []
+    in_str = False
+    esc = False
+    for ch in text:
+        if esc:
+            esc = False
+            out.append(ch)
+            continue
+        if ch == '\\':
+            esc = True
+            out.append(ch)
+            continue
+        if ch == '"':
+            in_str = not in_str
+            out.append(ch)
+            continue
+        if in_str and ord(ch) < 0x20:
+            out.append(_escape_map.get(ch, f'\\u{ord(ch):04x}'))
+        else:
+            out.append(ch)
+    return ''.join(out)
+
+
 def _try_repair_backslash_quote(text):
     """修复 JSON 常见错误 + 结构补全。
 
+    Step 0: 修复字符串值中的字面控制字符（原始换行符/制表符 → 转义）。
     Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
     当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
     未转义引号，提前终止字符串。利用 json 解析器的错误位置逐个修复。
@@ -372,7 +407,8 @@ def _try_repair_backslash_quote(text):
     Step 3: 花括号+方括号补全。在 repaired 文本上统计深度并补全缺失的 } 和 ]。
     """
     decoder = json.JSONDecoder()
-    repaired = text
+    # Step 0: 修复字符串值中的字面控制字符
+    repaired = _escape_control_chars_in_strings(text)
     # Step 1: 修复 \\" 转义错误
     for _ in range(50):
         try:
