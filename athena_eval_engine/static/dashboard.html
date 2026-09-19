@@ -456,7 +456,7 @@ function fmtDur(ms){
 }
 function fmt(v,u){
   if(v===null||v===undefined||isNaN(v))return'<span class="na">NA</span>';
-  if(u==="ratio")return (v*100).toFixed(1)+'<span class="ci">%</span>';
+  if(u==="ratio")return (v*100).toFixed(2)+'<span class="ci">%</span>';
   if(u==="ms")return fmtDur(v);
   if(u==="steps"||u==="tokens"){const a=Math.abs(v);let s;
     if(a>=1e9)s=(v/1e9).toFixed(2)+'B';else if(a>=1e6)s=(v/1e6).toFixed(2)+'M';else if(a>=1e3)s=(v/1e3).toFixed(1)+'K';else s=Math.round(v).toString();
@@ -471,11 +471,11 @@ function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const
 const MI={
   M13:{n:"误报率",short:"误报率",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
-     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(1)}%`,
+     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(2)}%`,
      formula:"误报率 = 误报数 / (误报数 + 真正数)"},
   M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(1)}%, 少量`:`知识访问率 ${(v*100).toFixed(1)}%, 占比低`,
+     interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(2)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(2)}%, 少量`:`知识访问率 ${(v*100).toFixed(2)}%, 占比低`,
      formula:"kg_count / total_tool_calls (知识查询次数 / 总工具调用次数)"},
   M6:{n:"知识交付率",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
@@ -483,7 +483,7 @@ const MI={
      formula:"successful_read_count / access_event_count (有效回复次数 / 总查询次数)"},
   M11:{n:"记忆访问率",short:"记忆访问",d:"Agent 工具调用中记忆读取/检索所占比例。与知识访问率同算法。",u:"ratio",
      range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(1)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(1)}%, 少量`:`记忆访问率 ${(v*100).toFixed(1)}%, 占比低`,
+     interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(2)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(2)}%, 少量`:`记忆访问率 ${(v*100).toFixed(2)}%, 占比低`,
      formula:"memory_access_event_count / total_tool_calls (记忆读取次数 / 总工具调用次数)"},
   M12:{n:"记忆交付率",short:"记忆交付",d:"记忆读取中成功返回的比例。与知识交付率同算法。",u:"ratio",
      range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
@@ -508,7 +508,7 @@ const MI={
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
 function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
-function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(1):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(1):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
+function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(2):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(2):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
 function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
 
 function selectReportTab(button,paneId){
@@ -620,8 +620,8 @@ function renderReport(d){
       html+="<span class='bdg b-COMPLETED' style='font-size:13px'>有效返回 "+stats.success+"</span>";
       html+="<span class='bdg b-FAILED' style='font-size:13px'>返回失败 "+stats.fail+"</span>";
       html+="<span class='bdg b-CREATED' style='font-size:13px'>知识盲区 "+stats.blind+"</span>";
-      if(accessRate!=null&&!isNaN(accessRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(1)+"%</span>";
-      if(deliveryRate!=null&&!isNaN(deliveryRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(1)+"%</span>";
+      if(accessRate!=null&&!isNaN(accessRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(2)+"%</span>";
+      if(deliveryRate!=null&&!isNaN(deliveryRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(2)+"%</span>";
       html+="</div>";
     }
     return html;
@@ -897,7 +897,7 @@ function renderReport(d){
     function _buildFprHtml(g){
       const fpr=g.fpr_analysis||{};
       const details=fpr.match_details||[];
-      const fprPct=fpr.fpr!=null?(fpr.fpr*100).toFixed(1)+'%':'—';
+      const fprPct=fpr.fpr!=null?(fpr.fpr*100).toFixed(2)+'%':'—';
       const tp=fpr.tp||0,fp=fpr.fp||0,matched=fpr.matched||0;
       const totalF=fpr.total_findings||0,totalBl=fpr.total_baseline||0;
       const isMining=g.category==='mining_fpr';
@@ -951,7 +951,7 @@ function renderReport(d){
       const srcIcon=isAc?'📈':'📊';
       function _row(label,r){
         if(!r) return `<div style="text-align:center;min-width:120px;opacity:.4"><div style="font-size:14px;color:var(--sub)">—</div><div style="font-size:14px;color:var(--gray);margin-top:4px">${label}</div></div>`;
-        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(1)+'%':'—';
+        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';
         return `<div style="text-align:center;min-width:120px"><div style="font-size:28px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:2px">${label} 误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${r.matched||0} / ${srcLabel}${r.total_findings||0} / 真正${r.tp||0} / 误报${r.fp||0}</div></div>`;
       }
       let merged=null;
@@ -961,7 +961,7 @@ function renderReport(d){
         merged={fpr:m>0?fp/m:0,matched:m,fp:fp,tp:(kg.tp||0)+(nogk.tp||0),total_findings:(kg.total_findings||0)+(nogk.total_findings||0),total_baseline:kg.total_baseline||nogk.total_baseline||0};
       }
       const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
-        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(1)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
+        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(2)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
       </div>
       <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
         <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数)<br>

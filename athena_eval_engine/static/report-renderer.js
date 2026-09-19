@@ -48,7 +48,7 @@ function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const
 const MI={
   M13:{n:"误报率",short:"误报率",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
      range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
-     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(1)}%`,
+     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(2)}%`,
      formula:"误报率 = 误报数 / (误报数 + 真正数)",
      kgKey:"fpr_kg",nogkKey:"fpr_nogk"},
   M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
@@ -270,7 +270,7 @@ function renderReport(d){
     if(conf==="TP")kgTP++;else if(conf==="FP")kgFP++;else if(conf==="FN")kgFN++;else if(conf==="TN")kgTN++;else kgNA++;
   });
   var kgFprNum=kgFP,kgFprDen=kgTP+kgFP;
-  var kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
+  var kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(2)+"%":"—";
   kgHtml+="<div style='font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px'>混淆矩阵汇总：真阳性="+kgTP+" 假阳性="+kgFP+" 假阴性="+kgFN+" 真阴性="+kgTN+(kgNA?" 未判定="+kgNA:"")+"<span style='margin-left:16px'>误报率="+kgFprStr+"（误报数="+kgFprNum+" / (误报数+真正数)="+kgFprDen+"）</span></div>";
 
   // 基线漏洞 per-case 分析（有 case_results 就逐个展示，不依赖 kgActive/memActive）
@@ -632,7 +632,7 @@ function renderReport(d){
       return `<div class="card" style="margin-bottom:16px">
         <h3>📊 ${label} — 漏洞检测统计</h3>
         ${acHtml}
-        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b> · 误报率 <b style="color:var(--amber)">${(vulnN+nonVulnN)>0?((nonVulnN/(vulnN+nonVulnN))*100).toFixed(1)+'%':'—'}</b></span>`:""}</div>
+        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b> · 误报率 <b style="color:var(--amber)">${(vulnN+nonVulnN)>0?((nonVulnN/(vulnN+nonVulnN))*100).toFixed(2)+'%':'—'}</b></span>`:""}</div>
         <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th>${nogkTh}</tr>
         <tr><td>${isVerify?"验证接收总数":"发现 finding 数"}</td><td class="num">${kgRecv}</td>${nc(nogkRecv)}</tr>
         <tr><td>${isVerify?"确认漏洞数":"上报漏洞数"}</td><td class="num">${kgFound}</td>${nc(nogkFound)}</tr>
@@ -760,8 +760,8 @@ function renderReport(d){
       if(!rows.length) return "";
       const kgFprNum=kgFP,kgFprDen=kgTP+kgFP;
       const nogkFprNum=nogkFP,nogkFprDen=nogkTP+nogkFP;
-      const kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(1)+"%":"—";
-      const nogkFprStr=nogkFprDen>0?(nogkFprNum/nogkFprDen*100).toFixed(1)+"%":"—";
+      const kgFprStr=kgFprDen>0?(kgFprNum/kgFprDen*100).toFixed(2)+"%":"—";
+      const nogkFprStr=nogkFprDen>0?(nogkFprNum/nogkFprDen*100).toFixed(2)+"%":"—";
       const summary=_hasNogk
         ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<span style="margin-left:16px">No-KG 误报率=${nogkFprStr}（误报数=${nogkFprNum} / (误报数+真正数)=${nogkFprDen}）</span><div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`
         : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">KG 误报率=${kgFprStr}（误报数=${kgFprNum} / (误报数+真正数)=${kgFprDen}）<div style="font-size:12px;margin-top:4px;color:var(--gray)">混淆矩阵：真阳性=${kgTP} 假阳性=${kgFP} 假阴性=${kgFN} 真阴性=${kgTN}${kgNA?` 未判定=${kgNA}`:""}</div></div>`;
@@ -776,7 +776,7 @@ function renderReport(d){
     function _buildFprHtml(g){
       const fpr=g.fpr_analysis||{};
       const details=fpr.match_details||[];
-      const fprPct=fpr.fpr!=null?(fpr.fpr*100).toFixed(1)+'%':'—';
+      const fprPct=fpr.fpr!=null?(fpr.fpr*100).toFixed(2)+'%':'—';
       const tp=fpr.tp||0,fp=fpr.fp||0,matched=fpr.matched||0;
       const totalF=fpr.total_findings||0,totalBl=fpr.total_baseline||0;
       const isMining=g.category==='mining_fpr';
@@ -830,7 +830,7 @@ function renderReport(d){
       const srcIcon=isAc?'📈':'📊';
       function _row(label,r){
         if(!r) return `<div style="text-align:center;min-width:120px;opacity:.4"><div style="font-size:14px;color:var(--sub)">—</div><div style="font-size:14px;color:var(--gray);margin-top:4px">${label}</div></div>`;
-        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(1)+'%':'—';
+        const fprPct=r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';
         return `<div style="text-align:center;min-width:120px"><div style="font-size:28px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:2px">${label} 误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${r.matched||0} / ${srcLabel}${r.total_findings||0} / 真正${r.tp||0} / 误报${r.fp||0}</div></div>`;
       }
       // 合并
@@ -841,7 +841,7 @@ function renderReport(d){
         merged={fpr:m>0?fp/m:0,matched:m,fp:fp,tp:(kg.tp||0)+(nogk.tp||0),total_findings:(kg.total_findings||0)+(nogk.total_findings||0),total_baseline:kg.total_baseline||nogk.total_baseline||0};
       }
       const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px;align-items:flex-end">
-        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(1)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
+        ${_row('KG',kg)}${nogk?_row('No-KG',nogk):''}${merged?`<div style="text-align:center;min-width:120px;border-left:2px solid var(--bd);padding-left:24px"><div style="font-size:28px;font-weight:700;color:var(--red)">${(merged.fpr*100).toFixed(2)}%</div><div style="font-size:14px;color:var(--sub);margin-top:2px">合并误报率</div><div style="font-size:12px;color:var(--gray);margin-top:4px">匹配${merged.matched} / 真正${merged.tp} / 误报${merged.fp}</div></div>`:''}
       </div>
       <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
         <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数)<br>
