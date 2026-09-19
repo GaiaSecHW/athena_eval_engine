@@ -871,12 +871,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         # token 数 × chars/token 换算率 × 70%（留 system prompt + response 空间）
         _char_limit = int(_mt * _cpt * 0.7) if _mt else 840000
 
-        # 先剥离 knowledge_interactions 的 answer（完整 LLM 输出，数据量大）
-        # 在初始大小检查之前执行，避免 answer 导致不必要的压缩流程
+        # 截断 knowledge_interactions 的 answer（完整 LLM 输出，数据量大）
+        # 保留前 500 字使 LLM 能判断知识返回内容是正向/负向/中性
         _kis = data.get("knowledge_interactions", [])
         if _kis:
             data["knowledge_interactions"] = [
-                {"tool": ki.get("tool", ""), "question": ki.get("question", "")}
+                {"tool": ki.get("tool", ""), "question": ki.get("question", ""),
+                 "answer": (ki.get("answer", "") or "")[:500]}
                 for ki in _kis
             ]
 
@@ -1000,7 +1001,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
                 del _uncached, _by_session
 
-            # knowledge_interactions 的 answer 已在初始大小检查前剥离
+            # knowledge_interactions 的 answer 已截断为前 500 字
 
             _data_str = json.dumps(data, ensure_ascii=False)
             log("KG_ANALYSIS", f"压缩后 {len(_data_str)} chars")
@@ -1090,8 +1091,11 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "   - agent_validation：Agent 自身的判定，CONFIRMED=确认是漏洞，FALSE_POSITIVE=判定不是漏洞\n"
                 "3. matched_finding：Agent 提交的漏洞报告中与基线匹配的那条（Agent 没找到时为 null）\n"
                 "4. agent_findings_list：Agent 提交的全部漏洞报告\n"
-                "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录（含查询命令）\n"
-                "6. mining_actions：完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：挖掘过程摘要、知识/记忆问答记录、关键操作列表\n"
+                "5. knowledge_interactions：Agent 向知识图谱和记忆系统发起的查询记录，每条包含：tool（工具名）、question（查询命令/内容）、answer（知识返回内容摘要，≤500字）\n"
+                "6. mining_actions：完整挖掘过程（sink 匹配链上行为）。数据量大时已按会话压缩，每条包含：\n"
+                "   - mining_summary：该会话的挖掘过程摘要（时间线描述，重点标注知识/记忆查询时机和后续行为变化）\n"
+                "   - knowledge_queries：知识/记忆问答记录列表，每条含 question（查询内容）、answer（回答要点）、follow_up（得到回答后 Agent 做了什么）\n"
+                "   - key_actions：关键操作列表\n"
                 "7. sink_analysis：sink 点 LLM 链分析结论（判断 session 链是否是基线漏洞的挖掘过程）\n"
                 "8. no_finding_reason：当 agent 接触了漏洞代码但未提交 finding 时，LLM 分析的未提交原因\n"
                 "9. knowledge_intervention：当 agent 接触了漏洞代码但未提交 finding 时，知识/记忆介入的结构化分析（query=问了什么，response=回答了什么，decision=Agent 做了什么决策，impact=正向/负向/中性）。为 null 表示无知识介入\n"

@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 import time
 import socket
+import select
 import threading
 import http.client
 from urllib.parse import urlparse
@@ -258,16 +259,24 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         finish_reason = None
         _last_content_ts = time.time()  # 从 Phase 2 开始计时，keepalive 不重置
         while True:
-            line = resp.readline()
-            if not line:
-                break  # 连接关闭
-            # ── 内容超时检查（放在所有 continue 之前，确保每行都检查）──
-            # 防止 LLM 网关持续发 keepalive/空 delta 的 chunk 导致无限循环
             _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
-            if time.time() - _last_content_ts > _timeout:
+            _elapsed = time.time() - _last_content_ts
+            if _elapsed > _timeout:
                 _phase = "首 token" if first_token else "后续 token 断流"
                 log("LLM", f"stream content stall ({_timeout}s no content, {_phase}), aborting")
                 raise RuntimeError(f"LLM {_phase}超时（{_timeout}s 无实际内容）")
+            # ── 用 select 等待数据可用，避免 readline() 无限阻塞 ──
+            # socket.timeout 是 per-recv 的，readline 逐字节读取时每次 recv 都重置计时器，
+            # 导致整体永不超时。select 带剩余超时确保即使无数据也能在超时后退出。
+            _remaining = _timeout - _elapsed
+            _sock = conn.sock
+            if _sock is not None:
+                _ready, _, _ = select.select([_sock], [], [], min(_remaining, 5))
+                if not _ready:
+                    continue  # select 超时，回到循环顶部检查总超时
+            line = resp.readline()
+            if not line:
+                break  # 连接关闭
             line_str = line.decode("utf-8", errors="replace").strip()
             if not line_str:
                 continue  # SSE 事件分隔空行
