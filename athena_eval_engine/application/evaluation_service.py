@@ -660,6 +660,7 @@ def run(evaluation_id: str) -> dict:
             with ThreadPoolExecutor(max_workers=min(len(_need_fill), 8)) as pool:
                 futures = [pool.submit(_fill_missing_source, cd) for cd in _need_fill]
                 for fut in as_completed(futures):
+                    _check_cancel(evaluation_id, "INGEST")
                     fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
@@ -861,6 +862,7 @@ def run(evaluation_id: str) -> dict:
 
         def _run_fpr_for_cond(cond_label, cond_val):
             """单个条件的 FPR 分析（可并行调用）。"""
+            _cancel_cb = lambda: _check_cancel(evaluation_id, "FPR_MATCHING")
             _mining_entry = next((e for e in entries
                                   if e.get("category", "") != "verify"
                                   and e.get("condition") == cond_val
@@ -877,7 +879,8 @@ def run(evaluation_id: str) -> dict:
                 def _fpr_cb(done, total, _cl=cond_label):
                     set_task_progress(evaluation_id, f"误报率分析{_cl}", f"误报率匹配 {done}/{total}")
                 _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
-                                               source="alert_center", case_details=case_details)
+                                               source="alert_center", case_details=case_details,
+                                               cancel_cb=_cancel_cb)
             except Exception as _fpr_err:
                 log("FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
                 _ac_result = None
@@ -895,7 +898,8 @@ def run(evaluation_id: str) -> dict:
             return cond_val, _ac_result, _vc_ids
 
         from concurrent.futures import ThreadPoolExecutor as _FPR_TP
-        with _FPR_TP(max_workers=2) as _fpr_pool:
+        _fpr_pool = _FPR_TP(max_workers=2)
+        try:
             _fpr_futures = {
                 _fpr_pool.submit(_run_fpr_for_cond, label, val): val
                 for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
@@ -928,6 +932,11 @@ def run(evaluation_id: str) -> dict:
                 else:
                     _cond_label = "KG" if _cond_val == "KG" else "NOGK"
                     log("FPR", f"FPR ({_cond_label}) 无结果（基线未配置或告警中心无数据）")
+        except Exception:
+            _fpr_pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            _fpr_pool.shutdown(wait=True)
 
         # 持久化 FPR 匹配结果到文件（供后续环节使用）
         _fpr_match_data = {}
@@ -1246,6 +1255,7 @@ def run(evaluation_id: str) -> dict:
             _trid = tr.task_run_id
 
             log("MATCH", f"[{_trid}] {cond.value} bench_items={len(bench)} events={len(events)} starting ai_match + resolve...")
+            _check_cancel(evaluation_id, "AI_MATCHING")
             _trace_start = time.time()
             _TRACE_TIMEOUT = 7200  # 单条 trace 超时上限 2 小时
             # 提前构建 session_graph，sink_match_baselines 和返回值共用，避免重复遍历百万级 events
@@ -1269,6 +1279,7 @@ def run(evaluation_id: str) -> dict:
                 _ac_fp = 0
                 _ac_cases = []  # 按项目过滤后的告警中心 case
                 if _alert_center_data and _alert_center_data.get("cases"):
+                    _check_cancel(evaluation_id, "AI_MATCHING")
                     _ac_cases = list(_alert_center_data["cases"])
                     # 按项目过滤：只匹配当前 trace 所属项目的告警中心 case
                     if _trace_project_id:
@@ -1288,7 +1299,8 @@ def run(evaluation_id: str) -> dict:
                         _ac_cases, _parser_findings,
                         progress_cb=lambda text: set_task_progress(
                             evaluation_id, tr.task_run_id,
-                            f"[{tr.condition.value}] {text}"))
+                            f"[{tr.condition.value}] {text}"),
+                        cancel_cb=lambda: _check_cancel(evaluation_id, "AI_MATCHING"))
 
                     # Step 3: 匹配上的 finding 记录 AC 关联（不改 validation_result，不参与指标计算）
                     for fi, ai in _matched.items():
@@ -1304,13 +1316,15 @@ def run(evaluation_id: str) -> dict:
                           f"confirmed={_ac_confirmed} fp={_ac_fp}")
 
                 # sink_match_baselines: 确定性 sink 点匹配 + finding 匹配 → TP/FP/FN/TN
+                _check_cancel(evaluation_id, "AI_MATCHING")
                 try:
                     fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
                                                     progress_cb=lambda text, tr=tr: set_task_progress(
                                                         evaluation_id, tr.task_run_id,
                                                         f"[{tr.condition.value}] {text}"),
                                                     findings_override=_findings_override,
-                                                    session_graph=session_graph)
+                                                    session_graph=session_graph,
+                                                    cancel_cb=lambda: _check_cancel(evaluation_id, "AI_MATCHING"))
                     log("MATCH", f"[{_trid}] {cond.value} sink_match_baselines submitted (findings_override={'yes' if _findings_override is not None else 'no'})")
                 except RuntimeError:
                     raise RuntimeError("线程池已关闭（Pod 可能正在重启）")
@@ -1951,7 +1965,8 @@ def run(evaluation_id: str) -> dict:
                     ai_per_case_kg_analysis, _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
                     _g_mem_interactions, group["category"], _g_parser, _cb,
-                    has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup)
+                    has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup,
+                    cancel_cb=lambda: _check_cancel(evaluation_id, "REPORTING"))
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
                 _group_kg_inputs.pop(group["task_id"], None)

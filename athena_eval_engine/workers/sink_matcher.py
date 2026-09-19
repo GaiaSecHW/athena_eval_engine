@@ -368,7 +368,7 @@ def _match_finding_to_baseline(baseline_metadata: dict, findings: list[dict]) ->
 
 def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                          findings_override=None, progress_cb=None,
-                         session_graph=None) -> tuple:
+                         session_graph=None, cancel_cb=None) -> tuple:
     """Sink 点匹配主入口 — 确定性匹配 + 链数据收集。
 
     流程：
@@ -460,6 +460,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
     # 对每个基线，先做 sink 覆盖检查（确定性，无 LLM）
     sink_results: dict[int, dict] = {}  # baseline_idx → {sink_sessions, chains, has_sink_info}
     for bi, b in enumerate(benchmarks):
+        if cancel_cb:
+            cancel_cb()
         md = b.metadata or {}
         source_file = md.get("source_file", "")
         source_line = md.get("source_line", "")
@@ -483,6 +485,8 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
 
     # Step 5: 确定性 confusion + 收集链数据
     for bi, b in enumerate(benchmarks):
+        if cancel_cb:
+            cancel_cb()
         cid = b.benchmark_item_id or ""
         is_vuln = b.expected_label and b.expected_label.value == "VULNERABLE"
         sr = sink_results[bi]

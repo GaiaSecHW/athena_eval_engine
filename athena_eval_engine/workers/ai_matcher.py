@@ -17,7 +17,7 @@ from ..infrastructure.log_util import log
 
 
 def match_alert_center_to_findings(alert_center_cases: list[dict], findings: list[dict],
-                                    progress_cb=None) -> tuple[dict[int, int], set[int]]:
+                                    progress_cb=None, cancel_cb=None) -> tuple[dict[int, int], set[int]]:
     """AI 匹配告警中心 cases ↔ trace findings（跟基线一样的方案）。
 
     告警中心 case 为锚点（同 ai_match_outcome 中基线为锚点），
@@ -125,12 +125,15 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
-    with ThreadPoolExecutor(max_workers=20) as pre_pool:
+    pre_pool = ThreadPoolExecutor(max_workers=20)
+    try:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(_prefilter_one, ai)
             pre_futures[fut] = ai
         for fut in as_completed(pre_futures):
+            if cancel_cb:
+                cancel_cb()
             ai = pre_futures[fut]
             try:
                 _, indices = fut.result()
@@ -140,6 +143,11 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 log("AC_MATCH", f"prefilter FAILED (ac{ai}): {e}, fallback all")
             prefilter_done += 1
             _progress(f"告警中心匹配 预筛选: {prefilter_done}/{len(alert_center_cases)} 完成")
+    except Exception:
+        pre_pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        pre_pool.shutdown(wait=True)
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
     log("AC_MATCH", f"prefilter: {len(alert_center_cases)} ac_cases, {total_cand} candidates "
@@ -188,7 +196,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # 全量并行 1vs1
     pair_results: dict[tuple[int, int], bool] = {}
     if all_pairs:
-        with ThreadPoolExecutor(max_workers=20) as pool:
+        pool = ThreadPoolExecutor(max_workers=20)
+        try:
             futures = {}
             for ai, fi in all_pairs:
                 fut = pool.submit(_check_pair, ai, fi, {
@@ -198,6 +207,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 futures[fut] = (ai, fi)
             done = 0
             for fut in as_completed(futures):
+                if cancel_cb:
+                    cancel_cb()
                 ai, fi = futures[fut]
                 try:
                     _, _, is_same = fut.result()
@@ -207,6 +218,11 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                     log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
                 done += 1
                 _progress(f"告警中心匹配 详细对比: {done}/{len(all_pairs)} LLM 调用完成")
+        except Exception:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
 
     # 串行冲突解决：按 AC case 顺序分配，先到先得（一对一约束）
     for ai in range(len(alert_center_cases)):

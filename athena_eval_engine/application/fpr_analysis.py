@@ -205,7 +205,7 @@ def _llm_match_batch(baseline_content: str,
 
 
 def _run_matching(findings: list[dict], baseline_rows: list[dict],
-                  progress_cb=None) -> list[dict]:
+                  progress_cb=None, cancel_cb=None) -> list[dict]:
     """两阶段并行匹配：所有基线并行匹配 → 冲突解决（1:1 分配）。
 
     阶段 1：每个基线独立对所有 findings 并行匹配，选最佳候选。
@@ -259,10 +259,18 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
         return bl_idx, best_fidx, best_conf, all_matches
 
-    with ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows))) as bl_pool:
+    bl_pool = ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows)))
+    try:
         futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
         for fut in as_completed(futures):
+            if cancel_cb:
+                cancel_cb()
             bl_results.append(fut.result())
+    except Exception:
+        bl_pool.shutdown(wait=False, cancel_futures=True)
+        raise
+    else:
+        bl_pool.shutdown(wait=True)
 
     # 阶段 2：冲突解决 — 1:1 分配
     # 按置信度降序排列所有基线的最佳匹配，贪心分配
@@ -410,7 +418,8 @@ def derive_fpr_from_subset(alert_result: dict, vuln_center_case_ids: set[str]) -
 
 def run_fpr_analysis(project_id: str, task_id: str,
                      progress_cb=None, source: str = "vuln_center",
-                     case_details: dict | None = None) -> dict | None:
+                     case_details: dict | None = None,
+                     cancel_cb=None) -> dict | None:
     """主入口：基线 vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
 
     source="vuln_center"  → 漏洞中心数据（E2E 分析）
@@ -468,7 +477,7 @@ def run_fpr_analysis(project_id: str, task_id: str,
     log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE}, 基线并发={_MAX_BASELINE_WORKERS})")
     if progress_cb:
         progress_cb(0, len(baseline_rows))
-    match_results = _run_matching(findings, baseline_rows, progress_cb)
+    match_results = _run_matching(findings, baseline_rows, progress_cb, cancel_cb)
 
     fpr, matched, fp = _calculate_fpr(match_results, baseline_rows)
     tp = matched - fp

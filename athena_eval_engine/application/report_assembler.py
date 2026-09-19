@@ -169,7 +169,7 @@ def rule_based_per_case_kg_analysis(case_results: list[dict], category: str = ""
     return result
 
 
-def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True, fpr_match_lookup: dict | None = None):
+def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, session_graph=None, nogk_case_results=None, events=None, memory_interactions=None, category="", parser=None, progress_cb=None, has_nogk: bool = True, fpr_match_lookup: dict | None = None, cancel_cb=None):
     """AI 逐漏洞分析知识图谱与记忆介入效果。
 
     对每个基线漏洞，分析：
@@ -983,6 +983,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     with ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"]) as pool:
                         futures = [pool.submit(_compress_one, item) for item in _uncached]
                         for fut in as_completed(futures):
+                            if cancel_cb:
+                                cancel_cb()
                             _compressed.append(fut.result())
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
@@ -1045,6 +1047,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         futures = [pool.submit(_compress_batch, batch) for batch in _batches]
                         _compressed = []
                         for fut in as_completed(futures):
+                            if cancel_cb:
+                                cancel_cb()
                             _compressed.append(fut.result())
                     data["mining_actions"] = _compressed
                     _data_str = json.dumps(data, ensure_ascii=False)
@@ -1155,14 +1159,22 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 }
 
         _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
-        with ThreadPoolExecutor(max_workers=_workers) as pool:
+        pool = ThreadPoolExecutor(max_workers=_workers)
+        try:
             futures = [pool.submit(_run_llm, t) for t in _pending_llm]
             for fut in as_completed(futures):
+                if cancel_cb:
+                    cancel_cb()
                 _ci, result = fut.result()
                 results[_ci] = result
                 with _count_lock:
                     _done_count[0] += 1
                     if progress_cb:
                         progress_cb(_fast_done + _done_count[0], _total)
+        except Exception:
+            pool.shutdown(wait=False, cancel_futures=True)
+            raise
+        else:
+            pool.shutdown(wait=True)
 
     return [r for r in results if r is not None]
