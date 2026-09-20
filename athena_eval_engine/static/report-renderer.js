@@ -898,7 +898,7 @@ function renderReport(d){
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
       if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG',verified:(nogk.vc_ids||[]).includes(d.finding_id)})));
       const rows=allDetails.map(d=>{
-        const rejectBadge=isAc&&d.verified===false?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
+        const rejectBadge=isAc&&d.verified===false&&d.match_status==="已匹配"?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
         const badge=(d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
           :d.match_status==="已匹配"?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(22,163,74,.18);color:var(--green)'>真正</span>"
           :"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:var(--gray)'>未匹配</span>")+rejectBadge;
@@ -919,7 +919,7 @@ function renderReport(d){
           <td>${badge}</td>
         </tr>`;
       }).join('');
-      return `${`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
+      return `${isAc?stats:`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
       ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
       <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`:''}`;
