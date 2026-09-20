@@ -96,6 +96,40 @@ function selectReportTab(button,paneId){
   button.style.background='var(--acc)';button.style.color='#fff';button.style.borderColor='var(--acc)';button.style.boxShadow='0 8px 20px rgba(124,58,237,.28)';button.style.transform='translateY(-2px)';button.setAttribute('aria-selected','true');
 }
 
+function fprFilter(btn,filterType,val){
+  var card=btn.closest('.card');
+  if(!card)return;
+  // Update button styles
+  card.querySelectorAll('[data-fpr-filter="'+filterType+'"]').forEach(function(b){
+    b.style.background='var(--panel)';b.style.color='var(--sub)';b.style.borderColor='var(--bd)';
+  });
+  btn.style.background='var(--acc)';btn.style.color='#fff';btn.style.borderColor='var(--acc)';
+  // Collect active filters
+  var active={};
+  card.querySelectorAll('.fpr-filter-btn').forEach(function(b){
+    if(b.style.background==='var(--acc)'||b.style.background.includes('124,58,237')){
+      active[b.getAttribute('data-fpr-filter')]=b.getAttribute('data-val');
+    }
+  });
+  // Filter rows
+  var tbody=card.querySelector('tbody');
+  if(!tbody)return;
+  var rows=tbody.querySelectorAll('tr');
+  var visible=0;
+  rows.forEach(function(row){
+    var show=true;
+    for(var key in active){
+      if(active[key]!=='ALL'&&row.getAttribute('data-'+key)!==active[key]){
+        show=false;break;
+      }
+    }
+    row.style.display=show?'':'none';
+    if(show)visible++;
+  });
+  var countEl=card.querySelector('[data-fpr-count]');
+  if(countEl)countEl.textContent='共 '+visible+' / '+rows.length+' 条';
+}
+
 function filterKgCases(btn,filter){
   var container=btn.closest('details')||btn.closest('.card')||btn.parentElement;
   if(!container)return;
@@ -898,14 +932,18 @@ function renderReport(d){
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
       if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG',verified:(nogk.vc_ids||[]).includes(d.finding_id)})));
       const rows=allDetails.map(d=>{
-        const rejectBadge=isAc&&d.verified===false&&d.match_status==="已匹配"?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
+        const isRejected=isAc&&d.verified===false&&d.match_status==="已匹配";
+        const rejectBadge=isRejected?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
+        const verdict=d.is_fp?"fp":d.match_status==="已匹配"?"tp":"unmatched";
         const badge=(d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
           :d.match_status==="已匹配"?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(22,163,74,.18);color:var(--green)'>真正</span>"
           :"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:var(--gray)'>未匹配</span>")+rejectBadge;
         const blLabel=d.bl_label==="VULNERABLE"?"<span style='font-size:11px;color:var(--red)'>漏洞</span>":d.bl_label==="NON_VULNERABLE"?"<span style='font-size:11px;color:var(--gray)'>非漏洞</span>":"-";
         const condBadge=d.condition==='KG'?"<span style='font-size:11px;font-weight:600;color:var(--acc)'>KG</span>":"<span style='font-size:11px;font-weight:600;color:var(--gray)'>No-KG</span>";
         const summary=String(d.finding_summary||'').slice(0,200);
-        return `<tr>
+        const matchKey=d.match_status==="已匹配"?"matched":"unmatched";
+        const verdictKey=isRejected?"rejected":verdict;
+        return `<tr data-condition="${d.condition||''}" data-match="${matchKey}" data-verdict="${verdictKey}">
           <td>${d.seq||''}</td>
           <td>${condBadge}</td>
           <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
@@ -919,8 +957,35 @@ function renderReport(d){
           <td>${badge}</td>
         </tr>`;
       }).join('');
+      const _hasNogkFpr=!!nogk;
+      const _filterBar=`
+      <div style="display:flex;gap:16px;flex-wrap:wrap;align-items:center;margin-bottom:12px;padding:8px 12px;background:var(--p3);border-radius:8px">
+        <span style="font-size:13px;font-weight:600;color:var(--sub)">筛选：</span>
+        <div style="display:flex;gap:4px;align-items:center" data-fpr-filter-group="condition">
+          <span style="font-size:12px;color:var(--gray);margin-right:4px">条件</span>
+          <button class="fpr-filter-btn" data-fpr-filter="condition" data-val="ALL" onclick="fprFilter(this,'condition','ALL')" style="padding:2px 10px;border:1px solid var(--acc);border-radius:4px;background:var(--acc);color:#fff;font-size:12px;cursor:pointer">全部</button>
+          <button class="fpr-filter-btn" data-fpr-filter="condition" data-val="KG" onclick="fprFilter(this,'condition','KG')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">KG</button>
+          ${_hasNogkFpr?`<button class="fpr-filter-btn" data-fpr-filter="condition" data-val="No-KG" onclick="fprFilter(this,'condition','No-KG')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">No-KG</button>`:''}
+        </div>
+        <div style="display:flex;gap:4px;align-items:center" data-fpr-filter-group="match">
+          <span style="font-size:12px;color:var(--gray);margin-right:4px">匹配状态</span>
+          <button class="fpr-filter-btn" data-fpr-filter="match" data-val="ALL" onclick="fprFilter(this,'match','ALL')" style="padding:2px 10px;border:1px solid var(--acc);border-radius:4px;background:var(--acc);color:#fff;font-size:12px;cursor:pointer">全部</button>
+          <button class="fpr-filter-btn" data-fpr-filter="match" data-val="matched" onclick="fprFilter(this,'match','matched')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">已匹配</button>
+          <button class="fpr-filter-btn" data-fpr-filter="match" data-val="unmatched" onclick="fprFilter(this,'match','unmatched')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">未匹配</button>
+        </div>
+        <div style="display:flex;gap:4px;align-items:center" data-fpr-filter-group="verdict">
+          <span style="font-size:12px;color:var(--gray);margin-right:4px">判定</span>
+          <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="ALL" onclick="fprFilter(this,'verdict','ALL')" style="padding:2px 10px;border:1px solid var(--acc);border-radius:4px;background:var(--acc);color:#fff;font-size:12px;cursor:pointer">全部</button>
+          <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="tp" onclick="fprFilter(this,'verdict','tp')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">真正</button>
+          <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="fp" onclick="fprFilter(this,'verdict','fp')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">误报</button>
+          <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="unmatched" onclick="fprFilter(this,'verdict','unmatched')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">未匹配</button>
+          ${isAc?`<button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="rejected" onclick="fprFilter(this,'verdict','rejected')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">验证否决</button>`:''}
+        </div>
+        <span style="font-size:12px;color:var(--gray);margin-left:auto" data-fpr-count>共 ${allDetails.length} 条</span>
+      </div>`;
       return `${isAc?stats:`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
       ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
+      ${_filterBar}
       <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`:''}`;
     }
