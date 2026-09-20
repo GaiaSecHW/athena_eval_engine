@@ -337,7 +337,8 @@ def _ai_identify_finding(ac_title: str, ac_summary: str,
 
 
 def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
-                                  findings: list[dict], events: list
+                                  findings: list[dict], events: list,
+                                  llm_result: int | None = None
                                   ) -> tuple[dict | None, str]:
     """用 AC case 漏洞标题匹配 finding，找不到则搜索 trace 全文。
 
@@ -348,6 +349,8 @@ def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
 
     返回 (finding or None, match_method)
     match_method: "title_unique" | "title_ai" | "title_multiple_fallback" | "trace_search" | "no_relationship"
+
+    llm_result: 预计算的 AI 识别结果（best_idx），传入时跳过 LLM 调用直接使用。
     """
     if not ac_title:
         return None, "no_title"
@@ -364,7 +367,11 @@ def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
 
     if len(matched_findings) > 1:
         # 1:N → 用 AI 从漏洞描述识别
-        if ac_summary and llm_mod.is_enabled():
+        if llm_result is not None:
+            # 使用预计算结果
+            if 0 <= llm_result < len(matched_findings):
+                return matched_findings[llm_result], "title_ai"
+        elif ac_summary and llm_mod.is_enabled():
             try:
                 _best_idx = _ai_identify_finding(ac_title, ac_summary, matched_findings)
                 if _best_idx is not None:
@@ -789,9 +796,19 @@ def run(evaluation_id: str) -> dict:
             from ..infrastructure.vuln_center_client import get_alert_center_summary
             _all_cases: list[dict] = []
             _merged_counts = {"vulnerable": 0, "not_vulnerable": 0, "inconclusive": 0, "pending": 0}
-            for _ac_project, _ac_task in _ac_pairs:
+
+            def _fetch_ac(pair: tuple[str, str]) -> dict:
+                _ac_project, _ac_task = pair
                 log("INGEST", f"告警中心取数据: project={_ac_project} task={_ac_task}")
-                ac_summary = get_alert_center_summary(_ac_project, _ac_task)
+                return get_alert_center_summary(_ac_project, _ac_task)
+
+            from concurrent.futures import ThreadPoolExecutor
+            _ac_pool = ThreadPoolExecutor(max_workers=min(len(_ac_pairs), 4))
+            _ac_futs = {_ac_pool.submit(_fetch_ac, pair): pair for pair in _ac_pairs}
+            for fut in _ac_futs:
+                pair = _ac_futs[fut]
+                _ac_project = pair[0]
+                ac_summary = fut.result()
                 ac_total = ac_summary.get("total", 0)
                 ac_counts = ac_summary.get("counts", {})
                 log("INGEST", f"告警中心返回 {ac_total} 条 case: "
@@ -813,6 +830,7 @@ def run(evaluation_id: str) -> dict:
                     }
                     for c in ac_summary.get("cases", [])
                 )
+            _ac_pool.shutdown(wait=False)
             _alert_center_data = {
                 "source_task_ids": [t for _, t in _ac_pairs],
                 "project_ids": [p for p, _ in _ac_pairs],
@@ -1893,6 +1911,36 @@ def run(evaluation_id: str) -> dict:
         _nogk_events = _g_nogk_facts.get("events", [])
         _nogk_parser = _g_nogk_facts.get("parser")
         _g_case_results = []
+
+        # 预计算：哪些 case 的 KG/NOGK 条件需要 LLM 识别 finding（1:N 标题匹配）
+        _llm_tasks: list[tuple[str, str, str, str, list[dict]]] = []  # (cond, case_id, ac_title, ac_summary, matched_findings)
+        for _g_case in _g_kg_cases:
+            _g_case_id = _g_case.get("case_id")
+            for _cond, _findings in [("kg", _kg_findings), ("nogk", _nogk_findings)]:
+                _fpr_m = (_fpr_match_lookup or {}).get(_cond, {}).get(_g_case_id, {})
+                _ac_t = _fpr_m.get("ac_title", "")
+                _ac_s = _fpr_m.get("ac_summary", "")
+                if _ac_t and _ac_s and llm_mod.is_enabled():
+                    _mf = [f for f in _findings if _ac_t in (f.get("title", "") or f.get("vuln_type", ""))]
+                    if len(_mf) > 1:
+                        _llm_tasks.append((_cond, _g_case_id, _ac_t, _ac_s, _mf))
+
+        # 并行提交所有 LLM 识别调用
+        _llm_results: dict[tuple[str, str], int | None] = {}  # (cond, case_id) -> best_idx
+        if _llm_tasks:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            log("EVAL", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
+            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), 8))
+            _llm_futs = {_llm_pool.submit(_ai_identify_finding, t[2], t[3], t[4]): (t[0], t[1]) for t in _llm_tasks}
+            for fut in _llm_futs:
+                _cond, _cid = _llm_futs[fut]
+                try:
+                    _llm_results[(_cond, _cid)] = fut.result()
+                except Exception as _e:
+                    log("MATCH", f"AI 识别 finding 失败 (cond={_cond} case={_cid}): {_e}")
+                    _llm_results[(_cond, _cid)] = None
+            _llm_pool.shutdown(wait=False)
+
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
             _g_bench = _g_bench_by_case.get(_g_case_id)
@@ -1928,7 +1976,8 @@ def run(evaluation_id: str) -> dict:
             _kg_ac_match_method = ""
             if _fpr_ac_title:
                 _fpr_finding, _match_method = _match_ac_to_finding_by_title(
-                    _fpr_ac_title, _fpr_ac_summary, _kg_findings, _kg_events)
+                    _fpr_ac_title, _fpr_ac_summary, _kg_findings, _kg_events,
+                    llm_result=_llm_results.get(("kg", _g_case_id)))
                 _kg_ac_match_method = _match_method
                 if _fpr_finding:
                     _fpr_session = _fpr_finding.get("session_id", "")
@@ -1999,7 +2048,8 @@ def run(evaluation_id: str) -> dict:
             _nogk_ac_match_method = ""
             if _nogk_ac_title:
                 _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(
-                    _nogk_ac_title, _nogk_ac_summary, _nogk_findings, _nogk_events)
+                    _nogk_ac_title, _nogk_ac_summary, _nogk_findings, _nogk_events,
+                    llm_result=_llm_results.get(("nogk", _g_case_id)))
                 _nogk_ac_match_method = _nogk_match_method
                 if _nogk_fpr_finding:
                     _nogk_fpr_session = _nogk_fpr_finding.get("session_id", "")
