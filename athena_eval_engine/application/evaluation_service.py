@@ -149,11 +149,79 @@ def _check_cancel(evaluation_id: str, phase: str):
         raise TaskCancelledError(f"{evaluation_id} 在 {phase} 阶段被取消（force retry）")
 
 LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tests", "fixtures", "fetched")
+# k8s 模式下 trace 文件在 NFS-backed PVC 上，SQLite 随机读极慢；
+# 拷贝到 pod 本地 /tmp 加速解析，解析完删除，pod 重启自动清理
+_K8S_TRACE_CACHE = "/tmp/eval_traces"
+
+
+def _copy_trace_to_local(remote_path: str) -> str:
+    """k8s 模式下将 trace 文件从 NFS 拷贝到本地 /tmp，加速后续 SQLite/JSONL 解析。
+
+    单文件（.db/.jsonl）→ 直接 copy；目录（session/）→ copytree。
+    已存在且完整 → 直接返回（幂等，resume 场景复用）。
+    """
+    import hashlib, shutil
+    os.makedirs(_K8S_TRACE_CACHE, exist_ok=True)
+    h = hashlib.md5(remote_path.encode()).hexdigest()[:8]
+    name = os.path.basename(remote_path.rstrip("/"))
+    local = os.path.join(_K8S_TRACE_CACHE, f"{h}_{name}")
+    if os.path.exists(local):
+        # 目录：检查非空；文件：检查大小匹配
+        if os.path.isdir(local) and os.listdir(local):
+            return local
+        if os.path.isfile(local) and os.path.getsize(local) > 0:
+            # SQLite 完整性校验
+            if local.endswith((".db", ".sqlite", ".sqlite3")):
+                import sqlite3 as _sql
+                _conn = None
+                try:
+                    _conn = _sql.connect(local)
+                    _conn.execute("SELECT COUNT(*) FROM sqlite_master")
+                    return local
+                except Exception:
+                    if _conn:
+                        try: _conn.close()
+                        except: pass
+                    try: os.remove(local)
+                    except OSError: pass
+            else:
+                return local
+    # 执行拷贝
+    if os.path.isdir(remote_path):
+        if os.path.exists(local):
+            shutil.rmtree(local, ignore_errors=True)
+        shutil.copytree(remote_path, local)
+    else:
+        shutil.copy2(remote_path, local)
+    log("TRACE_CACHE", f"拷贝到本地: {remote_path} → {local} ({os.path.getsize(local) if os.path.isfile(local) else 'dir'}B)")
+    return local
+
+
+def _cleanup_trace_cache():
+    """解析完成后清理本地 trace 缓存。"""
+    import shutil
+    try:
+        if os.path.exists(_K8S_TRACE_CACHE):
+            shutil.rmtree(_K8S_TRACE_CACHE, ignore_errors=True)
+            log("TRACE_CACHE", f"已清理 {_K8S_TRACE_CACHE}")
+    except Exception:
+        pass
 
 
 def _resolve_trace_path(source_uri: str, project_id: str = "", task_id: str = "") -> str:
-    """source_uri 可能是 k8s pod 上的 /data/... 路径；本地开发时拉到本地。"""
+    """source_uri 可能是 k8s pod 上的 /data/... 路径；本地开发时拉到本地。
+
+    k8s 模式下 /data 在 NFS-backed PVC 上，SQLite 随机读极慢，
+    拷贝到 pod 本地 /tmp 加速解析。
+    """
     if os.path.exists(source_uri):
+        # k8s 模式：/data 上的文件拷贝到本地 /tmp 加速
+        if source_uri.startswith("/data/") and os.path.isdir(_K8S_TRACE_CACHE):
+            return _copy_trace_to_local(source_uri)
+        # 判断是否在 NFS 上（k8s 部署时 DATA_ROOT=/data/files 存在）
+        from ..config_loader import DATA_ROOT
+        if source_uri.startswith("/data/") and os.path.isdir(DATA_ROOT):
+            return _copy_trace_to_local(source_uri)
         return source_uri
     if source_uri.startswith("/data/") or source_uri.startswith("data/"):
         return ps.fetch_trace_to_local(project_id, task_id, source_uri, LOCAL_TRACE_DIR)

@@ -348,6 +348,7 @@ def _run_bg_resume(evaluation_id: str):
     finally:
         clear_eval_ctx()
         es.clear_progress(evaluation_id)
+        es._cleanup_trace_cache()
 
 
 @app.get("/health")
@@ -421,6 +422,7 @@ def create_evaluation(req: CreateRequest):
             finally:
                 clear_eval_ctx()
                 es.clear_progress(req.evaluation_id)
+                es._cleanup_trace_cache()
         _submit_eval(req.evaluation_id, _run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -628,6 +630,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             finally:
                 clear_eval_ctx()
                 es.clear_progress(evaluation_id)
+                es._cleanup_trace_cache()
         _submit_eval(evaluation_id, _run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
