@@ -864,16 +864,35 @@ function renderReport(d){
       const isAc=g.category==='mining_fpr';
       const srcLabel=isAc?'告警中心':'漏洞中心';
       const srcIcon=isAc?'📈':'📊';
-      function _fprStat(r){
-        if(!r) return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">M13</span> 误报率</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">无数据</div></div>`;
-        const fprPct=(r.fpr*100).toFixed(2)+'%';
+      // 构造伪 metric 对象，与 _metricCards 中 _absMetric 返回的格式一致，供 mCard 渲染
+      function _fprMetric(r,condLabel,condCode){
+        if(!r||r.fpr==null) return null;
         const tp=r.tp||0,fp=r.fp||0;
-        const formulaHtml=`<div style="font-size:12px;color:var(--sub);margin-top:4px">误报=${fp}，真正=${tp}，→ ${fp}/(${fp}+${tp})</div><div style="font-size:12px;color:var(--sub);margin-top:2px;font-family:monospace">${fprPct}</div>`;
-        return `<div class="mcard"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--acc)">M13</span> 误报率</div><div class="mc-val" style="color:var(--red)">${fprPct}</div><div style="font-size:13px;color:var(--sub);margin-top:4px">误报数=${fp} / (误报数+真正数)=${tp+fp}</div>${formulaHtml}</div>`;
+        return {
+          estimate:r.fpr,
+          calculation_status:"CALCULATED",
+          unit:"ratio",
+          d:condLabel+"条件下与基线对比的误报率",
+          cm:{tp:tp,fp:fp},
+          formulaDetail:condCode+": "+fp+" / ("+fp+" + "+tp+") = "+r.fpr.toFixed(4)
+        };
       }
-      const stats=kg&&nogk
-        ? `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">${_fprStat(kg)}${_fprStat(nogk)}</div>`
-        : `<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:12px">${_fprStat(kg||nogk)}</div>`;
+      // 与 _metricCards 完全相同的 group 结构
+      const groups=[
+        ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
+          [["M13",_fprMetric(kg,"KG","KG")]]],
+        ...(nogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
+          [["M13",_fprMetric(nogk,"No-KG","NOGK")]]]]:[])
+      ];
+      const stats=`${groups.map(gr=>`<div style="margin-bottom:14px">
+        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
+          <span style="font-weight:700;font-size:15px">${gr[0]}</span>
+          <span style="font-size:12px;color:var(--sub)">— ${gr[1]}</span>
+        </div>
+        <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
+          ${gr[2].map(m=>mCard(m[0],m[1])).join("")}
+        </div>
+      </div>`).join("")}`;
       // 合并 match_details，检查告警中心 finding 是否被漏洞验证否决（不在漏洞中心 case ID 集合中 = 被否决）
       let allDetails=[];
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
