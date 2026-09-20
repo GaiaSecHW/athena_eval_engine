@@ -32,7 +32,7 @@ class SystemConfigUpdate(BaseModel):
     fpr_cond_workers: int | None = Field(default=None, ge=1, le=10)
     fpr_baseline_workers: int | None = Field(default=None, ge=1, le=100)
     fpr_baseline_batch: int | None = Field(default=None, ge=1, le=50)
-    kg_analysis_workers: int | None = Field(default=None, ge=1, le=50)
+    kg_analysis_workers: int | None = Field(default=None, ge=1, le=100)
     bootstrap_workers: int | None = Field(default=None, ge=1, le=20)
 
 

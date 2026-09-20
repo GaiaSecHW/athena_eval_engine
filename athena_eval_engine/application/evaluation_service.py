@@ -154,46 +154,92 @@ LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_
 _K8S_TRACE_CACHE = "/tmp/eval_traces"
 
 
+def _verify_sqlite(path: str) -> bool:
+    """快速校验 SQLite 文件可读（不跑 integrity_check，太慢）。"""
+    import sqlite3 as _sql
+    _conn = None
+    try:
+        _conn = _sql.connect(f"file:{path}?immutable=1", uri=True)
+        _conn.execute("SELECT COUNT(*) FROM sqlite_master")
+        return True
+    except Exception:
+        return False
+    finally:
+        if _conn:
+            try: _conn.close()
+            except: pass
+
+
 def _copy_trace_to_local(remote_path: str) -> str:
     """k8s 模式下将 trace 文件从 NFS 拷贝到本地 /tmp，加速后续 SQLite/JSONL 解析。
 
     单文件（.db/.jsonl）→ 直接 copy；目录（session/）→ copytree。
     已存在且完整 → 直接返回（幂等，resume 场景复用）。
+    拷贝后校验大小 + SQLite 可读性；校验失败回退到直接读 NFS 原始路径。
     """
     import hashlib, shutil
     os.makedirs(_K8S_TRACE_CACHE, exist_ok=True)
     h = hashlib.md5(remote_path.encode()).hexdigest()[:8]
     name = os.path.basename(remote_path.rstrip("/"))
     local = os.path.join(_K8S_TRACE_CACHE, f"{h}_{name}")
+    is_sqlite = name.endswith((".db", ".sqlite", ".sqlite3"))
+
+    def _verify_local():
+        """校验本地文件：大小匹配 + SQLite 可读。"""
+        if not os.path.exists(local):
+            return False
+        if os.path.isdir(local):
+            return bool(os.listdir(local))
+        if os.path.isfile(local):
+            if os.path.getsize(local) == 0:
+                return False
+            if is_sqlite:
+                return _verify_sqlite(local)
+            return True
+        return False
+
+    # resume 场景：缓存文件已存在且校验通过 → 直接返回
+    if _verify_local():
+        return local
+    # 缓存文件损坏 → 清理
     if os.path.exists(local):
-        # 目录：检查非空；文件：检查大小匹配
-        if os.path.isdir(local) and os.listdir(local):
-            return local
-        if os.path.isfile(local) and os.path.getsize(local) > 0:
-            # SQLite 完整性校验
-            if local.endswith((".db", ".sqlite", ".sqlite3")):
-                import sqlite3 as _sql
-                _conn = None
-                try:
-                    _conn = _sql.connect(local)
-                    _conn.execute("SELECT COUNT(*) FROM sqlite_master")
-                    return local
-                except Exception:
-                    if _conn:
-                        try: _conn.close()
-                        except: pass
-                    try: os.remove(local)
-                    except OSError: pass
+        try:
+            if os.path.isdir(local):
+                shutil.rmtree(local, ignore_errors=True)
             else:
-                return local
+                os.remove(local)
+        except OSError:
+            pass
+
     # 执行拷贝
-    if os.path.isdir(remote_path):
-        if os.path.exists(local):
-            shutil.rmtree(local, ignore_errors=True)
-        shutil.copytree(remote_path, local)
-    else:
-        shutil.copy2(remote_path, local)
-    log("TRACE_CACHE", f"拷贝到本地: {remote_path} → {local} ({os.path.getsize(local) if os.path.isfile(local) else 'dir'}B)")
+    try:
+        if os.path.isdir(remote_path):
+            shutil.copytree(remote_path, local)
+        else:
+            shutil.copy2(remote_path, local)
+    except Exception as e:
+        log("TRACE_CACHE", f"⚠ 拷贝失败: {remote_path} → {local}: {e}，回退到直接读 NFS")
+        return remote_path
+
+    remote_size = os.path.getsize(remote_path) if os.path.isfile(remote_path) else None
+    local_size = os.path.getsize(local) if os.path.isfile(local) else None
+    log("TRACE_CACHE", f"拷贝到本地: {remote_path} → {local} "
+          f"(remote={remote_size}B local={local_size}B)")
+
+    # 校验拷贝结果
+    if remote_size is not None and local_size is not None and remote_size != local_size:
+        log("TRACE_CACHE", f"⚠ 拷贝截断: remote={remote_size}B local={local_size}B "
+              f"(差 {remote_size - local_size}B)，回退到直接读 NFS")
+        try: os.remove(local)
+        except OSError: pass
+        return remote_path
+
+    if is_sqlite and not _verify_sqlite(local):
+        log("TRACE_CACHE", f"⚠ SQLite 校验失败: {local}，回退到直接读 NFS")
+        try: os.remove(local)
+        except OSError: pass
+        return remote_path
+
     return local
 
 

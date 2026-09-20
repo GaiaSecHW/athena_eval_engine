@@ -60,7 +60,7 @@ _RANGES = {
     "fpr_cond_workers": (1, 10),
     "fpr_baseline_workers": (1, 100),
     "fpr_baseline_batch": (1, 50),
-    "kg_analysis_workers": (1, 50),
+    "kg_analysis_workers": (1, 100),
     "bootstrap_workers": (1, 20),
 }
 
