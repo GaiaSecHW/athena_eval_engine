@@ -751,18 +751,23 @@ def run(evaluation_id: str) -> dict:
         cur.execute("SET FOREIGN_KEY_CHECKS=1")
         log("RUN", f"清理旧数据（重跑）: evaluation_id={evaluation_id} 含 benchmark_item")
     _db_query(_clear_all_old_data)
-    # 删除旧的静态报告 HTML 文件 + FPR 匹配结果文件
+    # 归档旧报告文件（不删除，改名保留）
     import os as _os_clear
+    from datetime import datetime as _dt_clear
+    from datetime import timezone as _tz_cls, timedelta as _td_cls
+    _tz_clear = _tz_cls(_td_cls(hours=8))
+    _archive_ts = _dt_clear.now(_tz_clear).strftime("%Y%m%d_%H%M%S")
     try:
         _reports_dir = _os_clear.environ.get("EVAL_REPORTS_DIR") or _os_clear.path.join(
             _os_clear.path.dirname(_os_clear.path.dirname(_os_clear.path.abspath(__file__))), "reports")
         for _old_suffix in (".html", "_fpr_match.json"):
             _old_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}{_old_suffix}")
             if _os_clear.path.isfile(_old_path):
-                _os_clear.remove(_old_path)
-                log("RUN", f"删除旧文件: {_old_path}")
+                _archive_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}_archive_{_archive_ts}{_old_suffix}")
+                _os_clear.rename(_old_path, _archive_path)
+                log("RUN", f"归档旧报告: {_old_path} → {_archive_path}")
     except Exception as _e:
-        log("RUN", f"删除旧报告文件失败（不影响重跑）: {_e}")
+        log("RUN", f"归档旧报告文件失败（不影响重跑）: {_e}")
 
     # ===== Phase 0: INGESTING — 取基线 + 告警中心数据 + 写 benchmark_items =====
     _set_status_short(evaluation_id, "INGESTING")
