@@ -36,6 +36,22 @@ def clear_eval_ctx():
     _ctx.eval_id = ""
 
 
+def with_eval_ctx(fn):
+    """装饰器：捕获当前线程的 eval_id，在子线程中恢复。
+
+    用于 ThreadPoolExecutor.submit：
+        pool.submit(with_eval_ctx(my_fn), arg1, arg2)
+    """
+    eid = get_eval_ctx()
+    def _wrapper(*args, **kwargs):
+        set_eval_ctx(eid)
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            clear_eval_ctx()
+    return _wrapper
+
+
 def log(tag: str, msg: str, *, eval_id: str = ""):
     """带时间戳 + 评测 ID 的日志输出。
 

@@ -153,8 +153,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
     path = parsed.path.rstrip("/") + "/chat/completions"
     _model = model or DEFAULT_MODEL
     first_token_timeout = timeout if timeout is not None else FIRST_TOKEN_TIMEOUT
-    log("LLM", f"POST {host}:{port}{path} model={_model} msgs={len(messages)} "
-          f"stream=True first_token={first_token_timeout}s stream_gap={STREAM_TIMEOUT}s")
+    _first_token_ts = None
 
     _payload = {
         "model": _model,
@@ -294,8 +293,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                 first_token = False
                 if conn.sock:
                     conn.sock.settimeout(STREAM_TIMEOUT)
-                _last_content_ts = time.time()
-                log("LLM", f"first token in {time.time()-_req_ts:.1f}s, stream gap timeout -> {STREAM_TIMEOUT}s")
+                _first_token_ts = time.time()
+                _last_content_ts = _first_token_ts
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
             if usage:
@@ -332,7 +331,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}")
 
         if content:
-            log("LLM", f"OK stream done content_len={len(content)} elapsed={time.time()-_req_ts:.1f}s")
+            _ft = f"first_token={_first_token_ts - _req_ts:.1f}s" if _first_token_ts else "first_token=N/A"
+            log("LLM", f"done model={_model} msgs={len(messages)} {_ft} content_len={len(content)} elapsed={time.time()-_req_ts:.1f}s")
             return content, finish_reason
         raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
     except (socket.timeout, TimeoutError) as e:

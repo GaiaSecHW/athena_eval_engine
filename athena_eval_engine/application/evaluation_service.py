@@ -21,7 +21,7 @@ from ..workers.ai_matcher import match_alert_center_to_findings
 from ..workers.sink_matcher import (sink_match_baselines,
                                     group_chains, collect_chain_actions, collect_chain_findings)
 from ..infrastructure import llm as llm_mod
-from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx
+from ..infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, with_eval_ctx
 from ..workers.pairing import TaskPairMatcherImpl, PairDerivedFactComputer
 from ..domain.metrics import PairView, run_all_metrics
 from ..domain.diagnostics import diagnose
@@ -765,7 +765,7 @@ def run(evaluation_id: str) -> dict:
             _fill_had_timeout = False
             try:
                 _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), 8))
-                futures = [_fill_pool.submit(_fill_missing_source, cd) for cd in _need_fill]
+                futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), cd) for cd in _need_fill]
                 for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST"), per_task_timeout=1800):
                     if _timeout:
                         _fill_had_timeout = True
@@ -804,7 +804,7 @@ def run(evaluation_id: str) -> dict:
 
             from concurrent.futures import ThreadPoolExecutor
             _ac_pool = ThreadPoolExecutor(max_workers=min(len(_ac_pairs), 4))
-            _ac_futs = {_ac_pool.submit(_fetch_ac, pair): pair for pair in _ac_pairs}
+            _ac_futs = {_ac_pool.submit(with_eval_ctx(_fetch_ac), pair): pair for pair in _ac_pairs}
             for fut in _ac_futs:
                 pair = _ac_futs[fut]
                 _ac_project = pair[0]
@@ -1030,7 +1030,7 @@ def run(evaluation_id: str) -> dict:
         _fpr_pool = _FPR_TP(max_workers=2)
         try:
             _fpr_futures = {
-                _fpr_pool.submit(_run_fpr_for_cond, label, val): val
+                _fpr_pool.submit(with_eval_ctx(_run_fpr_for_cond), label, val): val
                 for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
             }
             for _fut in _fpr_futures:
@@ -1118,7 +1118,7 @@ def run(evaluation_id: str) -> dict:
             "fpr_match_lookup": _fpr_match_lookup,
         }
 
-    _fpr_future = _bg_executor.submit(_run_fpr_bg)
+    _fpr_future = _bg_executor.submit(with_eval_ctx(_run_fpr_bg))
     log("EVAL", "FPR 分析已提交后台（与 PARSING 并行）")
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
@@ -1435,9 +1435,9 @@ def run(evaluation_id: str) -> dict:
             inner_pool = ThreadPoolExecutor(max_workers=50)
             try:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
-                fut_kn = inner_pool.submit(KnowledgeResolverImpl(EVAL_CONFIG).resolve, tr, events)
-                fut_ta = inner_pool.submit(ToolActionResolverImpl(EVAL_CONFIG).resolve, tr, events, "1.0")
-                fut_rs = inner_pool.submit(ResourceResolverImpl(EVAL_CONFIG).resolve, tr, session)
+                fut_kn = inner_pool.submit(with_eval_ctx(KnowledgeResolverImpl(EVAL_CONFIG).resolve), tr, events)
+                fut_ta = inner_pool.submit(with_eval_ctx(ToolActionResolverImpl(EVAL_CONFIG).resolve), tr, events, "1.0")
+                fut_rs = inner_pool.submit(with_eval_ctx(ResourceResolverImpl(EVAL_CONFIG).resolve), tr, session)
                 log("MATCH", f"[{_trid}] {cond.value} KN/TA/RS resolvers submitted")
 
                 # 三方匹配（主线程跑，KN/TA/RS 在后台并行）
@@ -1485,7 +1485,7 @@ def run(evaluation_id: str) -> dict:
                 # sink_match_baselines: 确定性 sink 点匹配 + finding 匹配 → TP/FP/FN/TN
                 _check_cancel(evaluation_id, "AI_MATCHING")
                 try:
-                    fut_outcome = inner_pool.submit(sink_match_baselines, tr, bench, events, parser,
+                    fut_outcome = inner_pool.submit(with_eval_ctx(sink_match_baselines), tr, bench, events, parser,
                                                     progress_cb=lambda text, tr=tr: set_task_progress(
                                                         evaluation_id, tr.task_run_id,
                                                         f"[{tr.condition.value}] {text}"),
@@ -1573,7 +1573,7 @@ def run(evaluation_id: str) -> dict:
         # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
         set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _runtime_workers["parse"]))) as pool:
-            _parse_futures = {pool.submit(_parse_trace, e): i for i, e in enumerate(entries)}
+            _parse_futures = {pool.submit(with_eval_ctx(_parse_trace), e): i for i, e in enumerate(entries)}
             parsed = [None] * len(entries)
             _parse_done = 0
             for _fut, _timeout in iter_completed(_parse_futures, cancel_cb=lambda: _check_cancel(evaluation_id, "PARSING")):
@@ -1931,7 +1931,7 @@ def run(evaluation_id: str) -> dict:
             from concurrent.futures import ThreadPoolExecutor as _TPE
             log("EVAL", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
             _llm_pool = _TPE(max_workers=min(len(_llm_tasks), 8))
-            _llm_futs = {_llm_pool.submit(_ai_identify_finding, t[2], t[3], t[4]): (t[0], t[1]) for t in _llm_tasks}
+            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4]): (t[0], t[1]) for t in _llm_tasks}
             for fut in _llm_futs:
                 _cond, _cid = _llm_futs[fut]
                 try:
@@ -2223,7 +2223,7 @@ def run(evaluation_id: str) -> dict:
                 def _cb(done, total, _label=_g_label):
                     set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
                 fut_group_pcka[group["task_id"]] = kg_pool.submit(
-                    ai_per_case_kg_analysis, _g_cases, _g_interactions,
+                    with_eval_ctx(ai_per_case_kg_analysis), _g_cases, _g_interactions,
                     bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
                     _g_mem_interactions, group["category"], _g_parser, _cb,
                     has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup,
