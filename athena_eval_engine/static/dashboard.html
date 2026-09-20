@@ -258,7 +258,7 @@ function renderEvList(){
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">KG：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
         (e.nogk_project?'<div><span style="color:var(--gray)">No-KG：</span><b>'+(e.nogk_project||'-')+'</b> / '+(e.nogk_task||'-')+'</div>':'')+
-        '<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_project_name||'-')+' / '+(e.vc_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>'+
+        '<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>'+
       '</div>'+
       '</div>';
   }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
@@ -1268,16 +1268,8 @@ async function runEval(){
   let eid=$("eid").value.trim()||genId();
   $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
   const evalName=$("eval-name")?$("eval-name").value.trim():"";
-  const caseIds=sel.bsrc==='vuln_center'?(_vcCases?_vcCases.map(c=>c.case_id):[]):(_vbCases?_vbCases.map(c=>c.case_id):[]);
-  const bSetId=sel.bsrc==='vuln_center'?(sel.vcProj||"BS001"):(sel.vbProj||"BS001");
-  const entries=[];
-  let tid=1;
-  if(sel.kg.miningTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.miningTrace,trace_kind:sel.kg.miningTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("kg",sel.kg.miningTrace,sel.kg.miningTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
-  if(sel.kg.verifyTrace){entries.push({task_id:"T"+String(tid).padStart(3,"0"),condition:"KG",source_uri:sel.kg.verifyTrace,trace_kind:sel.kg.verifyTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("kg",sel.kg.verifyTrace,sel.kg.verifyTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.kg.projName,project_id:sel.kg.proj,task_name:sel.kg.taskName,task_id_actual:sel.kg.task});tid++;}
-  let tid2=1;
-  if(sel.nogk.miningTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.miningTrace,trace_kind:sel.nogk.miningTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("nogk",sel.nogk.miningTrace,sel.nogk.miningTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"mining",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
-  if(sel.nogk.verifyTrace){entries.push({task_id:"T"+String(tid2).padStart(3,"0"),condition:"NOGK",source_uri:sel.nogk.verifyTrace,trace_kind:sel.nogk.verifyTraceKind||undefined,trace_case_ids:_selectedTraceCaseIds("nogk",sel.nogk.verifyTrace,sel.nogk.verifyTraceKind),benchmark_item_ids:caseIds.length?caseIds:undefined,expected_label:"VULNERABLE",category:"verify",project_name:sel.nogk.projName,project_id:sel.nogk.proj,task_name:sel.nogk.taskName,task_id_actual:sel.nogk.task});tid2++;}
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,benchmark_set_id:bSetId,vbench_project_name:sel.vbProjName||undefined,benchmark_source:sel.bsrc,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,vc_source_project_name:sel.bsrc==='vuln_center'?(sel.vcProjName||undefined):undefined,vc_source_task_name:sel.bsrc==='vuln_center'?(sel.vcTaskName||undefined):undefined,entries:entries});
+  const bSetId=sel.bsrc==='vuln_center'?(sel.vcProj||undefined):(sel.vbProj||undefined);
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,kg_project_id:sel.kg.proj,kg_task_id:sel.kg.task,nogk_project_id:sel.nogk.proj||undefined,nogk_task_id:sel.nogk.task||undefined,benchmark_source:sel.bsrc,benchmark_set_id:bSetId,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;Router.navigate('/evaluations/'+r.evaluation_id);
     // selEv 内部已启动轮询，不再重复轮询

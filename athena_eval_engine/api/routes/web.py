@@ -34,27 +34,41 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
         evals = []
         for r in rows:
             kg_proj = kg_task = nogk_proj = nogk_task = ""
+            kg_proj_name = kg_task_name = nogk_proj_name = nogk_task_name = ""
             bm_source = ""
+            vbench_project_name = ""
+            vc_source_project_name = ""
+            vc_source_task_name = ""
             if r[5]:
                 try:
                     cfg = json.loads(r[5])
                     manifest = cfg.get("manifest", {})
                     bm_source = manifest.get("benchmark_source", "vbench_zip")
+                    vbench_project_name = manifest.get("vbench_project_name", "")
+                    vc_source_project_name = manifest.get("vc_source_project_name", "")
+                    vc_source_task_name = manifest.get("vc_source_task_name", "")
                     for e in manifest.get("entries", []):
                         if e.get("condition") == "KG" and not kg_proj:
                             kg_proj = e.get("project_id") or ""
                             kg_task = e.get("task_id_actual") or ""
+                            kg_proj_name = e.get("project_name") or kg_proj
+                            kg_task_name = e.get("task_name") or kg_task
                         elif e.get("condition") == "NOGK" and not nogk_proj:
                             nogk_proj = e.get("project_id") or ""
                             nogk_task = e.get("task_id_actual") or ""
+                            nogk_proj_name = e.get("project_name") or nogk_proj
+                            nogk_task_name = e.get("task_name") or nogk_task
                 except (json.JSONDecodeError, TypeError):
                     pass
             evals.append({"evaluation_id": r[0], "name": r[1], "status": r[2],
                           "benchmark_set_id": r[3],
                           "created_at": r[4].isoformat() if r[4] else "",
-                          "kg_project": kg_proj, "kg_task": kg_task,
-                          "nogk_project": nogk_proj, "nogk_task": nogk_task,
+                          "kg_project": kg_proj_name, "kg_task": kg_task_name,
+                          "nogk_project": nogk_proj_name, "nogk_task": nogk_task_name,
                           "benchmark_source": bm_source,
+                          "vbench_project_name": vbench_project_name,
+                          "vc_source_project_name": vc_source_project_name,
+                          "vc_source_task_name": vc_source_task_name,
                           "progress": get_progress(r[0]) if r[2] not in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED") else ""})
         return {
             "evaluations": evals,

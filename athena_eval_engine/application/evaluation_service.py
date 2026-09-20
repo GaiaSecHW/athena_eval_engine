@@ -399,9 +399,26 @@ def _build_entries(req: CreateRequest) -> list[dict]:
     """从项目 ID + 任务 ID 自动发现 trace，构建 entries。
 
     每个 entry 包含：task_id, condition, source_uri, trace_kind, category,
-    project_id, task_id_actual, benchmark_item_ids（空，INGESTING 阶段填充）, expected_label。
+    project_id, project_name, task_id_actual, task_name, benchmark_item_ids（空，INGESTING 阶段填充）, expected_label。
     """
     entries: list[dict] = []
+
+    # 预收集项目名/任务名（best-effort，平台不可用时不阻断）
+    _proj_names: dict[str, str] = {}
+    _task_names: dict[str, dict[str, str]] = {}  # project_id -> {task_id -> task_name}
+    _pids = {req.kg_project_id, req.nogk_project_id} - {""}
+    if _pids:
+        try:
+            for p in ps.get_projects():
+                if p["id"] in _pids:
+                    _proj_names[p["id"]] = p.get("name") or p["id"]
+        except Exception:
+            pass
+        for pid in _pids:
+            try:
+                _task_names[pid] = {t["id"]: t.get("name") or t["id"] for t in ps.get_tasks(pid)}
+            except Exception:
+                _task_names[pid] = {}
 
     # 1. 挖掘 trace
     for cond, pid, tid in [
@@ -421,7 +438,9 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "trace_kind": kind,
                     "category": "mining",
                     "project_id": pid,
+                    "project_name": _proj_names.get(pid, pid),
                     "task_id_actual": tid,
+                    "task_name": _task_names.get(pid, {}).get(tid, tid),
                     "benchmark_item_ids": [],
                     "expected_label": "VULNERABLE",
                 })
@@ -448,6 +467,7 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "trace_kind": vt["trace_kind"],
                     "category": "verify",
                     "project_id": pid,
+                    "project_name": _proj_names.get(pid, pid),
                     "benchmark_item_ids": [],
                 })
                 log("CREATE", f"自动发现验证 trace: cond={cond} kind={vt['trace_kind']} agent={vt['agent_name']}")
@@ -474,12 +494,45 @@ def create(req: CreateRequest):
             f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id} "
             f"nogk_project={req.nogk_project_id} nogk_task={req.nogk_task_id}")
 
-    # 3. benchmark_set + evaluation + snapshot
+    # 3. 查基线名称（best-effort）
+    vbench_project_name = ""
+    vc_source_project_name = ""
+    vc_source_task_name = ""
+    if req.benchmark_source == "vuln_center":
+        # 漏洞中心：benchmark_set_id=项目ID, vc_source_task_id=任务ID
+        try:
+            for p in ps.get_projects():
+                if p["id"] == req.benchmark_set_id:
+                    vc_source_project_name = p.get("name") or ""
+                    break
+        except Exception:
+            pass
+        if req.vc_source_task_id:
+            try:
+                for t in ps.get_tasks(req.benchmark_set_id):
+                    if t["id"] == req.vc_source_task_id:
+                        vc_source_task_name = t.get("name") or ""
+                        break
+            except Exception:
+                pass
+    elif req.benchmark_source == "vbench_zip":
+        # V-Bench：benchmark_set_id=V-Bench set ID
+        try:
+            from ..infrastructure.vbench_client import get_project
+            vp = get_project(req.benchmark_set_id)
+            vbench_project_name = vp.get("name") or "" if vp else ""
+        except Exception:
+            pass
+
+    # 4. benchmark_set + evaluation + snapshot
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
     manifest = {"entries": entries,
                 "benchmark_source": req.benchmark_source,
                 "benchmark_set_id": req.benchmark_set_id,
-                "vc_source_task_id": req.vc_source_task_id}
+                "vc_source_task_id": req.vc_source_task_id,
+                "vbench_project_name": vbench_project_name,
+                "vc_source_project_name": vc_source_project_name,
+                "vc_source_task_name": vc_source_task_name}
 
     conn = connect(autocommit=True)
     try:
