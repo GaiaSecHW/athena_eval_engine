@@ -73,12 +73,12 @@ def _get_sched_pod() -> str:
     return pod
 
 
-def _get(url, *, retries: int = 3, retry_delay: float = 5.0):
+def _get(url, *, retries: int = 20, retry_delay: float = 5.0):
     last_err = None
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (URLError, TimeoutError, OSError) as e:
             last_err = e

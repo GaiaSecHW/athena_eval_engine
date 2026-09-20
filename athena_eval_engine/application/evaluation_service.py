@@ -962,8 +962,11 @@ def run(evaluation_id: str) -> dict:
             import traceback as _tb
             log("INGEST", f"⚠ 取告警中心数据失败: {e}")
             _tb.print_exc()
+            raise ValueError(f"取告警中心数据失败（重试 20 次后仍超时）: {e}") from e
     else:
         log("INGEST", "⚠ 跳过告警中心数据获取: entries 中无 project_id/task_id_actual")
+        raise ValueError("无法获取告警中心数据: entries 中无 project_id/task_id_actual，"
+                         "请检查快照配置中的 project_id 和 task_id_actual 字段。")
 
     # 0d. 写 benchmark_set + benchmark_items（短连接，幂等）
     conn = connect(autocommit=True)
@@ -1143,6 +1146,7 @@ def run(evaluation_id: str) -> dict:
                     log("FPR", f"漏洞中心 {len(_vc_ids)} 条 case (用于派生验证 FPR)")
                 except Exception as _vc_err:
                     log("FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
+                    raise ValueError(f"获取漏洞中心 case 失败（关键数据）: {_vc_err}") from _vc_err
 
             return cond_val, _ac_result, _vc_ids
 
@@ -1727,6 +1731,23 @@ def run(evaluation_id: str) -> dict:
             facts[tr.task_run_id]["_source_uri"] = src
 
         log("MATCH", f"all {len(results)} traces resolved, entering RESOLVING (total={int(time.time()-_match_start)}s)")
+
+        # 关键数据检查：KG trace 必须有效，否则 KG vs No-KG 对比无意义
+        _has_valid_kg = any(tr.condition == Condition.KG and tr.trace_valid for tr in task_runs)
+        if not _has_valid_kg:
+            _kg_traces = [tr for tr in task_runs if tr.condition == Condition.KG]
+            _detail = ", ".join(f"{tr.task_run_id}(trace_valid={tr.trace_valid})" for tr in _kg_traces) or "无 KG task_run"
+            raise ValueError(f"KG trace 数据缺失或解析失败（{_detail}），无法进行 KG vs No-KG 对比评测")
+
+        # 关键数据检查：选了 No-KG 时，No-KG trace 也必须有效
+        _has_nogk = any(tr.condition == Condition.NOGK for tr in task_runs)
+        if _has_nogk:
+            _has_valid_nogk = any(tr.condition == Condition.NOGK and tr.trace_valid for tr in task_runs)
+            if not _has_valid_nogk:
+                _nogk_traces = [tr for tr in task_runs if tr.condition == Condition.NOGK]
+                _detail = ", ".join(f"{tr.task_run_id}(trace_valid={tr.trace_valid})" for tr in _nogk_traces) or "无 No-KG task_run"
+                raise ValueError(f"No-KG trace 数据缺失或解析失败（{_detail}），选了 No-KG 对照组但数据不可用")
+
         # Phase 3: 写入 facts（每 task_run 一个短连接，避免长连接被防火墙断开）
         set_progress(evaluation_id, "写入事实数据...")
         _set_status_short(evaluation_id, "RESOLVING")

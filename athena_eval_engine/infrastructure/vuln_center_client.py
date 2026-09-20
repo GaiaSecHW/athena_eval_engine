@@ -21,7 +21,7 @@ from urllib.error import URLError
 from ..config_loader import VULN_CENTER_API_URL, PLATFORM_TOKEN
 
 
-def _get(url: str, params: dict | None = None, retries: int = 3,
+def _get(url: str, params: dict | None = None, retries: int = 20,
          retry_delay: float = 5.0) -> dict | list:
     """带 bearer token 的 GET，返回 JSON。沿用 vbench_client 的 urllib 同步风格。
 
@@ -33,7 +33,7 @@ def _get(url: str, params: dict | None = None, retries: int = 3,
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with urllib.request.urlopen(req, timeout=180) as r:
                 return json.loads(r.read().decode("utf-8"))
         except (URLError, TimeoutError, OSError) as e:
             last_err = e
