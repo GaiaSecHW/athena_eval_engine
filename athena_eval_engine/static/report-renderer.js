@@ -1041,7 +1041,6 @@ function renderReport(d){
       return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
       ${_statsTable(g.task_id,g.label)}
-      ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
       <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
       <details class="card" style="margin-bottom:16px">
         <summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">🧠 ${g.label} — 知识图谱与记忆介入分析 <span style="font-size:12px;color:var(--gray)">（点击展开）</span></summary>
