@@ -686,10 +686,13 @@ for path in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
     return [group] if group else []
 
 
-def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
-    """自动判断挖掘 trace 的 trace_kind。
+def discover_mining_trace(project_id: str, task_id: str) -> tuple[str, str] | None:
+    """自动发现挖掘 trace 的 trace_kind 和 source_uri。
 
-    按各适配器定义的绝对路径扫描，哪个目录有对应文件就用哪个适配器：
+    返回 (trace_kind, source_uri) 或 None。
+    source_uri 对于 turing 是 .db 文件路径，对于其他是目录路径。
+
+    按各适配器定义的绝对路径扫描：
     - secmate:      tasks/{task_id}/tools/secmate-*/run/.worker-config/projects/*/ 有 .jsonl
     - argo:         tasks/{task_id}/session/argo/ 有 .jsonl
     - turing:       tasks/{task_id}/tools/Turing-*/session/opencode/opencode.db 存在
@@ -714,12 +717,22 @@ def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
         for trace_kind, pattern, is_file in _RULES:
             matches = glob.glob(pattern, recursive=not is_file)
             if matches and any(os.path.isfile(m) for m in matches):
-                return trace_kind
+                if is_file:
+                    return trace_kind, matches[0]
+                # 目录型：从匹配文件推导 source_uri
+                if trace_kind == "argo":
+                    return trace_kind, os.path.join(task_base, "session", "argo")
+                elif trace_kind == "secmate":
+                    return trace_kind, os.path.dirname(matches[0])
+                elif trace_kind == "dataflow":
+                    return trace_kind, os.path.join(task_base, "session", "dataflow_vuln_scan")
+                elif trace_kind == "webvulnverify":
+                    return trace_kind, os.path.join(task_base, "session", "WebVerify")
+                return trace_kind, os.path.dirname(matches[0])
     else:
         env = dict(os.environ, MSYS_NO_PATHCONV="1")
         pod = _get_sched_pod()
         remote_base = f"{DATA_ROOT}/{project_id}/tasks/{task_id}"
-        # dev 模式：用 find 命令逐个检查
         _REMOTE_RULES = [
             ("secmate",      f"{remote_base}/tools/secmate-*/run/.worker-config/projects/*/", "-name", "*.jsonl"),
             ("argo",         f"{remote_base}/session/argo/", "-name", "*.jsonl"),
@@ -732,8 +745,25 @@ def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
                    "find", search_path, name_flag, name_val, "-print", "-quit"]
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
             if r.stdout and r.stdout.strip():
-                return trace_kind
+                _found = r.stdout.strip().split("\n")[0]
+                if trace_kind == "turing":
+                    return trace_kind, _found
+                elif trace_kind == "argo":
+                    return trace_kind, f"{remote_base}/session/argo"
+                elif trace_kind == "secmate":
+                    return trace_kind, os.path.dirname(_found)
+                elif trace_kind == "dataflow":
+                    return trace_kind, f"{remote_base}/session/dataflow_vuln_scan"
+                elif trace_kind == "webvulnverify":
+                    return trace_kind, f"{remote_base}/session/WebVerify"
+                return trace_kind, os.path.dirname(_found)
     return None
+
+
+def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
+    """兼容：只返回 trace_kind。"""
+    r = discover_mining_trace(project_id, task_id)
+    return r[0] if r else None
 
 
 def discover_verify_traces(project_id: str) -> list[dict]:

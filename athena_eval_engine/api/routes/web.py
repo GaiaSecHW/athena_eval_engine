@@ -35,23 +35,18 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
         for r in rows:
             kg_proj = kg_task = nogk_proj = nogk_task = ""
             bm_source = ""
-            vb_proj_name = ""
-            vc_proj_name = vc_task_name = ""
             if r[5]:
                 try:
                     cfg = json.loads(r[5])
                     manifest = cfg.get("manifest", {})
                     bm_source = manifest.get("benchmark_source", "vbench_zip")
-                    vb_proj_name = manifest.get("vbench_project_name") or ""
-                    vc_proj_name = manifest.get("vc_source_project_name") or ""
-                    vc_task_name = manifest.get("vc_source_task_name") or ""
                     for e in manifest.get("entries", []):
                         if e.get("condition") == "KG" and not kg_proj:
-                            kg_proj = e.get("project_name") or e.get("project_id") or ""
-                            kg_task = e.get("task_name") or e.get("task_id_actual") or ""
+                            kg_proj = e.get("project_id") or ""
+                            kg_task = e.get("task_id_actual") or ""
                         elif e.get("condition") == "NOGK" and not nogk_proj:
-                            nogk_proj = e.get("project_name") or e.get("project_id") or ""
-                            nogk_task = e.get("task_name") or e.get("task_id_actual") or ""
+                            nogk_proj = e.get("project_id") or ""
+                            nogk_task = e.get("task_id_actual") or ""
                 except (json.JSONDecodeError, TypeError):
                     pass
             evals.append({"evaluation_id": r[0], "name": r[1], "status": r[2],
@@ -60,9 +55,6 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                           "kg_project": kg_proj, "kg_task": kg_task,
                           "nogk_project": nogk_proj, "nogk_task": nogk_task,
                           "benchmark_source": bm_source,
-                          "vbench_project_name": vb_proj_name,
-                          "vc_project_name": vc_proj_name,
-                          "vc_task_name": vc_task_name,
                           "progress": get_progress(r[0]) if r[2] not in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED") else ""})
         return {
             "evaluations": evals,

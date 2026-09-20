@@ -10,7 +10,7 @@ import os
 import sys
 import time
 import threading
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from ..infrastructure.database import connect
 from ..persistence.repositories import fact_repo
 from ..workers.turing_trace_parser import TuringTraceParser
@@ -184,15 +184,23 @@ EVAL_CONFIG = {
 
 @dataclass
 class CreateRequest:
+    """简化版创建请求 — 调用方只需传项目 ID + 任务 ID，trace 路径/kind/验证 trace 全部自动发现。
+
+    必传：evaluation_id, kg_project_id, kg_task_id
+    可选：nogk_project_id/nogk_task_id（对照组），benchmark_source，benchmark_set_id，vc_source_task_id
+    """
     evaluation_id: str
     evaluation_name: str | None = None
-    benchmark_set_id: str = "BS001"
-    vbench_project_name: str | None = None
-    benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
-    vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id（项目用 benchmark_set_id）
-    vc_source_project_name: str | None = None  # 漏洞中心项目名
-    vc_source_task_name: str | None = None  # 漏洞中心任务名
-    entries: list = field(default_factory=list)  # [{task_id, condition, source_uri, benchmark_item_id}]
+    # KG 项目（知识图谱组）
+    kg_project_id: str = ""
+    kg_task_id: str = ""
+    # NOGK 项目（对照组，可选）
+    nogk_project_id: str = ""
+    nogk_task_id: str = ""
+    # 基线来源
+    benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
+    benchmark_set_id: str | None = None  # vuln_center: 漏洞中心项目ID; vbench_zip: V-Bench set ID; 默认=kg_project_id
+    vc_source_task_id: str | None = None  # 漏洞中心 source_task_id（可选）
 
 
 def _set_status(cur, evaluation_id, status):
@@ -385,48 +393,92 @@ def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
     return None, "no_relationship"
 
 
-def create(req: CreateRequest):
-    """Stage 0：建 evaluation + snapshot（冻结）。每步用独立连接避免远程防火墙重置。"""
-    # ===== 自动发现 trace =====
-    # 1. 挖掘 trace：自动判断 trace_kind（用户只选了 task_id，不选 trace_kind）
-    for e in req.entries:
-        if not e.get("trace_kind") and e.get("task_id") and e.get("project_id"):
-            try:
-                kind = ps.discover_mining_trace_kind(e["project_id"], e["task_id"])
-                if kind:
-                    e["trace_kind"] = kind
-                    log("CREATE", f"自动发现挖掘 trace_kind={kind} task={e['task_id']}")
-            except Exception as err:
-                log("CREATE", f"⚠ 自动发现挖掘 trace_kind 失败: {err}")
+def _build_entries(req: CreateRequest) -> list[dict]:
+    """从项目 ID + 任务 ID 自动发现 trace，构建 entries。
 
-    # 2. 验证 trace：自动扫描 app 目录，有数据就加入 entries
-    _existing_kinds = {e.get("trace_kind") for e in req.entries}
-    _project_id = req.entries[0].get("project_id") if req.entries else ""
-    # 是否有 No-KG 条目（决定验证 trace 是否也创建 NOGK entry）
-    _has_nogk_entries = any(e.get("condition") == "NOGK" for e in req.entries)
-    if _project_id and not any(k in _existing_kinds for k in ("cvuln_verify", "webvulnverify")):
+    每个 entry 包含：task_id, condition, source_uri, trace_kind, category,
+    project_id, task_id_actual, benchmark_item_ids（空，INGESTING 阶段填充）, expected_label。
+    """
+    entries: list[dict] = []
+
+    # 1. 挖掘 trace
+    for cond, pid, tid in [
+        ("KG", req.kg_project_id, req.kg_task_id),
+        ("NOGK", req.nogk_project_id, req.nogk_task_id),
+    ]:
+        if not pid or not tid:
+            continue
         try:
-            verify_traces = ps.discover_verify_traces(_project_id)
-            for vt in verify_traces:
-                # 有 No-KG 时为每个验证 agent 创建 KG + NOGK 两个 entry；仅 KG 时只创建 KG
-                _conds = ("KG", "NOGK") if _has_nogk_entries else ("KG",)
-                for cond in _conds:
-                    req.entries.append({
-                        "task_id": f"verify-{vt['agent_name']}",
-                        "condition": cond,
-                        "source_uri": vt["source_uri"],
-                        "trace_kind": vt["trace_kind"],
-                        "category": "verify",
-                        "project_id": _project_id,
-                        "benchmark_item_id": None,
-                        "benchmark_item_ids": [],
-                    })
-                log("CREATE", f"自动发现验证 trace: {vt['agent_name']} kind={vt['trace_kind']} conds={_conds}")
+            result = ps.discover_mining_trace(pid, tid)
+            if result:
+                kind, uri = result
+                entries.append({
+                    "task_id": "T001",
+                    "condition": cond,
+                    "source_uri": uri,
+                    "trace_kind": kind,
+                    "category": "mining",
+                    "project_id": pid,
+                    "task_id_actual": tid,
+                    "benchmark_item_ids": [],
+                    "expected_label": "VULNERABLE",
+                })
+                log("CREATE", f"自动发现挖掘 trace: cond={cond} kind={kind} project={pid} task={tid}")
+            else:
+                log("CREATE", f"⚠ 未找到挖掘 trace: cond={cond} project={pid} task={tid}")
         except Exception as err:
-            log("CREATE", f"⚠ 自动发现验证 trace 失败: {err}")
+            log("CREATE", f"⚠ 自动发现挖掘 trace 失败: cond={cond} project={pid} task={tid} err={err}")
 
-    # Step 1: benchmark_set + evaluation（先确保 benchmark_set 存在，避免 FK 约束失败）
+    # 2. 验证 trace（每个项目各自发现）
+    for cond, pid in [
+        ("KG", req.kg_project_id),
+        ("NOGK", req.nogk_project_id),
+    ]:
+        if not pid:
+            continue
+        try:
+            verify_traces = ps.discover_verify_traces(pid)
+            for vt in verify_traces:
+                entries.append({
+                    "task_id": f"verify-{vt['agent_name']}",
+                    "condition": cond,
+                    "source_uri": vt["source_uri"],
+                    "trace_kind": vt["trace_kind"],
+                    "category": "verify",
+                    "project_id": pid,
+                    "benchmark_item_ids": [],
+                })
+                log("CREATE", f"自动发现验证 trace: cond={cond} kind={vt['trace_kind']} agent={vt['agent_name']}")
+        except Exception as err:
+            log("CREATE", f"⚠ 自动发现验证 trace 失败: cond={cond} project={pid} err={err}")
+
+    return entries
+
+
+def create(req: CreateRequest):
+    """Stage 0：建 evaluation + snapshot（冻结）。
+
+    调用方只需传项目 ID + 任务 ID，trace 路径/kind/验证 trace 全部自动发现。
+    基线 case 数据在 run() 的 INGESTING 阶段从漏洞中心/V-Bench 获取。
+    """
+    # 1. 默认 benchmark_set_id
+    if not req.benchmark_set_id:
+        req.benchmark_set_id = req.kg_project_id
+
+    # 2. 自动发现 trace，构建 entries
+    entries = _build_entries(req)
+    if not entries:
+        raise ValueError(
+            f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id} "
+            f"nogk_project={req.nogk_project_id} nogk_task={req.nogk_task_id}")
+
+    # 3. benchmark_set + evaluation + snapshot
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
+    manifest = {"entries": entries,
+                "benchmark_source": req.benchmark_source,
+                "benchmark_set_id": req.benchmark_set_id,
+                "vc_source_task_id": req.vc_source_task_id}
+
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -438,21 +490,7 @@ def create(req: CreateRequest):
             "INSERT INTO evaluation (evaluation_id, evaluation_name, benchmark_set_id, agent_name) "
             "VALUES (%s,%s,%s,'Turing')",
             (req.evaluation_id, eval_name, req.benchmark_set_id))
-    finally:
-        conn.close()
-
-    # Step 2: evaluation_snapshot（独立连接）
-    # 基线数据、告警中心数据在 run() 的 INGESTING 阶段获取，create() 只冻结 entries + 配置
-    manifest = {"entries": req.entries, "manifest_hash": "mh",
-                "vbench_project_name": req.vbench_project_name,
-                "benchmark_source": req.benchmark_source,
-                "benchmark_set_id": req.benchmark_set_id,
-                "vc_source_task_id": req.vc_source_task_id,
-                "vc_source_project_name": req.vc_source_project_name,
-                "vc_source_task_name": req.vc_source_task_name}
-    conn = connect(autocommit=True)
-    try:
-        conn.cursor().execute(
+        cur.execute(
             "INSERT INTO evaluation_snapshot (snapshot_id, evaluation_id, parser_version, resolver_version, "
             "metric_profile_version, statistical_profile, canonical_action_schema, knowledge_rule_version, "
             "token_schema_version, experiment_fingerprint_json, code_hashes_json, config_json) "
@@ -746,6 +784,10 @@ def run(evaluation_id: str) -> dict:
     _inserted_ids: set[str] = set()
     for e in _ingest_entries:
         item_ids = e.get("benchmark_item_ids") or ([e["benchmark_item_id"]] if e.get("benchmark_item_id") else [])
+        # 没有指定 benchmark_item_ids 的 mining entry → 使用全部 case
+        if not item_ids and e.get("category") == "mining" and case_details:
+            item_ids = list(case_details.keys())
+            log("INGEST", f"task={e.get('task_id','')} cond={e.get('condition','')} 未指定 case，使用全部 {len(item_ids)} 条")
         if _filter_by_case_details:
             _before = len(item_ids)
             item_ids = [bid for bid in item_ids if bid in case_details]

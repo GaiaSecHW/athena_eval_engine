@@ -226,15 +226,16 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
 
 
 class CreateRequest(BaseModel):
+    """简化版创建请求 — 只传项目 ID + 任务 ID，trace 自动发现。"""
     evaluation_id: str
     evaluation_name: str | None = None
-    benchmark_set_id: str = "BS001"
-    vbench_project_name: str | None = None
-    benchmark_source: str = "vbench_zip"  # "vbench_zip" | "vuln_center"
-    vc_source_task_id: str | None = None  # 漏洞中心模式下的 source_task_id
-    vc_source_project_name: str | None = None  # 漏洞中心项目名
-    vc_source_task_name: str | None = None  # 漏洞中心任务名
-    entries: list[dict]
+    kg_project_id: str = ""
+    kg_task_id: str = ""
+    nogk_project_id: str = ""
+    nogk_task_id: str = ""
+    benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
+    benchmark_set_id: str | None = None  # 默认=kg_project_id
+    vc_source_task_id: str | None = None
 
 
 app = FastAPI(title="Athena Eval Engine", version="0.1.0")
@@ -381,13 +382,13 @@ def create_evaluation(req: CreateRequest):
     try:
         es.create(es.CreateRequest(evaluation_id=req.evaluation_id,
                                    evaluation_name=req.evaluation_name,
-                                   benchmark_set_id=req.benchmark_set_id,
-                                   vbench_project_name=req.vbench_project_name,
+                                   kg_project_id=req.kg_project_id,
+                                   kg_task_id=req.kg_task_id,
+                                   nogk_project_id=req.nogk_project_id,
+                                   nogk_task_id=req.nogk_task_id,
                                    benchmark_source=req.benchmark_source,
-                                   vc_source_task_id=req.vc_source_task_id,
-                                   vc_source_project_name=req.vc_source_project_name,
-                                   vc_source_task_name=req.vc_source_task_name,
-                                   entries=req.entries))
+                                   benchmark_set_id=req.benchmark_set_id,
+                                   vc_source_task_id=req.vc_source_task_id))
         # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
@@ -766,11 +767,11 @@ def _build_report(evaluation_id: str):
             cfg = _json.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
             manifest = cfg.get("manifest", {})
             entries = manifest.get("entries", [])
-            r["vbench_project_name"] = manifest.get("vbench_project_name", "")
             r["benchmark_source"] = manifest.get("benchmark_source", "vbench_zip")
-            r["entries_info"] = [{"condition": e.get("condition"), "project_name": e.get("project_name", ""),
-                                  "task_name": e.get("task_name", ""),
+            r["entries_info"] = [{"condition": e.get("condition"), "project_id": e.get("project_id", ""),
+                                  "task_id_actual": e.get("task_id_actual", ""),
                                   "task_id": e.get("task_id", ""),
+                                  "trace_kind": e.get("trace_kind", ""),
                                   "category": e.get("category", "")} for e in entries]
         # 知识介入
         cur.execute("SELECT task_run_id, access, delivery, access_event_count, "
