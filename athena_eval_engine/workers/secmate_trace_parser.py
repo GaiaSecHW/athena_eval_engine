@@ -390,7 +390,8 @@ class SecMateTraceParser(TraceParser):
                                 part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                 input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
                                 source_row_id=event_id, parser_version=self.parser_version,
-                                call_id=call_id)
+                                call_id=call_id,
+                                is_kg_interaction=info.get("is_kg", False))
                     elif self._is_user_record(record):
                         for result_index, (call_id, result) in enumerate(self._tool_results(record)):
                             if not result:
@@ -402,7 +403,8 @@ class SecMateTraceParser(TraceParser):
                                 part_id=event_id, step_no=None, tool_name=info.get("tool_name"),
                                 input_json=None, output_json=result, raw_type="tool_result", source_table="jsonl",
                                 source_row_id=event_id, parser_version=self.parser_version,
-                                call_id=call_id)
+                                call_id=call_id,
+                                is_kg_interaction=info.get("is_kg", False))
                     elif record.get("type") == "queue-operation" and record.get("operation") == "enqueue":
                         yield self._event(f"{base_id}-queue", trace_id, session_id, "SYSTEM_EVENT", timestamp,
                                           record, record.get("content"), "queue-enqueue")

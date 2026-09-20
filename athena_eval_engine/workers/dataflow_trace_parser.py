@@ -244,6 +244,7 @@ class DataflowVulnScanTraceParser(TraceParser):
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
                     call_id=tid,
+                    is_kg_interaction=self._tool_kg.get(tid, False) if tid else False,
                 ))
             else:
                 for ci, c in enumerate(content):

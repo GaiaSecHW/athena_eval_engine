@@ -230,6 +230,9 @@ class ArgoTraceParser(TraceParser):
                             tid = c.get("tool_use_id", "")
                             break
                 tn = tool_use_names.get(tid, "") if (tool_use_names and tid) else ""
+                # 从预收集标记继承 is_kg / is_mem（RESULT 事件需要这些标记才能被 resolver 计为 delivery）
+                is_kg = tool_use_kg.get(tid, False) if (tool_use_kg and tid) else False
+                mem_flags = tool_use_mem.get(tid, (False, False)) if (tool_use_mem and tid) else (False, False)
                 evs.append(RawEvent(
                     event_id=f"{eid}-res", trace_id=trace_id, session_id=session_id,
                     event_type="TOOL_RESULT", timestamp_ms=ts,
@@ -239,6 +242,9 @@ class ArgoTraceParser(TraceParser):
                     source_table="jsonl", source_row_id=f"{eid}-res",
                     parser_version=self.parser_version,
                     call_id=tid,
+                    is_kg_interaction=is_kg,
+                    is_memory_interaction=mem_flags[0],
+                    is_memory_write=mem_flags[1],
                 ))
 
         elif t == "queue-operation" and d.get("operation") == "enqueue":

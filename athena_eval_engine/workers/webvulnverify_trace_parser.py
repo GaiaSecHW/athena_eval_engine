@@ -279,9 +279,8 @@ class WebVulnVerifyTraceParser(TraceParser):
                         raw_type="tool_result", parse_status="OK",
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
-                        # KG/记忆标记不继承到 TOOL_RESULT——避免同一次交互计两次
-                        # resolver 通过 call_id 精确配对 CALL→RESULT
                         call_id=call_id,
+                        is_kg_interaction=info.get("is_kg", False),
                     ))
 
         return evs

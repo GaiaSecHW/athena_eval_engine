@@ -219,6 +219,7 @@ class CVulnVerifyTraceParser(TraceParser):
             # toolResult 消息：创建 TOOL_RESULT 事件
             if role == "toolResult":
                 tool_name = msg.get("toolName", "")
+                _tid = getattr(self, "_last_tool_id", "")
                 # 合并所有 text content 作为输出
                 result_text = ""
                 for c in content:
@@ -233,7 +234,8 @@ class CVulnVerifyTraceParser(TraceParser):
                     raw_type="toolResult", parse_status="OK",
                     source_table="jsonl", source_row_id=f"{eid}-tr",
                     parser_version=self.parser_version,
-                    call_id=getattr(self, "_last_tool_id", ""),
+                    call_id=_tid,
+                    is_kg_interaction=self._tool_kg.get(_tid, False) if _tid else False,
                 ))
                 usage = msg.get("usage", {})
                 if isinstance(usage, dict):
