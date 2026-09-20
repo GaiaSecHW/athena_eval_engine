@@ -702,8 +702,7 @@ def run(evaluation_id: str) -> dict:
                         "source_line": c.get("source_line") or "",
                         "locator": c.get("locator") or "",
                     }
-                    _fill_missing_source(case_details[cid])
-                _done += 1
+                    _done += 1
                 if _done % 5 == 0 or _done == _total:
                     set_progress(evaluation_id, f"获取基线数据: {_done}/{_total} 条 case")
         else:
