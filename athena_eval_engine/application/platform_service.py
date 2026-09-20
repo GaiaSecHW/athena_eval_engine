@@ -14,7 +14,7 @@ import subprocess
 import threading
 import time
 import urllib.request
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 from urllib.parse import urlencode
 from ..config_loader import PROJECT_API, SCHEDULE_API, VULN_API_URL, PLATFORM_TOKEN, DATA_ROOT
 
@@ -80,10 +80,20 @@ def _get(url, *, retries: int = 20, retry_delay: float = 5.0):
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
             with urllib.request.urlopen(req, timeout=180) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except (URLError, TimeoutError, OSError) as e:
+        except HTTPError as e:
+            if e.code != 429 and 400 <= e.code < 500:
+                _logger.warning("HTTP %d 不重试: %s", e.code, url)
+                raise
             last_err = e
+            _logger.warning("HTTP %d 重试 %d/%d: %s", e.code, attempt + 1, retries, url)
             if attempt + 1 < retries:
                 time.sleep(retry_delay)
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            _logger.warning("网络错误重试 %d/%d: %s → %s", attempt + 1, retries, url, e)
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    _logger.error("❌ %d 次重试全部失败: %s → %s", retries, url, last_err)
     raise last_err  # type: ignore[misc]
 
 

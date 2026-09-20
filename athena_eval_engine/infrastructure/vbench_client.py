@@ -13,7 +13,7 @@ import time
 import zipfile
 import io
 import urllib.request
-from urllib.error import URLError
+from urllib.error import URLError, HTTPError
 from ..config_loader import DATA_ROOT, PLATFORM_TOKEN, VBENCH_API_URL
 from .log_util import log
 
@@ -27,10 +27,20 @@ def _get(path: str, retries: int = 20, retry_delay: float = 5.0) -> dict | list:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
             with urllib.request.urlopen(req, timeout=180) as r:
                 return json.loads(r.read().decode("utf-8"))
-        except (URLError, TimeoutError, OSError) as e:
+        except HTTPError as e:
+            if e.code != 429 and 400 <= e.code < 500:
+                log("VBENCH", f"HTTP {e.code} 不重试: {url}")
+                raise
             last_err = e
+            log("VBENCH", f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
             if attempt + 1 < retries:
                 time.sleep(retry_delay)
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            log("VBENCH", f"网络错误重试 {attempt+1}/{retries}: {url} → {e}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    log("VBENCH", f"❌ {retries} 次重试全部失败: {url} → {last_err}")
     raise last_err
 
 
