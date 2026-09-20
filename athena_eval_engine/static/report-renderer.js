@@ -892,7 +892,7 @@ function renderReport(d){
       <table><thead><tr><th>#</th><th>${isMining?'告警中心':'漏洞中心'}ID</th><th>${isMining?'告警中心':'漏洞中心'}标题</th><th>${isMining?'告警中心':'漏洞中心'}摘要</th><th>确认状态</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>基线分类</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`;
     }
-    function _buildE2eFprInVerify(g){
+    function _buildE2eFprInVerify(g,verifyFpr){
       const kg=g.e2e_fpr_kg,nogk=g.e2e_fpr_nogk;
       if(!kg&&!nogk) return '';
       const isAc=g.category==='mining_fpr';
@@ -983,14 +983,62 @@ function renderReport(d){
         </div>
         <span style="font-size:12px;color:var(--gray);margin-left:auto" data-fpr-count>共 ${allDetails.length} 条</span>
       </div>`;
-      return `${isAc?stats:`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
+      // mining_fpr tab：汇总表（漏洞挖掘误报率 vs 最终误报率）
+      let _summaryCard='';
+      if(isAc&&verifyFpr){
+        function _fprCell(r){
+          if(!r||r.fpr==null) return '<span style="color:var(--gray)">—</span>';
+          const tp=r.tp||0,fp=r.fp||0;
+          return `<div style="font-size:24px;font-weight:700;color:var(--red)">${(r.fpr*100).toFixed(2)}%</div>
+            <div style="font-size:12px;color:var(--sub);margin-top:4px">误报=${fp}，真正=${tp}，→ ${fp}/(${fp}+${tp})</div>`;
+        }
+        const _vkg=verifyFpr.kg,_vnogk=verifyFpr.nogk;
+        const _summaryRows=[
+          `<tr>
+            <td style="text-align:center;font-weight:600;color:var(--acc)">KG</td>
+            <td style="text-align:center;padding:12px">${_fprCell(kg)}</td>
+            <td style="text-align:center;padding:12px">${_fprCell(_vkg)}</td>
+          </tr>`
+        ];
+        if(nogk||_vnogk){
+          _summaryRows.push(`<tr>
+            <td style="text-align:center;font-weight:600;color:var(--gray)">No-KG</td>
+            <td style="text-align:center;padding:12px">${_fprCell(nogk)}</td>
+            <td style="text-align:center;padding:12px">${_fprCell(_vnogk)}</td>
+          </tr>`);
+        }
+        _summaryCard=`<div class="card" style="margin-bottom:16px">
+          <h3>📊 误报率汇总</h3>
+          <table>
+            <thead><tr>
+              <th style="text-align:center">条件</th>
+              <th style="text-align:center">漏洞挖掘误报率</th>
+              <th style="text-align:center">最终误报率（漏洞验证误报率）</th>
+            </tr></thead>
+            <tbody>${_summaryRows.join('')}</tbody>
+          </table>
+          <div style="font-size:12px;color:var(--gray);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:8px">
+            计算公式：误报率 = 误报数 / (误报数 + 真正数)<br>
+            漏洞挖掘误报率 = 告警中心数据 vs 基线<br>
+            最终误报率 = 漏洞中心数据 vs 基线（经漏洞验证后）
+          </div>
+        </div>`;
+      }
+      return `${_summaryCard}
+      ${isAc?stats:`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
       ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
       ${_filterBar}
       <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`:''}`;
     }
     const tabs=mg.length>1?`<div role="tablist" aria-label="报告类别" style="display:grid;grid-template-columns:repeat(${mg.length},minmax(0,1fr));gap:12px;margin:0 0 20px">${mg.map((g,i)=>{const mfpr=g.category==='mining_fpr';const mining=g.category!=="verify"&&!mfpr;const icon=mfpr?'📈':mining?'🔎':'✅';const desc=mfpr?'告警中心 case 与基线漏洞匹配对比':mining?'发现与提交潜在漏洞':'验证候选漏洞是否成立';return`<button class="btn" role="tab" data-report-tab-btn aria-selected="${i===0?'true':'false'}" style="text-align:left;display:flex;gap:10px;align-items:center;padding:13px 15px;border:1px solid ${i===0?'var(--acc)':'var(--bd)'};background:${i===0?'var(--acc)':'var(--panel)'};color:${i===0?'#fff':'var(--sub)'};${i===0?'box-shadow:0 8px 20px rgba(124,58,237,.28);transform:translateY(-2px)':''}" onclick="selectReportTab(this,'report-tab-${i}')"><span style="font-size:24px">${icon}</span><span><b style="display:block;font-size:16px">${g.label}</b><small style="display:block;margin-top:3px;opacity:.82">${desc}</small></span></button>`}).join("")}</div><div style="font-size:14px;color:var(--sub);margin:-8px 0 16px;padding:8px 10px;background:var(--p2);border-radius:8px">当前选中的类别决定下方全部统计、效果指标和诊断的范围。</div>`:"";
-    const panes=mg.map((g,i)=>{if(g.category==='mining_fpr'){return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}"><div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">📈</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>${_buildE2eFprInVerify(g)}</div>`;}return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
+    const panes=mg.map((g,i)=>{
+      if(g.category==='mining_fpr'){
+        const _vg=mg.find(x=>x.category==='verify');
+        const _verifyFpr=_vg?{kg:_vg.e2e_fpr_kg,nogk:_vg.e2e_fpr_nogk}:null;
+        return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}"><div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">📈</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>${_buildE2eFprInVerify(g,_verifyFpr)}</div>`;
+      }
+      return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
       <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
       ${_statsTable(g.task_id,g.label)}
       ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
