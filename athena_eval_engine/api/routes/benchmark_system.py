@@ -6,15 +6,13 @@ from fastapi import APIRouter
 from pydantic import BaseModel, Field
 from ...infrastructure.database import connect
 from ...infrastructure.log_util import log
+from ...infrastructure.concurrency import get_keys as _conc_keys, get as _conc_get, set_val as _conc_set
 
 sys_r = APIRouter(prefix="/api/v1/system", tags=["system"])
 vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
 
-# 可持久化的配置 key 集合（用于 load 时过滤）
-_CONFIG_KEYS = {
-    "llm_max_concurrency", "max_concurrent_evals",
-    "parse_workers", "kg_analysis_workers",
-}
+# 可持久化的配置 key 集合 — 所有并发参数
+_CONFIG_KEYS = _conc_keys()
 
 # 配置时间戳（DB 更新时写 NOW(3)，worker 定期检查，变化则重载）
 _config_version = None
@@ -24,23 +22,31 @@ _config_version_lock = threading.Lock()
 class SystemConfigUpdate(BaseModel):
     llm_max_concurrency: int | None = Field(default=None, ge=1, le=200)
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
+    eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)
+    source_fill_workers: int | None = Field(default=None, ge=1, le=50)
+    ac_fetch_workers: int | None = Field(default=None, ge=1, le=50)
+    resolver_workers: int | None = Field(default=None, ge=1, le=100)
+    ai_match_workers: int | None = Field(default=None, ge=1, le=100)
+    ac_llm_workers: int | None = Field(default=None, ge=1, le=50)
+    fpr_cond_workers: int | None = Field(default=None, ge=1, le=10)
+    fpr_baseline_workers: int | None = Field(default=None, ge=1, le=100)
+    fpr_baseline_batch: int | None = Field(default=None, ge=1, le=50)
     kg_analysis_workers: int | None = Field(default=None, ge=1, le=50)
+    bootstrap_workers: int | None = Field(default=None, ge=1, le=20)
 
 
 def _apply_config(key: str, value: str):
     """把 DB 里的 config_value 应用到运行时。"""
     from ...infrastructure import llm
     from .evaluations import set_max_concurrent_evals
-    from ...application.evaluation_service import set_runtime_workers
     if key == "llm_max_concurrency":
         llm.set_max_concurrency(int(value))
+        _conc_set("llm_max_concurrency", int(value))
     elif key == "max_concurrent_evals":
         set_max_concurrent_evals(int(value))
-    elif key == "parse_workers":
-        set_runtime_workers(parse=int(value))
-    elif key == "kg_analysis_workers":
-        set_runtime_workers(kg_analysis=int(value))
+    elif key in _CONFIG_KEYS:
+        _conc_set(key, int(value))
 
 
 def load_system_config():
@@ -250,23 +256,23 @@ def _load_config_from_db() -> dict:
 def get_system_config():
     """获取系统参数（从 DB 读取，确保多 worker 一致）。"""
     from ...infrastructure import llm
-    from .evaluations import get_max_concurrent_evals, _running_futures, _pending_evals, _paused_evals, _pausing_eids, _running_lock
-    from ...application.evaluation_service import get_runtime_workers
+    from .evaluations import _running_futures, _pending_evals, _paused_evals, _pausing_eids, _running_lock
     db_cfg = _load_config_from_db()
     with _running_lock:
         running = len(_running_futures) - len(_pausing_eids)
         pending = len(_pending_evals)
         paused = len(_paused_evals)
-    return {
-        "llm_max_concurrency": int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency())),
-        "max_concurrent_evals": int(db_cfg.get("max_concurrent_evals", get_max_concurrent_evals())),
-        "parse_workers": int(db_cfg.get("parse_workers", get_runtime_workers().get("parse", 4))),
-        "kg_analysis_workers": int(db_cfg.get("kg_analysis_workers", get_runtime_workers().get("kg_analysis", 8))),
-        "running_tasks": running,
-        "queued_tasks": pending + paused,
-        "paused_tasks": paused,
-        "llm_active": llm.get_active_concurrency(),
-    }
+    # 所有并发参数：DB 有值用 DB 值，否则用内存默认值
+    result = {}
+    for key in _CONFIG_KEYS:
+        result[key] = int(db_cfg.get(key, _conc_get(key)))
+    # llm_max_concurrency 单独走 llm 模块（信号量）
+    result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
+    result["running_tasks"] = running
+    result["queued_tasks"] = pending + paused
+    result["paused_tasks"] = paused
+    result["llm_active"] = llm.get_active_concurrency()
+    return result
 
 
 @sys_r.put("/config")
@@ -275,24 +281,21 @@ def update_system_config(params: SystemConfigUpdate):
     global _config_version
     from ...infrastructure import llm
     from .evaluations import set_max_concurrent_evals
-    from ...application.evaluation_service import set_runtime_workers
     updated = []
-    if params.llm_max_concurrency is not None:
-        llm.set_max_concurrency(params.llm_max_concurrency)
-        _save_config("llm_max_concurrency", str(params.llm_max_concurrency))
-        updated.append(f"llm_max_concurrency={params.llm_max_concurrency}")
-    if params.max_concurrent_evals is not None:
-        set_max_concurrent_evals(params.max_concurrent_evals)
-        _save_config("max_concurrent_evals", str(params.max_concurrent_evals))
-        updated.append(f"max_concurrent_evals={params.max_concurrent_evals}")
-    if params.parse_workers is not None:
-        set_runtime_workers(parse=params.parse_workers)
-        _save_config("parse_workers", str(params.parse_workers))
-        updated.append(f"parse_workers={params.parse_workers}")
-    if params.kg_analysis_workers is not None:
-        set_runtime_workers(kg_analysis=params.kg_analysis_workers)
-        _save_config("kg_analysis_workers", str(params.kg_analysis_workers))
-        updated.append(f"kg_analysis_workers={params.kg_analysis_workers}")
+    # 遍历所有参数字段，非 None 的更新
+    for field_name in params.model_fields:
+        value = getattr(params, field_name)
+        if value is None:
+            continue
+        if field_name == "llm_max_concurrency":
+            llm.set_max_concurrency(value)
+            _conc_set("llm_max_concurrency", value)
+        elif field_name == "max_concurrent_evals":
+            set_max_concurrent_evals(value)
+        else:
+            _conc_set(field_name, value)
+        _save_config(field_name, str(value))
+        updated.append(f"{field_name}={value}")
     # 同步本地时间戳，避免 watcher 重复重载
     try:
         conn = connect(autocommit=True)

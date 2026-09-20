@@ -16,19 +16,18 @@ from fastapi import FastAPI, HTTPException, Request
 from pydantic import BaseModel
 from ...application import evaluation_service as es
 from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, log_error
+from ...infrastructure.concurrency import get as _conc_get, set_val as _conc_set
 from ...persistence.repositories import fact_repo
 from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
 # 最多 N 个评测同时运行，其余排队等待
-# 线程池固定大小（上界 10），通过队列 + 协作取消动态控制实际并发数
+# 线程池固定大小（上界由 eval_pool_max 控制），通过队列 + 协作取消动态控制实际并发数
 #   - 增大并发：_try_dispatch() 从队列调度（暂停的优先于新任务）
 #   - 减小并发：_pause_excess() 对最晚创建的任务设 cancel_requested，
 #     任务在下一个 _check_cancel 阶段边界退出，状态设为 QUEUED
-_MAX_POOL = 10  # 线程池上界，实际并发由 _max_concurrent_evals 控制
-_max_concurrent_evals = 3
-_executor = ThreadPoolExecutor(max_workers=_MAX_POOL, thread_name_prefix="eval")
+_executor = ThreadPoolExecutor(max_workers=_conc_get("eval_pool_max"), thread_name_prefix="eval")
 _running_futures: dict[str, Future] = {}  # 已提交到池（运行中 + 暂停中）
 _pausing_eids: set[str] = set()  # 已发取消信号但尚未退出的任务
 _paused_evals: deque[str] = deque()  # 暂停的任务（优先级高于新任务）
@@ -38,7 +37,7 @@ _TERMINAL_EVALUATION_STATUSES = {"COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED
 
 
 def get_max_concurrent_evals() -> int:
-    return _max_concurrent_evals
+    return _conc_get("max_concurrent_evals")
 
 
 def _running_count() -> int:
@@ -52,11 +51,9 @@ def set_max_concurrent_evals(n: int):
     增大时从队列调度等待任务（暂停的优先于新任务），并清除暂停中的取消标记；
     减小时暂停最晚创建的任务（协作取消，在下一个阶段边界退出）。
     """
-    global _max_concurrent_evals
-    n = max(1, min(n, _MAX_POOL))
-    with _running_lock:
-        old = _max_concurrent_evals
-        _max_concurrent_evals = n
+    old = _conc_get("max_concurrent_evals")
+    _conc_set("max_concurrent_evals", n)
+    n = _conc_get("max_concurrent_evals")  # 范围限制后的值
     if n > old:
         # 增大：清除暂停中任务的取消标记（让它们继续运行）
         with _running_lock:
@@ -75,7 +72,7 @@ def _try_dispatch():
     """从队列调度任务到线程池。暂停的任务优先于新任务。"""
     while True:
         with _running_lock:
-            if _running_count() >= _max_concurrent_evals:
+            if _running_count() >= _conc_get("max_concurrent_evals"):
                 return
             if _paused_evals:
                 eid = _paused_evals.popleft()
@@ -179,7 +176,7 @@ def _submit_eval(evaluation_id: str, fn) -> None:
         _pending_evals.append((evaluation_id, fn))
         log("THREAD", f"_submit_eval: {evaluation_id} 加入队列 "
               f"(running={len(_running_futures)}, pausing={len(_pausing_eids)}, "
-              f"pending={len(_pending_evals)}, paused={len(_paused_evals)}, max={_max_concurrent_evals})")
+              f"pending={len(_pending_evals)}, paused={len(_paused_evals)}, max={_conc_get('max_concurrent_evals')})")
     _try_dispatch()
 
 

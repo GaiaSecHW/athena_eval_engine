@@ -1314,14 +1314,64 @@ async function renderSystem(){
         <input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
+        <label style="font-weight:600;font-size:14px">评测线程池上界</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">评测线程池固定大小上界（1-50），需 ≥ 同时启动任务数</div>
+        <input id="cfg_eval_pool_max" type="number" min="1" max="50" value="${c.eval_pool_max}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
         <label style="font-weight:600;font-size:14px">Trace 解析并发数</label>
         <div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div>
-        <input id="cfg_parse_w" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <input id="cfg_parse_workers" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">Source 补提取并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-50）</div>
+        <input id="cfg_source_fill_workers" type="number" min="1" max="50" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">告警中心数据获取并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心 HTTP 调用并行数（1-50）</div>
+        <input id="cfg_ac_fetch_workers" type="number" min="1" max="50" value="${c.ac_fetch_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">单 Trace 内 resolver 并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-100）</div>
+        <input id="cfg_resolver_workers" type="number" min="1" max="100" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">AI Matcher 并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-100）</div>
+        <input id="cfg_ai_match_workers" type="number" min="1" max="100" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">AC→Finding LLM 识别并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-50）</div>
+        <input id="cfg_ac_llm_workers" type="number" min="1" max="50" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">FPR KG/NOGK 并行</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 分析 KG/NOGK 两个条件并行线程数（1-10）</div>
+        <input id="cfg_fpr_cond_workers" type="number" min="1" max="10" value="${c.fpr_cond_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">FPR 基线匹配并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-100）</div>
+        <input id="cfg_fpr_baseline_workers" type="number" min="1" max="100" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">FPR 基线 Batch 并行</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-50）</div>
+        <input id="cfg_fpr_baseline_batch" type="number" min="1" max="50" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">KG 分析并发数</label>
         <div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-50）</div>
-        <input id="cfg_kg_w" type="number" min="1" max="50" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <input id="cfg_kg_analysis_workers" type="number" min="1" max="50" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+      </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">Bootstrap 统计并发</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">M1-M13 bootstrap 统计并行线程数（1-20）</div>
+        <input id="cfg_bootstrap_workers" type="number" min="1" max="20" value="${c.bootstrap_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
     </div>
     <div style="margin-top:20px;display:flex;gap:12px">
@@ -1336,10 +1386,17 @@ async function renderSystem(){
 async function saveSystemConfig(){
   var body={};
   var v;
-  v=parseInt($("cfg_llm_conc").value);if(!isNaN(v))body.llm_max_concurrency=v;
-  v=parseInt($("cfg_max_evals").value);if(!isNaN(v))body.max_concurrent_evals=v;
-  v=parseInt($("cfg_parse_w").value);if(!isNaN(v))body.parse_workers=v;
-  v=parseInt($("cfg_kg_w").value);if(!isNaN(v))body.kg_analysis_workers=v;
+  var fields=["llm_conc:llm_max_concurrency","max_evals:max_concurrent_evals","eval_pool_max:eval_pool_max",
+    "parse_workers:parse_workers","source_fill_workers:source_fill_workers","ac_fetch_workers:ac_fetch_workers",
+    "resolver_workers:resolver_workers","ai_match_workers:ai_match_workers","ac_llm_workers:ac_llm_workers",
+    "fpr_cond_workers:fpr_cond_workers","fpr_baseline_workers:fpr_baseline_workers",
+    "fpr_baseline_batch:fpr_baseline_batch","kg_analysis_workers:kg_analysis_workers","bootstrap_workers:bootstrap_workers"];
+  for(var i=0;i<fields.length;i++){
+    var parts=fields[i].split(":");
+    var elId="cfg_"+parts[0],key=parts[1];
+    var el=$(elId);
+    if(el){v=parseInt(el.value);if(!isNaN(v))body[key]=v;}
+  }
   $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
   try{
     var r=await jput("/api/v1/system/config",body);

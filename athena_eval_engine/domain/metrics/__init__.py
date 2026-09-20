@@ -223,6 +223,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     confusion_pairs: 按 benchmark_item 展开的 pair 列表，用于 M1-M4 混淆矩阵。
     为 None 时回退到 pairs（任务级）。"""
     from concurrent.futures import ThreadPoolExecutor
+    from ...infrastructure.concurrency import get as _conc_get
     mrs = []; srs = []
     cp = confusion_pairs if confusion_pairs is not None else pairs  # M1-M4 用 item 级 pair
     # M5/M6 无 bootstrap，瞬时完成，直接算
@@ -233,7 +234,7 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
     # M13 占位（实际值由 REPORTING 阶段 _update_m13_fpr 填充）；M7-M10 用 pairs（任务级 delta）
-    with ThreadPoolExecutor(max_workers=4) as pool:
+    with ThreadPoolExecutor(max_workers=_conc_get("bootstrap_workers")) as pool:
         fut_m13 = pool.submit(calc_m13, cp, seed=seed)
         fut_m7 = pool.submit(calc_m7, pairs, seed=seed)
         fut_m8 = pool.submit(calc_m8, pairs, seed=seed)

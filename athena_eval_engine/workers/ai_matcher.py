@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
+from ..infrastructure.concurrency import get as _conc_get
 
 
 def match_alert_center_to_findings(alert_center_cases: list[dict], findings: list[dict],
@@ -126,7 +127,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
-    pre_pool = ThreadPoolExecutor(max_workers=20)
+    pre_pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
     _pre_had_timeout = False
     try:
         pre_futures = {}
@@ -202,7 +203,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # 全量并行 1vs1
     pair_results: dict[tuple[int, int], bool] = {}
     if all_pairs:
-        pool = ThreadPoolExecutor(max_workers=20)
+        pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
         _pair_had_timeout = False
         try:
             futures = {}

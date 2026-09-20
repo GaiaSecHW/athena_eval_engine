@@ -50,18 +50,19 @@ def _extract_source_task_id(entry: dict) -> str:
 # 协作取消：force retry 时在 DB 设 CANCEL_REQUESTED，run() 在阶段边界检查并退出
 # 跨 worker 生效（--workers 2 时不同 worker 共享同一 DB）
 
-# 运行时可调并发参数
-_runtime_workers = {"parse": 4, "kg_analysis": 4}
-
+# 运行时可调并发参数 — 委托给统一并发配置模块
+from ..infrastructure.concurrency import get as _conc_get, set_val as _conc_set, get_all as _conc_all
 
 def get_runtime_workers() -> dict:
-    return dict(_runtime_workers)
-
+    """返回 parse/kg_analysis 两个常用参数（兼容旧接口）。"""
+    return {"parse": _conc_get("parse_workers"), "kg_analysis": _conc_get("kg_analysis_workers")}
 
 def set_runtime_workers(**kwargs):
+    """兼容旧接口：parse=4 → parse_workers=4, kg_analysis=4 → kg_analysis_workers=4。"""
+    _key_map = {"parse": "parse_workers", "kg_analysis": "kg_analysis_workers"}
     for k, v in kwargs.items():
-        if k in _runtime_workers:
-            _runtime_workers[k] = max(1, min(v, 50))
+        real_key = _key_map.get(k, k)
+        _conc_set(real_key, v)
 
 # 进度文本：AI 匹配等慢阶段向前端报告进度（内存字典，pod 重启后重跑无需持久化）
 # 两层：_progress_phase 存阶段级文本（解析/写入/配对等），_progress_tasks 存任务级文本（多 task_run 并行各自独立）
@@ -764,7 +765,7 @@ def run(evaluation_id: str) -> dict:
             _fill_lock = _th.Lock()
             _fill_had_timeout = False
             try:
-                _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), 8))
+                _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), _conc_get("source_fill_workers")))
                 futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), cd) for cd in _need_fill]
                 for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST"), per_task_timeout=1800):
                     if _timeout:
@@ -803,7 +804,7 @@ def run(evaluation_id: str) -> dict:
                 return get_alert_center_summary(_ac_project, _ac_task)
 
             from concurrent.futures import ThreadPoolExecutor
-            _ac_pool = ThreadPoolExecutor(max_workers=min(len(_ac_pairs), 4))
+            _ac_pool = ThreadPoolExecutor(max_workers=min(len(_ac_pairs), _conc_get("ac_fetch_workers")))
             _ac_futs = {_ac_pool.submit(with_eval_ctx(_fetch_ac), pair): pair for pair in _ac_pairs}
             for fut in _ac_futs:
                 pair = _ac_futs[fut]
@@ -1027,7 +1028,7 @@ def run(evaluation_id: str) -> dict:
             return cond_val, _ac_result, _vc_ids
 
         from concurrent.futures import ThreadPoolExecutor as _FPR_TP
-        _fpr_pool = _FPR_TP(max_workers=2)
+        _fpr_pool = _FPR_TP(max_workers=_conc_get("fpr_cond_workers"))
         try:
             _fpr_futures = {
                 _fpr_pool.submit(with_eval_ctx(_run_fpr_for_cond), label, val): val
@@ -1432,7 +1433,7 @@ def run(evaluation_id: str) -> dict:
             session_graph = parser.build_session_graph(events) if parser else {}
             log("MATCH", f"[{_trid}] {cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
                   f"in {int(time.time()-_trace_start)}s")
-            inner_pool = ThreadPoolExecutor(max_workers=50)
+            inner_pool = ThreadPoolExecutor(max_workers=_conc_get("resolver_workers"))
             try:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(with_eval_ctx(KnowledgeResolverImpl(EVAL_CONFIG).resolve), tr, events)
@@ -1572,7 +1573,7 @@ def run(evaluation_id: str) -> dict:
                 _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
         # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
         set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
-        with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _runtime_workers["parse"]))) as pool:
+        with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _conc_get("parse_workers")))) as pool:
             _parse_futures = {pool.submit(with_eval_ctx(_parse_trace), e): i for i, e in enumerate(entries)}
             parsed = [None] * len(entries)
             _parse_done = 0
@@ -1587,7 +1588,7 @@ def run(evaluation_id: str) -> dict:
         set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
-        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 50）")
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 {_conc_get('resolver_workers')}）")
         _pool = ThreadPoolExecutor(max_workers=max(1, len(parsed)))
         _match_start = time.time()
         log("MATCH", f"pool.map start: {len(parsed)} traces, max_workers={max(1, len(parsed))}")
@@ -1930,7 +1931,7 @@ def run(evaluation_id: str) -> dict:
         if _llm_tasks:
             from concurrent.futures import ThreadPoolExecutor as _TPE
             log("EVAL", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
-            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), 8))
+            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), _conc_get("ac_llm_workers")))
             _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4]): (t[0], t[1]) for t in _llm_tasks}
             for fut in _llm_futs:
                 _cond, _cid = _llm_futs[fut]

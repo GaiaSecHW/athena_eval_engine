@@ -13,9 +13,9 @@ from ..infrastructure.parallel import iter_completed
 from ..infrastructure import vuln_center_client
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log
+from ..infrastructure.concurrency import get as _conc_get
 
 _BATCH_SIZE = 5
-_MAX_BASELINE_WORKERS = 20
 
 
 def _build_finding_desc(case: dict) -> str:
@@ -238,7 +238,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
         all_matches: list[tuple[int, float]] = []
         _bl_had_timeout = False
         try:
-            _bl_pool2 = ThreadPoolExecutor(max_workers=min(10, len(batches)))
+            _bl_pool2 = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_batch"), len(batches)))
             future_to_batch: dict = {}
             for batch in batches:
                 fut = _bl_pool2.submit(_llm_match_batch, bl_content, batch)
@@ -271,7 +271,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
         return bl_idx, best_fidx, best_conf, all_matches
 
-    bl_pool = ThreadPoolExecutor(max_workers=min(_MAX_BASELINE_WORKERS, len(baseline_rows)))
+    bl_pool = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_workers"), len(baseline_rows)))
     _bl_had_timeout = False
     try:
         futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
@@ -489,7 +489,7 @@ def run_fpr_analysis(project_id: str, task_id: str,
         log("FPR", f"{source_label}无数据，跳过 FPR 分析")
         return None
 
-    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE}, 基线并发={_MAX_BASELINE_WORKERS})")
+    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE}, 基线并发={_conc_get('fpr_baseline_workers')})")
     if progress_cb:
         progress_cb(0, len(baseline_rows))
     match_results = _run_matching(findings, baseline_rows, progress_cb, cancel_cb)
