@@ -1405,7 +1405,7 @@ def run(evaluation_id: str) -> dict:
             if not tr.trace_valid:
                 log("MATCH", f"[{_trid}] {cond.value} trace 无效（解析失败），跳过匹配")
                 oc = OutcomeFact.undetermined(tr.task_run_id, evaluation_id, tr.condition,
-                                              tr.condition_source, "TRACE_INVALID",
+                                              tr.condition_source, "PARSE_ERROR",
                                               tr.benchmark_item_id)
                 kn = KnowledgeInteractionFact(
                     knowledge_fact_id=f"kf-{tr.task_run_id}",
