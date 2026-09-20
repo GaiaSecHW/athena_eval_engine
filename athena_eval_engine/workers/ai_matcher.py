@@ -13,7 +13,7 @@ Agent 的 finding 结构：
 from __future__ import annotations
 import json
 from ..infrastructure import llm as llm_mod
-from ..infrastructure.log_util import log
+from ..infrastructure.log_util import log, with_eval_ctx
 from ..infrastructure.concurrency import get as _conc_get
 
 
@@ -132,7 +132,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     try:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
-            fut = pre_pool.submit(_prefilter_one, ai)
+            fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
             pre_futures[fut] = ai
         for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800):
             ai = pre_futures[fut]
@@ -208,7 +208,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         try:
             futures = {}
             for ai, fi in all_pairs:
-                fut = pool.submit(_check_pair, ai, fi, {
+                fut = pool.submit(with_eval_ctx(_check_pair), ai, fi, {
                     "title": ac_list[ai].get("title", ""),
                     "summary": ac_list[ai].get("summary", ""),
                 }, finding_list[fi])

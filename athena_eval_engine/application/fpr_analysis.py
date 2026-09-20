@@ -12,7 +12,7 @@ from ..infrastructure.parallel import iter_completed
 
 from ..infrastructure import vuln_center_client
 from ..infrastructure import llm as llm_mod
-from ..infrastructure.log_util import log
+from ..infrastructure.log_util import log, with_eval_ctx
 from ..infrastructure.concurrency import get as _conc_get
 
 _BATCH_SIZE = 5
@@ -241,7 +241,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             _bl_pool2 = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_batch"), len(batches)))
             future_to_batch: dict = {}
             for batch in batches:
-                fut = _bl_pool2.submit(_llm_match_batch, bl_content, batch)
+                fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, batch)
                 future_to_batch[fut] = batch
             for fut, _timeout in iter_completed(future_to_batch, per_task_timeout=1800):
                 if _timeout:
@@ -274,7 +274,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
     bl_pool = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_workers"), len(baseline_rows)))
     _bl_had_timeout = False
     try:
-        futures = [bl_pool.submit(_match_one_baseline, i) for i in range(len(baseline_rows))]
+        futures = [bl_pool.submit(with_eval_ctx(_match_one_baseline), i) for i in range(len(baseline_rows))]
         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
             if _timeout:
                 _bl_had_timeout = True

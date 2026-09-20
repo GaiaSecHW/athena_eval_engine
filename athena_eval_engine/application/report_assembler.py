@@ -8,7 +8,7 @@ import json
 import re
 from dataclasses import dataclass, field
 from ..infrastructure import llm as llm_mod
-from ..infrastructure.log_util import log
+from ..infrastructure.log_util import log, with_eval_ctx
 from ..workers.parse_utils import _extract_json_objects_from_text, parse_json_lenient
 from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser as _WebVVParser
 _extract_webvv_task_data = _WebVVParser._extract_webvv_task_data
@@ -988,7 +988,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _comp_had_timeout = False
                     try:
                         _comp_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
-                        futures = [_comp_pool.submit(_compress_one, item) for item in _uncached]
+                        futures = [_comp_pool.submit(with_eval_ctx(_compress_one), item) for item in _uncached]
                         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                             if _timeout:
                                 _comp_had_timeout = True
@@ -1061,7 +1061,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     _batch_had_timeout = False
                     try:
                         _batch_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
-                        futures = [_batch_pool.submit(_compress_batch, batch) for batch in _batches]
+                        futures = [_batch_pool.submit(with_eval_ctx(_compress_batch), batch) for batch in _batches]
                         _compressed = []
                         for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
                             if _timeout:
@@ -1225,7 +1225,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             _fut_to_task = {}
             for t in _pending_llm:
                 _ev = _th.Event()
-                fut = pool.submit(_run_llm, t, cancel_event=_ev)
+                fut = pool.submit(with_eval_ctx(_run_llm), t, cancel_event=_ev)
                 _fut_to_task[fut] = t
                 _task_events[fut] = _ev
             for fut, _timeout in iter_completed(
