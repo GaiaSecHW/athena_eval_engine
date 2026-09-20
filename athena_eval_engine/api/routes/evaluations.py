@@ -563,22 +563,27 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
-        # Step 2b: 删除固化 HTML + JSON 报告文件
-        try:
-            p = _static_report_path(evaluation_id)
-            if os.path.isfile(p):
-                os.remove(p)
-                log("RETRY", f"删除旧报告: {p}")
-        except Exception:
-            pass
-        # 删除 JSON 报告文件 + 临时 _cr.json 文件
+        # Step 2b: 归档旧报告文件（不删除，改名保留）
+        from datetime import datetime as _dt_r, timezone as _tz_r, timedelta as _td_r
+        _tz_r = _tz_r(_td_r(hours=8))
+        _archive_ts = _dt_r.now(_tz_r).strftime("%Y%m%d_%H%M%S")
         try:
             _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-            for _pattern in [f"{evaluation_id}.json", f"{evaluation_id}_*_cr.json"]:
-                import glob as _glob
-                for _f in _glob.glob(os.path.join(_reports_dir, _pattern)):
-                    os.remove(_f)
-                    log("RETRY", f"删除旧报告: {_f}")
+            for _suffix in (".html", ".json"):
+                _old = os.path.join(_reports_dir, f"{evaluation_id}{_suffix}")
+                if os.path.isfile(_old):
+                    _arc = os.path.join(_reports_dir, f"{evaluation_id}_archive_{_archive_ts}{_suffix}")
+                    os.rename(_old, _arc)
+                    log("RETRY", f"归档旧报告: {_old} → {_arc}")
+        except Exception:
+            pass
+        # 删除临时 _cr.json 文件（中间产物，非最终报告）
+        try:
+            _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+            import glob as _glob
+            for _f in _glob.glob(os.path.join(_reports_dir, f"{evaluation_id}_*_cr.json")):
+                os.remove(_f)
+                log("RETRY", f"删除临时文件: {_f}")
         except Exception:
             pass
 
@@ -813,22 +818,27 @@ def _build_report(evaluation_id: str):
         raw_rows = cur.fetchall()
         # 关联 outcome 的 case_results（从 evidence_json 或文件读取，KG 和 No-KG 分别取）
         def _load_case_results_from_outcome(suffix):
-            """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'"""
+            """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'
+            多 task run 场景下遍历所有匹配行，合并 case_results。"""
             cur.execute("SELECT evidence_json FROM outcome_fact WHERE evaluation_id=%s AND task_run_id LIKE %s",
                         (evaluation_id, f"%{suffix}"))
-            row = cur.fetchone()
-            if row and row[0]:
+            rows = cur.fetchall()
+            merged = []
+            for row in rows:
+                if not row or not row[0]:
+                    continue
                 ev = _j.loads(row[0]) if isinstance(row[0], str) else row[0]
                 if not isinstance(ev, dict):
-                    return []
+                    continue
                 # case_results 存文件时从文件读
                 cr_uri = ev.get("case_results_uri")
                 if cr_uri and os.path.isfile(cr_uri):
                     with open(cr_uri, "r", encoding="utf-8") as _f:
                         _file_data = _j.loads(_f.read())
-                        return _file_data.get("case_results") or []
-                return ev.get("case_results") or []
-            return []
+                        merged.extend(_file_data.get("case_results") or [])
+                else:
+                    merged.extend(ev.get("case_results") or [])
+            return merged
 
         kg_oc_cases = _load_case_results_from_outcome("-KG")
         nogk_oc_cases = _load_case_results_from_outcome("-NOGK")
@@ -1118,6 +1128,7 @@ svg{display:block;margin:0 auto;max-width:100%}
 </head>
 <body>
 <div style="background:#1a1d23;color:#9ca3af;font-size:13px;padding:5px 28px;text-align:right;font-family:'SF Mono',Consolas,monospace">报告生成时间：__GEN_TIME__ · 运行时长：__RUN_DUR__</div>
+<div id="archive-bar" style="background:#1e2228;color:#9ca3af;font-size:13px;padding:4px 28px;display:none;gap:8px;align-items:center;border-top:1px solid #2a2e36"></div>
 <div id="rep"></div>
 <script>
 __RENDERER_JS__
@@ -1125,6 +1136,17 @@ __RENDERER_JS__
 <script>
 window.__REPORT_DATA__ = __REPORT_JSON__;
 renderReport(window.__REPORT_DATA__);
+(function(){
+  var archives = __ARCHIVE_LINKS__;
+  if(archives && archives.length){
+    var bar=document.getElementById('archive-bar');
+    bar.style.display='flex';
+    bar.innerHTML='<span style="color:#6b7280">历史报告：</span>'+
+      archives.map(function(a){
+        return '<a href="'+a.url+'" style="color:#60a5fa;text-decoration:none;margin-left:4px">'+a.name+'</a>';
+      }).join('<span style="color:#4b5563;margin:0 4px">|</span>');
+  }
+})();
 </script>
 </body>
 </html>"""
@@ -1154,6 +1176,14 @@ renderReport(window.__REPORT_DATA__);
         .replace("__RENDERER_JS__", renderer_js)
         .replace("__REPORT_JSON__", data_str)
     )
+    # 扫描归档的旧报告，生成链接列表
+    import glob as _glob
+    _archives = sorted(_glob.glob(os.path.join(REPORTS_DIR, f"{evaluation_id}_archive_*.html")), reverse=True)
+    _archive_links = _json.dumps([
+        {"url": f"/eval/reports/{os.path.basename(a)}", "name": os.path.basename(a).replace(f"{evaluation_id}_archive_", "").replace(".html", "")}
+        for a in _archives
+    ])
+    html = html.replace("__ARCHIVE_LINKS__", _archive_links)
     out_path = os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
     os.makedirs(REPORTS_DIR, exist_ok=True)
     with open(out_path, "w", encoding="utf-8") as f:
