@@ -30,6 +30,8 @@ from .report_assembler import (assemble, render_json,
 from .fpr_analysis import run_fpr_analysis, derive_fpr_from_subset
 from ..domain.task_run import TaskRun, BenchmarkItem
 from ..domain.enums import Condition, ConditionSource, ExpectedLabel, PairMatchStatus
+from ..domain.facts import (OutcomeFact, KnowledgeInteractionFact,
+                            ToolActionFact, ResourceFact)
 from ..orchestration.state_machine import PIPELINE, assert_transition
 from ..application import platform_service as ps
 
@@ -1283,7 +1285,18 @@ def run(evaluation_id: str) -> dict:
                 else:
                     log("CVULN", f"未提供 trace_case_ids，parser 将不过滤文件")
             log("PARSE", f"{cond.value} parser={parser.__class__.__name__}")
-            events = list(parser.parse(trace_source))
+            try:
+                events = list(parser.parse(trace_source))
+            except Exception as _parse_err:
+                log("PARSE", f"⚠ {cond.value} trace 解析失败: {_parse_err} (path={local_path})，跳过此 trace")
+                tr.trace_valid = False
+                tr.runtime_valid = False
+                if not bench:
+                    bench = [BenchmarkItem(None, "BS001", e["task_id"], None, e.get("target_finding_id"))]
+                return {"tr": tr, "events": [], "session": {}, "bench": bench, "src": src,
+                        "cond": cond, "parser": parser,
+                        "trace_kind": e.get("trace_kind"), "category": e.get("category", ""),
+                        "project_id": e.get("project_id", "")}
             log("PARSE", f"{cond.value} events={len(events)}")
             if not events:
                 log("PARSE", f"⚠ {cond.value} 解析出 0 个事件！path={local_path}")
@@ -1316,6 +1329,27 @@ def run(evaluation_id: str) -> dict:
             _trace_project_id = parsed.get("project_id", "")
             is_verify = category == "verify" or trace_kind in ("cvuln_verify", "webvulnverify")
             _trid = tr.task_run_id
+
+            # trace 解析失败（如 SQLite 损坏）→ 跳过 LLM 匹配，返回空结果
+            if not tr.trace_valid:
+                log("MATCH", f"[{_trid}] {cond.value} trace 无效（解析失败），跳过匹配")
+                oc = OutcomeFact.undetermined(tr.task_run_id, evaluation_id, tr.condition,
+                                              tr.condition_source, "TRACE_INVALID",
+                                              tr.benchmark_item_id)
+                kn = KnowledgeInteractionFact(
+                    knowledge_fact_id=f"kf-{tr.task_run_id}",
+                    task_run_id=tr.task_run_id, evaluation_id=evaluation_id)
+                ta = ToolActionFact(
+                    tool_action_fact_id=f"taf-{tr.task_run_id}",
+                    task_run_id=tr.task_run_id, evaluation_id=evaluation_id)
+                rs = ResourceFact(
+                    resource_fact_id=f"rf-{tr.task_run_id}",
+                    task_run_id=tr.task_run_id, evaluation_id=evaluation_id,
+                    validity_status="INVALID")
+                return tr, {"outcome": oc, "knowledge": kn, "tool": ta, "resource": rs,
+                            "case_results": [], "session_graph": {}, "findings": [],
+                            "events": [], "_task_id": tr.task_id, "parser": parser,
+                            "_is_verify": is_verify}, parsed["src"]
 
             log("MATCH", f"[{_trid}] {cond.value} bench_items={len(bench)} events={len(events)} starting ai_match + resolve...")
             _check_cancel(evaluation_id, "AI_MATCHING")
