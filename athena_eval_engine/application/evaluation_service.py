@@ -425,11 +425,16 @@ def create(req: CreateRequest):
         except Exception as err:
             log("CREATE", f"⚠ 自动发现验证 trace 失败: {err}")
 
-    # Step 1: evaluation
+    # Step 1: benchmark_set + evaluation（先确保 benchmark_set 存在，避免 FK 约束失败）
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
     conn = connect(autocommit=True)
     try:
-        conn.cursor().execute(
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT IGNORE INTO benchmark_set (benchmark_set_id, name, version, manifest_hash) "
+            "VALUES (%s,%s,'1.0','hash-bs001')",
+            (req.benchmark_set_id, f"name-{req.benchmark_set_id}"))
+        cur.execute(
             "INSERT INTO evaluation (evaluation_id, evaluation_name, benchmark_set_id, agent_name) "
             "VALUES (%s,%s,%s,'Turing')",
             (req.evaluation_id, eval_name, req.benchmark_set_id))
