@@ -1026,7 +1026,7 @@ function renderReport(d){
       }
       return `${_summaryCard}
       ${isAc?'':`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
-      ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
+      ${isAc&&allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
       ${_filterBar}
       <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
       <tbody>${rows}</tbody></table></div>`:''}`;
