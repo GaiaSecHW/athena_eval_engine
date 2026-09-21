@@ -11,10 +11,60 @@ Agent 的 finding 结构：
   update_finding input: finding_id(UUID), validation_result(CONFIRMED/FALSE_POSITIVE)
 """
 from __future__ import annotations
-import json
+import json, re
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, with_eval_ctx
 from ..infrastructure.concurrency import get as _conc_get
+
+
+def _norm_path(path: str) -> str:
+    """归一化源文件路径用于比对。"""
+    if not path:
+        return ""
+    path = path.strip()
+    path = re.sub(r':\d+(-\d+)?$', '', path)
+    path = re.sub(r':[^/]+$', '', path)  # 去掉 :function_name
+    m = re.search(r'com/huawei/(.+)', path)
+    if m:
+        return m.group(1).lower().strip()
+    m = re.search(r'/src/(.+)', path)
+    if m:
+        return m.group(1).lower().strip()
+    return path.lower().strip("/")
+
+
+def _verify_sink(baseline_sink: str, finding_sink: str) -> bool | None:
+    """代码校验 sink 路径是否一致。返回 True/False，None=无法确定。"""
+    bl = _norm_path(baseline_sink)
+    fl = _norm_path(finding_sink)
+    if not bl or not fl:
+        return None
+    if bl == fl:
+        return True
+    if bl in fl or fl in bl:
+        return True
+    bl_parts = bl.split("/")
+    fl_parts = fl.split("/")
+    for n in (3, 2):
+        if len(bl_parts) >= n and len(fl_parts) >= n:
+            if bl_parts[-n:] == fl_parts[-n:]:
+                return True
+    broad = {"controller", "service", "impl", "common", "config", "utils",
+             "fintech", "huawei", "src", "com", "app", "main", "java",
+             "sdk", "api", "core", "biz", "ws", "restful"}
+    common = set(bl_parts) & set(fl_parts) - broad
+    if not common:
+        return False
+    return None
+
+
+def _parse_bool(val) -> bool:
+    """解析 LLM 返回的 bool 值。"""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower().strip() == "true"
+    return False
 
 
 def match_alert_center_to_findings(alert_center_cases: list[dict], findings: list[dict],
@@ -59,10 +109,12 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # 构建精简描述
     ac_list = []
     for c in alert_center_cases:
+        subject = c.get("subject", {}) or {}
         ac_list.append({
             "case_id": c.get("case_id") or "",
             "title": c.get("title") or "",
             "summary": c.get("summary") or "",
+            "locator": subject.get("locator", "") if isinstance(subject, dict) else "",
         })
     finding_list = []
     for f in active_findings:
@@ -74,13 +126,6 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             "sink": f.get("sink") or "",
         })
 
-    def _abbrev(s: str, n: int = 200) -> str:
-        s = s or ""
-        if len(s) <= n:
-            return s
-        h = n // 2
-        return s[:h] + "..." + s[-h:]
-
     # === Phase 1: 标题预筛选（每告警中心 case 1 次 LLM，O(M) 调用）===
     _PREFILTER_LIMIT = 50
     available_finding_indices = list(range(len(active_findings)))
@@ -89,20 +134,20 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     _progress(f"告警中心匹配 预筛选: 0/{len(alert_center_cases)} 完成")
     _prefilter_sys = (
-        "下面是一些代码安全漏洞的标题和描述摘要。"
-        "请从标题和描述分析哪些漏洞报告跟该告警中心案例描述的是同一个漏洞。"
+        "下面是一些代码安全漏洞的标题。"
+        "请从标题分析哪些漏洞报告跟该告警中心案例可能是同一个漏洞。"
+        "宁可多选不要遗漏。"
         "将可能匹配的漏洞的 ID 原样返回，便于核对。"
         "只返回 JSON：{\"possible_ids\": [\"ID1\", \"ID2\"]}。"
         "无匹配返回空数组 []。"
     )
 
     def _prefilter_one(ai: int) -> tuple[int, list[int]]:
-        """预筛选：告警中心 case 标题+摘要 + finding 标题+描述 → 候选 finding 索引。"""
+        """预筛选：告警中心 case 标题 + finding 标题 → 候选 finding 索引。"""
         ac = ac_list[ai]
         id_to_idx: dict[str, int] = {}
         lines = [
             f"告警中心案例标题：{ac.get('title', '')}",
-            f"案例摘要：{_abbrev(ac.get('summary') or '')}",
             "",
             "以下是要比较的漏洞报告：",
         ]
@@ -110,8 +155,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             fid = f.get("display_id") or f.get("finding_id", "") or str(i)
             id_to_idx[fid] = i
             _title = finding_list[i].get("title", "")
-            _desc = _abbrev(finding_list[i].get("description") or "")
-            lines.append(f"[{fid}] {_title} {_desc}")
+            lines.append(f"[{fid}] {_title}")
         user_msg = "\n".join(lines)
         prompt = [
             {"role": "system", "content": _prefilter_sys},
@@ -143,6 +187,10 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             else:
                 try:
                     _, indices = fut.result()
+                    if not indices:
+                        # 0 候选 → fallback 全量，避免标题预筛遗漏
+                        indices = list(range(len(active_findings)))
+                        log("AC_MATCH", f"prefilter 0 candidates (ac{ai}): fallback all")
                     prefilter_candidates[ai] = indices
                 except Exception as e:
                     prefilter_candidates[ai] = list(range(len(active_findings)))
@@ -163,29 +211,65 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # === Phase 2: 全量并行 1vs1 + 串行冲突解决 ===
     _progress(f"告警中心匹配 详细对比: 0/{len(alert_center_cases)} 完成")
     _sys_prompt = (
-        "# 角色\n"
-        "你是漏洞匹配判定器。判断给定的告警中心案例和漏洞报告是否描述的是同一个漏洞。\n\n"
-        "# 判断规则\n"
-        "1. 同一个漏洞 = 相同漏洞类型 + 相同入口/source + 相同 sink + 相同文件/函数位置\n"
-        "2. 路径格式可能不同：如 'src/main/java/.../FileService.java' 和 'FileService.java' 可能是同一文件\n"
-        "3. 函数名相同是强信号，但描述的漏洞行为也需吻合\n"
-        "4. 漏洞类型可能用不同术语：如 '注入' 和 'SQL Injection' 是同一类型\n"
-        "5. 仅漏洞类型相同但位置/函数不同的，不是同一个漏洞\n"
-        "6. 不看结论对错：只要描述的是同一个漏洞就返回 true\n\n"
-        "# 输出格式\n"
-        '只返回 JSON：{"is_same": true} 或 {"is_same": false}，不要任何额外文字。'
+        "你是漏洞匹配判定器。给定基线漏洞和候选漏洞的标题、描述和sink路径，"
+        "从中提取三个维度并判断是否指向同一漏洞：\n"
+        "1. sink点：漏洞代码位置（源文件路径）\n"
+        "2. source入口：攻击入口（API端点/接口名）\n"
+        "3. 漏洞类型：漏洞类别（如SQL注入、命令注入、越权、IDOR、SSRF等）\n\n"
+        "先从标题和描述中提取各自的三个维度值，sink路径作为参考，再逐一判断是否相同。\n"
+        "判断标准：\n"
+        "- sink点从严：源文件路径需要明确对应（不同文件=不同漏洞）\n"
+        "- source入口从宽：不同语言/命名但指向同一API端点或接口的，视为相同。"
+        "如'generateParameters接口'与'参数生成接口'、'POST /api/parameterGenerate'与'参数生成接口'是同一入口\n"
+        "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
+        "如'OS命令注入'与'远程命令注入'、'SQL注入'与'SQL Injection'是同一类型\n\n"
+        '只返回JSON：\n'
+        '{\n'
+        '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
+        '  "candidate": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
+        '  "same_sink": true/false,\n'
+        '  "same_source": true/false,\n'
+        '  "same_vuln_type": true/false,\n'
+        '  "reason": "简要说明每个维度的判断理由"\n'
+        '}'
     )
 
-    def _check_pair(ai: int, fi: int, ac_desc: dict, fd_desc: dict) -> tuple[int, int, bool]:
+    def _check_pair(ai: int, fi: int, ac_title: str, ac_summary: str, ac_sink: str,
+                    fd_title: str, fd_description: str, fd_sink: str) -> tuple[int, int, bool]:
+        ac_desc = f"标题: {ac_title}\n描述: {ac_summary}"
+        if ac_sink:
+            ac_desc += f"\nSink: {ac_sink}"
+        fd_desc = f"标题: {fd_title}\n描述: {fd_description}"
+        if fd_sink:
+            fd_desc += f"\nSink: {fd_sink}"
+
         prompt = [
             {"role": "system", "content": _sys_prompt},
-            {"role": "user", "content": json.dumps({
-                "告警中心案例": ac_desc, "漏洞报告": fd_desc,
-            }, ensure_ascii=False, indent=2)},
+            {"role": "user", "content": (
+                f"基线漏洞:\n{ac_desc}\n\n"
+                f"候选漏洞:\n{fd_desc}\n\n"
+                f"提取三个维度并判断是否同一漏洞。"
+            )},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0)
-        is_same = bool(result.get("is_same", False)) if isinstance(result, dict) else bool(result)
-        return ai, fi, is_same
+        try:
+            result = llm_mod.chat_json(prompt, temperature=0)
+            same_sink = _parse_bool(result.get("same_sink", False))
+            same_source = _parse_bool(result.get("same_source", False))
+            same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
+
+            # 代码校验 sink
+            sink_check = _verify_sink(ac_sink, fd_sink)
+            if sink_check is False and same_sink:
+                same_sink = False
+            elif sink_check is True and not same_sink:
+                same_sink = True
+
+            # 三者全 true 才算匹配
+            is_same = same_sink and same_source and same_vuln_type
+            return ai, fi, is_same
+        except Exception as e:
+            log("AC_MATCH", f"LLM 判断失败 (ac{ai},f{fi}): {e}")
+            return ai, fi, False
 
     # 收集所有 (ac_idx, finding_idx) 对
     all_pairs: list[tuple[int, int]] = []
@@ -208,10 +292,13 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         try:
             futures = {}
             for ai, fi in all_pairs:
-                fut = pool.submit(with_eval_ctx(_check_pair), ai, fi, {
-                    "title": ac_list[ai].get("title", ""),
-                    "summary": ac_list[ai].get("summary", ""),
-                }, finding_list[fi])
+                fut = pool.submit(with_eval_ctx(_check_pair), ai, fi,
+                    ac_list[ai].get("title", ""),
+                    ac_list[ai].get("summary", ""),
+                    ac_list[ai].get("locator", ""),
+                    finding_list[fi].get("title", ""),
+                    finding_list[fi].get("description", ""),
+                    finding_list[fi].get("sink", ""))
                 futures[fut] = (ai, fi)
             done = 0
             for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):

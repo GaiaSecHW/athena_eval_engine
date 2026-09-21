@@ -17,7 +17,7 @@ from ..workers.turing_trace_parser import TuringTraceParser
 from ..workers.resolvers import (
     OutcomeResolverImpl, KnowledgeResolverImpl, ToolActionResolverImpl, ResourceResolverImpl,
 )
-from ..workers.ai_matcher import match_alert_center_to_findings
+from ..workers.ai_matcher import match_alert_center_to_findings, _verify_sink, _parse_bool
 from ..workers.sink_matcher import (sink_match_baselines,
                                     group_chains, collect_chain_actions, collect_chain_findings)
 from ..infrastructure import llm as llm_mod
@@ -418,42 +418,103 @@ def _fill_missing_source(case: dict) -> None:
             case["source_line"] = sln
 
 
-def _ai_identify_finding(ac_title: str, ac_summary: str,
+def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
                          candidates: list[dict]) -> int | None:
-    """用 LLM 从多个候选 finding 中识别正确的 finding（1:N 场景）。"""
+    """用 LLM 从多个候选 finding 中识别正确的 finding（1:N 场景）。
+
+    三维度匹配：sink/source/vuln_type，三者全 true 才算匹配。
+    LLM 输入包含完整标题+描述+sink路径参考。
+    sink 额外用代码校验，LLM 说 true 但路径明显不一致则推翻。
+    """
     lines = []
     for i, f in enumerate(candidates):
         f_title = f.get("title", "") or f.get("vuln_type", "")
         f_desc = f.get("description", "") or ""
-        lines.append(f"--- 候选{i+1} ---\n标题: {f_title}\n描述: {f_desc}")
+        f_sink = f.get("sink", "") or ""
+        parts = [f"标题: {f_title}"]
+        if f_desc:
+            parts.append(f"描述: {f_desc}")
+        if f_sink:
+            parts.append(f"Sink: {f_sink}")
+        lines.append(f"--- 候选{i+1} ---\n" + "\n".join(parts))
+
+    ac_desc = f"标题: {ac_title}"
+    if ac_summary:
+        ac_desc += f"\n描述: {ac_summary}"
+    if ac_sink:
+        ac_desc += f"\nSink: {ac_sink}"
+
     prompt = [
         {"role": "system", "content": (
-            "你是漏洞匹配判定器。给定一个告警中心漏洞和多个候选 finding，"
-            "找出与告警中心漏洞是同一个漏洞的候选编号。\n"
-            "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
-            '只返回 JSON：{"no": 候选编号, "confidence": 0.0-1.0, "reason": "简要理由"}\n'
-            '如果没有匹配的候选，返回 {"no": 0, "confidence": 0.0, "reason": "无匹配"}'
+            "你是漏洞匹配判定器。给定一个基线漏洞和多个候选漏洞，"
+            "对每个候选提取三个维度并判断是否与基线指向同一漏洞：\n"
+            "1. sink点：漏洞代码位置（源文件路径）\n"
+            "2. source入口：攻击入口（API端点/接口名）\n"
+            "3. 漏洞类型：漏洞类别\n\n"
+            "判断标准：\n"
+            "- sink点从严：源文件路径需要明确对应（不同文件=不同漏洞）\n"
+            "- source入口从宽：不同语言/命名但指向同一API端点或接口的，视为相同。"
+            "如'generateParameters接口'与'参数生成接口'是同一入口\n"
+            "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
+            "如'OS命令注入'与'远程命令注入'是同一类型\n\n"
+            "对每个候选，先从标题和描述中提取三维度值，sink路径作为参考，再逐一判断是否相同。"
+            "只返回三者全为true的候选。\n"
+            '只返回JSON：\n'
+            '{\n'
+            '  "results": [\n'
+            '    {"no": 候选编号, "baseline": {"sink":"...","source":"...","vuln_type":"..."}, '
+            '"candidate": {"sink":"...","source":"...","vuln_type":"..."}, '
+            '"same_sink": true, "same_source": true, "same_vuln_type": true, "reason": "..."}\n'
+            '  ]\n'
+            '}\n'
+            '只包含三者全为true的候选。如果没有匹配，results为[]。'
         )},
         {"role": "user", "content": (
-            f"告警中心漏洞:\n标题: {ac_title}\n描述: {ac_summary}\n\n"
-            f"候选 finding:\n{chr(10).join(lines)}\n\n"
-            f"找出与告警中心漏洞是同一个漏洞的候选编号（1-{len(candidates)}）。"
+            f"基线漏洞:\n{ac_desc}\n\n"
+            f"候选漏洞:\n{chr(10).join(lines)}\n\n"
+            f"对每个候选提取三维度并判断是否同一漏洞，只返回三者全为true的候选，"
+            f"编号1-{len(candidates)}。"
         )},
     ]
-    result = llm_mod.chat_json(prompt, temperature=0)
-    no = result.get("no", 0)
     try:
-        no = int(no)
-    except (ValueError, TypeError):
+        result = llm_mod.chat_json(prompt, temperature=0)
+        results_raw = result.get("results", [])
+        if isinstance(results_raw, dict):
+            results_raw = [results_raw]
+        for item in results_raw:
+            if not isinstance(item, dict):
+                continue
+            no = item.get("no", 0)
+            try:
+                no = int(no)
+            except (ValueError, TypeError):
+                continue
+            if 1 <= no <= len(candidates):
+                same_sink = _parse_bool(item.get("same_sink", False))
+                same_source = _parse_bool(item.get("same_source", False))
+                same_vuln_type = _parse_bool(item.get("same_vuln_type", False))
+
+                # 代码校验 sink
+                fd_sink = candidates[no - 1].get("sink", "") or ""
+                sink_check = _verify_sink(ac_sink, fd_sink)
+                if sink_check is False and same_sink:
+                    same_sink = False
+                elif sink_check is True and not same_sink:
+                    same_sink = True
+
+                # 程序控制：三者全 true 才算匹配
+                if same_sink and same_source and same_vuln_type:
+                    return no - 1
         return None
-    if 1 <= no <= len(candidates):
-        return no - 1
-    return None
+    except Exception as e:
+        log("MATCH", f"AI 识别 finding 失败: {e}")
+        return None
 
 
 def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
                                   findings: list[dict], events: list,
-                                  llm_result: int | None = None
+                                  llm_result: int | None = None,
+                                  ac_sink: str = "",
                                   ) -> tuple[dict | None, str]:
     """用 AC case 漏洞标题匹配 finding，找不到则搜索 trace 全文。
 
@@ -488,7 +549,7 @@ def _match_ac_to_finding_by_title(ac_title: str, ac_summary: str,
                 return matched_findings[llm_result], "title_ai"
         elif ac_summary and llm_mod.is_enabled():
             try:
-                _best_idx = _ai_identify_finding(ac_title, ac_summary, matched_findings)
+                _best_idx = _ai_identify_finding(ac_title, ac_summary, ac_sink, matched_findings)
                 if _best_idx is not None:
                     return matched_findings[_best_idx], "title_ai"
             except Exception as _e:
@@ -1225,6 +1286,7 @@ def run(evaluation_id: str) -> dict:
                                 "ac_case_id": _d.get("finding_id", ""),
                                 "ac_title": _d.get("finding_title", ""),
                                 "ac_summary": _d.get("finding_summary", ""),
+                                "ac_sink": _d.get("finding_sink", ""),
                                 "judgment": _d.get("judgment", ""),
                                 "is_fp": _d.get("is_fp", False),
                             }
@@ -2054,17 +2116,18 @@ def run(evaluation_id: str) -> dict:
         _g_case_results = []
 
         # 预计算：哪些 case 的 KG/NOGK 条件需要 LLM 识别 finding（1:N 标题匹配）
-        _llm_tasks: list[tuple[str, str, str, str, list[dict]]] = []  # (cond, case_id, ac_title, ac_summary, matched_findings)
+        _llm_tasks: list[tuple[str, str, str, str, str, list[dict]]] = []  # (cond, case_id, ac_title, ac_summary, ac_sink, matched_findings)
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
             for _cond, _findings in [("kg", _kg_findings), ("nogk", _nogk_findings)]:
                 _fpr_m = (_fpr_match_lookup or {}).get(_cond, {}).get(_g_case_id, {})
                 _ac_t = _fpr_m.get("ac_title", "")
                 _ac_s = _fpr_m.get("ac_summary", "")
+                _ac_sk = _fpr_m.get("ac_sink", "")
                 if _ac_t and _ac_s and llm_mod.is_enabled():
                     _mf = [f for f in _findings if _ac_t in (f.get("title", "") or f.get("vuln_type", ""))]
                     if len(_mf) > 1:
-                        _llm_tasks.append((_cond, _g_case_id, _ac_t, _ac_s, _mf))
+                        _llm_tasks.append((_cond, _g_case_id, _ac_t, _ac_s, _ac_sk, _mf))
 
         # 并行提交所有 LLM 识别调用
         _llm_results: dict[tuple[str, str], int | None] = {}  # (cond, case_id) -> best_idx
@@ -2072,7 +2135,7 @@ def run(evaluation_id: str) -> dict:
             from concurrent.futures import ThreadPoolExecutor as _TPE
             log("EVAL", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
             _llm_pool = _TPE(max_workers=min(len(_llm_tasks), _conc_get("ac_llm_workers")))
-            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4]): (t[0], t[1]) for t in _llm_tasks}
+            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4], t[5]): (t[0], t[1]) for t in _llm_tasks}
             for fut in _llm_futs:
                 _cond, _cid = _llm_futs[fut]
                 try:
@@ -2096,6 +2159,7 @@ def run(evaluation_id: str) -> dict:
             _fpr_match = (_fpr_match_lookup or {}).get("kg", {}).get(_g_case_id, {})
             _fpr_ac_title = _fpr_match.get("ac_title", "")
             _fpr_ac_summary = _fpr_match.get("ac_summary", "")
+            _fpr_ac_sink = _fpr_match.get("ac_sink", "")
             # FPR 为权威来源：匹配 → TP/FP，未匹配 → FN/TN（与误报率统计一致）
             _fpr_judgment = _fpr_match.get("judgment", "")
             if _fpr_judgment and _fpr_judgment != "未匹配":
@@ -2118,7 +2182,8 @@ def run(evaluation_id: str) -> dict:
             if _fpr_ac_title:
                 _fpr_finding, _match_method = _match_ac_to_finding_by_title(
                     _fpr_ac_title, _fpr_ac_summary, _kg_findings, _kg_events,
-                    llm_result=_llm_results.get(("kg", _g_case_id)))
+                    llm_result=_llm_results.get(("kg", _g_case_id)),
+                    ac_sink=_fpr_ac_sink)
                 _kg_ac_match_method = _match_method
                 if _fpr_finding:
                     _fpr_session = _fpr_finding.get("session_id", "")
@@ -2168,6 +2233,7 @@ def run(evaluation_id: str) -> dict:
             _nogk_fpr_match = (_fpr_match_lookup or {}).get("nogk", {}).get(_g_case_id, {})
             _nogk_ac_title = _nogk_fpr_match.get("ac_title", "")
             _nogk_ac_summary = _nogk_fpr_match.get("ac_summary", "")
+            _nogk_ac_sink = _nogk_fpr_match.get("ac_sink", "")
             # FPR 为权威来源：匹配 → TP/FP，未匹配 → FN/TN（与误报率统计一致）
             _nogk_fpr_judgment = _nogk_fpr_match.get("judgment", "")
             if _nogk_fpr_judgment and _nogk_fpr_judgment != "未匹配":
@@ -2190,7 +2256,8 @@ def run(evaluation_id: str) -> dict:
             if _nogk_ac_title:
                 _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(
                     _nogk_ac_title, _nogk_ac_summary, _nogk_findings, _nogk_events,
-                    llm_result=_llm_results.get(("nogk", _g_case_id)))
+                    llm_result=_llm_results.get(("nogk", _g_case_id)),
+                    ac_sink=_nogk_ac_sink)
                 _nogk_ac_match_method = _nogk_match_method
                 if _nogk_fpr_finding:
                     _nogk_fpr_session = _nogk_fpr_finding.get("session_id", "")

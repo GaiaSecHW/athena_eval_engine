@@ -874,12 +874,12 @@ function renderReport(d){
         return `<tr>
           <td>${d.seq||''}</td>
           <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis">${summary.replace(/</g,'&lt;')}</td>
+          <td style="max-width:150px;word-break:break-all">${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
+          <td style="font-size:12px;color:var(--sub);max-width:300px;word-break:break-all">${summary.replace(/</g,'&lt;')}</td>
           <td style="font-size:12px">${String(d.finding_status||'').replace(/</g,'&lt;')}</td>
           <td>${d.match_status||''}</td>
           <td style="font-size:12px">${String(d.bl_case_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
+          <td style="max-width:150px;word-break:break-all">${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
           <td>${blLabel}</td>
           <td style="font-size:12px">${String(d.bl_category||'').replace(/</g,'&lt;')}</td>
           <td style="font-size:12px;color:var(--sub);max-width:300px">${String(d.reason||'').replace(/</g,'&lt;')}</td>
@@ -947,11 +947,11 @@ function renderReport(d){
           <td>${d.seq||''}</td>
           <td>${condBadge}</td>
           <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis">${summary.replace(/</g,'&lt;')}</td>
+          <td style="max-width:150px;word-break:break-all">${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
+          <td style="font-size:12px;color:var(--sub);max-width:300px;word-break:break-all">${summary.replace(/</g,'&lt;')}</td>
           <td>${d.match_status||''}</td>
           <td style="font-size:12px">${String(d.bl_case_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
+          <td style="max-width:150px;word-break:break-all">${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
           <td>${blLabel}</td>
           <td style="font-size:12px;color:var(--sub);max-width:300px">${String(d.reason||'').replace(/</g,'&lt;')}</td>
           <td>${badge}</td>

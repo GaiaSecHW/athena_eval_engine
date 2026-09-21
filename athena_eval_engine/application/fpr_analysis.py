@@ -15,96 +15,142 @@ from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, with_eval_ctx
 from ..infrastructure.concurrency import get as _conc_get
 
-_BATCH_SIZE = 5
+_BATCH_SIZE = 10
+
+
+def _norm_path(path: str) -> str:
+    """归一化源文件路径用于比对。"""
+    if not path:
+        return ""
+    import re
+    path = path.strip()
+    path = re.sub(r':\d+(-\d+)?$', '', path)
+    path = re.sub(r':[^/]+$', '', path)  # 去掉 :function_name
+    m = re.search(r'com/huawei/(.+)', path)
+    if m:
+        return m.group(1).lower().strip()
+    m = re.search(r'/src/(.+)', path)
+    if m:
+        return m.group(1).lower().strip()
+    return path.lower().strip("/")
+
+
+def _verify_sink(baseline_sink: str, finding_sink: str) -> bool | None:
+    """代码校验 sink 路径是否一致。返回 True/False，None=无法确定。"""
+    bl = _norm_path(baseline_sink)
+    fl = _norm_path(finding_sink)
+    if not bl or not fl:
+        return None
+    if bl == fl:
+        return True
+    if bl in fl or fl in bl:
+        return True
+    bl_parts = bl.split("/")
+    fl_parts = fl.split("/")
+    for n in (3, 2):
+        if len(bl_parts) >= n and len(fl_parts) >= n:
+            if bl_parts[-n:] == fl_parts[-n:]:
+                return True
+    # 无任何公共路径段 → 明确不一致
+    broad = {"controller", "service", "impl", "common", "config", "utils",
+             "fintech", "huawei", "src", "com", "app", "main", "java",
+             "sdk", "api", "core", "biz", "ws", "restful"}
+    common = set(bl_parts) & set(fl_parts) - broad
+    if not common:
+        return False
+    return None
 
 
 def _build_finding_desc(case: dict) -> str:
-    """从漏洞中心 case 构建完整漏洞描述（全量字段）。"""
+    """从漏洞中心 case 构建描述：标题 + 描述 + sink 路径。"""
     title = case.get("title", "")
-    summary = case.get("summary", "") or ""
-    display_summary = case.get("display_summary", "") or ""
+    summary = case.get("summary", "") or case.get("display_summary", "") or ""
+    if isinstance(summary, dict):
+        summary = json.dumps(summary, ensure_ascii=False)
+    if not isinstance(summary, str):
+        summary = str(summary)
     subject = case.get("subject", {})
     if isinstance(subject, dict):
-        vuln_type = subject.get("type", "")
         locator = subject.get("locator", "")
-        subj_name = subject.get("name", "")
     else:
-        vuln_type = ""
         locator = ""
-        subj_name = ""
-    human_conf = case.get("human_confirmation", {})
-    if isinstance(human_conf, dict):
-        human_summary = human_conf.get("summary", "")
-    else:
-        human_summary = ""
-    latest_decision = case.get("latest_human_decision", {})
-    if isinstance(latest_decision, dict):
-        decision_reason = latest_decision.get("reason", "")
-    else:
-        decision_reason = ""
-    raw_report = case.get("raw_report_summary", "") or ""
-
     parts = [f"标题: {title}"]
-    if vuln_type:
-        parts.append(f"漏洞类型: {vuln_type}")
-    if locator:
-        parts.append(f"定位: {locator}")
-    if subj_name:
-        parts.append(f"对象: {subj_name}")
     if summary:
-        parts.append(f"摘要: {summary}")
-    if display_summary:
-        parts.append(f"展示摘要: {display_summary}")
-    if human_summary:
-        parts.append(f"人工确认: {human_summary}")
-    if decision_reason:
-        parts.append(f"决策理由: {decision_reason}")
-    if raw_report:
-        parts.append(f"报告摘要: {raw_report}")
+        parts.append(f"描述: {summary}")
+    if locator:
+        parts.append(f"Sink: {locator}")
     return "\n".join(parts)
 
 
-def _llm_match_batch(baseline_content: str,
-                     batch_findings: list[tuple[int, str]]) -> tuple[list[tuple[int, float]], str]:
-    """用 LLM 从一批漏洞中找出与基线匹配的候选，返回 (matched_list, reason)。
+def _llm_match_batch(baseline_content: str, baseline_sink: str,
+                     batch_findings: list[tuple[int, str, str]]) -> tuple[list[tuple[int, float]], str]:
+    """用 LLM 从一批漏洞中找出与基线匹配的候选。
 
-    batch_findings: [(original_fidx, finding_desc), ...]
+    输入：标题 + 完整描述 + sink 路径（作为参考）。
+    LLM 输出三维度提取值 + 三个 bool，程序判断三者全 true 才算匹配。
+    sink 额外用代码校验，LLM 说 true 但路径明显不一致则推翻。
+
+    batch_findings: [(original_fidx, finding_desc, finding_sink), ...]
     返回: [(original_fidx, confidence 0.0-1.0), ...]（空列表=无匹配），理由
-
-    如果 token 超限，自动减半 batch size 重试，直到 1vs1。
     """
     if len(batch_findings) == 1:
-        fidx, desc = batch_findings[0]
+        fidx, desc, finding_sink = batch_findings[0]
         prompt = [
             {
                 "role": "system",
                 "content": (
-                    "你是漏洞匹配判定器。判断两个漏洞描述是否指的是同一个漏洞。\n"
-                    "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
-                    '只返回 JSON：{"is_same": true或false, "confidence": 0.0-1.0, "reason": "简要理由"}'
+                    "你是漏洞匹配判定器。给定基线漏洞和候选漏洞的标题、描述和sink路径，"
+                    "从中提取三个维度并判断是否指向同一漏洞：\n"
+                    "1. sink点：漏洞代码位置（源文件路径）\n"
+                    "2. source入口：攻击入口（API端点/接口名）\n"
+                    "3. 漏洞类型：漏洞类别（如SQL注入、命令注入、越权、IDOR、SSRF等）\n\n"
+                    "先从标题和描述中提取各自的三个维度值，sink路径作为参考，再逐一判断是否相同。\n"
+                    "判断标准：\n"
+                    "- sink点从严：源文件路径需要明确对应（不同文件=不同漏洞）\n"
+                    "- source入口从宽：不同语言/命名但指向同一API端点或接口的，视为相同。"
+                    "如'generateParameters接口'与'参数生成接口'、'POST /api/parameterGenerate'与'参数生成接口'是同一入口\n"
+                    "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
+                    "如'OS命令注入'与'远程命令注入'、'SQL注入'与'SQL Injection'是同一类型\n\n"
+                    '只返回JSON：\n'
+                    '{\n'
+                    '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
+                    '  "candidate": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
+                    '  "same_sink": true/false,\n'
+                    '  "same_source": true/false,\n'
+                    '  "same_vuln_type": true/false,\n'
+                    '  "reason": "简要说明每个维度的判断理由"\n'
+                    '}'
                 ),
             },
             {
                 "role": "user",
                 "content": (
-                    f"漏洞中心漏洞:\n{desc}\n\n"
                     f"基线漏洞:\n{baseline_content}\n\n"
-                    f"判断这两个描述是否指的是同一个漏洞。"
+                    f"候选漏洞:\n{desc}\n\n"
+                    f"提取三个维度并判断是否同一漏洞。"
                 ),
             },
         ]
         try:
             result = llm_mod.chat_json(prompt, temperature=0)
-            is_same = result.get("is_same", False)
+            same_sink = _parse_bool(result.get("same_sink", False))
+            same_source = _parse_bool(result.get("same_source", False))
+            same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
             reason = result.get("reason", "")
-            if not isinstance(is_same, bool):
-                is_same = str(is_same).lower() == "true"
-            conf = result.get("confidence", 1.0)
-            try:
-                conf = float(conf)
-            except (ValueError, TypeError):
-                conf = 1.0
-            return ([(fidx, conf)] if is_same else []), reason
+
+            # 代码校验 sink
+            sink_check = _verify_sink(baseline_sink, finding_sink)
+            if sink_check is False and same_sink:
+                same_sink = False
+                reason += " [代码校验: sink路径不一致，推翻LLM判断]"
+            elif sink_check is True and not same_sink:
+                same_sink = True
+                reason += " [代码校验: sink路径一致，推翻LLM判断]"
+
+            # 三者全 true 才算匹配
+            if same_sink and same_source and same_vuln_type:
+                return [(fidx, 1.0)], reason
+            return [], reason
         except Exception as e:
             log("FPR", f"LLM 判断失败: {e}")
             return [], f"LLM 错误: {e}"
@@ -113,7 +159,7 @@ def _llm_match_batch(baseline_content: str,
     current_batch = batch_findings
     while len(current_batch) > 1:
         lines = []
-        for i, (fidx, desc) in enumerate(current_batch):
+        for i, (fidx, desc, _) in enumerate(current_batch):
             lines.append(f"--- 候选{i+1} ---\n{desc}")
         candidates_text = "\n\n".join(lines)
 
@@ -122,14 +168,27 @@ def _llm_match_batch(baseline_content: str,
                 "role": "system",
                 "content": (
                     "你是漏洞匹配判定器。给定一个基线漏洞和多个候选漏洞，"
-                    "找出所有与基线指的是同一个漏洞的候选，并为每个命中的候选给出置信度。\n"
-                    "匹配标准：漏洞位置、攻击入口、漏洞类型、漏洞原理相同或高度相似。\n"
-                    "confidence 越高表示匹配越确信：1.0=完全确定，0.7=较可能，0.5=不确定。\n"
-                    "如果没有匹配的候选，matched 为 []。\n"
-                    '只返回 JSON：{"matched": [{"no": 候选编号, "confidence": 0.0-1.0}], "reason": "简要理由"}\n'
-                    '示例：{"matched": [{"no": 1, "confidence": 0.9}], "reason": "候选1的漏洞位置和攻击入口与基线一致"}\n'
-                    '示例：{"matched": [{"no": 1, "confidence": 0.9}, {"no": 3, "confidence": 0.6}], "reason": "候选1和3都与基线匹配，候选1更确信"}\n'
-                    '示例：{"matched": [], "reason": "无匹配"}'
+                    "对每个候选提取三个维度并判断是否与基线指向同一漏洞：\n"
+                    "1. sink点：漏洞代码位置（源文件路径）\n"
+                    "2. source入口：攻击入口（API端点/接口名）\n"
+                    "3. 漏洞类型：漏洞类别\n\n"
+                    "判断标准：\n"
+                    "- sink点从严：源文件路径需要明确对应（不同文件=不同漏洞）\n"
+                    "- source入口从宽：不同语言/命名但指向同一API端点或接口的，视为相同。"
+                    "如'generateParameters接口'与'参数生成接口'是同一入口\n"
+                    "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
+                    "如'OS命令注入'与'远程命令注入'是同一类型\n\n"
+                    "对每个候选，先从标题和描述中提取三维度值，sink路径作为参考，再逐一判断是否相同。"
+                    "只返回三者全为true的候选。\n"
+                    '只返回JSON：\n'
+                    '{\n'
+                    '  "results": [\n'
+                    '    {"no": 候选编号, "baseline": {"sink":"...","source":"...","vuln_type":"..."}, '
+                    '"candidate": {"sink":"...","source":"...","vuln_type":"..."}, '
+                    '"same_sink": true, "same_source": true, "same_vuln_type": true, "reason": "..."}\n'
+                    '  ]\n'
+                    '}\n'
+                    '只包含三者全为true的候选。如果没有匹配，results为[]。'
                 ),
             },
             {
@@ -137,44 +196,46 @@ def _llm_match_batch(baseline_content: str,
                 "content": (
                     f"基线漏洞:\n{baseline_content}\n\n"
                     f"候选漏洞:\n{candidates_text}\n\n"
-                    f"找出所有与基线漏洞是同一个漏洞的候选，给出编号和置信度（1-{len(current_batch)}），"
-                    f"如果没有匹配则返回空列表 []。"
+                    f"对每个候选提取三维度并判断是否同一漏洞，只返回三者全为true的候选，"
+                    f"编号1-{len(current_batch)}。"
                 ),
             },
         ]
         try:
             result = llm_mod.chat_json(prompt, temperature=0)
-            matched_raw = result.get("matched", [])
+            results_raw = result.get("results", [])
             reason = result.get("reason", "")
-            # 解析为 [(fidx, confidence), ...]
+            if isinstance(results_raw, dict):
+                results_raw = [results_raw]
+
             matched_pairs: list[tuple[int, float]] = []
-            if isinstance(matched_raw, list):
-                for item in matched_raw:
-                    if isinstance(item, dict):
-                        no = item.get("no", item.get("idx", item.get("candidate", 0)))
-                        conf = item.get("confidence", 1.0)
-                    elif isinstance(item, (int, float)):
-                        no = item
-                        conf = 1.0
-                    elif isinstance(item, str):
-                        import re
-                        nums = re.findall(r'\d+', item)
-                        if nums:
-                            no = int(nums[0])
-                        else:
-                            continue
-                        conf = 1.0
-                    else:
-                        continue
-                    try:
-                        no = int(no)
-                        conf = float(conf)
-                    except (ValueError, TypeError):
-                        continue
-                    if 1 <= no <= len(current_batch):
-                        matched_pairs.append((current_batch[no - 1][0], conf))
-            elif isinstance(matched_raw, int) and 1 <= matched_raw <= len(current_batch):
-                matched_pairs.append((current_batch[matched_raw - 1][0], 1.0))
+            for item in results_raw:
+                if not isinstance(item, dict):
+                    continue
+                no = item.get("no", 0)
+                try:
+                    no = int(no)
+                except (ValueError, TypeError):
+                    continue
+                if not (1 <= no <= len(current_batch)):
+                    continue
+
+                fidx, _, finding_sink = current_batch[no - 1]
+                same_sink = _parse_bool(item.get("same_sink", False))
+                same_source = _parse_bool(item.get("same_source", False))
+                same_vuln_type = _parse_bool(item.get("same_vuln_type", False))
+
+                # 代码校验 sink
+                sink_check = _verify_sink(baseline_sink, finding_sink)
+                if sink_check is False and same_sink:
+                    same_sink = False
+                elif sink_check is True and not same_sink:
+                    same_sink = True
+
+                # 三者全 true 才算匹配
+                if same_sink and same_source and same_vuln_type:
+                    matched_pairs.append((fidx, 1.0))
+
             if matched_pairs:
                 return matched_pairs, reason
             return [], reason or "无匹配"
@@ -185,24 +246,29 @@ def _llm_match_batch(baseline_content: str,
                 "token limit", "context_window", "input too long",
                 "prompt too long",
             )):
-                # token 超限，减半 batch size 重试
                 half = len(current_batch) // 2
                 log("FPR", f"token 超限 (batch={len(current_batch)})，降级到 {half}+{len(current_batch)-half}")
                 left = current_batch[:half]
                 right = current_batch[half:]
-                # 先查左半边
-                left_matches, left_reason = _llm_match_batch(baseline_content, left)
+                left_matches, left_reason = _llm_match_batch(baseline_content, baseline_sink, left)
                 if left_matches:
-                    # 左半边有匹配，合并右半边结果
-                    right_matches, _ = _llm_match_batch(baseline_content, right)
+                    right_matches, _ = _llm_match_batch(baseline_content, baseline_sink, right)
                     return left_matches + right_matches, left_reason
-                # 左半边无匹配，查右半边
-                return _llm_match_batch(baseline_content, right)
+                return _llm_match_batch(baseline_content, baseline_sink, right)
             log("FPR", f"LLM 批量判断失败: {e}")
             return [], f"LLM 错误: {e}"
 
     # 降级到 1 条
-    return _llm_match_batch(baseline_content, current_batch[:1])
+    return _llm_match_batch(baseline_content, baseline_sink, current_batch[:1])
+
+
+def _parse_bool(val) -> bool:
+    """解析 LLM 返回的 bool 值。"""
+    if isinstance(val, bool):
+        return val
+    if isinstance(val, str):
+        return val.lower().strip() == "true"
+    return False
 
 
 def _run_matching(findings: list[dict], baseline_rows: list[dict],
@@ -224,14 +290,16 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
     def _match_one_baseline(bl_idx: int) -> tuple[int, int | None, float, list[tuple[int, float]]]:
         bl = baseline_rows[bl_idx]
         bl_content = bl.get("content", "")
+        bl_sink = bl.get("source_file", "")
         bl_title = bl.get("title", "")
 
-        # 所有 findings 分批
+        # 所有 findings 分批，每条带 sink 路径
         all_fidx = list(range(len(findings)))
-        batches: list[list[tuple[int, str]]] = []
+        batches: list[list[tuple[int, str, str]]] = []
         for i in range(0, len(all_fidx), _BATCH_SIZE):
             chunk_idxs = all_fidx[i:i + _BATCH_SIZE]
-            batch = [(f_idx, _build_finding_desc(findings[f_idx]))
+            batch = [(f_idx, _build_finding_desc(findings[f_idx]),
+                      (findings[f_idx].get("subject", {}) or {}).get("locator", "") or "")
                      for f_idx in chunk_idxs]
             batches.append(batch)
 
@@ -241,7 +309,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             _bl_pool2 = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_batch"), len(batches)))
             future_to_batch: dict = {}
             for batch in batches:
-                fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, batch)
+                fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, bl_sink, batch)
                 future_to_batch[fut] = batch
             for fut, _timeout in iter_completed(future_to_batch, per_task_timeout=1800):
                 if _timeout:
@@ -360,6 +428,8 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
         )
         finding_id = finding.get("id", "")
         finding_status = finding.get("confirmation_status", "")
+        _subject = finding.get("subject", {}) or {}
+        finding_sink = _subject.get("locator", "") if isinstance(_subject, dict) else ""
 
         if match_idx >= 0:
             bl = baseline_rows[match_idx]
@@ -384,6 +454,7 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
             "finding_id": finding_id,
             "finding_title": finding_title,
             "finding_summary": finding_summary,
+            "finding_sink": finding_sink,
             "finding_status": finding_status,
             "match_status": match_status,
             "bl_case_id": bl_case_id,
@@ -455,12 +526,20 @@ def run_fpr_analysis(project_id: str, task_id: str,
     # vulnerability_type 已由 vbench_client 从 description 第一行提取（去掉 # 前缀）
     baseline_rows = []
     for cid, cd in case_details.items():
-        _desc = cd.get("description", "")
         _vuln_type = cd.get("vulnerability_type", "")
+        _source_file = cd.get("source_file", "") or cd.get("locator", "") or ""
+        _description = cd.get("description", "") or ""
+        # 基线描述：标题 + 描述 + sink 路径
+        _content_parts = [f"标题: {_vuln_type}"]
+        if _description:
+            _content_parts.append(f"描述: {_description}")
+        if _source_file:
+            _content_parts.append(f"Sink: {_source_file}")
         baseline_rows.append({
             "case_id": cid,
             "title": _vuln_type,
-            "content": _desc,
+            "content": "\n".join(_content_parts),
+            "source_file": _source_file,
             "label": cd.get("expected_label", "VULNERABLE"),
             "category": _vuln_type,
         })
