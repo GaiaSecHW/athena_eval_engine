@@ -544,20 +544,20 @@ def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
 
     prompt = [
         {"role": "system", "content": (
-            "你是漏洞匹配判定器。给定一个基线漏洞和多个候选漏洞，"
-            "对每个候选提取三个维度并判断是否与基线指向同一漏洞：\n"
-            "1. sink点：漏洞代码位置（源文件名）\n"
-            "2. source入口：攻击入口（API端点/接口名）\n"
-            "3. 漏洞类型：漏洞类别\n\n"
+            "你是漏洞匹配判定器。给你一个参考漏洞和多个待判定的漏洞，"
+            "对每个待判定漏洞从三个方面判断是否与参考漏洞是同一个漏洞：\n"
+            "1. 代码位置：漏洞出现在哪个代码文件里\n"
+            "2. 触发入口：漏洞是通过哪个接口或功能触发的\n"
+            "3. 漏洞类型：属于什么类别的问题\n\n"
+            "注意：两边的标题和描述可能写法不同，但说的可能是同一个问题。请仔细阅读全部内容，结合具体细节综合判断，不要只看标题字面不一样就认为不是同一个。\n\n"
             "判断标准：\n"
-            "- sink点从严：源文件路径需要明确对应（不同文件=不同漏洞）\n"
-            "- source入口从宽：不同语言/命名但指向同一API端点或接口的，视为相同。"
-            "如'generateParameters接口'与'参数生成接口'是同一入口\n"
-            "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
+            "- 代码位置要求严格：文件路径必须明确对应，不同文件就是不同漏洞\n"
+            "- 触发入口可以宽松：写法不同但指向同一个接口或功能的，视为相同。"
+            "如'generateParameters接口'与'参数生成接口'是同一个入口\n"
+            "- 漏洞类型可以宽松：说法不同但属于同一类问题的，视为相同。"
             "如'OS命令注入'与'远程命令注入'是同一类型\n\n"
-            "对每个候选，先从标题和描述中提取三维度值，sink路径作为参考，再逐一判断是否相同。"
-            "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true），且描述相似度置信度（desc_similarity）>= 0.5。\n"
-            "desc_similarity为描述相似度置信度（0.0-1.0），衡量基线与候选漏洞描述的相似程度。\n"
+            "对每个待判定漏洞，先从标题和描述中提取三个方面信息，代码文件路径作为参考，再逐一判断是否相同。"
+            "desc_similarity是描述相似度（0.0-1.0），表示两边描述讲的是同一个问题的程度。\n"
             '只返回JSON：\n'
             '{\n'
             '  "results": [\n'
@@ -567,12 +567,12 @@ def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
             '"desc_similarity": 0.0-1.0, "reason": "..."}\n'
             '  ]\n'
             '}\n'
-            '只包含漏洞类型相同且 sink 或 source 至少一个相同且描述相似度>=0.5的候选。如果没有匹配，results为[]。'
+            '对每个待判定漏洞都返回以上判断结果。'
         )},
         {"role": "user", "content": (
-            f"基线漏洞:\n{ac_desc}\n\n"
-            f"候选漏洞:\n{chr(10).join(lines)}\n\n"
-            f"对每个候选提取三维度并判断是否同一漏洞，只返回漏洞类型相同且 sink 或 source 至少一个相同且描述相似度>=0.5的候选，"
+            f"参考漏洞:\n{ac_desc}\n\n"
+            f"待判定漏洞:\n{chr(10).join(lines)}\n\n"
+            f"对每个待判定漏洞提取三个方面信息并判断是否同一个漏洞，"
             f"编号1-{len(candidates)}。"
         )},
     ]
@@ -607,8 +607,10 @@ def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
                 elif sink_check is True and not same_sink:
                     same_sink = True
 
-                # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true，且描述相似度 >= 0.5
-                if same_vuln_type and (same_sink or same_source) and desc_sim >= 0.5:
+                # 匹配条件：vuln_type 必须为 true，且满足以下之一：
+                # 1. sink 与 source 至少一个为 true，且描述相似度 >= 0.5
+                # 2. sink 与 source 都为 false，但描述相似度 >= 0.6
+                if same_vuln_type and (((same_sink or same_source) and desc_sim >= 0.5) or ((not same_sink and not same_source) and desc_sim >= 0.6)):
                     return no - 1
         return None
     except Exception as e:
