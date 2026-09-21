@@ -1210,7 +1210,7 @@ async function renderRunConf(){
   }else{
     if(!_allVbProjs.length){try{_allVbProjs=(await jget("/api/v1/vbench/projects")).projects||[];}catch(e){}}
     if(!sel.vbProj){
-      bodyHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div><a href="http://secflow.ai.icsl.huawei.com/vbench/static/index.html#/dashboard" target="_blank" style="font-size:13px;color:var(--acc)">前往 V-Bench 管理 →</a></div>`;
+      bodyHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div></div>`;
     }else{
       if(!_vbCases){_vbCases=(await jget(`/api/v1/vbench/projects/${sel.vbProj}/benchmark`)).cases||[];}
       const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vulnerability_type||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");

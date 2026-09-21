@@ -44,9 +44,38 @@ def _get(path: str, retries: int = 20, retry_delay: float = 5.0) -> dict | list:
     raise last_err
 
 
+_PAGE_SIZE = 1000
+_MAX_PAGES = 100
+
+
+def _get_paged(path: str, page_size: int = _PAGE_SIZE,
+               max_pages: int = _MAX_PAGES) -> list[dict]:
+    """分页拉取 V-Bench API，自动翻页直到取完全部数据。
+
+    V-Bench API 返回 {"items": [...], "total": N}，不传分页参数时
+    可能只返回第一页（默认 page_size），导致数据缺失。
+    """
+    accumulated: list[dict] = []
+    total: int | None = None
+    for page in range(1, max_pages + 1):
+        sep = "&" if "?" in path else "?"
+        paged_path = f"{path}{sep}page={page}&page_size={page_size}"
+        d = _get(paged_path)
+        items = d.get("items", []) if isinstance(d, dict) else (d if isinstance(d, list) else [])
+        accumulated.extend(items)
+        if total is None:
+            total = d.get("total") if isinstance(d, dict) else None
+        if not items:
+            break
+        if total is not None and len(accumulated) >= total:
+            break
+        if total is None and len(items) < page_size:
+            break
+    return accumulated
+
+
 def list_projects() -> list[dict]:
-    d = _get("/projects")
-    items = d.get("items", d) if isinstance(d, dict) else d
+    items = _get_paged("/projects")
     return [{"id": p["id"], "name": p["name"], "status": p.get("status"),
              "package_type": p.get("package_type"),
              "tags": [t.get("tag_value") for t in (p.get("tags") or [])]}
@@ -58,8 +87,7 @@ def get_project(project_id: str) -> dict:
 
 
 def get_cases(project_id: str) -> list[dict]:
-    d = _get(f"/projects/{project_id}/cases")
-    items = d if isinstance(d, list) else d.get("items", d if isinstance(d, dict) else [])
+    items = _get_paged(f"/projects/{project_id}/cases")
     return [{"id": c["id"], "cve_id": c.get("cve_id"),
              "description": c.get("description") or c.get("raw_description") or "",
              "external_id": c.get("external_id"), "status": c.get("status")}
@@ -68,8 +96,7 @@ def get_cases(project_id: str) -> list[dict]:
 
 def get_tasks(project_id: str) -> list[dict]:
     try:
-        d = _get(f"/projects/{project_id}/tasks")
-        items = d if isinstance(d, list) else d.get("items", d if isinstance(d, dict) else [])
+        items = _get_paged(f"/projects/{project_id}/tasks")
         return items
     except Exception:
         return []
