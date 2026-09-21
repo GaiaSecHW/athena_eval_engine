@@ -594,7 +594,6 @@ def chat_json(messages, **kwargs) -> dict:
     _empty_repeat = 0
     _no_reasoning = False  # reasoning 占满后关闭推理重试
     _network_retries = 0  # 网络错误重试计数（不叠加 _chat_once 内部的 429/500 重试）
-    _json_retries = 0     # JSON 解析失败重试计数
     for attempt in range(retries):
         # 取消检查：外部超时后立即停止重试，释放信号量
         if _cancel_cb:
@@ -639,6 +638,9 @@ def chat_json(messages, **kwargs) -> dict:
                 else:
                     _empty_repeat = 0
                 _prev_err = last_err
+                if attempt < retries - 1:
+                    time.sleep(RETRY_DELAY)
+                continue
             # 网络错误重试不叠加 _chat_once 内部的 429/500 重试
             _network_retries += 1
             if _network_retries > MAX_NETWORK_RETRIES:

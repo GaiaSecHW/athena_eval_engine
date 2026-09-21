@@ -1057,11 +1057,15 @@ def run(evaluation_id: str) -> dict:
                 for cd in _need_fill:
                     fut = _fill_pool.submit(with_eval_ctx(_fill_missing_source), cd, _fill_cancel)
                     _fill_fut_to_cd[fut] = cd
+                def _fill_resubmit(old_fut):
+                    cd = _fill_fut_to_cd[old_fut]
+                    new_fut = _fill_pool.submit(with_eval_ctx(_fill_missing_source), cd, _fill_cancel)
+                    _fill_fut_to_cd[new_fut] = cd
+                    return new_fut
                 for fut, _timeout in iter_completed(
                     _fill_fut_to_cd, cancel_cb=_fill_cancel, per_task_timeout=600,
                     max_retries=2,
-                    resubmit_fn=lambda old_fut: _fill_pool.submit(
-                        with_eval_ctx(_fill_missing_source), _fill_fut_to_cd[old_fut], _fill_cancel),
+                    resubmit_fn=_fill_resubmit,
                     log_tag="SOURCE_FILL",
                 ):
                     if _timeout:
@@ -1880,12 +1884,19 @@ def run(evaluation_id: str) -> dict:
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _conc_get("parse_workers")))) as pool:
             _parse_futures = {pool.submit(with_eval_ctx(_parse_trace), e): i for i, e in enumerate(entries)}
             _parse_fut_to_entry = {f: entries[i] for f, i in _parse_futures.items()}
+            def _parse_resubmit(old_fut):
+                i = _parse_futures[old_fut]
+                e = _parse_fut_to_entry[old_fut]
+                new_fut = pool.submit(with_eval_ctx(_parse_trace), e)
+                _parse_fut_to_entry[new_fut] = e
+                _parse_futures[new_fut] = i
+                return new_fut
             parsed = [None] * len(entries)
             _parse_done = 0
             for _fut, _timeout in iter_completed(
                 _parse_futures, cancel_cb=lambda: _check_cancel(evaluation_id, "PARSING"),
                 per_task_timeout=7200, max_retries=1,
-                resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_parse_trace), _parse_fut_to_entry[old_fut]),
+                resubmit_fn=_parse_resubmit,
                 log_tag="TRACE_PARSE",
             ):
                 if _timeout:
@@ -3409,10 +3420,15 @@ def _load_kg_inputs_from_db(evaluation_id: str, entries: list, bench_by_task: di
     with ThreadPoolExecutor(max_workers=min(_n_runs, _conc_get("parse_workers"))) as pool:
         _futs = {pool.submit(with_eval_ctx(_load_one), tr): tr for tr in _kg_runs}
         _fut_to_tr = {f: tr for f, tr in _futs.items()}
+        def _rerun_resubmit(old_fut):
+            tr = _fut_to_tr[old_fut]
+            new_fut = pool.submit(with_eval_ctx(_load_one), tr)
+            _fut_to_tr[new_fut] = tr
+            return new_fut
         _done = 0
         for fut, _timeout in iter_completed(
             _futs, per_task_timeout=7200, max_retries=1,
-            resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_load_one), _fut_to_tr[old_fut]),
+            resubmit_fn=_rerun_resubmit,
             log_tag="RERUN_KG_PARSE",
         ):
             if _timeout:

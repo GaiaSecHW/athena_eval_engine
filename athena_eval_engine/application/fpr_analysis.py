@@ -329,10 +329,14 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             for batch in batches:
                 fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, bl_sink, batch)
                 future_to_batch[fut] = batch
+            def _batch_resubmit(old_fut):
+                batch = future_to_batch[old_fut]
+                new_fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, bl_sink, batch)
+                future_to_batch[new_fut] = batch
+                return new_fut
             for fut, _timeout in iter_completed(
                 future_to_batch, per_task_timeout=1800, max_retries=2,
-                resubmit_fn=lambda old_fut: _bl_pool2.submit(
-                    with_eval_ctx(_llm_match_batch), bl_content, bl_sink, future_to_batch[old_fut]),
+                resubmit_fn=_batch_resubmit,
                 log_tag="FPR_BATCH",
             ):
                 if _timeout:
@@ -366,10 +370,14 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
         for i in range(len(baseline_rows)):
             fut = bl_pool.submit(with_eval_ctx(_match_one_baseline), i)
             _bl_fut_to_idx[fut] = i
+        def _bl_resubmit(old_fut):
+            i = _bl_fut_to_idx[old_fut]
+            new_fut = bl_pool.submit(with_eval_ctx(_match_one_baseline), i)
+            _bl_fut_to_idx[new_fut] = i
+            return new_fut
         for fut, _timeout in iter_completed(
             _bl_fut_to_idx, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
-            resubmit_fn=lambda old_fut: bl_pool.submit(
-                with_eval_ctx(_match_one_baseline), _bl_fut_to_idx[old_fut]),
+            resubmit_fn=_bl_resubmit,
             log_tag="FPR_BASELINE",
         ):
             if _timeout:

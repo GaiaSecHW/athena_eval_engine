@@ -993,11 +993,15 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         for item in _uncached:
                             fut = _comp_pool.submit(with_eval_ctx(_compress_one), item)
                             _comp_fut_to_item[fut] = item
+                        def _comp_resubmit(old_fut):
+                            item = _comp_fut_to_item[old_fut]
+                            new_fut = _comp_pool.submit(with_eval_ctx(_compress_one), item)
+                            _comp_fut_to_item[new_fut] = item
+                            return new_fut
                         for fut, _timeout in iter_completed(
                             _comp_fut_to_item, cancel_cb=cancel_cb,
                             per_task_timeout=1800, max_retries=2,
-                            resubmit_fn=lambda old_fut: _comp_pool.submit(
-                                with_eval_ctx(_compress_one), _comp_fut_to_item[old_fut]),
+                            resubmit_fn=_comp_resubmit,
                             log_tag="KG_COMPRESS",
                         ):
                             _compressed.append(fut.result())
@@ -1070,12 +1074,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         for batch in _batches:
                             fut = _batch_pool.submit(with_eval_ctx(_compress_batch), batch)
                             _batch_fut_to_data[fut] = batch
+                        def _batch_resubmit(old_fut):
+                            batch = _batch_fut_to_data[old_fut]
+                            new_fut = _batch_pool.submit(with_eval_ctx(_compress_batch), batch)
+                            _batch_fut_to_data[new_fut] = batch
+                            return new_fut
                         _compressed = []
                         for fut, _timeout in iter_completed(
                             _batch_fut_to_data, cancel_cb=cancel_cb,
                             per_task_timeout=1800, max_retries=2,
-                            resubmit_fn=lambda old_fut: _batch_pool.submit(
-                                with_eval_ctx(_compress_batch), _batch_fut_to_data[old_fut]),
+                            resubmit_fn=_batch_resubmit,
                             log_tag="KG_BATCH_COMPRESS",
                         ):
                             _compressed.append(fut.result())
@@ -1218,10 +1226,15 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for t in _pending_llm:
                 fut = pool.submit(with_eval_ctx(_run_llm), t)
                 _fut_to_task[fut] = t
+            def _llm_resubmit(old_fut):
+                t = _fut_to_task[old_fut]
+                new_fut = pool.submit(with_eval_ctx(_run_llm), t)
+                _fut_to_task[new_fut] = t
+                return new_fut
             for fut, _timeout in iter_completed(
                 _fut_to_task, cancel_cb=cancel_cb,
                 per_task_timeout=1800, max_retries=2,
-                resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_run_llm), _fut_to_task[old_fut]),
+                resubmit_fn=_llm_resubmit,
                 log_tag="KG_LLM_ANALYSIS",
             ):
                 _ci, result = fut.result()
