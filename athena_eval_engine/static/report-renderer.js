@@ -636,7 +636,7 @@ function renderReport(d){
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
       <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
       ${(r.has_nogk!==false)?`<div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>`:""}
-      <div><span style="color:var(--gray)">基线来源：</span><b>${d.benchmark_source==='vuln_center'?'漏洞中心数据':(vbenchName||'无（无 GT 模式）')}</b></div>
+      <div><span style="color:var(--gray)">基线来源：</span><b>${d.benchmark_source==='vuln_center'?`漏洞中心 · ${d.vc_source_project_name||'-'} / ${d.vc_source_task_name||'-'}`:(vbenchName||'无（无 GT 模式）')}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
       <div><span style="color:var(--gray)">运行时长：</span><b>${(d.started_at&&d.finished_at)?fmtDur(new Date(d.finished_at+'Z')-new Date(d.started_at+'Z')):'-'}</b> <span style="color:var(--gray);font-size:13px">（${fmtDate(d.started_at)} → ${fmtDate(d.finished_at)}）</span></div>
     </div>

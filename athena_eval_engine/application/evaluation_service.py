@@ -2739,8 +2739,8 @@ def run(evaluation_id: str) -> dict:
                       "validation": facts[tr.task_run_id]["outcome"].validation_result}
                      for tr in task_runs]
     # 报告 JSON 瘦身：删除 renderer 不使用的大字段，避免 100MB+ HTML
-    _STRIP_FIELDS = ("chain_actions", "kg_source_uri", "nogk_source_uri",
-                      "nogk_session_id", "finding_ts")
+    # 只剥离大列表/嵌套字段，保留前端需要的 kg_source_uri/nogk_source_uri 等
+    _STRIP_FIELDS = ("chain_actions",)
     for group in _metric_groups:
         for cr in group.get("case_results", []):
             for _f in _STRIP_FIELDS:
@@ -2847,17 +2847,21 @@ def run(evaluation_id: str) -> dict:
     # 并删除临时 _cr.json 文件。JSON 从 250MB 降到 ~5MB。
     if _html_ok:
         import json as _json_slim
+        # 前端不使用的大列表/嵌套字段，剥离以减小文件体积
+        # 用 strip-list 而非 whitelist，保留前端需要的增强字段
+        _STRIP_FIELDS = {"chain_actions", "candidate_findings",
+                         "nogk_candidate_findings", "sink_sessions",
+                         "nogk_sink_sessions", "sink_hit_sessions",
+                         "nogk_sink_hit_sessions", "session_chain",
+                         "nogk_session_chain", "sink_analysis",
+                         "nogk_sink_analysis", "knowledge_intervention",
+                         "nogk_knowledge_intervention"}
         try:
             with open(_json_path, "r", encoding="utf-8") as _f:
                 _rj_data = _json_slim.loads(_f.read())
-            # dashboard 需要的 case_results 字段白名单
-            _KEEP_FIELDS = {"case_id", "expected_label", "confusion", "nogk_confusion",
-                             "description", "vulnerability_type", "source_file",
-                             "source_function", "session_id"}
             for _mg in _rj_data.get("metric_groups", []):
                 for _cr in _mg.get("case_results", []):
-                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
-                    for _k in _strip_keys:
+                    for _k in _STRIP_FIELDS:
                         _cr.pop(_k, None)
             _rj_slim = _json_slim.dumps(_rj_data, ensure_ascii=False)
             with open(_json_path, "w", encoding="utf-8") as _f:
@@ -2872,8 +2876,7 @@ def run(evaluation_id: str) -> dict:
                 _kg_data = _json_slim.loads(_f.read())
             for _grp in _kg_data.get("groups", []):
                 for _cr in _grp.get("case_results", []):
-                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
-                    for _k in _strip_keys:
+                    for _k in _STRIP_FIELDS:
                         _cr.pop(_k, None)
             _kg_slim = _json_slim.dumps(_kg_data, ensure_ascii=False)
             with open(_kg_path, "w", encoding="utf-8") as _f:
@@ -3932,13 +3935,16 @@ def rerun_kg(evaluation_id: str):
             import json as _json_slim
             with open(_kg_path, "r", encoding="utf-8") as _f:
                 _kg_data = _json_slim.loads(_f.read())
-            _KEEP_FIELDS = {"case_id", "expected_label", "confusion", "nogk_confusion",
-                             "description", "vulnerability_type", "source_file",
-                             "source_function", "session_id"}
+            _STRIP_FIELDS = {"chain_actions", "candidate_findings",
+                             "nogk_candidate_findings", "sink_sessions",
+                             "nogk_sink_sessions", "sink_hit_sessions",
+                             "nogk_sink_hit_sessions", "session_chain",
+                             "nogk_session_chain", "sink_analysis",
+                             "nogk_sink_analysis", "knowledge_intervention",
+                             "nogk_knowledge_intervention"}
             for _grp in _kg_data.get("groups", []):
                 for _cr in _grp.get("case_results", []):
-                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
-                    for _k in _strip_keys:
+                    for _k in _STRIP_FIELDS:
                         _cr.pop(_k, None)
             _kg_slim = _json_slim.dumps(_kg_data, ensure_ascii=False)
             with open(_kg_path, "w", encoding="utf-8") as _f:
