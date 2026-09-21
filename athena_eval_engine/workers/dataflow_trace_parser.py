@@ -687,6 +687,8 @@ class DataflowVulnScanTraceParser(TraceParser):
                 continue
             for data in extract_json_payloads(text, keywords=['"findings"']):
                 for f in (data.get("findings") or []):
+                    if not isinstance(f, dict):
+                        continue
                     _dvs_counter += 1
                     title = str(f.get("title", ""))
                     fn = str(f.get("function_name", ""))
@@ -719,6 +721,8 @@ class DataflowVulnScanTraceParser(TraceParser):
                     continue
                 for data in extract_json_payloads(text, keywords=['"candidates"']):
                     for f in (data.get("candidates") or []):
+                        if not isinstance(f, dict):
+                            continue
                         if f.get("judgment") != "confirmed":
                             continue
                         fn = str(f.get("function_name", ""))
