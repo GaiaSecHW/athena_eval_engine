@@ -326,7 +326,7 @@ async function selEv(id){
       $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       var cb=$("cancel-btn");if(cb)cb.onclick=function(){cancelEval(id);};
-      let cnt=0;const poll=async()=>{cnt++;if(cnt>14400)return;
+      let cnt=0;let _partialLoaded=false;let _lastRsKey="";const poll=async()=>{cnt++;if(cnt>14400)return;
         if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
         try{const st=await jget(`/api/v1/evaluations/${id}`);
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
@@ -341,14 +341,30 @@ async function selEv(id){
             const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);
           }
           else if(st.status==="FAILED"){selEv(id);}
-          else if(st.status!==s.status){
-            // 更新缓存中的状态
-            if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;ev.progress=st.progress;}}
-            selEv(id);
-          }
           else{
+            // 运行中：检查是否有段文件已就绪
+            try{
+              const rs=await jget(`/api/v1/evaluations/${id}/report/status`);
+              if(rs.base){  // 基础报告就绪才切换到部分报告视图（FPR/KG 段需要合并到基础报告）
+                var _rsKey=rs.base+'|'+rs.fpr+'|'+rs.kg;
+                if(!_partialLoaded||_rsKey!==_lastRsKey){
+                  _partialLoaded=true;
+                  _lastRsKey=_rsKey;
+                  loadPartialReport(id,st);
+                }
+              }
+            }catch(e){}
+            // 更新进度文本
             var pe=$("eval-progress");
             if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
+            if(st.status!==s.status){
+              if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;ev.progress=st.progress;}}
+              if(!_partialLoaded){selEv(id);return;}  // 状态变更时刷新步骤图标（无段文件时）
+              // 部分报告已加载：更新横幅进度文本
+              var _bn=$("partial-banner-status");
+              if(_bn){_bn.textContent=st.progress||st.status||'';}
+              s.status=st.status;
+            }
             setTimeout(poll,20000);
           }
         }catch(e){}};
@@ -575,6 +591,67 @@ function filterKgCases(btn,filter){
   });
 }
 
+// 分阶段加载报告：运行中时加载已就绪的段，未就绪段显示占位
+async function loadPartialReport(id,st){
+  try{
+    const rs=await jget(`/api/v1/evaluations/${id}/report/status`);
+    let report={evaluation_id:id,status:st.status,evaluation_name:st.evaluation_name||""};
+    let r={};
+    // 加载基础报告（指标版或完整版）
+    if(rs.base){
+      try{
+        const base=await jget(`/api/v1/evaluations/${id}/report`);
+        r=base.report||base;
+        report.evaluation_name=report.evaluation_name||base.evaluation_name||"";
+      }catch(e){}
+    }
+    // 合并 FPR 段
+    if(rs.fpr){
+      try{
+        const fpr=await jget(`/api/v1/evaluations/${id}/report/fpr`);
+        if(fpr){
+          if(fpr.e2e_fpr_kg||fpr.e2e_fpr_nogk){
+            (r.metric_groups||[]).forEach(function(g){
+              if(g.category==='verify'||g.category==='verification'){
+                if(fpr.e2e_fpr_kg)g.e2e_fpr_kg=fpr.e2e_fpr_kg;
+                if(fpr.e2e_fpr_nogk)g.e2e_fpr_nogk=fpr.e2e_fpr_nogk;
+              }
+            });
+          }
+          if(fpr.mining_fpr_group&&!(r.metric_groups||[]).some(function(g){return g.category==='mining_fpr';})){
+            (r.metric_groups=r.metric_groups||[]).push(fpr.mining_fpr_group);
+          }
+          if(fpr.m13_top){(r.p0=r.p0||{}).M13=fpr.m13_top;}
+          if(fpr.group_m13){
+            (r.metric_groups||[]).forEach(function(g){
+              if(fpr.group_m13[g.task_id]){(g.p0=g.p0||{}).M13=fpr.group_m13[g.task_id];}
+            });
+          }
+        }
+      }catch(e){}
+    }
+    // 合并 KG 段
+    if(rs.kg){
+      try{
+        const kg=await jget(`/api/v1/evaluations/${id}/report/kg`);
+        if(kg&&kg.groups){
+          const kgMap={};
+          kg.groups.forEach(function(g){kgMap[g.task_id]=g;});
+          (r.metric_groups||[]).forEach(function(g){
+            if(kgMap[g.task_id]){
+              if(kgMap[g.task_id].per_case_kg_analysis)g.per_case_kg_analysis=kgMap[g.task_id].per_case_kg_analysis;
+              if(kgMap[g.task_id].case_results)g.case_results=kgMap[g.task_id].case_results;
+            }
+          });
+        }
+      }catch(e){}
+    }
+    report.report=r;
+    report._partial={base:rs.base,fpr:rs.fpr,kg:rs.kg,html:rs.html,running:true,status:st.status,progress:st.progress};
+    renderReport(report);
+  }catch(e){}
+}
+
 function renderReport(d){
   var _evalId=d.evaluation_id||activeId||'';
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button>'+(DEBUG?'<div style="margin-left:auto;display:flex;gap:8px"><button class="btn" style="font-size:12px;padding:4px 10px" onclick="rerunSection(\''+_evalId+'\',\'fpr\')">重跑误报率</button><button class="btn" style="font-size:12px;padding:4px 10px" onclick="rerunSection(\''+_evalId+'\',\'kg\')">重跑知识分析</button></div>':'')+'</div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
@@ -582,6 +659,7 @@ function renderReport(d){
   if(!rep)return;
   rep.style.overflowY='auto';
   const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
+  var _partial=d._partial||null;
 
   // 指标卡片：名称 + 值 + 解读 + 参考范围条
   function mCard(mid,m){
@@ -848,6 +926,10 @@ function renderReport(d){
   const nogkInfo=entriesInfo.find(e=>e.condition==="NOGK")||{};
 
   rep.innerHTML=`
+  ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+    <div style="width:20px;height:20px;border:2px solid var(--acc);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0"></div>
+    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容，未完成段会标注"计算中"${_partial.base?'':' · 基础报告计算中'}${_partial.fpr?'':' · 误报率分析计算中'}${_partial.kg?'':' · 知识图谱分析计算中'}</div></div>
+  </div>`:""}
   <div style="margin-bottom:22px">
     <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
     <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
@@ -1072,7 +1154,8 @@ function renderReport(d){
   `;
 
   // 异步加载 FPR 段和 KG 段（三段拆分后主报告不含这些大字段）
-  if(_evalId){
+  // 仅在非部分加载模式下执行（部分加载已由 loadPartialReport 处理）
+  if(_evalId&&!_partial){
     var _mg=r.metric_groups||[];
     var _hasFprUri=!!r.fpr_uri,_hasKgUri=!!r.kg_uri;
     // 检查是否已有内嵌 FPR/KG 数据（旧报告兼容）

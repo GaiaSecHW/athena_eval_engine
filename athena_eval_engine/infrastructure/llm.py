@@ -139,7 +139,7 @@ def set_runtime_config(**kwargs):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
-            api_base=None, api_key=None, timeout=None, reasoning_effort="high",
+            api_base=None, api_key=None, timeout=None, reasoning_effort="low",
             cancel_cb=None, **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
@@ -165,13 +165,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
-        # 开启推理模式（兼容各厂商参数，换模型无需改代码）
-        "thinking": {"type": "enabled"},
-        "chat_template_kwargs": {"enable_thinking": True},
-        "enable_thinking": True,
-        "reasoning_effort": reasoning_effort,
-        "reasoning_split": True,
     }
+    if reasoning_effort:
+        # 开启推理模式（兼容各厂商参数，换模型无需改代码）
+        _payload["thinking"] = {"type": "enabled"}
+        _payload["chat_template_kwargs"] = {"enable_thinking": True}
+        _payload["enable_thinking"] = True
+        _payload["reasoning_effort"] = reasoning_effort
+        _payload["reasoning_split"] = True
     if max_tokens is not None:
         _payload["max_tokens"] = max_tokens
     body = json.dumps(_payload).encode("utf-8")
@@ -329,18 +330,18 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                 _last_content_ts = time.time()
 
         content = "".join(content_parts)
-        if not content and reasoning_parts:
-            # reasoning 占满 max_tokens 时，用 reasoning 文本作为回退
-            content = "".join(reasoning_parts)
 
         if finish_reason and finish_reason != "stop":
-            log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} max_tokens={max_tokens}")
+            _rl = len("".join(reasoning_parts)) if reasoning_parts else 0
+            log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} reasoning_len={_rl} max_tokens={max_tokens}")
 
         if content:
             _ft = f"first_token={_first_token_ts - _req_ts:.1f}s" if _first_token_ts else "first_token=N/A"
             log("LLM", f"done model={_model} msgs={len(messages)} {_ft} content_len={len(content)} elapsed={time.time()-_req_ts:.1f}s")
             return content, finish_reason
-        raise RuntimeError("content 为空（reasoning 占满 max_tokens）")
+        # content 为空但 reasoning 有内容 — reasoning 占满 max_tokens
+        _rl = len("".join(reasoning_parts)) if reasoning_parts else 0
+        raise RuntimeError(f"content 为空（reasoning 占满 max_tokens, reasoning_len={_rl}）")
     except (socket.timeout, TimeoutError) as e:
         phase = "首 token" if first_token else "后续 token 断流"
         log("LLM", f"{phase}超时: {e}")
@@ -569,25 +570,45 @@ def chat_json(messages, **kwargs) -> dict:
     _cancel_cb = kwargs.get("cancel_cb")
     _prev_raw = None
     _repeat_count = 0
+    _prev_err = None
+    _empty_repeat = 0
+    _no_reasoning = False  # reasoning 占满后关闭推理重试
     for attempt in range(retries):
         # 取消检查：外部超时后立即停止重试，释放信号量
         if _cancel_cb:
             _cancel_cb()
         # ── LLM 调用（网络/超时错误走原重试逻辑）──
+        _call_kwargs = {k: v for k, v in kwargs.items() if k != "retries"}
+        if _no_reasoning:
+            _call_kwargs["reasoning_effort"] = "none"
         try:
-            raw, _fr = _chat_once(msgs, **{k: v for k, v in kwargs.items() if k != "retries"})
+            raw, _fr = _chat_once(msgs, **_call_kwargs)
         except Exception as e:
             last_err = str(e)[:300]
             err_lower = last_err.lower()
-            # "content 为空" 是 reasoning 偶发问题，需要重试（不是输入超限）
             # context length / token limit 错误是确定性的，重试无意义
-            if "content 为空" not in err_lower and any(kw in err_lower for kw in (
+            if any(kw in err_lower for kw in (
                 "context length", "too long", "maximum context",
                 "token limit", "context_window",
                 "input too long", "prompt too long",
             )):
                 log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
                 break
+            # content 为空 = reasoning 占满，下次关闭推理重试
+            if "content 为空" in err_lower:
+                if not _no_reasoning:
+                    _no_reasoning = True
+                    log("LLM", f"chat_json reasoning 占满 max_tokens，下次关闭推理重试")
+                    continue
+                # 关闭推理后仍 content 为空，连续 2 次则停止
+                if last_err == _prev_err:
+                    _empty_repeat += 1
+                    if _empty_repeat >= 2:
+                        log("LLM", f"chat_json 关闭推理后仍连续 content 为空，停止重试")
+                        break
+                else:
+                    _empty_repeat = 0
+                _prev_err = last_err
             log("LLM", f"chat_json attempt {attempt+1}/{retries} LLM error: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)

@@ -2137,6 +2137,22 @@ def run(evaluation_id: str) -> dict:
     log("FPR", f"FPR 查找表已就绪: KG={len(_fpr_match_lookup.get('kg', {}))} "
           f"NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
 
+    # ===== FPR 段提前写入（PARSING 完成后即可，M13/mining_fpr_group 稍后更新）=====
+    try:
+        import os as _os_fpr
+        _reports_dir_fpr = _os_fpr.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os_fpr.makedirs(_reports_dir_fpr, exist_ok=True)
+        _write_fpr_section(evaluation_id, _reports_dir_fpr,
+                           _fpr_res["e2e_fpr_kg"], _fpr_res["e2e_fpr_nogk"],
+                           _fpr_res["ac_fpr_kg"], _fpr_res["ac_fpr_nogk"],
+                           _fpr_res.get("vc_ids_kg", set()),
+                           _fpr_res.get("vc_ids_nogk", set()),
+                           None, {}, None,  # m13_top, group_m13, mining_fpr_group 稍后更新
+                           _fpr_match_lookup)
+        log("EVAL", "FPR 段已提前写入（M13/mining_fpr_group 待 REPORTING 阶段更新）")
+    except Exception as _fpr_early_err:
+        log("EVAL", f"⚠ FPR 段提前写入失败（不影响后续）: {_fpr_early_err}")
+
     # 为每组计算指标
     _metric_groups: list[dict] = []
     _group_kg_inputs: dict[str, tuple[list[dict], list[dict], object, list[dict], list, list[dict], object]] = {}
@@ -2498,6 +2514,32 @@ def run(evaluation_id: str) -> dict:
             fact_repo.insert_statistical_result(cur, cr_id, pop_id, s, evaluation_id)
     _db_query(_insert_metrics)
 
+    # ===== 基础报告（指标版）提前写入（CALCULATING 完成后）=====
+    # 此时 _metric_groups 有指标(p0/p1/p2) + case_results，无 per_case_kg_analysis
+    # 前端可加载指标版报告，KG 分析完成后再加载 KG 段
+    try:
+        import os as _os_sk
+        _sk_dir = _os_sk.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os_sk.makedirs(_sk_dir, exist_ok=True)
+        _sk_report = assemble(evaluation_id, out["metric_results"],
+                              out["statistical_results"], [],  # 无诊断
+                              pair_views=pair_views, has_nogk=has_nogk)
+        # 指标版：只有指标，无 case_results / per_case_kg_analysis / FPR 字段
+        _sk_groups = [{k: v for k, v in _mg.items()
+                        if k not in ("case_results", "per_case_kg_analysis",
+                                     "e2e_fpr_kg", "e2e_fpr_nogk")}
+                       for _mg in _metric_groups]
+        _sk_report.metric_groups = _sk_groups
+        _sk_report.fpr_uri = ""
+        _sk_report.kg_uri = ""
+        _sk_rj = render_json(_sk_report)
+        _sk_path = _os_sk.path.join(_sk_dir, f"{evaluation_id}.json")
+        with open(_sk_path, "w", encoding="utf-8") as _f:
+            _f.write(_sk_rj)
+        log("EVAL", f"基础报告（指标版）已提前写入: {_sk_path} ({len(_sk_rj):,} 字节)")
+    except Exception as _sk_err:
+        log("EVAL", f"⚠ 基础报告指标版写入失败（不影响后续）: {_sk_err}")
+
     # ===== Phase 6: AI 分析 + 生成报告（慢操作，无 DB 连接）=====
     # 排空连接池空闲连接：LLM 调用期间空闲连接会被网络层关闭，
     # 但 ping 检测（小包）无法发现半断连，导致后续大 INSERT 失败
@@ -2561,6 +2603,31 @@ def run(evaluation_id: str) -> dict:
         for item in group["per_case_kg_analysis"]:
             item.setdefault("task_id", group["task_id"])
             item.setdefault("category", group["category"])
+
+    # ===== KG 段提前写入（KG 分析完成后，不等报告组装）=====
+    try:
+        import os as _os_kg
+        _kg_dir = _os_kg.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os_kg.makedirs(_kg_dir, exist_ok=True)
+        _kg_path_early = _os_kg.path.join(_kg_dir, f"{evaluation_id}_kg.json")
+        _kg_section_early = {
+            "evaluation_id": evaluation_id,
+            "groups": [
+                {
+                    "task_id": _mg.get("task_id", ""),
+                    "category": _mg.get("category", ""),
+                    "label": _mg.get("label", ""),
+                    "per_case_kg_analysis": _mg.get("per_case_kg_analysis", []),
+                    "case_results": _mg.get("case_results", []),
+                }
+                for _mg in _metric_groups if _mg.get("category") != "mining_fpr"
+            ],
+        }
+        with open(_kg_path_early, "w", encoding="utf-8") as _f:
+            json.dump(_kg_section_early, _f, ensure_ascii=False)
+        log("EVAL", f"KG 段已提前写入: {_kg_path_early}")
+    except Exception as _kg_err:
+        log("EVAL", f"⚠ KG 段提前写入失败（不影响后续）: {_kg_err}")
 
     # 将 E2E FPR 结果挂到 verify metric_group
     if _e2e_fpr_kg or _e2e_fpr_nogk:
@@ -2709,26 +2776,18 @@ def run(evaluation_id: str) -> dict:
     _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
     _os.makedirs(_reports_dir, exist_ok=True)
 
-    # --- FPR 段：误报率分析结果 + M13 实际值 + fpr_match_lookup ---
+    # --- FPR 段：更新 M13 + mining_fpr_group（文件已提前写入，这里补充）---
     _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-    _fpr_section = {
-        "evaluation_id": evaluation_id,
-        "e2e_fpr_kg": _e2e_fpr_kg,
-        "e2e_fpr_nogk": _e2e_fpr_nogk,
-        "ac_fpr_kg": _ac_fpr_kg,
-        "ac_fpr_nogk": _ac_fpr_nogk,
-        "vc_ids_kg": list(_vc_ids_kg) if _vc_ids_kg else [],
-        "vc_ids_nogk": list(_vc_ids_nogk) if _vc_ids_nogk else [],
-        "m13_top": report.p0.get("M13"),
-        "group_m13": {_mg.get("task_id", ""): _mg.get("p0", {}).get("M13") for _mg in _metric_groups},
-        "mining_fpr_group": next((_mg for _mg in _metric_groups if _mg.get("category") == "mining_fpr"), None),
-        "fpr_match_lookup": _fpr_match_lookup,
-    }
-    with open(_fpr_path, "w", encoding="utf-8") as _f:
-        json.dump(_fpr_section, _f, ensure_ascii=False)
-    log("EVAL", f"FPR 段已写入: {_fpr_path} ({len(json.dumps(_fpr_section, ensure_ascii=False)):,} 字节)")
+    _write_fpr_section(evaluation_id, _reports_dir,
+                       _e2e_fpr_kg, _e2e_fpr_nogk, _ac_fpr_kg, _ac_fpr_nogk,
+                       _vc_ids_kg, _vc_ids_nogk,
+                       report.p0.get("M13"),
+                       {_mg.get("task_id", ""): _mg.get("p0", {}).get("M13") for _mg in _metric_groups},
+                       next((_mg for _mg in _metric_groups if _mg.get("category") == "mining_fpr"), None),
+                       _fpr_match_lookup)
+    log("EVAL", f"FPR 段已更新（含 M13 + mining_fpr_group）: {_fpr_path}")
 
-    # --- KG 段：增强版 case_results + per_case_kg_analysis ---
+    # --- KG 段：覆盖写入（瘦身后的 case_results + per_case_kg_analysis）---
     _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
     _kg_section = {
         "evaluation_id": evaluation_id,
@@ -2992,7 +3051,7 @@ def _write_fpr_section(evaluation_id: str, reports_dir: str,
     }
     with open(_fpr_path, "w", encoding="utf-8") as _f:
         json.dump(_fpr_section, _f, ensure_ascii=False)
-    log("RERUN-FPR", f"FPR 段已写入: {_fpr_path}")
+    log("FPR", f"FPR 段已写入: {_fpr_path}")
     return _fpr_path
 
 

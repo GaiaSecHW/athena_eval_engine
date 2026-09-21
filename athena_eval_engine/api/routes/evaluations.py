@@ -775,6 +775,23 @@ def get_kg_report(evaluation_id: str):
         return _json.loads(_f.read())
 
 
+@app.get("/api/v1/evaluations/{evaluation_id}/report/status")
+def get_report_status(evaluation_id: str):
+    """返回各段报告文件的就绪状态，供前端分段加载。"""
+    import os as _os
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _base = _os.path.join(_reports_dir, f"{evaluation_id}.json")
+    _fpr = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+    _kg = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+    _html = _os.path.join(_reports_dir, f"{evaluation_id}.html")
+    return {
+        "base": _os.path.isfile(_base),
+        "fpr": _os.path.isfile(_fpr),
+        "kg": _os.path.isfile(_kg),
+        "html": _os.path.isfile(_html),
+    }
+
+
 @app.post("/api/v1/evaluations/{evaluation_id}/rerun-fpr")
 def rerun_fpr(evaluation_id: str, force: bool = False):
     """重跑误报率分析段。前置：评测必须 COMPLETED。
