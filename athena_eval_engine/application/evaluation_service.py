@@ -413,7 +413,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "",
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0)
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
         return result.get("source_file", ""), result.get("source_function", ""), str(result.get("source_line", ""))
     except Exception as e:
         log("CREATE", f"AI 提取 source_file/source_function/source_line 失败: {e}")
@@ -495,7 +495,7 @@ def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
         )},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0)
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
         results_raw = result.get("results", [])
         if isinstance(results_raw, dict):
             results_raw = [results_raw]
@@ -844,7 +844,7 @@ def run(evaluation_id: str) -> dict:
     try:
         _reports_dir = _os_clear.environ.get("EVAL_REPORTS_DIR") or _os_clear.path.join(
             _os_clear.path.dirname(_os_clear.path.dirname(_os_clear.path.abspath(__file__))), "reports")
-        for _old_suffix in (".html", ".json", "_fpr_match.json"):
+        for _old_suffix in (".html", ".json", "_fpr.json", "_kg.json", "_fpr_match.json"):
             _old_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}{_old_suffix}")
             if _os_clear.path.isfile(_old_path):
                 _archive_path = _os_clear.path.join(_reports_dir, f"{evaluation_id}_archive_{_archive_ts}{_old_suffix}")
@@ -2622,14 +2622,66 @@ def run(evaluation_id: str) -> dict:
     else:
         log("EVAL", f"评测完成")
 
-    # ===== Phase 7: 写入报告 JSON 文件 + 标记完成 =====
-    # 报告 JSON 存文件（PVC），不存 DB — 避免 26MB INSERT 导致 BrokenPipe/max_allowed_packet
+    # ===== Phase 7: 写入报告 JSON 文件（三段拆分）+ 标记完成 =====
+    # 报告分三段存储：基础报告 {eid}.json + FPR 段 {eid}_fpr.json + KG 段 {eid}_kg.json
     set_progress(evaluation_id, "生成报告中...")
-    rj = render_json(report)  # rj 在写入 warnings 后重新序列化
-    log("EVAL", f"报告 JSON 大小: {len(rj):,} 字节")
     import os as _os
     _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
     _os.makedirs(_reports_dir, exist_ok=True)
+
+    # --- FPR 段：误报率分析结果 + M13 实际值 + fpr_match_lookup ---
+    _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+    _fpr_section = {
+        "evaluation_id": evaluation_id,
+        "e2e_fpr_kg": _e2e_fpr_kg,
+        "e2e_fpr_nogk": _e2e_fpr_nogk,
+        "ac_fpr_kg": _ac_fpr_kg,
+        "ac_fpr_nogk": _ac_fpr_nogk,
+        "vc_ids_kg": list(_vc_ids_kg) if _vc_ids_kg else [],
+        "vc_ids_nogk": list(_vc_ids_nogk) if _vc_ids_nogk else [],
+        "m13_top": report.p0.get("M13"),
+        "group_m13": {_mg.get("task_id", ""): _mg.get("p0", {}).get("M13") for _mg in _metric_groups},
+        "mining_fpr_group": next((_mg for _mg in _metric_groups if _mg.get("category") == "mining_fpr"), None),
+        "fpr_match_lookup": _fpr_match_lookup,
+    }
+    with open(_fpr_path, "w", encoding="utf-8") as _f:
+        json.dump(_fpr_section, _f, ensure_ascii=False)
+    log("EVAL", f"FPR 段已写入: {_fpr_path} ({len(json.dumps(_fpr_section, ensure_ascii=False)):,} 字节)")
+
+    # --- KG 段：增强版 case_results + per_case_kg_analysis ---
+    _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+    _kg_section = {
+        "evaluation_id": evaluation_id,
+        "groups": [
+            {
+                "task_id": _mg.get("task_id", ""),
+                "category": _mg.get("category", ""),
+                "label": _mg.get("label", ""),
+                "per_case_kg_analysis": _mg.get("per_case_kg_analysis", []),
+                "case_results": _mg.get("case_results", []),
+            }
+            for _mg in _metric_groups if _mg.get("category") != "mining_fpr"
+        ],
+    }
+    with open(_kg_path, "w", encoding="utf-8") as _f:
+        json.dump(_kg_section, _f, ensure_ascii=False)
+    log("EVAL", f"KG 段已写入: {_kg_path} ({len(json.dumps(_kg_section, ensure_ascii=False)):,} 字节)")
+
+    # --- 主报告瘦身：移除 FPR/KG 大字段，只保留框架 + 指标 + 诊断 ---
+    # case_results 保留原始版（sink_matcher 产出，不含 FPR 覆盖的 confusion）
+    # per_case_kg_analysis 和 FPR 字段移除，前端从段文件加载
+    for _mg in _metric_groups:
+        _mg.pop("per_case_kg_analysis", None)
+        _mg.pop("e2e_fpr_kg", None)
+        _mg.pop("e2e_fpr_nogk", None)
+        # case_results 保留在主报告中（原始版，供前端展示）
+    # 移除 mining_fpr group（FPR 数据在段文件中）
+    _metric_groups[:] = [_mg for _mg in _metric_groups if _mg.get("category") != "mining_fpr"]
+    report.fpr_uri = _fpr_path
+    report.kg_uri = _kg_path
+
+    rj = render_json(report)
+    log("EVAL", f"报告 JSON 大小: {len(rj):,} 字节")
     _json_path = _os.path.join(_reports_dir, f"{evaluation_id}.json")
     with open(_json_path, "w", encoding="utf-8") as _f:
         _f.write(rj)
@@ -2674,6 +2726,22 @@ def run(evaluation_id: str) -> dict:
             log("EVAL", f"报告 JSON 瘦身后: {len(_rj_slim):,} 字节")
         except Exception as e:
             log("EVAL", f"⚠ 报告 JSON 瘦身失败: {e}")
+
+        # KG 段同样瘦身 case_results
+        try:
+            with open(_kg_path, "r", encoding="utf-8") as _f:
+                _kg_data = _json_slim.loads(_f.read())
+            for _grp in _kg_data.get("groups", []):
+                for _cr in _grp.get("case_results", []):
+                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
+                    for _k in _strip_keys:
+                        _cr.pop(_k, None)
+            _kg_slim = _json_slim.dumps(_kg_data, ensure_ascii=False)
+            with open(_kg_path, "w", encoding="utf-8") as _f:
+                _f.write(_kg_slim)
+            log("EVAL", f"KG 段瘦身后: {len(_kg_slim):,} 字节")
+        except Exception as e:
+            log("EVAL", f"⚠ KG 段瘦身失败: {e}")
 
         # 删除临时 case_results 文件
         for _tr in task_runs:
@@ -2729,3 +2797,335 @@ def get_report(evaluation_id: str) -> dict:
                 "report": json.loads(r[0]) if r[0] else None}
     finally:
         conn.close()
+
+
+def _load_eval_config(evaluation_id: str) -> tuple[dict, str, list, dict]:
+    """从 DB 读取评测配置。返回 (manifest, benchmark_set_id, entries, case_details)。"""
+    def _load(cur):
+        cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        if not row:
+            raise ValueError(f"evaluation {evaluation_id} not found")
+        cfg = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        manifest = cfg.get("manifest", {})
+        entries = manifest.get("entries", [])
+        cur.execute("SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        eval_row = cur.fetchone()
+        bsid = eval_row[0] if eval_row else "BS001"
+        return manifest, bsid, entries
+    manifest, bsid, entries = _db_query(_load)
+
+    # 重建 case_details（与 INGEST 阶段相同逻辑）
+    _bm_source = manifest.get("benchmark_source", "vbench_zip")
+    _vc_task_id = manifest.get("vc_source_task_id")
+    case_details = {}
+    if _bm_source == "vuln_center" and not _vc_task_id:
+        for e in entries:
+            tid_actual = e.get("task_id_actual") or _extract_source_task_id(e) or e.get("task_id")
+            if tid_actual:
+                _vc_task_id = tid_actual
+                break
+    try:
+        if _bm_source == "vuln_center":
+            from ..infrastructure.vuln_center_client import get_vuln_center_benchmark
+            bm = get_vuln_center_benchmark(bsid, _vc_task_id)
+            if not (bm.get("cases") or []) and _vc_task_id:
+                bm = get_vuln_center_benchmark(bsid, None)
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    case_details[cid] = {
+                        "description": c.get("description") or "",
+                        "vulnerability_type": c.get("vulnerability_type") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                        "expected_label": c.get("expected_label") or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                        "locator": c.get("locator") or "",
+                    }
+        else:
+            from ..infrastructure.vbench_client import get_benchmark
+            bm = get_benchmark(bsid)
+            for c in (bm.get("cases") or []):
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    findings = c.get("findings") or []
+                    desc = " ".join(f.get("explanation", "") for f in findings if f.get("explanation")) \
+                           or c.get("description", "") or c.get("vulnerability_type", "") or ""
+                    case_details[cid] = {
+                        "description": desc,
+                        "vulnerability_type": c.get("vulnerability_type") or c.get("category") or "",
+                        "target_finding_id": c.get("target_finding_id") or "",
+                        "expected_label": c.get("expected_label") or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                    }
+    except Exception as e:
+        log("RERUN-FPR", f"取基线数据失败: {e}")
+    return manifest, bsid, entries, case_details
+
+
+def _build_fpr_match_lookup(fpr_match_data: dict) -> dict:
+    """从 _fpr_match_data 构建查找表（与 _run_fpr_bg 中逻辑一致）。"""
+    _fpr_match_lookup = {}
+    if fpr_match_data:
+        for _cond_key in ("kg", "nogk"):
+            _cond_fpr = fpr_match_data.get(_cond_key)
+            if _cond_fpr:
+                _cond_lookup = {}
+                for _d in _cond_fpr.get("match_details", []):
+                    if _d.get("bl_case_id"):
+                        _cond_lookup[_d["bl_case_id"]] = {
+                            "ac_case_id": _d.get("finding_id", ""),
+                            "ac_title": _d.get("finding_title", ""),
+                            "ac_summary": _d.get("finding_summary", ""),
+                            "ac_sink": _d.get("finding_sink", ""),
+                            "judgment": _d.get("judgment", ""),
+                            "is_fp": _d.get("is_fp", False),
+                        }
+                _fpr_match_lookup[_cond_key] = _cond_lookup
+    return _fpr_match_lookup
+
+
+def _write_fpr_section(evaluation_id: str, reports_dir: str,
+                        e2e_fpr_kg, e2e_fpr_nogk, ac_fpr_kg, ac_fpr_nogk,
+                        vc_ids_kg, vc_ids_nogk,
+                        m13_top, group_m13, mining_fpr_group,
+                        fpr_match_lookup) -> str:
+    """写入 FPR 段文件，返回路径。"""
+    import os as _os
+    _fpr_path = _os.path.join(reports_dir, f"{evaluation_id}_fpr.json")
+    _fpr_section = {
+        "evaluation_id": evaluation_id,
+        "e2e_fpr_kg": e2e_fpr_kg,
+        "e2e_fpr_nogk": e2e_fpr_nogk,
+        "ac_fpr_kg": ac_fpr_kg,
+        "ac_fpr_nogk": ac_fpr_nogk,
+        "vc_ids_kg": list(vc_ids_kg) if vc_ids_kg else [],
+        "vc_ids_nogk": list(vc_ids_nogk) if vc_ids_nogk else [],
+        "m13_top": m13_top,
+        "group_m13": group_m13 or {},
+        "mining_fpr_group": mining_fpr_group,
+        "fpr_match_lookup": fpr_match_lookup,
+    }
+    with open(_fpr_path, "w", encoding="utf-8") as _f:
+        json.dump(_fpr_section, _f, ensure_ascii=False)
+    log("RERUN-FPR", f"FPR 段已写入: {_fpr_path}")
+    return _fpr_path
+
+
+def _update_main_report_m13(evaluation_id: str, reports_dir: str, m13_top, group_m13):
+    """更新主报告 JSON 中的 M13 指标。"""
+    import os as _os
+    import json as _json
+    _json_path = _os.path.join(reports_dir, f"{evaluation_id}.json")
+    if not _os.path.isfile(_json_path):
+        log("RERUN-FPR", f"主报告不存在: {_json_path}，跳过 M13 更新")
+        return
+    with open(_json_path, "r", encoding="utf-8") as _f:
+        _rj_data = _json.loads(_f.read())
+    if m13_top:
+        _rj_data["p0"]["M13"] = m13_top
+    for _mg in _rj_data.get("metric_groups", []):
+        _tid = _mg.get("task_id", "")
+        if _tid in (group_m13 or {}):
+            _mg.setdefault("p0", {})["M13"] = group_m13[_tid]
+    _rj_slim = _json.dumps(_rj_data, ensure_ascii=False)
+    with open(_json_path, "w", encoding="utf-8") as _f:
+        _f.write(_rj_slim)
+    log("RERUN-FPR", f"主报告 M13 已更新: {_json_path}")
+
+
+def rerun_fpr(evaluation_id: str):
+    """重跑误报率分析段。
+
+    从 DB 读取评测配置 → 重建 case_details → 重跑 run_fpr_analysis (KG+NOGK)
+    → 更新 M13 → 写入 {eid}_fpr.json + {eid}_fpr_match.json → 更新主报告 M13 → 重渲染 HTML。
+    """
+    import os as _os
+    from .fpr_analysis import run_fpr_analysis, derive_fpr_from_subset
+    from ..infrastructure.vuln_center_client import list_vuln_cases
+    from ..infrastructure.concurrency import get as _conc_get
+    from ..infrastructure.log_util import with_eval_ctx
+    from ..infrastructure.parallel import iter_completed
+    from concurrent.futures import ThreadPoolExecutor as _TP
+
+    set_eval_ctx(evaluation_id)
+    set_progress(evaluation_id, "重跑误报率分析中...")
+
+    try:
+        manifest, bsid, entries, case_details = _load_eval_config(evaluation_id)
+        if not case_details:
+            raise ValueError("case_details 为空，无法重跑 FPR 分析")
+        log("RERUN-FPR", f"配置加载完成: entries={len(entries)}, case_details={len(case_details)}")
+
+        # 重跑 FPR（KG + NOGK 并行）— 复用 _run_fpr_bg 的核心逻辑
+        _e2e_fpr_kg = None
+        _e2e_fpr_nogk = None
+        _ac_fpr_kg = None
+        _ac_fpr_nogk = None
+        _vc_ids_kg: set[str] = set()
+        _vc_ids_nogk: set[str] = set()
+
+        def _run_fpr_for_cond(cond_label, cond_val):
+            _mining_entry = next((e for e in entries
+                                  if e.get("category", "") != "verify"
+                                  and e.get("condition") == cond_val
+                                  and e.get("project_id")), None)
+            if not _mining_entry:
+                return cond_val, None, None
+            _fpr_pid = _mining_entry["project_id"]
+            _fpr_tid = _extract_source_task_id(_mining_entry) or _mining_entry.get("task_id", "")
+            if not _fpr_tid or _fpr_tid == _mining_entry.get("task_id"):
+                _fpr_tid = _mining_entry.get("task_id", "")
+
+            log("RERUN-FPR", f"误报率分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+            try:
+                def _fpr_cb(done, total, _cl=cond_label):
+                    set_progress(evaluation_id, f"重跑误报率({_cl}): 匹配 {done}/{total}")
+                _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
+                                               source="alert_center", case_details=case_details)
+            except Exception as _fpr_err:
+                log("RERUN-FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
+                _ac_result = None
+
+            _vc_ids: set[str] = set()
+            if _ac_result:
+                try:
+                    _vc_cases = list_vuln_cases(project_id=_fpr_pid, source_task_id=_fpr_tid)
+                    _vc_ids = {c.get("id", "") for c in _vc_cases if c.get("id")}
+                    log("RERUN-FPR", f"漏洞中心 {len(_vc_ids)} 条 case")
+                except Exception as _vc_err:
+                    log("RERUN-FPR", f"获取漏洞中心 case ID 失败: {_vc_err}")
+
+            return cond_val, _ac_result, _vc_ids
+
+        from concurrent.futures import as_completed as _as_completed
+        _fpr_pool = _TP(max_workers=_conc_get("fpr_cond_workers"))
+        try:
+            _fpr_futures = {
+                _fpr_pool.submit(with_eval_ctx(_run_fpr_for_cond), label, val): val
+                for label, val in (("KG", "KG"), ("NOGK", "NOGK"))
+            }
+            for _fut in _as_completed(_fpr_futures):
+                _cond_val, _ac_result, _vc_ids = _fut.result()
+                if _ac_result:
+                    _vc_result = derive_fpr_from_subset(_ac_result, _vc_ids) if _vc_ids else None
+                    if _cond_val == "KG":
+                        _ac_fpr_kg = _ac_result
+                        _e2e_fpr_kg = _vc_result
+                        _vc_ids_kg = _vc_ids
+                    else:
+                        _ac_fpr_nogk = _ac_result
+                        _e2e_fpr_nogk = _vc_result
+                        _vc_ids_nogk = _vc_ids
+                    _cl = "KG" if _cond_val == "KG" else "NOGK"
+                    log("RERUN-FPR", f"FPR ({_cl}): 挖掘={_ac_result['fpr']:.1%}, "
+                          f"验证={_vc_result['fpr']:.1%}" if _vc_result else
+                          f"FPR ({_cl}): 挖掘={_ac_result['fpr']:.1%}, 验证未派生")
+        finally:
+            _fpr_pool.shutdown(wait=True)
+
+        # 持久化 FPR 匹配结果到 _fpr_match.json
+        _fpr_match_data = {}
+        _kg_fpr_for_match = _e2e_fpr_kg or _ac_fpr_kg
+        _nogk_fpr_for_match = _e2e_fpr_nogk or _ac_fpr_nogk
+        if _kg_fpr_for_match:
+            _fpr_match_data["kg"] = {**_kg_fpr_for_match, "vc_ids": list(_vc_ids_kg)}
+        if _nogk_fpr_for_match:
+            _fpr_match_data["nogk"] = {**_nogk_fpr_for_match, "vc_ids": list(_vc_ids_nogk)}
+
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os.makedirs(_reports_dir, exist_ok=True)
+
+        if _fpr_match_data:
+            _fpr_match_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr_match.json")
+            with open(_fpr_match_path, "w", encoding="utf-8") as _f:
+                json.dump(_fpr_match_data, _f, ensure_ascii=False)
+            log("RERUN-FPR", f"FPR 匹配结果已写入: {_fpr_match_path}")
+
+        _fpr_match_lookup = _build_fpr_match_lookup(_fpr_match_data)
+
+        # 计算 M13（复用 _update_m13_fpr 的逻辑，内联实现）
+        def _calc_m13(fpr_kg_result, fpr_nogk_result):
+            if not fpr_kg_result and not fpr_nogk_result:
+                return {"estimate": None, "calculation_status": "NA",
+                        "reason_code": "FPR_ANALYSIS_FAILED",
+                        "ci_lower": None, "ci_upper": None,
+                        "method": {"formula": "误报率 = 误报数 / (误报数 + 真正数)"}}
+            fpr_kg = fpr_kg_result["fpr"] if fpr_kg_result else None
+            fpr_nogk = fpr_nogk_result["fpr"] if fpr_nogk_result else None
+            tp_kg = fpr_kg_result["tp"] if fpr_kg_result else 0
+            fp_kg = fpr_kg_result["fp"] if fpr_kg_result else 0
+            tp_n = fpr_nogk_result["tp"] if fpr_nogk_result else 0
+            fp_n = fpr_nogk_result["fp"] if fpr_nogk_result else 0
+            n_kg = fpr_kg_result["total_findings"] if fpr_kg_result else 0
+            n_n = fpr_nogk_result["total_findings"] if fpr_nogk_result else 0
+            return {
+                "estimate": fpr_kg if fpr_kg is not None else 0.0,
+                "calculation_status": "CALCULATED",
+                "reason_code": None,
+                "ci_lower": None, "ci_upper": None,
+                "n": n_kg,
+                "method": {
+                    "fpr_kg": fpr_kg if fpr_kg is not None else 0.0,
+                    "fpr_nogk": fpr_nogk if fpr_nogk is not None else 0.0,
+                    "tp_kg": tp_kg, "fp_kg": fp_kg, "fn_kg": 0, "tn_kg": 0,
+                    "tp_n": tp_n, "fp_n": fp_n, "fn_n": 0, "tn_n": 0,
+                    "formula": "误报率 = 误报数 / (误报数 + 真正数)",
+                    "formula_kg": f"KG: {fp_kg} / ({fp_kg} + {tp_kg}) = {fpr_kg:.4f}" if fpr_kg is not None else "KG: 无数据",
+                    "formula_nogk": f"NOGK: {fp_n} / ({fp_n} + {tp_n}) = {fpr_nogk:.4f}" if fpr_nogk is not None else "NOGK: 无数据",
+                    "uncertainty": None,
+                },
+            }
+
+        # 顶层 M13：用挖掘 FPR（告警中心，超集）
+        _m13_top = _calc_m13(_ac_fpr_kg, _ac_fpr_nogk)
+        # 分组 M13：从主报告读取已有分组信息
+        _group_m13 = {}
+        _mining_fpr_group = None
+        _json_path = _os.path.join(_reports_dir, f"{evaluation_id}.json")
+        if _os.path.isfile(_json_path):
+            with open(_json_path, "r", encoding="utf-8") as _f:
+                _rj_data = json.loads(_f.read())
+            for _mg in _rj_data.get("metric_groups", []):
+                _tid = _mg.get("task_id", "")
+                _cat = _mg.get("category", "")
+                if _cat == "mining":
+                    _group_m13[_tid] = _calc_m13(_ac_fpr_kg, _ac_fpr_nogk)
+                elif _cat == "verify":
+                    _group_m13[_tid] = _calc_m13(_e2e_fpr_kg, _e2e_fpr_nogk)
+
+        # 写入 FPR 段文件
+        _fpr_path = _write_fpr_section(
+            evaluation_id, _reports_dir,
+            _e2e_fpr_kg, _e2e_fpr_nogk, _ac_fpr_kg, _ac_fpr_nogk,
+            _vc_ids_kg, _vc_ids_nogk,
+            _m13_top, _group_m13, _mining_fpr_group,
+            _fpr_match_lookup)
+
+        # 更新主报告 M13
+        _update_main_report_m13(evaluation_id, _reports_dir, _m13_top, _group_m13)
+
+        # 重新渲染静态 HTML
+        try:
+            from ..api.routes.evaluations import render_static_report
+            render_static_report(evaluation_id)
+            log("RERUN-FPR", f"静态 HTML 已重新渲染")
+        except Exception as e:
+            log("RERUN-FPR", f"⚠ 静态 HTML 重新渲染失败: {e}")
+
+        set_progress(evaluation_id, "误报率分析重跑完成")
+        log("RERUN-FPR", f"重跑完成: {evaluation_id}")
+        return {"status": "completed", "evaluation_id": evaluation_id, "section": "fpr"}
+
+    except Exception as e:
+        import traceback as _tb
+        log("RERUN-FPR", f"重跑失败: {e}")
+        _tb.print_exc()
+        set_progress(evaluation_id, f"误报率分析重跑失败: {e}")
+        raise
+    finally:
+        clear_eval_ctx()

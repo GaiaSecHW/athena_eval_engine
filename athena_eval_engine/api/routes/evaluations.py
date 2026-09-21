@@ -569,7 +569,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         _archive_ts = _dt_r.now(_tz_r).strftime("%Y%m%d_%H%M%S")
         try:
             _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-            for _suffix in (".html", ".json"):
+            for _suffix in (".html", ".json", "_fpr.json", "_kg.json", "_fpr_match.json"):
                 _old = os.path.join(_reports_dir, f"{evaluation_id}{_suffix}")
                 if os.path.isfile(_old):
                     _arc = os.path.join(_reports_dir, f"{evaluation_id}_archive_{_archive_ts}{_suffix}")
@@ -747,6 +747,100 @@ def get_metrics(evaluation_id: str):
 @app.get("/api/v1/evaluations/{evaluation_id}/report")
 def get_report(evaluation_id: str):
     return _build_report(evaluation_id)
+
+
+@app.get("/api/v1/evaluations/{evaluation_id}/report/fpr")
+def get_fpr_report(evaluation_id: str):
+    """误报率分析段：FPR 结果 + match_details + M13 实际值 + fpr_match_lookup。"""
+    import os as _os
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+    if not _os.path.isfile(_fpr_path):
+        raise HTTPException(status_code=404, detail="FPR report not found")
+    import json as _json
+    with open(_fpr_path, "r", encoding="utf-8") as _f:
+        return _json.loads(_f.read())
+
+
+@app.get("/api/v1/evaluations/{evaluation_id}/report/kg")
+def get_kg_report(evaluation_id: str):
+    """知识图谱与记忆介入分析段：per_case_kg_analysis + 增强版 case_results。"""
+    import os as _os
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+    if not _os.path.isfile(_kg_path):
+        raise HTTPException(status_code=404, detail="KG report not found")
+    import json as _json
+    with open(_kg_path, "r", encoding="utf-8") as _f:
+        return _json.loads(_f.read())
+
+
+@app.post("/api/v1/evaluations/{evaluation_id}/rerun-fpr")
+def rerun_fpr(evaluation_id: str, force: bool = False):
+    """重跑误报率分析段。前置：评测必须 COMPLETED。
+
+    force=true: 跳过状态检查（用于重跑卡住的 FPR 重跑任务）。
+    """
+    from ...infrastructure.database import connect
+    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                       'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                       'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
+        if row[0] in _RUNNING_STATES and not force:
+            raise HTTPException(status_code=409,
+                               detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
+                                     f"rerun not allowed. Use ?force=true to force.")
+    finally:
+        conn.close()
+
+    _submit_eval(evaluation_id, lambda: es.rerun_fpr(evaluation_id))
+    log("API", f"rerun-fpr submitted: {evaluation_id}")
+    return {"status": "submitted", "evaluation_id": evaluation_id, "section": "fpr"}
+
+
+@app.post("/api/v1/evaluations/{evaluation_id}/rerun-kg")
+def rerun_kg(evaluation_id: str, force: bool = False):
+    """重跑知识图谱与记忆介入分析段。前置：FPR 段必须存在。
+
+    force=true: 跳过状态检查。
+    """
+    import os as _os
+    from ...infrastructure.database import connect
+
+    # 检查 FPR 段文件存在
+    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+    if not _os.path.isfile(_fpr_path):
+        raise HTTPException(status_code=400,
+                           detail="FPR report not found. Please rerun FPR analysis first "
+                                 "(POST /api/v1/evaluations/{id}/rerun-fpr).")
+
+    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
+                       'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
+                       'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+        row = cur.fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
+        if row[0] in _RUNNING_STATES and not force:
+            raise HTTPException(status_code=409,
+                               detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
+                                     f"rerun not allowed. Use ?force=true to force.")
+    finally:
+        conn.close()
+
+    _submit_eval(evaluation_id, lambda: es.rerun_kg(evaluation_id))
+    log("API", f"rerun-kg submitted: {evaluation_id}")
+    return {"status": "submitted", "evaluation_id": evaluation_id, "section": "kg"}
 
 
 def _build_report(evaluation_id: str):

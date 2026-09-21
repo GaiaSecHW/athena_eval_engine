@@ -31,6 +31,8 @@ class ReportModel:
     llm_token_usage: dict = field(default_factory=dict)
     warnings: list = field(default_factory=list)
     has_nogk: bool = True  # 是否有 No-KG 对照组（False=仅 KG 模式）
+    fpr_uri: str = ""   # FPR 段文件路径（{eid}_fpr.json）
+    kg_uri: str = ""    # KG 段文件路径（{eid}_kg.json）
 
 
 def assemble(evaluation_id: str, metrics: list, stats: list,

@@ -48,7 +48,7 @@ _lock = threading.Lock()
 
 # 参数范围限制
 _RANGES = {
-    "llm_max_concurrency": (1, 200),
+    "llm_max_concurrency": (1, 1000),
     "max_concurrent_evals": (1, 10),
     "eval_pool_max": (1, 50),
     "parse_workers": (1, 50),

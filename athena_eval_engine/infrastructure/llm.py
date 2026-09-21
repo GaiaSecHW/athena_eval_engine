@@ -139,10 +139,13 @@ def set_runtime_config(**kwargs):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
-            api_base=None, api_key=None, timeout=None, **_unused) -> tuple[str, str | None]:
+            api_base=None, api_key=None, timeout=None, reasoning_effort="high",
+            **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
     ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
+    ``reasoning_effort`` 控制 LLM 推理深度（"high"/"medium"/"low"），简单匹配任务
+    传 "low" 可将 80s/次降至 ~10s/次，避免线程堆积导致服务停止。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
     LLM 并发受全局信号量控制（上限 50）。
     """
@@ -165,7 +168,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "thinking": {"type": "enabled"},
         "chat_template_kwargs": {"enable_thinking": True},
         "enable_thinking": True,
-        "reasoning_effort": "high",
+        "reasoning_effort": reasoning_effort,
         "reasoning_split": True,
     }
     if max_tokens is not None:
