@@ -38,6 +38,7 @@ class DataflowVulnScanTraceParser(TraceParser):
         self._tool_kg = {}
         self._tool_mem = {}
         self._seen_msg_ids: set[str] = set()
+        self._original_uri: str | None = None
 
     def _list_files(self, uri: str) -> list[str]:
         if os.path.isdir(uri):
@@ -61,16 +62,24 @@ class DataflowVulnScanTraceParser(TraceParser):
 
         trace: /data/files/{project_id}/tasks/{task_id}/session/dataflow_vuln_scan
         app:   /data/files/{project_id}/app/secflow-app-dataflow-vuln-scan
+
+        k8s 拷贝后 uri 为 /tmp/... 路径，不含 /data/files/，
+        用 original_source_uri 兜底推导原始路径。
         """
-        parts = uri.replace("\\", "/").rstrip("/").split("/")
-        if "files" not in parts:
-            return None
-        idx = parts.index("files")
-        if idx + 1 >= len(parts):
-            return None
-        project_id = parts[idx + 1]
-        dvs_app = f"/data/files/{project_id}/app/secflow-app-dataflow-vuln-scan"
-        return dvs_app if os.path.isdir(dvs_app) else None
+        for candidate_uri in (uri, self._original_uri):
+            if not candidate_uri:
+                continue
+            parts = candidate_uri.replace("\\", "/").rstrip("/").split("/")
+            if "files" not in parts:
+                continue
+            idx = parts.index("files")
+            if idx + 1 >= len(parts):
+                continue
+            project_id = parts[idx + 1]
+            dvs_app = f"/data/files/{project_id}/app/secflow-app-dataflow-vuln-scan"
+            if os.path.isdir(dvs_app):
+                return dvs_app
+        return None
 
     def _parse_intake_events(self, uri: str, trace_id: str) -> list[RawEvent]:
         """从 DVS app 目录的 events.jsonl 提取 vuln_intake_result 事件。
@@ -144,6 +153,7 @@ class DataflowVulnScanTraceParser(TraceParser):
     def parse(self, trace_source) -> Iterator[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件}"""
         uri = trace_source["source_uri"]
+        self._original_uri = trace_source.get("original_source_uri")
         trace_id = trace_source.get("trace_id", uri)
 
         files = self._list_files(uri)
