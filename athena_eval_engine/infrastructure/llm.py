@@ -161,13 +161,12 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "temperature": temperature,
         "stream": True,
         "stream_options": {"include_usage": True},
-        # 关闭推理模式（兼容各厂商参数，换模型无需改代码）
-        "thinking": {"type": "disabled"},
-        "chat_template_kwargs": {"enable_thinking": False},
-        "thinking_budget": 0,
-        "enable_thinking": False,
-        "reasoning_effort": "none",
-        "reasoning_split": False,
+        # 开启推理模式（兼容各厂商参数，换模型无需改代码）
+        "thinking": {"type": "enabled"},
+        "chat_template_kwargs": {"enable_thinking": True},
+        "enable_thinking": True,
+        "reasoning_effort": "high",
+        "reasoning_split": True,
     }
     if max_tokens is not None:
         _payload["max_tokens"] = max_tokens
