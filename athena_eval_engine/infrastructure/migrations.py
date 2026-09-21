@@ -60,6 +60,14 @@ MIGRATIONS = [
             "ALTER TABLE evaluation ADD COLUMN cancel_requested TINYINT(1) NOT NULL DEFAULT 0",
         ],
     },
+    {
+        "id": "006_extracted_finding_session_id_widen",
+        "desc": "extracted_finding.session_id/verify_session_id 扩容到 VARCHAR(512)",
+        "sql": [
+            "ALTER TABLE extracted_finding MODIFY COLUMN session_id VARCHAR(512)",
+            "ALTER TABLE extracted_finding MODIFY COLUMN verify_session_id VARCHAR(512)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

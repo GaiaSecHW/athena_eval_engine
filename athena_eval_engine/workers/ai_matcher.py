@@ -213,7 +213,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     _sys_prompt = (
         "你是漏洞匹配判定器。给定基线漏洞和候选漏洞的标题、描述和sink路径，"
         "从中提取三个维度并判断是否指向同一漏洞：\n"
-        "1. sink点：漏洞代码位置（源文件路径）\n"
+        "1. sink点：漏洞代码位置（源文件名）\n"
         "2. source入口：攻击入口（API端点/接口名）\n"
         "3. 漏洞类型：漏洞类别（如SQL注入、命令注入、越权、IDOR、SSRF等）\n\n"
         "先从标题和描述中提取各自的三个维度值，sink路径作为参考，再逐一判断是否相同。\n"
@@ -223,7 +223,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         "如'generateParameters接口'与'参数生成接口'、'POST /api/parameterGenerate'与'参数生成接口'是同一入口\n"
         "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
         "如'OS命令注入'与'远程命令注入'、'SQL注入'与'SQL Injection'是同一类型\n\n"
-        "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true）。\n\n"
+        "desc_similarity为描述相似度置信度（0.0-1.0），衡量基线与候选漏洞描述的相似程度。\n\n"
+        "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true），且描述相似度置信度（desc_similarity）>= 0.5。\n\n"
         '只返回JSON：\n'
         '{\n'
         '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
@@ -231,12 +232,13 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         '  "same_sink": true/false,\n'
         '  "same_source": true/false,\n'
         '  "same_vuln_type": true/false,\n'
+        '  "desc_similarity": 0.0-1.0,\n'
         '  "reason": "简要说明每个维度的判断理由"\n'
         '}'
     )
 
     def _check_pair(ai: int, fi: int, ac_title: str, ac_summary: str, ac_sink: str,
-                    fd_title: str, fd_description: str, fd_sink: str) -> tuple[int, int, bool]:
+                    fd_title: str, fd_description: str, fd_sink: str) -> tuple[int, int, float]:
         ac_desc = f"标题: {ac_title}\n描述: {ac_summary}"
         if ac_sink:
             ac_desc += f"\nSink: {ac_sink}"
@@ -257,6 +259,11 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             same_sink = _parse_bool(result.get("same_sink", False))
             same_source = _parse_bool(result.get("same_source", False))
             same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
+            desc_sim = result.get("desc_similarity")
+            try:
+                desc_sim = float(desc_sim) if desc_sim is not None else 0.0
+            except (ValueError, TypeError):
+                desc_sim = 0.0
 
             # 代码校验 sink
             sink_check = _verify_sink(ac_sink, fd_sink)
@@ -265,9 +272,9 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             elif sink_check is True and not same_sink:
                 same_sink = True
 
-            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
-            is_same = same_vuln_type and (same_sink or same_source)
-            return ai, fi, is_same
+            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true，且描述相似度 >= 0.5
+            is_same = same_vuln_type and (same_sink or same_source) and desc_sim >= 0.5
+            return ai, fi, desc_sim if is_same else 0.0
         except Exception as e:
             log("AC_MATCH", f"LLM 判断失败 (ac{ai},f{fi}): {e}")
             return ai, fi, False
@@ -286,7 +293,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
           f"avg {len(all_pairs)/max(len(alert_center_cases),1):.1f}/case)")
 
     # 全量并行 1vs1
-    pair_results: dict[tuple[int, int], bool] = {}
+    pair_results: dict[tuple[int, int], float] = {}
     if all_pairs:
         pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
         _pair_had_timeout = False
@@ -306,14 +313,14 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 ai, fi = futures[fut]
                 if _timeout:
                     _pair_had_timeout = True
-                    pair_results[(ai, fi)] = False
-                    log("AC_MATCH", f"LLM 超时 (ac{ai},f{fi}): fallback false")
+                    pair_results[(ai, fi)] = 0.0
+                    log("AC_MATCH", f"LLM 超时 (ac{ai},f{fi}): fallback 0.0")
                 else:
                     try:
-                        _, _, is_same = fut.result()
-                        pair_results[(ai, fi)] = is_same
+                        _, _, score = fut.result()
+                        pair_results[(ai, fi)] = score
                     except Exception as e:
-                        pair_results[(ai, fi)] = False
+                        pair_results[(ai, fi)] = 0.0
                         log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
                 done += 1
                 _progress(f"告警中心匹配 详细对比: {done}/{len(all_pairs)} LLM 调用完成")
@@ -332,7 +339,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         candidates = [fi for fi in candidates if fi in available_finding_indices]
         case_matched = False
         for fi in candidates:
-            if pair_results.get((ai, fi), False):
+            if pair_results.get((ai, fi), 0.0) >= 0.5:
                 orig_fi = active_to_orig[fi]
                 matched[orig_fi] = ai
                 matched_ac_ids.add(ac_list[ai].get("case_id", ""))

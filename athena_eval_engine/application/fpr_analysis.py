@@ -101,7 +101,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 "content": (
                     "你是漏洞匹配判定器。给定基线漏洞和候选漏洞的标题、描述和sink路径，"
                     "从中提取三个维度并判断是否指向同一漏洞：\n"
-                    "1. sink点：漏洞代码位置（源文件路径）\n"
+                    "1. sink点：漏洞代码位置（源文件名）\n"
                     "2. source入口：攻击入口（API端点/接口名）\n"
                     "3. 漏洞类型：漏洞类别（如SQL注入、命令注入、越权、IDOR、SSRF等）\n\n"
                     "先从标题和描述中提取各自的三个维度值，sink路径作为参考，再逐一判断是否相同。\n"
@@ -111,6 +111,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                     "如'generateParameters接口'与'参数生成接口'、'POST /api/parameterGenerate'与'参数生成接口'是同一入口\n"
                     "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
                     "如'OS命令注入'与'远程命令注入'、'SQL注入'与'SQL Injection'是同一类型\n\n"
+                    "desc_similarity为描述相似度置信度（0.0-1.0），衡量基线与候选漏洞描述的相似程度。\n\n"
                     '只返回JSON：\n'
                     '{\n'
                     '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
@@ -118,6 +119,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                     '  "same_sink": true/false,\n'
                     '  "same_source": true/false,\n'
                     '  "same_vuln_type": true/false,\n'
+                    '  "desc_similarity": 0.0-1.0,\n'
                     '  "reason": "简要说明每个维度的判断理由"\n'
                     '}'
                 ),
@@ -136,6 +138,11 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
             same_sink = _parse_bool(result.get("same_sink", False))
             same_source = _parse_bool(result.get("same_source", False))
             same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
+            desc_sim = result.get("desc_similarity")
+            try:
+                desc_sim = float(desc_sim) if desc_sim is not None else 0.0
+            except (ValueError, TypeError):
+                desc_sim = 0.0
             reason = result.get("reason", "")
 
             # 代码校验 sink
@@ -147,9 +154,9 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 same_sink = True
                 reason += " [代码校验: sink路径一致，推翻LLM判断]"
 
-            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
-            if same_vuln_type and (same_sink or same_source):
-                return [(fidx, 1.0)], reason
+            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true，且描述相似度 >= 0.5
+            if same_vuln_type and (same_sink or same_source) and desc_sim >= 0.5:
+                return [(fidx, desc_sim)], reason
             return [], reason
         except Exception as e:
             log("FPR", f"LLM 判断失败: {e}")
@@ -169,7 +176,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 "content": (
                     "你是漏洞匹配判定器。给定一个基线漏洞和多个候选漏洞，"
                     "对每个候选提取三个维度并判断是否与基线指向同一漏洞：\n"
-                    "1. sink点：漏洞代码位置（源文件路径）\n"
+                    "1. sink点：漏洞代码位置（源文件名）\n"
                     "2. source入口：攻击入口（API端点/接口名）\n"
                     "3. 漏洞类型：漏洞类别\n\n"
                     "判断标准：\n"
@@ -179,16 +186,18 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                     "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
                     "如'OS命令注入'与'远程命令注入'是同一类型\n\n"
                     "对每个候选，先从标题和描述中提取三维度值，sink路径作为参考，再逐一判断是否相同。"
-                    "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true）。\n"
+                    "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true），且描述相似度置信度（desc_similarity）>= 0.5。\n"
+                    "desc_similarity为描述相似度置信度（0.0-1.0），衡量基线与候选漏洞描述的相似程度。\n"
                     '只返回JSON：\n'
                     '{\n'
                     '  "results": [\n'
                     '    {"no": 候选编号, "baseline": {"sink":"...","source":"...","vuln_type":"..."}, '
                     '"candidate": {"sink":"...","source":"...","vuln_type":"..."}, '
-                    '"same_sink": true, "same_source": true, "same_vuln_type": true, "reason": "..."}\n'
+                    '"same_sink": true, "same_source": true, "same_vuln_type": true, '
+                    '"desc_similarity": 0.0-1.0, "reason": "..."}\n'
                     '  ]\n'
                     '}\n'
-                    '只包含漏洞类型相同且 sink 或 source 至少一个相同的候选。如果没有匹配，results为[]。'
+                    '只包含漏洞类型相同且 sink 或 source 至少一个相同且描述相似度>=0.5的候选。如果没有匹配，results为[]。'
                 ),
             },
             {
@@ -196,7 +205,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 "content": (
                     f"基线漏洞:\n{baseline_content}\n\n"
                     f"候选漏洞:\n{candidates_text}\n\n"
-                    f"对每个候选提取三维度并判断是否同一漏洞，只返回漏洞类型相同且 sink 或 source 至少一个相同的候选，"
+                    f"对每个候选提取三维度并判断是否同一漏洞，只返回漏洞类型相同且 sink 或 source 至少一个相同且描述相似度>=0.5的候选，"
                     f"编号1-{len(current_batch)}。"
                 ),
             },
@@ -224,6 +233,11 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 same_sink = _parse_bool(item.get("same_sink", False))
                 same_source = _parse_bool(item.get("same_source", False))
                 same_vuln_type = _parse_bool(item.get("same_vuln_type", False))
+                desc_sim = item.get("desc_similarity")
+                try:
+                    desc_sim = float(desc_sim) if desc_sim is not None else 0.0
+                except (ValueError, TypeError):
+                    desc_sim = 0.0
 
                 # 代码校验 sink
                 sink_check = _verify_sink(baseline_sink, finding_sink)
@@ -232,9 +246,9 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 elif sink_check is True and not same_sink:
                     same_sink = True
 
-                # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
-                if same_vuln_type and (same_sink or same_source):
-                    matched_pairs.append((fidx, 1.0))
+                # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true，且描述相似度 >= 0.5
+                if same_vuln_type and (same_sink or same_source) and desc_sim >= 0.5:
+                    matched_pairs.append((fidx, desc_sim))
 
             if matched_pairs:
                 return matched_pairs, reason
