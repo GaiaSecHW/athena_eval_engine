@@ -100,7 +100,7 @@ def set_max_concurrency(n: int):
     替换前释放旧信号量的全部许可，避免等待中的线程被永久搁置。
     """
     global _llm_semaphore, _MAX_CONCURRENCY
-    n = max(1, min(n, 200))
+    n = max(1, min(n, 1000))
     if n == 20:
         import traceback
         log("LLM", f"⚠ set_max_concurrency(20) 被调用！调用栈:\n{''.join(traceback.format_stack())}")
