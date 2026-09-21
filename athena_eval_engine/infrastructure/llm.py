@@ -22,11 +22,12 @@ DEFAULT_API_KEY = LLM_API_KEY
 
 MAX_RETRIES = 20
 RETRY_DELAY = 5  # 秒，重试间隔
+MAX_NETWORK_RETRIES = 3  # chat_json 对网络错误的重试次数（不叠加 _chat_once 内部的 429/500 重试）
 
 # SSE 流式超时（秒）
 FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟（大 prompt 需要更长时间处理）
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
-MAX_RATE_LIMIT_RETRIES = 20
+MAX_RATE_LIMIT_RETRIES = 100
 
 # LLM 全局并发上限（信号量，模块加载时即创建）
 _MAX_CONCURRENCY = 50
@@ -166,13 +167,18 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
-    if reasoning_effort:
+    if reasoning_effort and reasoning_effort != "none":
         # 开启推理模式（兼容各厂商参数，换模型无需改代码）
         _payload["thinking"] = {"type": "enabled"}
         _payload["chat_template_kwargs"] = {"enable_thinking": True}
         _payload["enable_thinking"] = True
         _payload["reasoning_effort"] = reasoning_effort
         _payload["reasoning_split"] = True
+    elif reasoning_effort == "none":
+        # 显式关闭推理（reasoning 占满 max_tokens 时使用）
+        _payload["thinking"] = {"type": "disabled"}
+        _payload["chat_template_kwargs"] = {"enable_thinking": False}
+        _payload["enable_thinking"] = False
     if max_tokens is not None:
         _payload["max_tokens"] = max_tokens
     body = json.dumps(_payload).encode("utf-8")
@@ -203,15 +209,29 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         _500_count = 0
         MAX_500_RETRIES = 50
         while True:
-            conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
+            _phase1_elapsed = time.time() - _req_ts
+            if _phase1_elapsed > first_token_timeout:
+                log("LLM", f"Phase 1 总超时（{first_token_timeout}s，含 429/500 重试），放弃")
+                raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s，含 {_429_count} 次 429 + {_500_count} 次 500 重试）")
+            # 用短 timeout 创建连接，配合应用层总超时计时
+            # socket.timeout 是 per-recv 的，TCP keepalive 会导致永不超时
+            # 所以用 min(剩余时间, 30) 作为 socket timeout，确保不会在单个 recv 上无限阻塞
+            _phase1_remaining = first_token_timeout - _phase1_elapsed
+            _conn_timeout = min(_phase1_remaining, 30)
+            conn = http.client.HTTPConnection(host, port, timeout=_conn_timeout)
             try:
                 conn.request("POST", path, body=body, headers=headers)
                 resp = conn.getresponse()
             except (socket.timeout, TimeoutError) as e:
                 conn.close()
                 conn = None
-                log("LLM", f"首 token 超时（{first_token_timeout}s）: {e}")
-                raise RuntimeError(f"LLM 首 token 超时（{first_token_timeout}s）") from e
+                _phase1_elapsed = time.time() - _req_ts
+                if _phase1_elapsed > first_token_timeout:
+                    log("LLM", f"Phase 1 总超时（{first_token_timeout}s）: {e}")
+                    raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s）") from e
+                # 未超总时间，可能是 per-recv 超时，重试连接
+                log("LLM", f"连接超时（{_conn_timeout}s），总已用 {_phase1_elapsed:.1f}s/{first_token_timeout}s，重试连接")
+                continue
             status = resp.status
             if status == 429:
                 if _429_count >= MAX_RATE_LIMIT_RETRIES:
@@ -573,6 +593,8 @@ def chat_json(messages, **kwargs) -> dict:
     _prev_err = None
     _empty_repeat = 0
     _no_reasoning = False  # reasoning 占满后关闭推理重试
+    _network_retries = 0  # 网络错误重试计数（不叠加 _chat_once 内部的 429/500 重试）
+    _json_retries = 0     # JSON 解析失败重试计数
     for attempt in range(retries):
         # 取消检查：外部超时后立即停止重试，释放信号量
         if _cancel_cb:
@@ -596,20 +618,33 @@ def chat_json(messages, **kwargs) -> dict:
                 break
             # content 为空 = reasoning 占满，下次关闭推理重试
             if "content 为空" in err_lower:
+                _msg_chars = sum(len(str(m.get("content", ""))) for m in msgs)
+                _sys_msg = str(msgs[0].get("content", ""))[:80] if msgs else ""
                 if not _no_reasoning:
                     _no_reasoning = True
-                    log("LLM", f"chat_json reasoning 占满 max_tokens，下次关闭推理重试")
+                    log("LLM", f"chat_json reasoning 占满 max_tokens，下次关闭推理重试 "
+                          f"attempt={attempt+1}/{retries} msgs={len(msgs)} input_chars={_msg_chars} "
+                          f"max_tokens={kwargs.get('max_tokens')} sys_prompt=\"{_sys_msg}\"")
+                    time.sleep(1)
                     continue
-                # 关闭推理后仍 content 为空，连续 2 次则停止
+                # 关闭推理后仍 content 为空
+                log("LLM", f"chat_json 关闭推理后仍 content 为空 "
+                      f"attempt={attempt+1}/{retries} input_chars={_msg_chars} "
+                      f"reasoning_len={last_err}")
                 if last_err == _prev_err:
                     _empty_repeat += 1
                     if _empty_repeat >= 2:
-                        log("LLM", f"chat_json 关闭推理后仍连续 content 为空，停止重试")
+                        log("LLM", f"chat_json 关闭推理后连续 {_empty_repeat} 次 content 为空，停止重试")
                         break
                 else:
                     _empty_repeat = 0
                 _prev_err = last_err
-            log("LLM", f"chat_json attempt {attempt+1}/{retries} LLM error: {last_err}")
+            # 网络错误重试不叠加 _chat_once 内部的 429/500 重试
+            _network_retries += 1
+            if _network_retries > MAX_NETWORK_RETRIES:
+                log("LLM", f"chat_json 网络错误重试耗尽（{MAX_NETWORK_RETRIES} 次，不叠加 _chat_once 内部重试）: {last_err}")
+                break
+            log("LLM", f"chat_json attempt {attempt+1}/{retries} 网络错误（{_network_retries}/{MAX_NETWORK_RETRIES}）: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
             continue

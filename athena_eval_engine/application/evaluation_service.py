@@ -471,7 +471,7 @@ def _set_status_short(evaluation_id, status):
 
 
 def _ai_extract_source_info(description: str, vulnerability_type: str = "",
-                             locator: str = "") -> tuple[str, str, str]:
+                             locator: str = "", cancel_cb=None) -> tuple[str, str, str]:
     """用 LLM 从漏洞描述中提取 source_file、source_function 和 source_line（行号）。
 
     当结构化数据（V-Bench traces 或漏洞中心 subject.locator）无法提取时作为 fallback。
@@ -495,19 +495,19 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "",
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low", cancel_cb=cancel_cb)
         return result.get("source_file", ""), result.get("source_function", ""), str(result.get("source_line", ""))
     except Exception as e:
         log("CREATE", f"AI 提取 source_file/source_function/source_line 失败: {e}")
         return "", "", ""
 
 
-def _fill_missing_source(case: dict) -> None:
+def _fill_missing_source(case: dict, cancel_cb=None) -> None:
     """如果 case 的 source_file、source_function 或 source_line 为空，用 AI 从 description 补提取。"""
     if not case.get("source_file") or not case.get("source_function") or not case.get("source_line"):
         sf, sfn, sln = _ai_extract_source_info(
             case.get("description", ""), case.get("vulnerability_type", ""),
-            case.get("locator", ""))
+            case.get("locator", ""), cancel_cb=cancel_cb)
         if not case.get("source_file"):
             case["source_file"] = sf
         if not case.get("source_function"):
@@ -1051,9 +1051,21 @@ def run(evaluation_id: str) -> dict:
             import threading as _th
             _fill_lock = _th.Lock()
             try:
+                _fill_cancel = lambda: _check_cancel(evaluation_id, "INGEST")
                 _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), _conc_get("source_fill_workers")))
-                futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), cd) for cd in _need_fill]
-                for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST")):
+                _fill_fut_to_cd = {}
+                for cd in _need_fill:
+                    fut = _fill_pool.submit(with_eval_ctx(_fill_missing_source), cd, _fill_cancel)
+                    _fill_fut_to_cd[fut] = cd
+                for fut, _timeout in iter_completed(
+                    _fill_fut_to_cd, cancel_cb=_fill_cancel, per_task_timeout=600,
+                    max_retries=2,
+                    resubmit_fn=lambda old_fut: _fill_pool.submit(
+                        with_eval_ctx(_fill_missing_source), _fill_fut_to_cd[old_fut], _fill_cancel),
+                    log_tag="SOURCE_FILL",
+                ):
+                    if _timeout:
+                        raise RuntimeError(f"补提取 source 超时（600s × 3次重试），任务卡住")
                     fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
@@ -1867,9 +1879,17 @@ def run(evaluation_id: str) -> dict:
         set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _conc_get("parse_workers")))) as pool:
             _parse_futures = {pool.submit(with_eval_ctx(_parse_trace), e): i for i, e in enumerate(entries)}
+            _parse_fut_to_entry = {f: entries[i] for f, i in _parse_futures.items()}
             parsed = [None] * len(entries)
             _parse_done = 0
-            for _fut, _timeout in iter_completed(_parse_futures, cancel_cb=lambda: _check_cancel(evaluation_id, "PARSING")):
+            for _fut, _timeout in iter_completed(
+                _parse_futures, cancel_cb=lambda: _check_cancel(evaluation_id, "PARSING"),
+                per_task_timeout=7200, max_retries=1,
+                resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_parse_trace), _parse_fut_to_entry[old_fut]),
+                log_tag="TRACE_PARSE",
+            ):
+                if _timeout:
+                    raise RuntimeError(f"Trace 解析超时（7200s × 2次重试），任务卡住")
                 parsed[_parse_futures[_fut]] = _fut.result()
                 _parse_done += 1
                 set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")
@@ -3388,8 +3408,15 @@ def _load_kg_inputs_from_db(evaluation_id: str, entries: list, bench_by_task: di
     set_progress(evaluation_id, f"重跑知识与记忆: 解析 trace 0/{_n_runs}")
     with ThreadPoolExecutor(max_workers=min(_n_runs, _conc_get("parse_workers"))) as pool:
         _futs = {pool.submit(with_eval_ctx(_load_one), tr): tr for tr in _kg_runs}
+        _fut_to_tr = {f: tr for f, tr in _futs.items()}
         _done = 0
-        for fut, _timeout in iter_completed(_futs):
+        for fut, _timeout in iter_completed(
+            _futs, per_task_timeout=7200, max_retries=1,
+            resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_load_one), _fut_to_tr[old_fut]),
+            log_tag="RERUN_KG_PARSE",
+        ):
+            if _timeout:
+                raise RuntimeError(f"重跑 KG trace 解析超时（7200s × 2次重试），任务卡住")
             trid, data = fut.result()
             if data:
                 _inputs[trid] = data

@@ -329,7 +329,14 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             for batch in batches:
                 fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, bl_sink, batch)
                 future_to_batch[fut] = batch
-            for fut, _timeout in iter_completed(future_to_batch):
+            for fut, _timeout in iter_completed(
+                future_to_batch, per_task_timeout=1800, max_retries=2,
+                resubmit_fn=lambda old_fut: _bl_pool2.submit(
+                    with_eval_ctx(_llm_match_batch), bl_content, bl_sink, future_to_batch[old_fut]),
+                log_tag="FPR_BATCH",
+            ):
+                if _timeout:
+                    raise RuntimeError("FPR 批量匹配超时（1800s × 3次重试），任务卡住")
                 matched_pairs, _ = fut.result()
                 all_matches.extend(matched_pairs)
         except Exception:
@@ -355,8 +362,18 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
     bl_pool = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_workers"), len(baseline_rows)))
     try:
-        futures = [bl_pool.submit(with_eval_ctx(_match_one_baseline), i) for i in range(len(baseline_rows))]
-        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
+        _bl_fut_to_idx = {}
+        for i in range(len(baseline_rows)):
+            fut = bl_pool.submit(with_eval_ctx(_match_one_baseline), i)
+            _bl_fut_to_idx[fut] = i
+        for fut, _timeout in iter_completed(
+            _bl_fut_to_idx, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
+            resubmit_fn=lambda old_fut: bl_pool.submit(
+                with_eval_ctx(_match_one_baseline), _bl_fut_to_idx[old_fut]),
+            log_tag="FPR_BASELINE",
+        ):
+            if _timeout:
+                raise RuntimeError("FPR 基线匹配超时（1800s × 3次重试），任务卡住")
             bl_results.append(fut.result())
     except Exception:
         bl_pool.shutdown(wait=False, cancel_futures=True)

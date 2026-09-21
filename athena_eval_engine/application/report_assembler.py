@@ -989,8 +989,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from .evaluation_service import get_runtime_workers
                     try:
                         _comp_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
-                        futures = [_comp_pool.submit(with_eval_ctx(_compress_one), item) for item in _uncached]
-                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
+                        _comp_fut_to_item = {}
+                        for item in _uncached:
+                            fut = _comp_pool.submit(with_eval_ctx(_compress_one), item)
+                            _comp_fut_to_item[fut] = item
+                        for fut, _timeout in iter_completed(
+                            _comp_fut_to_item, cancel_cb=cancel_cb,
+                            per_task_timeout=1800, max_retries=2,
+                            resubmit_fn=lambda old_fut: _comp_pool.submit(
+                                with_eval_ctx(_compress_one), _comp_fut_to_item[old_fut]),
+                            log_tag="KG_COMPRESS",
+                        ):
                             _compressed.append(fut.result())
                     except Exception:
                         _comp_pool.shutdown(wait=False, cancel_futures=True)
@@ -1057,9 +1066,18 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from .evaluation_service import get_runtime_workers
                     try:
                         _batch_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
-                        futures = [_batch_pool.submit(with_eval_ctx(_compress_batch), batch) for batch in _batches]
+                        _batch_fut_to_data = {}
+                        for batch in _batches:
+                            fut = _batch_pool.submit(with_eval_ctx(_compress_batch), batch)
+                            _batch_fut_to_data[fut] = batch
                         _compressed = []
-                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
+                        for fut, _timeout in iter_completed(
+                            _batch_fut_to_data, cancel_cb=cancel_cb,
+                            per_task_timeout=1800, max_retries=2,
+                            resubmit_fn=lambda old_fut: _batch_pool.submit(
+                                with_eval_ctx(_compress_batch), _batch_fut_to_data[old_fut]),
+                            log_tag="KG_BATCH_COMPRESS",
+                        ):
                             _compressed.append(fut.result())
                     except Exception:
                         _batch_pool.shutdown(wait=False, cancel_futures=True)
@@ -1200,7 +1218,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             for t in _pending_llm:
                 fut = pool.submit(with_eval_ctx(_run_llm), t)
                 _fut_to_task[fut] = t
-            for fut, _timeout in iter_completed(_fut_to_task, cancel_cb=cancel_cb):
+            for fut, _timeout in iter_completed(
+                _fut_to_task, cancel_cb=cancel_cb,
+                per_task_timeout=1800, max_retries=2,
+                resubmit_fn=lambda old_fut: pool.submit(with_eval_ctx(_run_llm), _fut_to_task[old_fut]),
+                log_tag="KG_LLM_ANALYSIS",
+            ):
                 _ci, result = fut.result()
                 results[_ci] = result
                 with _count_lock:

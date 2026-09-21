@@ -177,7 +177,11 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
             pre_futures[fut] = ai
-        for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb):
+        for fut, _timeout in iter_completed(
+            pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
+            resubmit_fn=lambda old_fut: pre_pool.submit(with_eval_ctx(_prefilter_one), pre_futures[old_fut]),
+            log_tag="AC_PREFILTER",
+        ):
             ai = pre_futures[fut]
             try:
                 _, indices = fut.result()
@@ -303,7 +307,19 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                     finding_list[fi].get("sink", ""))
                 futures[fut] = (ai, fi)
             done = 0
-            for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
+            for fut, _timeout in iter_completed(
+                futures, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
+                resubmit_fn=lambda old_fut: pool.submit(
+                    with_eval_ctx(_check_pair),
+                    futures[old_fut][0], futures[old_fut][1],
+                    ac_list[futures[old_fut][0]].get("title", ""),
+                    ac_list[futures[old_fut][0]].get("summary", ""),
+                    ac_list[futures[old_fut][0]].get("locator", ""),
+                    finding_list[futures[old_fut][1]].get("title", ""),
+                    finding_list[futures[old_fut][1]].get("description", ""),
+                    finding_list[futures[old_fut][1]].get("sink", "")),
+                log_tag="AC_MATCH",
+            ):
                 ai, fi = futures[fut]
                 try:
                     _, _, score = fut.result()
