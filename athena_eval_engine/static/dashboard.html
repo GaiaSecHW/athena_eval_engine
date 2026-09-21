@@ -1063,14 +1063,14 @@ function loadPipeline(eid){
   }).catch(e=>{const el=$("pipeline-card");if(el)el.innerHTML="<h3>分析过程日志</h3><div style=color:var(--red)>加载失败："+e+"</div>";});
 }
 
-// ===== ② 新建评测（KG / No-KG 分别选 trace，各自 项目→任务→trace）=====
-let sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
+// ===== ② 新建评测（KG / No-KG 分别选 项目→任务，trace 自动发现）=====
+let sel={kg:{proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:""},nogk:{proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
 let _allVbProjs=[];let _vbCases=null;let _vcCases=null;let _vcKey="";let _vcTasks=null;
-let _allProjs=[];let _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
+let _allProjs=[];let _sideData={kg:{tasks:null},nogk:{tasks:null}};
 async function renderCreate(){
   // 重置上轮选择，避免残留数据
-  sel={kg:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},nogk:{proj:"",projName:"",task:"",taskName:"",miningTrace:"",miningTraceKind:"",miningTraceName:"",verifyTrace:"",verifyTraceKind:"",verifyTraceName:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
-  _sideData={kg:{tasks:null,traces:null},nogk:{tasks:null,traces:null}};
+  sel={kg:{proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:""},nogk:{proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:""},vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vbench_zip",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:""};
+  _sideData={kg:{tasks:null},nogk:{tasks:null}};
   _vbCases=null;_vcCases=null;_vcTasks=null;_vcKey="";
   $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
     <div class="card" style="margin-bottom:16px"><label>评测名称 <span style="color:var(--red)">*</span></label><input id="eval-name" placeholder="输入评测名称（如：java-demo KG vs No-KG 对比）" oninput="updateRunBtn()"></div>
@@ -1084,57 +1084,45 @@ async function renderCreate(){
 }
 function renderSide(side){
   const s=sel[side];const label=side==="kg"?"KG（开）":"No-KG（关，可选）";const col=side==="kg"?"var(--acc)":"var(--amber)";
-  const p1=s.proj?col:"var(--p2)";const p2=s.task?col:"var(--p2)";const p3=(s.miningTrace||s.verifyTrace)?col:"var(--p2)";
+  const p1=s.proj?col:"var(--p2)";const p2=s.task?col:"var(--p2)";
   const steps=`<div style="display:flex;gap:6px;font-size:14px;margin-bottom:12px">
     <span style="padding:2px 8px;border-radius:8px;background:${p1};color:#fff">${s.proj?"✓ ":""}1 项目</span>
-    <span style="padding:2px 8px;border-radius:8px;background:${p2};color:#fff">${s.task?"✓ ":""}2 任务</span>
-    <span style="padding:2px 8px;border-radius:8px;background:${p3};color:#fff">${(s.miningTrace||s.verifyTrace)?"✓ ":""}3 trace</span></div>`;
+    <span style="padding:2px 8px;border-radius:8px;background:${p2};color:#fff">${s.task?"✓ ":""}2 任务</span></div>`;
   let body="";
   if(!s.proj){
     body=`<input id="${side}-search" placeholder="搜索项目名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
   }else if(!s.task){
     body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <span class="ci">(${s.proj})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].proj='';_sideData['${side}'].tasks=null;renderSide('${side}');renderRunConf()">重选</button></div><input id="${side}-search" placeholder="搜索任务名…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div class="sel" style="max-height:300px" id="${side}-list"></div>`;
   }else{
-    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <span class="ci">(${s.proj})</span> · 任务：<b>${s.taskName}</b> <span class="ci">(${s.task})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';_sideData['${side}'].traces=null;sel['${side}'].miningTrace='';sel['${side}'].miningTraceKind='';sel['${side}'].miningTraceName='';sel['${side}'].verifyTrace='';sel['${side}'].verifyTraceKind='';sel['${side}'].verifyTraceName='';renderSide('${side}');renderRunConf()">重选</button>${s.miningTrace?` · 挖掘 <b>${s.miningTraceName||''}</b>`:''}${s.verifyTrace?` · 验证 <b>${s.verifyTraceName||''}</b>`:''}</div><input id="${side}-search" placeholder="搜索 trace…" oninput="filterSideList('${side}')" style="margin-bottom:10px"><div id="${side}-mining" style="margin-bottom:12px"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞挖掘 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-mining"></div></div><div id="${side}-verify"><div style="font-size:13px;color:var(--sub);margin-bottom:4px">漏洞验证 Trace</div><div class="sel" style="max-height:200px" id="${side}-list-verify"></div></div>`;
+    body=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${s.projName}</b> <span class="ci">(${s.proj})</span> · 任务：<b>${s.taskName}</b> <span class="ci">(${s.task})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel['${side}'].task='';sel['${side}'].traceReady=false;sel['${side}'].traceKind='';sel['${side}'].traceInfo='';renderSide('${side}');renderRunConf()">重选</button></div><div id="${side}-trace-info" style="padding:8px 12px;border-radius:8px;background:var(--p2);font-size:13px">${s.traceReady?`<span style="color:var(--green)">✓ ${s.traceInfo}</span>`:`<span style="color:var(--sub)">⏳ 检查 trace…</span>`}</div>`;
   }
   $(side+"-col").innerHTML=`<h3><span class="tier ${side==='kg'?'t-p0':'t-p1'}">${label}</span></h3>${steps}${body}`;
   if(!s.proj){renderSideList(side);}
   else if(!s.task){jget(`/api/v1/platform/tasks?project_id=${s.proj}`).then(d=>{_sideData[side].tasks=d.tasks||[];renderSideList(side);});}
-  else{if(_sideData[side].traces){renderSideList(side);}else{renderSideList(side);jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/traces`).then(d=>{_sideData[side].traces=(d.traces||[]).filter(t=>t.kind==="session"||t.kind==="argo_session"||t.kind==="opencode_session"||t.kind==="webverify_session"||t.kind==="cvuln_verify_session"||t.kind==="dataflow_session"||t.kind==="secmate_session");renderSideList(side);});}}
+  else if(!s.traceReady&&s.traceKind===""){_checkTrace(side);}
+}
+function _checkTrace(side){
+  const s=sel[side];
+  jget(`/api/v1/platform/tasks/${s.proj}/${s.task}/trace-check`).then(d=>{
+    if(d.ready){
+      const m=d.mining||{};const v=d.verify||[];
+      let info=`挖掘工具: <b>${_toolLabel(m.trace_kind)}</b>`;
+      if(v.length)info+=` · 验证工具: <b>${v.map(x=>_toolLabel(x.trace_kind)).join('、')}</b>`;
+      s.traceReady=true;s.traceKind=m.trace_kind;s.traceInfo=info;
+    }else{
+      s.traceReady=false;s.traceKind="";s.traceInfo="未发现 trace";
+    }
+    renderSide(side);renderRunConf();
+  }).catch(e=>{
+    s.traceReady=false;s.traceKind="";s.traceInfo="检查失败: "+String(e).slice(0,80);
+    renderSide(side);renderRunConf();
+  });
+}
+function _toolLabel(kind){
+  const m={turing:"Turing",secmate:"SecMate",argo:"Argo",dataflow:"Dataflow",webvulnverify:"WebVulnVerify",cvuln_verify:"CVulnVerify"};
+  return m[kind]||kind||"未知";
 }
 function renderSideList(side){filterSideList(side);}
-function _traceLabel(t){
-  var path=t.path||"";var label=t.kind;
-  if(path.indexOf("/subagents")>=0){label="子 Agent Session";}
-  else if(t.kind==="secmate_session"){label="SecMate Session";}
-  else if(t.kind==="dataflow_session"){label="DataflowVulnScan Session";}
-  else if(path.indexOf("/hook-watch")>=0){label="Hook Watch";}
-  else if(path.indexOf("/run/logs")>=0){label="运行日志";}
-  else if(path.indexOf("/run/projects")>=0){label="项目数据";}
-  else if(path.indexOf("/run")>=0&&path.indexOf("/session")<0){label="运行目录";}
-  else if(t.kind==="session"&&path.indexOf("/tools/")<0){label="任务级 Session（主）";}
-  else if(t.kind==="session"){label="Session";}
-  else if(t.kind==="argo_session"&&path.indexOf("/subagents")<0&&path.indexOf("/run")<0){label="Argo Session（主）";}
-  else if(t.kind==="argo_session"){label="Argo Session";}
-  else if(t.kind==="opencode_session"){label="Turing opencode.db";}
-  else if(t.kind==="webverify_session"){label="WebVulnVerify Session";}
-  else if(t.kind==="cvuln_verify_session"){label="CVulnVerify Session";}
-  
-  return label;
-}
-function _traceBadge(label){
-  const badges={"任务级 Session（主）":`<span class="knd k-turing">任务级 Session</span>`,"子 Agent Session":`<span class="knd k-turing">子 Agent</span>`,"Argo Session（主）":`<span class="knd k-argo">Argo 主 Session</span>`,"Argo Session":`<span class="knd k-argo">Argo</span>`,"Turing opencode.db":`<span class="knd k-opencode">opencode.db</span>`,"Hook Watch":`<span class="knd k-argo">Hook Watch</span>`,"运行日志":`<span class="knd k-argo">日志</span>`,"项目数据":`<span class="knd k-argo">项目</span>`,"运行目录":`<span class="knd k-argo">运行</span>`,"Session":`<span class="knd k-turing">Session</span>`,"WebVulnVerify Session":`<span class="knd k-argo">WebVerify</span>`,"CVulnVerify Session":`<span class="knd k-argo">CVulnVerify</span>`,"DataflowVulnScan Session":`<span class="knd k-argo">Dataflow</span>`,"SecMate Session":`<span class="knd k-argo">SecMate</span>`};
-  return badges[label]||`<span class="knd">${label}</span>`;
-}
-function _isVerifyKind(kind){return kind==="webverify_session"||kind==="cvuln_verify_session";}
-function _renderTraceItem(side,t){
-  const label=_traceLabel(t);const badge=_traceBadge(label);
-  const cnt=Number.isFinite(t.file_count)?`<span style="font-size:12px;color:var(--sub)">${t.file_count} 个文件</span>`:"";
-  var display=t.tool_task_id||t.file||"";
-  const isSel=t.path===sel[side].miningTrace||t.path===sel[side].verifyTrace;
-  const selStyle=isSel?'background:rgba(0,0,0,0.06);font-weight:600;border-left:3px solid var(--green)':'';
-  return `<div class="opt" style="${selStyle}" onclick="pickTrace('${side}','${t.path}','${t.file}','${t.trace_kind}','${_isVerifyKind(t.kind)?"verify":"mining"}')"><span class="opt-main">${badge}<span class="num l" style="font-size:13px">${display}</span></span><span class="opt-mid">${cnt}</span><span class="opt-right" style="color:var(--amber)">${fmtMtime(t.mtime)}</span></div>`;
-}
 function filterSideList(side){
   const q=$(side+"-search")?($(side+"-search").value||"").toLowerCase():"";const s=sel[side];
   if(!s.proj){
@@ -1150,43 +1138,18 @@ function filterSideList(side){
       var stText=st==='success'?'✓ 已完成':st==='failed'?'✗ 失败':st==='running'?'⏳ 运行中':st==='paused'?'⏸ 已暂停':st==='queued'?'排队中':st;
       return `<div class="opt" onclick="pick('${side}','task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l" title="${t.name||t.id}">${t.name||t.id}</span>${t.task_type?`<span style="font-size:12px;color:var(--acc)">${t.task_type}</span>`:""}<span style="font-size:12px;color:${stColor};font-weight:600">${stText}</span>${t.test_target?`<span style="font-size:12px;color:var(--sub);max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${t.test_target}">${t.test_target}</span>`:""}</div>`;
     }).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
-  }else{
-    const miningList=$(side+"-list-mining");const verifyList=$(side+"-list-verify");
-    if(!_sideData[side].traces){
-      const loading='<div style="padding:12px;color:var(--sub);font-size:13px">⏳ 加载 trace…</div>';
-      if(miningList)miningList.innerHTML=loading;
-      if(verifyList)verifyList.innerHTML=loading;
-      return;
-    }
-    const f=_sideData[side].traces.filter(t=>(t.path+" "+(t.tool_task_id||"")+" "+t.file).toLowerCase().includes(q));
-    const mining=f.filter(t=>!_isVerifyKind(t.kind));
-    const verify=f.filter(t=>_isVerifyKind(t.kind));
-    if(miningList)miningList.innerHTML=mining.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
-    if(verifyList)verifyList.innerHTML=verify.map(t=>_renderTraceItem(side,t)).join("")||'<div style="padding:12px;color:var(--sub);font-size:13px">无</div>';
   }
 }
 function pick(side,field,id,name){
   sel[side][field]=id;
-  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].miningTrace="";sel[side].miningTraceKind="";sel[side].miningTraceName="";sel[side].verifyTrace="";sel[side].verifyTraceKind="";sel[side].verifyTraceName="";_sideData[side].tasks=null;}
-  else if(field==="task"){sel[side].taskName=name;sel[side].miningTrace="";sel[side].miningTraceKind="";sel[side].miningTraceName="";sel[side].verifyTrace="";sel[side].verifyTraceKind="";sel[side].verifyTraceName="";_sideData[side].traces=null;}
+  if(field==="proj"){sel[side].projName=name;sel[side].task="";sel[side].taskName="";sel[side].traceReady=false;sel[side].traceKind="";sel[side].traceInfo="";_sideData[side].tasks=null;}
+  else if(field==="task"){sel[side].taskName=name;sel[side].traceReady=false;sel[side].traceKind="";sel[side].traceInfo="";}
   renderSide(side);renderRunConf();
-}
-function pickTrace(side,path,name,trace_kind,category){
-  if(category==="verify"){
-    if(sel[side].verifyTrace===path){sel[side].verifyTrace="";sel[side].verifyTraceKind="";sel[side].verifyTraceName="";}else{sel[side].verifyTrace=path;sel[side].verifyTraceKind=trace_kind;sel[side].verifyTraceName=name;}
-  }else{
-    if(sel[side].miningTrace===path){sel[side].miningTrace="";sel[side].miningTraceKind="";sel[side].miningTraceName="";}else{sel[side].miningTrace=path;sel[side].miningTraceKind=trace_kind;sel[side].miningTraceName=name;}
-  }
-  renderSide(side);renderRunConf();
-}
-function _selectedTraceCaseIds(side,path,traceKind){
-  if(traceKind!=="cvuln_verify")return undefined;
-  const traces=_sideData[side].traces||[];
-  const trace=traces.find(t=>t.path===path&&t.trace_kind===traceKind);
-  return trace&&Array.isArray(trace.case_ids)&&trace.case_ids.length?trace.case_ids:undefined;
 }
 async function renderRunConf(){
-  const kgM=!!sel.kg.miningTrace,kgV=!!sel.kg.verifyTrace,nogkM=!!sel.nogk.miningTrace,nogkV=!!sel.nogk.verifyTrace;const paired=(kgM===nogkM)&&(kgV===nogkV);const ready=(kgM||kgV)&&(!(nogkM||nogkV)||paired);
+  const kgReady=sel.kg.traceReady,nogkReady=sel.nogk.traceReady;
+  const hasNogk=!!sel.nogk.proj;
+  const ready=kgReady&&(!hasNogk||nogkReady);
   const isVb=sel.bsrc!=='vuln_center';
   const srcToggle=`<div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px;margin-bottom:14px">
     <button onclick="switchBsrc('vbench_zip')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">📦 测评数据集基线</button>
@@ -1222,9 +1185,9 @@ async function renderRunConf(){
   <div style="display:none"><input id="eid" value="${genId()}"></div>
   ${srcToggle}
   ${bodyHtml}
-  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG trace 已就绪'+(nogkM||nogkV?' + No-KG trace 已就绪':'（仅 KG，无对照组）')+'</span><br>':((kgM||kgV)&&(nogkM||nogkV)&&!paired?'<span style="color:var(--red)">⚠ 两侧 trace 类型不匹配（挖掘/验证需对应），请选同类型</span><br>':'请在左侧选完 KG trace'+(nogkM||nogkV?'，右侧选 No-KG trace':'')+'<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
+  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ KG trace 已就绪'+(hasNogk?' + No-KG trace 已就绪':'（仅 KG，无对照组）')+'</span><br>':(sel.kg.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 KG trace…</span><br>':'请选完 KG 项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}</div>
   <div class="st" id="run-st"></div>
-  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完 KG trace"}</button>`;
+  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完 KG 项目和任务"}</button>`;
   if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
   else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
 }
@@ -1247,7 +1210,7 @@ function pickVc(field,id,name){
   renderRunConf();
 }
 function renderVbList(){filterVbList();}
-function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const kgM=!!sel.kg.miningTrace,kgV=!!sel.kg.verifyTrace,nogkM=!!sel.nogk.miningTrace,nogkV=!!sel.nogk.verifyTrace;const paired=(kgM===nogkM)&&(kgV===nogkV);const ready=(kgM||kgV)&&(!(nogkM||nogkV)||paired);btn.disabled=!(ready&&name);}
+function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const kgReady=sel.kg.traceReady,nogkReady=sel.nogk.traceReady;const hasNogk=!!sel.nogk.proj;const ready=kgReady&&(!hasNogk||nogkReady);btn.disabled=!(ready&&name);}
 function filterVbList(){
   if(!_allVbProjs)return;
   const list=$("vb-list");if(!list)return;
