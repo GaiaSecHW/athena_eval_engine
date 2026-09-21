@@ -172,37 +172,30 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
     pre_pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
-    _pre_had_timeout = False
     try:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
             pre_futures[fut] = ai
-        for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800):
+        for fut, _timeout in iter_completed(pre_futures, cancel_cb=cancel_cb):
             ai = pre_futures[fut]
-            if _timeout:
-                _pre_had_timeout = True
+            try:
+                _, indices = fut.result()
+                if not indices:
+                    indices = list(range(len(active_findings)))
+                    log("AC_MATCH", f"prefilter 0 candidates (ac{ai}): fallback all")
+                prefilter_candidates[ai] = indices
+            except Exception as e:
                 prefilter_candidates[ai] = list(range(len(active_findings)))
-                log("AC_MATCH", f"prefilter TIMEOUT (ac{ai}): fallback all")
-            else:
-                try:
-                    _, indices = fut.result()
-                    if not indices:
-                        # 0 候选 → fallback 全量，避免标题预筛遗漏
-                        indices = list(range(len(active_findings)))
-                        log("AC_MATCH", f"prefilter 0 candidates (ac{ai}): fallback all")
-                    prefilter_candidates[ai] = indices
-                except Exception as e:
-                    prefilter_candidates[ai] = list(range(len(active_findings)))
-                    log("AC_MATCH", f"prefilter FAILED (ac{ai}): {e}, fallback all")
+                log("AC_MATCH", f"prefilter FAILED (ac{ai}): {e}, fallback all")
             prefilter_done += 1
             _progress(f"告警中心匹配 预筛选: {prefilter_done}/{len(alert_center_cases)} 完成")
     except Exception:
         pre_pool.shutdown(wait=False, cancel_futures=True)
         raise
     else:
-        # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
-        pre_pool.shutdown(wait=not _pre_had_timeout, cancel_futures=_pre_had_timeout)
+        # wait=True：确保所有 LLM 线程完成，结果不丢弃
+        pre_pool.shutdown(wait=True)
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
     log("AC_MATCH", f"prefilter: {len(alert_center_cases)} ac_cases, {total_cand} candidates "
@@ -298,7 +291,6 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     pair_results: dict[tuple[int, int], float] = {}
     if all_pairs:
         pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
-        _pair_had_timeout = False
         try:
             futures = {}
             for ai, fi in all_pairs:
@@ -311,27 +303,21 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                     finding_list[fi].get("sink", ""))
                 futures[fut] = (ai, fi)
             done = 0
-            for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
+            for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
                 ai, fi = futures[fut]
-                if _timeout:
-                    _pair_had_timeout = True
+                try:
+                    _, _, score = fut.result()
+                    pair_results[(ai, fi)] = score
+                except Exception as e:
                     pair_results[(ai, fi)] = 0.0
-                    log("AC_MATCH", f"LLM 超时 (ac{ai},f{fi}): fallback 0.0")
-                else:
-                    try:
-                        _, _, score = fut.result()
-                        pair_results[(ai, fi)] = score
-                    except Exception as e:
-                        pair_results[(ai, fi)] = 0.0
-                        log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
+                    log("AC_MATCH", f"LLM 失败 (ac{ai},f{fi}): {e}")
                 done += 1
                 _progress(f"告警中心匹配 详细对比: {done}/{len(all_pairs)} LLM 调用完成")
         except Exception:
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
-            pool.shutdown(wait=not _pair_had_timeout, cancel_futures=_pair_had_timeout)
+            pool.shutdown(wait=True)
 
     # 串行冲突解决：按 AC case 顺序分配，先到先得（一对一约束）
     for ai in range(len(alert_center_cases)):

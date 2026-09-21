@@ -987,21 +987,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
-                    _comp_had_timeout = False
                     try:
                         _comp_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
                         futures = [_comp_pool.submit(with_eval_ctx(_compress_one), item) for item in _uncached]
-                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
-                            if _timeout:
-                                _comp_had_timeout = True
-                                _compressed.append({"mining_summary": "压缩超时"})
-                                continue
+                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
                             _compressed.append(fut.result())
                     except Exception:
                         _comp_pool.shutdown(wait=False, cancel_futures=True)
                         raise
                     else:
-                        _comp_pool.shutdown(wait=not _comp_had_timeout, cancel_futures=_comp_had_timeout)
+                        _comp_pool.shutdown(wait=True)
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
                 del _uncached, _by_session
@@ -1060,22 +1055,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
-                    _batch_had_timeout = False
                     try:
                         _batch_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
                         futures = [_batch_pool.submit(with_eval_ctx(_compress_batch), batch) for batch in _batches]
                         _compressed = []
-                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb, per_task_timeout=1800):
-                            if _timeout:
-                                _batch_had_timeout = True
-                                _compressed.append({"mining_summary": "压缩超时"})
-                                continue
+                        for fut, _timeout in iter_completed(futures, cancel_cb=cancel_cb):
                             _compressed.append(fut.result())
                     except Exception:
                         _batch_pool.shutdown(wait=False, cancel_futures=True)
                         raise
                     else:
-                        _batch_pool.shutdown(wait=not _batch_had_timeout, cancel_futures=_batch_had_timeout)
+                        _batch_pool.shutdown(wait=True)
                     data["mining_actions"] = _compressed
                     _data_str = json.dumps(data, ensure_ascii=False)
                     log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
@@ -1154,11 +1144,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
         import threading as _th
         _count_lock = _th.Lock()
 
-        # 单个 LLM 调用硬超时：超过此时间未完成的 case 使用规则降级结果。
-        # 正常调用 ~60s；含队列等待 + 重试，30 分钟足够；
-        # 防止 chat_json 20 次重试 × (300s+600s) ≈ 5 小时卡死整个 group。
-        _LLM_PER_CASE_TIMEOUT = 1800
-
         def _build_fallback(task, *, reason=None):
             """组装降级结果 dict（LLM 失败/超时共用）。"""
             _ci, _prompt, case_id, kg_judgment, confusion, case_interactions, \
@@ -1187,23 +1172,12 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                 "sink_hit_sessions": _sink_hit_sessions,
             }
 
-        def _run_llm(task, cancel_event=None):
+        def _run_llm(task):
             _ci, prompt, case_id, kg_judgment, confusion, case_interactions, case_mem_interactions, \
                 _sink_analysis, _no_finding_reason, _ki, _nogk_sink_analysis, \
                 _nogk_no_finding_reason, _nogk_ki, _finding_session, _sink_hit_sessions = task
-            # 超时取消检查：cancel_event 被 set 后，chat_json 在重试前检查并立即退出
-            _cancel_fn = None
-            if cancel_event is not None:
-                def _cancel_fn():
-                    if cancel_event.is_set():
-                        raise TimeoutError("LLM 调用被超时取消")
-                    if cancel_cb:
-                        cancel_cb()
-            else:
-                _cancel_fn = cancel_cb
             try:
-                # retries=3：限制重试次数，防止 20 次重试 × (300s+600s) ≈ 5 小时卡死
-                result = llm_mod.chat_json(prompt, temperature=0, retries=3, cancel_cb=_cancel_fn)
+                result = llm_mod.chat_json(prompt, temperature=0, cancel_cb=cancel_cb)
                 result["case_id"] = case_id
                 result["interactions"] = case_interactions
                 result["memory_interactions"] = case_mem_interactions
@@ -1221,26 +1195,13 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
         _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
         pool = ThreadPoolExecutor(max_workers=_workers)
-        _had_timeout = False
-        _task_events = {}  # fut → threading.Event（超时后 set，通知线程退出）
         try:
             _fut_to_task = {}
             for t in _pending_llm:
-                _ev = _th.Event()
-                fut = pool.submit(with_eval_ctx(_run_llm), t, cancel_event=_ev)
+                fut = pool.submit(with_eval_ctx(_run_llm), t)
                 _fut_to_task[fut] = t
-                _task_events[fut] = _ev
-            for fut, _timeout in iter_completed(
-                _fut_to_task, cancel_cb=cancel_cb, per_task_timeout=_LLM_PER_CASE_TIMEOUT
-            ):
-                if _timeout:
-                    _had_timeout = True
-                    _task_events[fut].set()  # 通知超时线程停止重试
-                    _ci, result = _build_fallback(
-                        _fut_to_task[fut], reason=f"LLM 超时（{_LLM_PER_CASE_TIMEOUT}s），规则生成")
-                    log("KG_ANALYSIS", f"LLM 调用超时（{_LLM_PER_CASE_TIMEOUT}s），case {_ci} 使用规则降级")
-                else:
-                    _ci, result = fut.result()
+            for fut, _timeout in iter_completed(_fut_to_task, cancel_cb=cancel_cb):
+                _ci, result = fut.result()
                 results[_ci] = result
                 with _count_lock:
                     _done_count[0] += 1
@@ -1250,8 +1211,6 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             pool.shutdown(wait=False, cancel_futures=True)
             raise
         else:
-            # 有超时时 wait=False：超时线程仍在 chat_json 重试中，wait=True 会阻塞整个评估
-            # 线程结束后自行清理（_chat_once 的 finally 释放信号量+计数器）
-            pool.shutdown(wait=not _had_timeout, cancel_futures=_had_timeout)
+            pool.shutdown(wait=True)
 
     return [r for r in results if r is not None]

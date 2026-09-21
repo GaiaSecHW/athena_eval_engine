@@ -1050,15 +1050,11 @@ def run(evaluation_id: str) -> dict:
             _fill_done = [0]
             import threading as _th
             _fill_lock = _th.Lock()
-            _fill_had_timeout = False
             try:
                 _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), _conc_get("source_fill_workers")))
                 futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), cd) for cd in _need_fill]
-                for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST"), per_task_timeout=1800):
-                    if _timeout:
-                        _fill_had_timeout = True
-                    else:
-                        fut.result()
+                for fut, _timeout in iter_completed(futures, cancel_cb=lambda: _check_cancel(evaluation_id, "INGEST")):
+                    fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
                         if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
@@ -1067,7 +1063,7 @@ def run(evaluation_id: str) -> dict:
                 _fill_pool.shutdown(wait=False, cancel_futures=True)
                 raise
             else:
-                _fill_pool.shutdown(wait=not _fill_had_timeout, cancel_futures=_fill_had_timeout)
+                _fill_pool.shutdown(wait=True)
 
     # 0c. 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
     _ac_pairs: list[tuple[str, str]] = []
@@ -2136,7 +2132,7 @@ def run(evaluation_id: str) -> dict:
             "vc_ids_kg": set(), "vc_ids_nogk": set(),
             "fpr_match_data": {}, "fpr_match_lookup": {},
         }
-    _bg_executor.shutdown(wait=False)
+    _bg_executor.shutdown(wait=True)
     _fpr_match_lookup = _fpr_res["fpr_match_lookup"]
     log("FPR", f"FPR 查找表已就绪: KG={len(_fpr_match_lookup.get('kg', {}))} "
           f"NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
@@ -2254,7 +2250,7 @@ def run(evaluation_id: str) -> dict:
                 except Exception as _e:
                     log("MATCH", f"AI 识别 finding 失败 (cond={_cond} case={_cid}): {_e}")
                     _llm_results[(_cond, _cid)] = None
-            _llm_pool.shutdown(wait=False)
+            _llm_pool.shutdown(wait=True)
 
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
@@ -3331,10 +3327,7 @@ def _load_kg_inputs_from_db(evaluation_id: str, entries: list, bench_by_task: di
     with ThreadPoolExecutor(max_workers=min(_n_runs, _conc_get("parse_workers"))) as pool:
         _futs = {pool.submit(with_eval_ctx(_load_one), tr): tr for tr in _kg_runs}
         _done = 0
-        for fut, _timeout in iter_completed(_futs, per_task_timeout=3600):
-            if _timeout:
-                log("RERUN-KG", f"加载超时: {fut}")
-                continue
+        for fut, _timeout in iter_completed(_futs):
             trid, data = fut.result()
             if data:
                 _inputs[trid] = data
@@ -3527,7 +3520,7 @@ def _build_enhanced_case_results(evaluation_id: str, task_runs: list, entries: l
                 except Exception as _e:
                     log("RERUN-KG", f"AI 识别 finding 失败: {_e}")
                     _llm_results[(_cond, _cid)] = None
-            _llm_pool.shutdown(wait=False)
+            _llm_pool.shutdown(wait=True)
 
         _g_case_results = []
         for _g_case in _kg_cases:
