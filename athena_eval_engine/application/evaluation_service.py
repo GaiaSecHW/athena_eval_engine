@@ -154,6 +154,88 @@ LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(_
 _K8S_TRACE_CACHE = "/tmp/eval_traces"
 
 
+def _is_webvulnverify_trace_module(path):
+    """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。模块级版本。"""
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line:
+                    continue
+                import json as _json
+                d = _json.loads(line)
+                return d.get("type") == "session_meta"
+    except Exception:
+        pass
+    return False
+
+
+def _get_parser_module(uri, trace_kind: str | None = None):
+    """根据 trace_kind 或路径推断返回 parser 实例。模块级版本，供 rerun_kg 使用。"""
+    import os as _os
+    if trace_kind == "webvulnverify":
+        from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
+        return WebVulnVerifyTraceParser()
+    if trace_kind == "cvuln_verify":
+        from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
+        return CVulnVerifyTraceParser()
+    if trace_kind == "argo":
+        from ..workers.argo_trace_parser import ArgoTraceParser
+        from ..infrastructure import llm as _llm_mod
+        return ArgoTraceParser(llm_module=_llm_mod)
+    if trace_kind == "turing":
+        from ..workers.turing_trace_parser import TuringTraceParser
+        return TuringTraceParser()
+    if trace_kind == "dataflow":
+        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+        return DataflowVulnScanTraceParser()
+    if trace_kind == "secmate":
+        from ..workers.secmate_trace_parser import SecMateTraceParser
+        return SecMateTraceParser()
+    # 兼容：无 trace_kind 时按路径推断
+    p = _os.path.normpath(uri)
+    cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
+    argo_suffix = _os.path.join("session", "argo")
+    dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
+    if p.replace("\\", "/").endswith("/session/secmate"):
+        from ..workers.secmate_trace_parser import SecMateTraceParser
+        return SecMateTraceParser()
+    if _os.path.isdir(p) and p.endswith(cvuln_suffix):
+        from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
+        return CVulnVerifyTraceParser()
+    if _os.path.isdir(p) and p.endswith(argo_suffix):
+        from ..workers.argo_trace_parser import ArgoTraceParser
+        from ..infrastructure import llm as _llm_mod
+        return ArgoTraceParser(llm_module=_llm_mod)
+    if _os.path.isdir(p) and (p.endswith(dataflow_suffix) or "dataflow_vuln_scan" in p):
+        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+        return DataflowVulnScanTraceParser()
+    if "dataflow_vuln_scan" in p and (p.endswith(".jsonl") or _os.path.isdir(p)):
+        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
+        return DataflowVulnScanTraceParser()
+    if p.endswith("opencode.db"):
+        from ..workers.turing_trace_parser import TuringTraceParser
+        return TuringTraceParser()
+    if _os.path.isdir(p) or p.endswith(".jsonl"):
+        from ..workers.secmate_trace_parser import is_secmate_trace
+        if is_secmate_trace(p):
+            from ..workers.secmate_trace_parser import SecMateTraceParser
+            return SecMateTraceParser()
+        _check_path = p
+        if _os.path.isdir(p):
+            import glob as _glob
+            _jfiles = sorted(_glob.glob(_os.path.join(p, "*.jsonl")))
+            _check_path = _jfiles[0] if _jfiles else ""
+        if _check_path and _is_webvulnverify_trace_module(_check_path):
+            from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
+            return WebVulnVerifyTraceParser()
+        from ..workers.argo_trace_parser import ArgoTraceParser
+        from ..infrastructure import llm as _llm_mod
+        return ArgoTraceParser(llm_module=_llm_mod)
+    from ..workers.turing_trace_parser import TuringTraceParser
+    return TuringTraceParser()
+
+
 def _verify_sqlite(path: str) -> bool:
     """快速校验 SQLite 文件可读（不跑 integrity_check，太慢）。"""
     import sqlite3 as _sql
@@ -3126,6 +3208,708 @@ def rerun_fpr(evaluation_id: str):
         log("RERUN-FPR", f"重跑失败: {e}")
         _tb.print_exc()
         set_progress(evaluation_id, f"误报率分析重跑失败: {e}")
+        raise
+    finally:
+        clear_eval_ctx()
+
+
+def _load_kg_inputs_from_db(evaluation_id: str, entries: list, bench_by_task: dict,
+                             task_runs: list, has_nogk: bool):
+    """为 rerun_kg 加载所有输入数据：重新解析 trace 获取 events + 从 DB 加载其余数据。
+
+    返回 dict: task_run_id → {
+        case_results, interactions, session_graph, nogk_case_results,
+        events, memory_interactions, parser, findings, _source_uri, _category, _agent_name
+    }
+    """
+    import os as _os
+    from concurrent.futures import ThreadPoolExecutor
+    from ..infrastructure.parallel import iter_completed
+    from ..infrastructure.log_util import with_eval_ctx
+    from ..workers.sink_matcher import sink_match_baselines
+
+    _entry_by_task = {}
+    for e in entries:
+        _tid = e.get("task_id", "")
+        _cond = e.get("condition", "")
+        if _tid not in _entry_by_task:
+            _entry_by_task[_tid] = {}
+        _entry_by_task[_tid][_cond] = e
+
+    # 预取 trace 本地路径
+    _local_paths = {}
+    for e in entries:
+        key = e.get("source_uri", "")
+        if key and key not in _local_paths:
+            try:
+                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e.get("task_id", ""))
+            except Exception as _e:
+                log("RERUN-KG", f"trace 路径解析失败 {key}: {_e}")
+                _local_paths[key] = key
+
+    def _load_one(tr):
+        """加载单个 task_run 的所有 KG 输入。"""
+        tid = tr.task_id
+        cond = tr.condition.value  # "KG" or "NOGK"
+        entry = _entry_by_task.get(tid, {}).get(cond, {})
+        if not entry:
+            log("RERUN-KG", f"未找到 entry: tid={tid} cond={cond}")
+            return tr.task_run_id, None
+
+        src = entry.get("source_uri", "")
+        trace_kind = entry.get("trace_kind", "")
+        local_path = _local_paths.get(src, src)
+
+        # 获取 parser
+        parser = _get_parser_module(local_path, trace_kind) if _os.path.exists(local_path) else None
+
+        # 重新解析 trace 获取 events
+        events = []
+        session_graph = {}
+        if parser:
+            try:
+                trace_source = {"trace_id": tr.trace_id, "source_uri": local_path}
+                if src != local_path:
+                    trace_source["original_source_uri"] = src
+                events = list(parser.parse(trace_source))
+                log("RERUN-KG", f"解析 {tr.task_run_id}: {len(events)} events")
+                session_graph = parser.build_session_graph(events)
+            except Exception as e:
+                log("RERUN-KG", f"解析 trace 失败 {tr.task_run_id}: {e}")
+                events = []
+                # 尝试从 DB 加载 session_graph
+                session_graph = _load_session_graph_from_db(tr.task_run_id, evaluation_id)
+        else:
+            # parser 不可用，从 DB 加载 session_graph
+            session_graph = _load_session_graph_from_db(tr.task_run_id, evaluation_id)
+
+        # 从 DB 加载 findings
+        findings = _load_findings_from_db(tr.task_run_id, evaluation_id)
+
+        # 从 DB 加载 interactions + memory_interactions
+        interactions, memory_interactions = _load_interactions_from_db(tr.task_run_id, evaluation_id)
+
+        # 重新运行 sink_match_baselines 获取 case_results
+        bench = list(bench_by_task.get(tid, []))
+        case_results = []
+        if bench and events:
+            try:
+                _oc, case_results = sink_match_baselines(
+                    tr, bench, events, parser=parser,
+                    findings_override=findings if findings else None,
+                    session_graph=session_graph)
+                log("RERUN-KG", f"sink_match {tr.task_run_id}: {len(case_results)} case_results")
+            except Exception as e:
+                log("RERUN-KG", f"sink_match_baselines 失败 {tr.task_run_id}: {e}")
+                case_results = []
+
+        _category = entry.get("category", "")
+        _agent_name = entry.get("agent_name", "")
+
+        return tr.task_run_id, {
+            "case_results": case_results,
+            "interactions": interactions,
+            "session_graph": session_graph,
+            "events": events,
+            "memory_interactions": memory_interactions,
+            "parser": parser,
+            "findings": findings,
+            "_source_uri": src,
+            "_category": _category,
+            "_agent_name": _agent_name,
+        }
+
+    _inputs = {}
+    _kg_runs = [tr for tr in task_runs if tr.condition == Condition.KG]
+    _n_runs = len(_kg_runs)
+    if _n_runs == 0:
+        return _inputs
+
+    set_progress(evaluation_id, f"重跑知识与记忆: 解析 trace 0/{_n_runs}")
+    with ThreadPoolExecutor(max_workers=min(_n_runs, _conc_get("parse_workers"))) as pool:
+        _futs = {pool.submit(with_eval_ctx(_load_one), tr): tr for tr in _kg_runs}
+        _done = 0
+        for fut, _timeout in iter_completed(_futs, per_task_timeout=3600):
+            if _timeout:
+                log("RERUN-KG", f"加载超时: {fut}")
+                continue
+            trid, data = fut.result()
+            if data:
+                _inputs[trid] = data
+            _done += 1
+            set_progress(evaluation_id, f"重跑知识与记忆: 解析 trace {_done}/{_n_runs}")
+
+    # 加载 NOGK case_results（不需要重新解析，只需 sink_match）
+    if has_nogk:
+        _nogk_runs = [tr for tr in task_runs if tr.condition == Condition.NOGK]
+        for tr in _nogk_runs:
+            tid = tr.task_id
+            entry = _entry_by_task.get(tid, {}).get("NOGK", {})
+            src = entry.get("source_uri", "")
+            trace_kind = entry.get("trace_kind", "")
+            local_path = _local_paths.get(src, src)
+            parser = _get_parser_module(local_path, trace_kind) if _os.path.exists(local_path) else None
+            events = []
+            session_graph = {}
+            if parser:
+                try:
+                    trace_source = {"trace_id": tr.trace_id, "source_uri": local_path}
+                    if src != local_path:
+                        trace_source["original_source_uri"] = src
+                    events = list(parser.parse(trace_source))
+                    session_graph = parser.build_session_graph(events)
+                except Exception as e:
+                    log("RERUN-KG", f"解析 NOGK trace 失败 {tr.task_run_id}: {e}")
+                    session_graph = _load_session_graph_from_db(tr.task_run_id, evaluation_id)
+            else:
+                session_graph = _load_session_graph_from_db(tr.task_run_id, evaluation_id)
+            findings = _load_findings_from_db(tr.task_run_id, evaluation_id)
+            interactions, memory_interactions = _load_interactions_from_db(tr.task_run_id, evaluation_id)
+            bench = list(bench_by_task.get(tid, []))
+            case_results = []
+            if bench and events:
+                try:
+                    _oc, case_results = sink_match_baselines(
+                        tr, bench, events, parser=parser,
+                        findings_override=findings if findings else None,
+                        session_graph=session_graph)
+                except Exception as e:
+                    log("RERUN-KG", f"sink_match NOGK 失败 {tr.task_run_id}: {e}")
+            _inputs[tr.task_run_id] = {
+                "case_results": case_results,
+                "interactions": interactions,
+                "session_graph": session_graph,
+                "events": events,
+                "memory_interactions": memory_interactions,
+                "parser": parser,
+                "findings": findings,
+                "_source_uri": src,
+                "_category": entry.get("category", ""),
+                "_agent_name": entry.get("agent_name", ""),
+            }
+
+    return _inputs
+
+
+def _load_session_graph_from_db(task_run_id: str, evaluation_id: str) -> dict:
+    """从 session_graph 表加载 graph_json。"""
+    def _load(cur):
+        cur.execute("SELECT graph_json FROM session_graph WHERE task_run_id=%s", (task_run_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return {}
+        return json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
+    try:
+        return _db_query(_load)
+    except Exception as e:
+        log("RERUN-KG", f"加载 session_graph 失败 {task_run_id}: {e}")
+        return {}
+
+
+def _load_findings_from_db(task_run_id: str, evaluation_id: str) -> list[dict]:
+    """从 extracted_finding 表加载 findings。"""
+    def _load(cur):
+        cur.execute("SELECT finding_json FROM extracted_finding WHERE task_run_id=%s", (task_run_id,))
+        rows = cur.fetchall()
+        findings = []
+        for row in rows:
+            if row and row[0]:
+                try:
+                    f = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+                    if isinstance(f, dict):
+                        findings.append(f)
+                except Exception:
+                    pass
+        return findings
+    try:
+        return _db_query(_load)
+    except Exception as e:
+        log("RERUN-KG", f"加载 findings 失败 {task_run_id}: {e}")
+        return []
+
+
+def _load_interactions_from_db(task_run_id: str, evaluation_id: str) -> tuple[list, list]:
+    """从 knowledge_interaction_fact.evidence_json 加载 interactions 和 memory_interactions。"""
+    def _load(cur):
+        cur.execute("SELECT evidence_json FROM knowledge_interaction_fact WHERE task_run_id=%s", (task_run_id,))
+        row = cur.fetchone()
+        if not row or not row[0]:
+            return [], []
+        ev = json.loads(row[0]) if isinstance(row[0], str) else (row[0] or {})
+        if not isinstance(ev, dict):
+            return [], []
+        interactions = ev.get("interactions", [])
+        mem = ev.get("memory", {}) if isinstance(ev.get("memory"), dict) else {}
+        memory_interactions = mem.get("interactions", [])
+        return interactions, memory_interactions
+    try:
+        return _db_query(_load)
+    except Exception as e:
+        log("RERUN-KG", f"加载 interactions 失败 {task_run_id}: {e}")
+        return [], []
+
+
+def _build_enhanced_case_results(evaluation_id: str, task_runs: list, entries: list,
+                                  bench_by_task: dict, inputs: dict,
+                                  fpr_match_lookup: dict, has_nogk: bool):
+    """重建增强版 case_results（FPR 覆盖 confusion + 链重建）。
+
+    复用 run() 中 per-task 循环的核心逻辑（evaluation_service.py:2060-2391），
+    但从 inputs dict 加载数据而非 facts dict。
+    返回: dict task_id → (case_results, category, agent_name, label)
+    """
+    from ..workers.sink_matcher import group_chains, collect_chain_actions, collect_chain_findings
+    from ..infrastructure import llm as llm_mod
+
+    # 按 task_id 分组 KG task_runs
+    _kg_runs_by_task = {}
+    for tr in task_runs:
+        if tr.condition == Condition.KG:
+            _kg_runs_by_task.setdefault(tr.task_id, []).append(tr)
+
+    _result = {}
+    for tid, kg_runs in _kg_runs_by_task.items():
+        tr = kg_runs[0]
+        trid = tr.task_run_id
+        _data = inputs.get(trid, {})
+        if not _data:
+            continue
+
+        _kg_cases = _data.get("case_results", [])
+        _kg_findings = _data.get("findings", [])
+        _kg_session_graph = _data.get("session_graph", {})
+        _kg_events = _data.get("events", [])
+        _kg_parser = _data.get("parser")
+        _category = _data.get("_category", "")
+        _agent_name = _data.get("_agent_name", "")
+
+        # NOGK 数据
+        _nogk_data = {}
+        if has_nogk:
+            _nogk_run = next((t for t in task_runs if t.task_id == tid and t.condition == Condition.NOGK), None)
+            if _nogk_run:
+                _nogk_data = inputs.get(_nogk_run.task_run_id, {})
+
+        _nogk_cases = _nogk_data.get("case_results", [])
+        _nogk_findings = _nogk_data.get("findings", [])
+        _nogk_session_graph = _nogk_data.get("session_graph", {})
+        _nogk_events = _nogk_data.get("events", [])
+        _nogk_parser = _nogk_data.get("parser")
+        _nogk_by_case = {c.get("case_id"): c for c in _nogk_cases}
+        _g_bench_by_case = {b.benchmark_item_id: b for b in bench_by_task.get(tid, [])}
+
+        # 预计算 LLM 识别任务
+        _llm_tasks = []
+        for _g_case in _kg_cases:
+            _g_case_id = _g_case.get("case_id")
+            for _cond, _findings in [("kg", _kg_findings), ("nogk", _nogk_findings)]:
+                _fpr_m = (fpr_match_lookup or {}).get(_cond, {}).get(_g_case_id, {})
+                _ac_t = _fpr_m.get("ac_title", "")
+                _ac_s = _fpr_m.get("ac_summary", "")
+                _ac_sk = _fpr_m.get("ac_sink", "")
+                if _ac_t and _ac_s and llm_mod.is_enabled():
+                    _mf = [f for f in _findings if _ac_t in (f.get("title", "") or f.get("vuln_type", ""))]
+                    if len(_mf) > 1:
+                        _llm_tasks.append((_cond, _g_case_id, _ac_t, _ac_s, _ac_sk, _mf))
+
+        _llm_results = {}
+        if _llm_tasks:
+            from concurrent.futures import ThreadPoolExecutor as _TPE
+            log("RERUN-KG", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
+            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), _conc_get("ac_llm_workers")))
+            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4], t[5]): (t[0], t[1]) for t in _llm_tasks}
+            for fut in _llm_futs:
+                _cond, _cid = _llm_futs[fut]
+                try:
+                    _llm_results[(_cond, _cid)] = fut.result()
+                except Exception as _e:
+                    log("RERUN-KG", f"AI 识别 finding 失败: {_e}")
+                    _llm_results[(_cond, _cid)] = None
+            _llm_pool.shutdown(wait=False)
+
+        _g_case_results = []
+        for _g_case in _kg_cases:
+            _g_case_id = _g_case.get("case_id")
+            _g_bench = _g_bench_by_case.get(_g_case_id)
+            _g_meta = (_g_bench.metadata or {}) if _g_bench else {}
+            _g_nogk_case = _nogk_by_case.get(_g_case_id, {})
+
+            _kg_case_data = dict(_g_case)
+            _nogk_case_data = dict(_g_nogk_case)
+
+            # KG: FPR 覆盖 confusion
+            _fpr_match = (fpr_match_lookup or {}).get("kg", {}).get(_g_case_id, {})
+            _fpr_ac_title = _fpr_match.get("ac_title", "")
+            _fpr_ac_summary = _fpr_match.get("ac_summary", "")
+            _fpr_ac_sink = _fpr_match.get("ac_sink", "")
+            _fpr_judgment = _fpr_match.get("judgment", "")
+            if _fpr_judgment and _fpr_judgment != "未匹配":
+                _kg_case_data["matched"] = True
+                _kg_case_data["mined"] = True
+                _kg_case_data["confusion"] = "TP" if _fpr_judgment == "真正" else "FP"
+                if not _kg_case_data.get("matched_finding_id"):
+                    _kg_case_data["matched_finding_id"] = _fpr_match.get("ac_case_id", "")
+                if not _kg_case_data.get("finding_title"):
+                    _kg_case_data["finding_title"] = _fpr_ac_title
+                _kg_case_data["ac_case_id"] = _fpr_match.get("ac_case_id", "")
+            elif "kg" in (fpr_match_lookup or {}):
+                _expected = (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA")
+                _kg_case_data["confusion"] = "FN" if _expected == "VULNERABLE" else ("TN" if _expected == "NON_VULNERABLE" else "NA")
+                _kg_case_data["matched"] = False
+                _kg_case_data["mined"] = False
+
+            # KG: 链重建
+            _kg_ac_match_method = ""
+            if _fpr_ac_title:
+                _fpr_finding, _match_method = _match_ac_to_finding_by_title(
+                    _fpr_ac_title, _fpr_ac_summary, _kg_findings, _kg_events,
+                    llm_result=_llm_results.get(("kg", _g_case_id)),
+                    ac_sink=_fpr_ac_sink)
+                _kg_ac_match_method = _match_method
+                if _fpr_finding:
+                    _fpr_session = _fpr_finding.get("session_id", "")
+                    _sink_session = _g_case.get("session_id", "") or _g_case.get("finding_session", "")
+                    if _fpr_session and _fpr_session != _sink_session:
+                        _new_chains = group_chains([_fpr_session], _kg_session_graph)
+                        if _new_chains:
+                            _kg_case_data.update({
+                                "chain_actions": collect_chain_actions(_new_chains[0], _kg_events, _kg_parser),
+                                "matched_finding_id": _fpr_finding.get("display_id") or _fpr_finding.get("finding_id", ""),
+                                "session_id": _fpr_session,
+                                "finding_session": _fpr_session,
+                                "ac_case_id": _fpr_match.get("ac_case_id", ""),
+                                "candidate_findings": [{
+                                    "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                                    "title": f.get("title") or f.get("vuln_type") or "",
+                                    "vuln_type": f.get("vuln_type", ""),
+                                    "description": f.get("description") or "",
+                                    "source": f.get("source") or "",
+                                    "sink": f.get("sink") or "",
+                                    "validation_result": f.get("validation_result"),
+                                    "session_id": f.get("session_id", ""),
+                                } for f in collect_chain_findings(_new_chains[0], _kg_findings)],
+                                "sink_sessions": sorted(_new_chains[0]),
+                            })
+            _kg_case_data["ac_match_method"] = _kg_ac_match_method
+            _kg_cands = _kg_case_data.get("candidate_findings") or []
+            if _kg_case_data.get("matched"):
+                _kg_case_data["candidate_findings"] = []
+                _kg_case_data["candidate_count"] = 0
+            else:
+                _kg_case_data["candidate_count"] = len(_kg_cands)
+                _kg_case_data["candidate_findings"] = _kg_cands[:1]
+
+            # NOGK: FPR 覆盖 confusion
+            _nogk_fpr_match = (fpr_match_lookup or {}).get("nogk", {}).get(_g_case_id, {})
+            _nogk_ac_title = _nogk_fpr_match.get("ac_title", "")
+            _nogk_ac_summary = _nogk_fpr_match.get("ac_summary", "")
+            _nogk_ac_sink = _nogk_fpr_match.get("ac_sink", "")
+            _nogk_fpr_judgment = _nogk_fpr_match.get("judgment", "")
+            if _nogk_fpr_judgment and _nogk_fpr_judgment != "未匹配":
+                _nogk_case_data["matched"] = True
+                _nogk_case_data["mined"] = True
+                _nogk_case_data["confusion"] = "TP" if _nogk_fpr_judgment == "真正" else "FP"
+                if not _nogk_case_data.get("matched_finding_id"):
+                    _nogk_case_data["matched_finding_id"] = _nogk_fpr_match.get("ac_case_id", "")
+                if not _nogk_case_data.get("finding_title"):
+                    _nogk_case_data["finding_title"] = _nogk_ac_title
+                _nogk_case_data["ac_case_id"] = _nogk_fpr_match.get("ac_case_id", "")
+            elif "nogk" in (fpr_match_lookup or {}):
+                _expected = (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA")
+                _nogk_case_data["confusion"] = "FN" if _expected == "VULNERABLE" else ("TN" if _expected == "NON_VULNERABLE" else "NA")
+                _nogk_case_data["matched"] = False
+                _nogk_case_data["mined"] = False
+
+            # NOGK: 链重建
+            _nogk_ac_match_method = ""
+            if _nogk_ac_title:
+                _nogk_fpr_finding, _nogk_match_method = _match_ac_to_finding_by_title(
+                    _nogk_ac_title, _nogk_ac_summary, _nogk_findings, _nogk_events,
+                    llm_result=_llm_results.get(("nogk", _g_case_id)),
+                    ac_sink=_nogk_ac_sink)
+                _nogk_ac_match_method = _nogk_match_method
+                if _nogk_fpr_finding:
+                    _nogk_fpr_session = _nogk_fpr_finding.get("session_id", "")
+                    _nogk_sink_session = _g_nogk_case.get("session_id", "") or _g_nogk_case.get("finding_session", "")
+                    if _nogk_fpr_session and _nogk_fpr_session != _nogk_sink_session:
+                        _nogk_new_chains = group_chains([_nogk_fpr_session], _nogk_session_graph)
+                        if _nogk_new_chains:
+                            _nogk_case_data.update({
+                                "chain_actions": collect_chain_actions(_nogk_new_chains[0], _nogk_events, _nogk_parser),
+                                "matched_finding_id": _nogk_fpr_finding.get("display_id") or _nogk_fpr_finding.get("finding_id", ""),
+                                "session_id": _nogk_fpr_session,
+                                "finding_session": _nogk_fpr_session,
+                                "ac_case_id": _nogk_fpr_match.get("ac_case_id", ""),
+                                "candidate_findings": [{
+                                    "finding_id": f.get("display_id") or f.get("finding_id", ""),
+                                    "title": f.get("title") or f.get("vuln_type") or "",
+                                    "vuln_type": f.get("vuln_type", ""),
+                                    "description": f.get("description") or "",
+                                    "source": f.get("source") or "",
+                                    "sink": f.get("sink") or "",
+                                    "validation_result": f.get("validation_result"),
+                                    "session_id": f.get("session_id", ""),
+                                } for f in collect_chain_findings(_nogk_new_chains[0], _nogk_findings)],
+                                "sink_sessions": sorted(_nogk_new_chains[0]),
+                            })
+            _nogk_case_data["ac_match_method"] = _nogk_ac_match_method
+            _nogk_cands = _nogk_case_data.get("candidate_findings") or []
+            if _nogk_case_data.get("matched"):
+                _nogk_case_data["candidate_findings"] = []
+                _nogk_case_data["candidate_count"] = 0
+            else:
+                _nogk_case_data["candidate_count"] = len(_nogk_cands)
+                _nogk_case_data["candidate_findings"] = _nogk_cands[:1]
+
+            _g_case_results.append({
+                **_kg_case_data,
+                "expected_label": _kg_case_data.get("expected_label") or (_g_bench.expected_label.value if _g_bench and _g_bench.expected_label else "NA"),
+                "description": _g_meta.get("description", ""),
+                "vulnerability_type": _g_meta.get("vulnerability_type", ""),
+                "source_file": _g_meta.get("source_file", ""),
+                "source_function": _g_meta.get("source_function", ""),
+                "source_line": _g_meta.get("source_line", ""),
+                "nogk_matched": _nogk_case_data.get("matched", False),
+                "nogk_mined": _nogk_case_data.get("mined", False),
+                "nogk_sink_hit": _nogk_case_data.get("sink_hit", False),
+                "nogk_confusion": _nogk_case_data.get("confusion", "NA"),
+                "nogk_finding_title": _nogk_case_data.get("finding_title", ""),
+                "nogk_ac_case_id": _nogk_case_data.get("ac_case_id", ""),
+                "nogk_ac_match_method": _nogk_case_data.get("ac_match_method", ""),
+                "nogk_session_id": _nogk_case_data.get("session_id", ""),
+                "nogk_sink_sessions": _nogk_case_data.get("sink_sessions", []),
+                "nogk_sink_hit_sessions": _nogk_case_data.get("sink_hit_sessions", []),
+                "nogk_finding_session": _nogk_case_data.get("finding_session", ""),
+                "nogk_session_chain": _nogk_case_data.get("session_chain", []),
+                "nogk_candidate_findings": _nogk_case_data.get("candidate_findings", []),
+                "nogk_candidate_count": _nogk_case_data.get("candidate_count", 0),
+                "nogk_sink_info": _nogk_case_data.get("sink_info", ""),
+                "nogk_sink_analysis": _nogk_case_data.get("sink_analysis", ""),
+                "nogk_no_finding_reason": _nogk_case_data.get("no_finding_reason", ""),
+                "nogk_knowledge_intervention": _nogk_case_data.get("knowledge_intervention"),
+                "kg_source_uri": _data.get("_source_uri", ""),
+                "nogk_source_uri": _nogk_data.get("_source_uri", ""),
+            })
+
+        _label = (f"漏洞验证-{_agent_name}" if _category == "verify" and _agent_name
+                  else ("漏洞验证" if _category == "verify" else "漏洞挖掘"))
+        _result[tid] = (_g_case_results, _category, _agent_name, _label)
+
+    return _result
+
+
+def rerun_kg(evaluation_id: str):
+    """重跑知识图谱与记忆介入分析段。
+
+    前置：{eid}_fpr.json 存在（提供 fpr_match_lookup）。
+    流程：读 FPR 段 → 加载配置 → 重新解析 trace 获取 events → 重建增强版 case_results
+    → 并行重跑 ai_per_case_kg_analysis → 写 {eid}_kg.json → 重渲染 HTML。
+    """
+    import os as _os
+    from ..infrastructure.llm import is_enabled as _llm_enabled
+    from ..infrastructure.log_util import with_eval_ctx
+    from concurrent.futures import ThreadPoolExecutor as _TP
+
+    set_eval_ctx(evaluation_id)
+    set_progress(evaluation_id, "重跑知识与记忆分析中...")
+
+    try:
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _os.makedirs(_reports_dir, exist_ok=True)
+
+        # 1. 读取 FPR 段获取 fpr_match_lookup
+        _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+        if not _os.path.isfile(_fpr_path):
+            raise FileNotFoundError(f"FPR 段不存在: {_fpr_path}，请先重跑误报率分析")
+        with open(_fpr_path, "r", encoding="utf-8") as _f:
+            _fpr_section = json.loads(_f.read())
+        _fpr_match_lookup = _fpr_section.get("fpr_match_lookup", {})
+        log("RERUN-KG", f"FPR 查找表已加载: KG={len(_fpr_match_lookup.get('kg', {}))} "
+              f"NOGK={len(_fpr_match_lookup.get('nogk', {}))} 条匹配")
+
+        # 2. 加载评测配置
+        manifest, bsid, entries, case_details = _load_eval_config(evaluation_id)
+        if not entries:
+            raise ValueError("entries 为空，无法重跑 KG 分析")
+
+        # 加载 bench_by_task（与 run() 相同逻辑）
+        def _load_bench(cur):
+            cur.execute("SELECT benchmark_item_id, task_id, expected_label, target_finding_id, metadata_json "
+                        "FROM benchmark_item WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)",
+                        (evaluation_id,))
+            bench_by_task = {}
+            for bi_id, tid, label, tfid, meta in cur.fetchall():
+                md = json.loads(meta) if isinstance(meta, str) else (meta or None)
+                bench_by_task.setdefault(tid, []).append(
+                    BenchmarkItem(bi_id, "BS001", tid, ExpectedLabel(label) if label else None, tfid, md))
+            # 分配给所有 entry 的 task_id
+            if bench_by_task and entries:
+                _seen_ids = set()
+                _all_items = []
+                for items in bench_by_task.values():
+                    for item in items:
+                        if item.benchmark_item_id not in _seen_ids:
+                            _seen_ids.add(item.benchmark_item_id)
+                            _all_items.append(item)
+                for e in entries:
+                    _tid = e.get("task_id", "")
+                    if _tid and _tid not in bench_by_task:
+                        bench_by_task[_tid] = [BenchmarkItem(b.benchmark_item_id, "BS001", _tid,
+                                                             b.expected_label, b.target_finding_id, b.metadata)
+                                               for b in _all_items]
+            return bench_by_task
+        bench_by_task = _db_query(_load_bench)
+
+        # 3. 加载 task_runs
+        def _load_task_runs(cur):
+            cur.execute("SELECT task_run_id, task_id, `condition`, benchmark_item_id, trace_valid, runtime_valid "
+                        "FROM task_run WHERE evaluation_id=%s", (evaluation_id,))
+            runs = []
+            for r in cur.fetchall():
+                tr = TaskRun(task_run_id=r[0], evaluation_id=evaluation_id, task_id=r[1],
+                             trace_id=r[0].replace("tr-", "ts-"),
+                             condition=Condition[r[2]], condition_source=ConditionSource.MANIFEST,
+                             trace_valid=bool(r[4]), runtime_valid=bool(r[5]), benchmark_item_id=r[3])
+                runs.append(tr)
+            return runs
+        task_runs = _db_query(_load_task_runs)
+        has_nogk = any(tr.condition == Condition.NOGK for tr in task_runs)
+        log("RERUN-KG", f"task_runs={len(task_runs)}, has_nogk={has_nogk}")
+
+        # 4. 加载所有 KG 输入（重新解析 trace + 从 DB 加载）
+        _inputs = _load_kg_inputs_from_db(evaluation_id, entries, bench_by_task, task_runs, has_nogk)
+        log("RERUN-KG", f"输入加载完成: {len(_inputs)} task_runs")
+
+        # 5. 重建增强版 case_results
+        _enhanced = _build_enhanced_case_results(
+            evaluation_id, task_runs, entries, bench_by_task,
+            _inputs, _fpr_match_lookup, has_nogk)
+
+        # 6. 并行重跑 ai_per_case_kg_analysis
+        _kg_groups = []
+        for tid, (case_results, category, agent_name, label) in _enhanced.items():
+            _data = _inputs.get(next(tr.task_run_id for tr in task_runs if tr.task_id == tid and tr.condition == Condition.KG), {})
+            _kg_interactions = _data.get("interactions", [])
+            _kg_session_graph = _data.get("session_graph", {})
+            _kg_events = _data.get("events", [])
+            _kg_mem_interactions = _data.get("memory_interactions", [])
+            _kg_parser = _data.get("parser")
+            _nogk_cases = []
+            if has_nogk:
+                _nogk_run = next((tr for tr in task_runs if tr.task_id == tid and tr.condition == Condition.NOGK), None)
+                if _nogk_run:
+                    _nogk_data = _inputs.get(_nogk_run.task_run_id, {})
+                    _nogk_cases = _nogk_data.get("case_results", [])
+
+            _kg_groups.append({
+                "task_id": tid,
+                "category": category,
+                "label": label,
+                "case_results": case_results,
+                "_interactions": _kg_interactions,
+                "_session_graph": _kg_session_graph,
+                "_events": _kg_events,
+                "_mem_interactions": _kg_mem_interactions,
+                "_parser": _kg_parser,
+                "_nogk_cases": _nogk_cases,
+            })
+
+        if _llm_enabled():
+            log("RERUN-KG", f"知识与记忆介入分析: 分类 per_case_kg... ({len(_kg_groups)} groups)")
+            set_progress(evaluation_id, "重跑知识与记忆: AI 分析中...")
+            with _TP(max_workers=max(1, len(_kg_groups))) as kg_pool:
+                fut_group = {}
+                for group in _kg_groups:
+                    _g_label = group.get("label", group["task_id"])
+                    def _cb(done, total, _label=_g_label):
+                        set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
+                    fut_group[group["task_id"]] = kg_pool.submit(
+                        with_eval_ctx(ai_per_case_kg_analysis),
+                        group["case_results"],
+                        group["_interactions"],
+                        bench_by_task,
+                        group["_session_graph"],
+                        group["_nogk_cases"],
+                        group["_events"],
+                        group["_mem_interactions"],
+                        group["category"],
+                        group["_parser"],
+                        _cb,
+                        has_nogk=has_nogk,
+                        fpr_match_lookup=_fpr_match_lookup,
+                        cancel_cb=None)
+                for group in _kg_groups:
+                    group["per_case_kg_analysis"] = fut_group[group["task_id"]].result()
+            log("RERUN-KG", "知识与记忆介入分析完成")
+        else:
+            log("RERUN-KG", "LLM 未启用，使用规则化分析")
+            set_progress(evaluation_id, "重跑知识与记忆: 规则化分析...")
+            for group in _kg_groups:
+                group["per_case_kg_analysis"] = rule_based_per_case_kg_analysis(
+                    group["case_results"], group["category"], group["_nogk_cases"])
+
+        # 设置 task_id/category 到每个 item
+        for group in _kg_groups:
+            for item in group["per_case_kg_analysis"]:
+                item.setdefault("task_id", group["task_id"])
+                item.setdefault("category", group["category"])
+
+        # 7. 写入 KG 段文件
+        _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+        _kg_section = {
+            "evaluation_id": evaluation_id,
+            "groups": [
+                {
+                    "task_id": g["task_id"],
+                    "category": g.get("category", ""),
+                    "label": g.get("label", ""),
+                    "per_case_kg_analysis": g.get("per_case_kg_analysis", []),
+                    "case_results": g.get("case_results", []),
+                }
+                for g in _kg_groups
+            ],
+        }
+        with open(_kg_path, "w", encoding="utf-8") as _f:
+            json.dump(_kg_section, _f, ensure_ascii=False)
+        log("RERUN-KG", f"KG 段已写入: {_kg_path}")
+
+        # KG 段瘦身 case_results（与 Phase 9 相同逻辑）
+        try:
+            import json as _json_slim
+            with open(_kg_path, "r", encoding="utf-8") as _f:
+                _kg_data = _json_slim.loads(_f.read())
+            _KEEP_FIELDS = {"case_id", "expected_label", "confusion", "nogk_confusion",
+                             "description", "vulnerability_type", "source_file",
+                             "source_function", "session_id"}
+            for _grp in _kg_data.get("groups", []):
+                for _cr in _grp.get("case_results", []):
+                    _strip_keys = set(_cr.keys()) - _KEEP_FIELDS
+                    for _k in _strip_keys:
+                        _cr.pop(_k, None)
+            _kg_slim = _json_slim.dumps(_kg_data, ensure_ascii=False)
+            with open(_kg_path, "w", encoding="utf-8") as _f:
+                _f.write(_kg_slim)
+            log("RERUN-KG", f"KG 段瘦身后: {len(_kg_slim):,} 字节")
+        except Exception as e:
+            log("RERUN-KG", f"⚠ KG 段瘦身失败: {e}")
+
+        # 8. 重新渲染静态 HTML
+        try:
+            from ..api.routes.evaluations import render_static_report
+            render_static_report(evaluation_id)
+            log("RERUN-KG", "静态 HTML 已重新渲染")
+        except Exception as e:
+            log("RERUN-KG", f"⚠ 静态 HTML 重新渲染失败: {e}")
+
+        set_progress(evaluation_id, "知识与记忆分析重跑完成")
+        log("RERUN-KG", f"重跑完成: {evaluation_id}")
+        return {"status": "completed", "evaluation_id": evaluation_id, "section": "kg"}
+
+    except Exception as e:
+        import traceback as _tb
+        log("RERUN-KG", f"重跑失败: {e}")
+        _tb.print_exc()
+        set_progress(evaluation_id, f"知识与记忆分析重跑失败: {e}")
         raise
     finally:
         clear_eval_ctx()

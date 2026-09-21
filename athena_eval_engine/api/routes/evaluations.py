@@ -1058,6 +1058,67 @@ def _build_report(evaluation_id: str):
                 _pcka = _grp.get("per_case_kg_analysis") or []
                 _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _valid_case_ids]
     es._db_query(_do)
+
+    # 合并 FPR 段和 KG 段（三段拆分后主报告不含这些字段）
+    _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    _fpr_path = os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+    _kg_path = os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+    _rep = r.get("report") or r  # report 可能在 r["report"] 或 r 本身
+
+    # FPR 段：e2e_fpr_kg/nogk + mining_fpr group + M13
+    if os.path.isfile(_fpr_path):
+        try:
+            with open(_fpr_path, "r", encoding="utf-8") as _f:
+                _fpr_data = _json.loads(_f.read())
+            # 挂载 e2e_fpr 到 verify group
+            _e2e_kg = _fpr_data.get("e2e_fpr_kg")
+            _e2e_nogk = _fpr_data.get("e2e_fpr_nogk")
+            _ac_kg = _fpr_data.get("ac_fpr_kg")
+            _ac_nogk = _fpr_data.get("ac_fpr_nogk")
+            for _grp in (_rep.get("metric_groups") or []):
+                if _grp.get("category") == "verify":
+                    if _e2e_kg:
+                        _grp["e2e_fpr_kg"] = _e2e_kg
+                    if _e2e_nogk:
+                        _grp["e2e_fpr_nogk"] = _e2e_nogk
+            # 添加 mining_fpr group
+            _mining_group = _fpr_data.get("mining_fpr_group")
+            if _mining_group and not any(g.get("category") == "mining_fpr" for g in (_rep.get("metric_groups") or [])):
+                if _ac_kg:
+                    _mining_group["e2e_fpr_kg"] = {**_ac_kg, "vc_ids": _fpr_data.get("vc_ids_kg", [])}
+                if _ac_nogk:
+                    _mining_group["e2e_fpr_nogk"] = {**_ac_nogk, "vc_ids": _fpr_data.get("vc_ids_nogk", [])}
+                (_rep.setdefault("metric_groups", [])).append(_mining_group)
+            # 更新 M13
+            _m13_top = _fpr_data.get("m13_top")
+            if _m13_top:
+                _rep.setdefault("p0", {})["M13"] = _m13_top
+            _group_m13 = _fpr_data.get("group_m13", {})
+            for _grp in (_rep.get("metric_groups") or []):
+                _tid = _grp.get("task_id", "")
+                if _tid in _group_m13:
+                    _grp.setdefault("p0", {})["M13"] = _group_m13[_tid]
+        except Exception as e:
+            log("REPORT", f"⚠ 合并 FPR 段失败: {e}")
+
+    # KG 段：per_case_kg_analysis + case_results
+    if os.path.isfile(_kg_path):
+        try:
+            with open(_kg_path, "r", encoding="utf-8") as _f:
+                _kg_data = _json.loads(_f.read())
+            _kg_groups = {g.get("task_id", ""): g for g in (_kg_data.get("groups") or [])}
+            for _grp in (_rep.get("metric_groups") or []):
+                _tid = _grp.get("task_id", "")
+                if _tid in _kg_groups:
+                    _kg_g = _kg_groups[_tid]
+                    if _kg_g.get("per_case_kg_analysis"):
+                        _grp["per_case_kg_analysis"] = _kg_g["per_case_kg_analysis"]
+                    if _kg_g.get("case_results"):
+                        # KG 段的 case_results 可能更完整（含 FPR 覆盖的 confusion）
+                        _grp["case_results"] = _kg_g["case_results"]
+        except Exception as e:
+            log("REPORT", f"⚠ 合并 KG 段失败: {e}")
+
     return r
 
 
