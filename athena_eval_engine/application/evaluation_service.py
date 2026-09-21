@@ -2580,10 +2580,12 @@ def run(evaluation_id: str) -> dict:
 
     # 判断是否需要标记 COMPLETED_WITH_WARNINGS
     _warnings = []
-    # 指标 NA（KG-only 模式下 M7-M10 是结构性不可计算，无对照组，不算告警）
-    _delta_metrics = {"M7", "M8", "M9", "M10"}
+    # 指标 NA 告警排除列表：
+    # - M7-M10：KG-only 无对照组时结构性不可计算（delta 指标）
+    # - M5,M6,M11,M12：单条件指标，trace 无工具调用/知识访问/记忆访问时 NA 是正常数据缺失
+    _no_warn_metrics = {"M7", "M8", "M9", "M10", "M5", "M6", "M11", "M12"}
     na_metrics = [m.metric_id for m in out["metric_results"] if m.calculation_status == "NA"
-                  and not (not has_nogk and m.metric_id in _delta_metrics)]
+                  and m.metric_id not in _no_warn_metrics]
     if na_metrics:
         _warnings.append(f"指标不可计算(NA)：{','.join(na_metrics)}，这些指标缺少必要数据")
     report.warnings = _warnings
