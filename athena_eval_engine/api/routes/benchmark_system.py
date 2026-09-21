@@ -20,7 +20,7 @@ _config_version_lock = threading.Lock()
 
 
 class SystemConfigUpdate(BaseModel):
-    llm_max_concurrency: int | None = Field(default=None, ge=1, le=200)
+    llm_max_concurrency: int | None = Field(default=None, ge=1, le=1000)
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
     eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)

@@ -221,6 +221,22 @@ def _copy_trace_to_local(remote_path: str) -> str:
         log("TRACE_CACHE", f"⚠ 拷贝失败: {remote_path} → {local}: {e}，回退到直接读 NFS")
         return remote_path
 
+    # SecMate trace 目录拷贝后，findings.db 在上级 run/ 目录中，
+    # 不会被 copytree 带过来。检查并额外拷贝。
+    if "/.worker-config/" in remote_path:
+        run_dir = remote_path.split("/.worker-config")[0]
+        findings_db = os.path.join(run_dir, "findings.db")
+        if os.path.isfile(findings_db):
+            # findings.db 放在 local 的同级目录（对应原始 run/ 目录）
+            local_run_dir = os.path.dirname(local)  # /tmp/eval_traces
+            local_db = os.path.join(local_run_dir, f"{h}_findings.db")
+            try:
+                shutil.copy2(findings_db, local_db)
+                log("TRACE_CACHE", f"额外拷贝 findings.db: {findings_db} → {local_db}")
+            except Exception as e:
+                log("TRACE_CACHE", f"⚠ findings.db 拷贝失败: {e}，回退到直接读 NFS")
+                return remote_path
+
     remote_size = os.path.getsize(remote_path) if os.path.isfile(remote_path) else None
     local_size = os.path.getsize(local) if os.path.isfile(local) else None
     log("TRACE_CACHE", f"拷贝到本地: {remote_path} → {local} "
@@ -1513,6 +1529,10 @@ def run(evaluation_id: str) -> dict:
             parser = _get_parser(local_path, e.get("trace_kind"))
             bench = list(bench_by_task.get(e["task_id"], []))
             trace_source = {"trace_id": tr.trace_id, "source_uri": local_path}
+            # k8s 拷贝模式下，保留原始 /data/... 路径供 parser 兜底读取
+            # （如 secmate findings.db 在拷贝目录找不到时读原文件）
+            if local_path != src:
+                trace_source["original_source_uri"] = src
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":

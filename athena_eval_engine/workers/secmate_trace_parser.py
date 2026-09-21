@@ -114,6 +114,7 @@ class SecMateTraceParser(TraceParser):
     def __init__(self, parser_version: str = "secmate-1.0"):
         self.parser_version = parser_version
         self._source_uri: str | None = None
+        self._original_uri: str | None = None
 
     @staticmethod
     def _files(uri: str) -> list[str]:
@@ -280,6 +281,7 @@ class SecMateTraceParser(TraceParser):
     def parse(self, trace_source) -> Iterator[RawEvent]:
         uri = trace_source["source_uri"]
         self._source_uri = uri
+        self._original_uri = trace_source.get("original_source_uri")
         trace_id = trace_source.get("trace_id", uri)
         files = self._files(uri)
         calls: dict[str, dict] = {}
@@ -623,6 +625,10 @@ class SecMateTraceParser(TraceParser):
         SecMate 的 findings.db 位于 trace 目录的上级：
         .../tasks/{task_id}/tools/secmate-*/run/findings.db
         而 source_uri 指向 .../run/.worker-config/projects
+
+        k8s 模式下 trace 目录被拷贝到 /tmp/eval_traces/，
+        findings.db 额外拷贝为同级 *_findings.db 文件。
+        拷贝路径找不到时，回退到原始 /data/... 路径直接读 NFS 兜底。
         """
         if not self._source_uri:
             return None
@@ -630,6 +636,8 @@ class SecMateTraceParser(TraceParser):
         # 向上找到 run/ 目录
         if "/.worker-config/projects" in uri:
             run_dir = uri.split("/.worker-config/projects")[0]
+        elif "/.worker-config/project" in uri:
+            run_dir = uri.split("/.worker-config/project")[0]
         elif "/run/" in uri:
             run_dir = uri.split("/run/")[0] + "/run"
         else:
@@ -643,6 +651,31 @@ class SecMateTraceParser(TraceParser):
         for candidate in glob.glob(os.path.join(parent, "*", "run", "findings.db")):
             if os.path.isfile(candidate):
                 return candidate
+        # k8s 拷贝路径：在同级目录找 *_findings.db
+        if "/tmp/" in uri:
+            sibling_dir = os.path.dirname(uri)
+            for candidate in glob.glob(os.path.join(sibling_dir, "*_findings.db")):
+                if os.path.isfile(candidate):
+                    return candidate
+        # 兜底：回退到原始 /data/... 路径直接读 NFS 上的 findings.db
+        if self._original_uri:
+            orig = self._original_uri.replace("\\", "/")
+            if "/.worker-config/projects" in orig:
+                orig_run_dir = orig.split("/.worker-config/projects")[0]
+            elif "/.worker-config/project" in orig:
+                orig_run_dir = orig.split("/.worker-config/project")[0]
+            elif "/run/" in orig:
+                orig_run_dir = orig.split("/run/")[0] + "/run"
+            else:
+                orig_run_dir = orig
+            orig_db = os.path.join(orig_run_dir, "findings.db")
+            if os.path.isfile(orig_db):
+                return orig_db
+            # 原始路径的 tools/secmate-*/run/ 下找
+            orig_parent = os.path.dirname(orig_run_dir)
+            for candidate in glob.glob(os.path.join(orig_parent, "*", "run", "findings.db")):
+                if os.path.isfile(candidate):
+                    return candidate
         return None
 
     def extract_findings(self, events: list[RawEvent]) -> list[dict]:
