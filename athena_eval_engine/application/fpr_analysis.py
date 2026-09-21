@@ -87,7 +87,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
     """用 LLM 从一批漏洞中找出与基线匹配的候选。
 
     输入：标题 + 完整描述 + sink 路径（作为参考）。
-    LLM 输出三维度提取值 + 三个 bool，程序判断三者全 true 才算匹配。
+    LLM 输出三维度提取值 + 三个 bool，程序判断：漏洞类型必须相同，且 sink 与 source 至少一个相同。
     sink 额外用代码校验，LLM 说 true 但路径明显不一致则推翻。
 
     batch_findings: [(original_fidx, finding_desc, finding_sink), ...]
@@ -147,8 +147,8 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 same_sink = True
                 reason += " [代码校验: sink路径一致，推翻LLM判断]"
 
-            # 三者全 true 才算匹配
-            if same_sink and same_source and same_vuln_type:
+            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
+            if same_vuln_type and (same_sink or same_source):
                 return [(fidx, 1.0)], reason
             return [], reason
         except Exception as e:
@@ -179,7 +179,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                     "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
                     "如'OS命令注入'与'远程命令注入'是同一类型\n\n"
                     "对每个候选，先从标题和描述中提取三维度值，sink路径作为参考，再逐一判断是否相同。"
-                    "只返回三者全为true的候选。\n"
+                    "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true）。\n"
                     '只返回JSON：\n'
                     '{\n'
                     '  "results": [\n'
@@ -188,7 +188,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                     '"same_sink": true, "same_source": true, "same_vuln_type": true, "reason": "..."}\n'
                     '  ]\n'
                     '}\n'
-                    '只包含三者全为true的候选。如果没有匹配，results为[]。'
+                    '只包含漏洞类型相同且 sink 或 source 至少一个相同的候选。如果没有匹配，results为[]。'
                 ),
             },
             {
@@ -196,7 +196,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 "content": (
                     f"基线漏洞:\n{baseline_content}\n\n"
                     f"候选漏洞:\n{candidates_text}\n\n"
-                    f"对每个候选提取三维度并判断是否同一漏洞，只返回三者全为true的候选，"
+                    f"对每个候选提取三维度并判断是否同一漏洞，只返回漏洞类型相同且 sink 或 source 至少一个相同的候选，"
                     f"编号1-{len(current_batch)}。"
                 ),
             },
@@ -232,8 +232,8 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 elif sink_check is True and not same_sink:
                     same_sink = True
 
-                # 三者全 true 才算匹配
-                if same_sink and same_source and same_vuln_type:
+                # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
+                if same_vuln_type and (same_sink or same_source):
                     matched_pairs.append((fidx, 1.0))
 
             if matched_pairs:

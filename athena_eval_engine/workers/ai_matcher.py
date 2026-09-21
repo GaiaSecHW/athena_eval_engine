@@ -223,6 +223,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         "如'generateParameters接口'与'参数生成接口'、'POST /api/parameterGenerate'与'参数生成接口'是同一入口\n"
         "- 漏洞类型从宽：不同术语但属于同一漏洞类别的，视为相同。"
         "如'OS命令注入'与'远程命令注入'、'SQL注入'与'SQL Injection'是同一类型\n\n"
+        "匹配条件：漏洞类型必须相同（same_vuln_type=true），且 sink 与 source 至少一个相同（same_sink=true 或 same_source=true）。\n\n"
         '只返回JSON：\n'
         '{\n'
         '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
@@ -264,8 +265,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             elif sink_check is True and not same_sink:
                 same_sink = True
 
-            # 三者全 true 才算匹配
-            is_same = same_sink and same_source and same_vuln_type
+            # 匹配条件：vuln_type 必须为 true，且 sink 与 source 至少一个为 true
+            is_same = same_vuln_type and (same_sink or same_source)
             return ai, fi, is_same
         except Exception as e:
             log("AC_MATCH", f"LLM 判断失败 (ac{ai},f{fi}): {e}")
