@@ -165,7 +165,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "thinking": {"type": "enabled"},
         "chat_template_kwargs": {"enable_thinking": True},
         "enable_thinking": True,
-        "reasoning_effort": "medium",
+        "reasoning_effort": "low",
         "reasoning_split": True,
     }
     if max_tokens is not None:
