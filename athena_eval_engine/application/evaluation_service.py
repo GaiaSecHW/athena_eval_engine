@@ -1063,13 +1063,13 @@ def run(evaluation_id: str) -> dict:
                     _fill_fut_to_cd[new_fut] = cd
                     return new_fut
                 for fut, _timeout in iter_completed(
-                    _fill_fut_to_cd, cancel_cb=_fill_cancel, per_task_timeout=600,
+                    _fill_fut_to_cd, cancel_cb=_fill_cancel, per_task_timeout=900,
                     max_retries=2,
                     resubmit_fn=_fill_resubmit,
                     log_tag="SOURCE_FILL",
                 ):
                     if _timeout:
-                        raise RuntimeError(f"补提取 source 超时（600s × 3次重试），任务卡住")
+                        raise RuntimeError(f"补提取 source 超时（900s × 3次重试），任务卡住")
                     fut.result()
                     with _fill_lock:
                         _fill_done[0] += 1
