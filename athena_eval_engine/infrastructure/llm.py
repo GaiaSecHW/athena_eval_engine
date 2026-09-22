@@ -101,15 +101,14 @@ def set_max_concurrency(n: int):
     """
     global _llm_semaphore, _MAX_CONCURRENCY
     n = max(1, min(n, 1000))
-    if n == 20:
-        import traceback
-        log("LLM", f"⚠ set_max_concurrency(20) 被调用！调用栈:\n{''.join(traceback.format_stack())}")
+    old_n = _MAX_CONCURRENCY
     old = _llm_semaphore
     _MAX_CONCURRENCY = n
     _llm_semaphore = threading.Semaphore(n)
     if old is not None:
-        for _ in range(_MAX_CONCURRENCY):
+        for _ in range(old_n):
             old.release()
+    log("LLM", f"set_max_concurrency: {old_n} → {n}")
 
 
 def get_max_concurrency() -> int:

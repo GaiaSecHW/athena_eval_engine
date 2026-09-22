@@ -83,7 +83,7 @@ def _build_finding_desc(case: dict) -> str:
 
 
 def _llm_match_batch(baseline_content: str, baseline_sink: str,
-                     batch_findings: list[tuple[int, str, str]]) -> tuple[list[tuple[int, float]], str]:
+                     batch_findings: list[tuple[int, str, str]]) -> tuple[list[tuple[int, float, str]], str]:
     """用 LLM 从一批漏洞中找出与基线匹配的候选。
 
     输入：标题 + 完整描述 + sink 路径（作为参考）。
@@ -159,7 +159,12 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
             # 1. sink 与 source 至少一个为 true，且描述相似度 >= 0.5
             # 2. sink 与 source 都为 false，但描述相似度 >= 0.6
             if same_vuln_type and (((same_sink or same_source) and desc_sim >= 0.5) or ((not same_sink and not same_source) and desc_sim >= 0.6)):
-                return [(fidx, desc_sim)], reason
+                _match_type = []
+                if same_sink: _match_type.append("sink相同")
+                if same_source: _match_type.append("source相同")
+                if same_vuln_type: _match_type.append("类型相同")
+                _reason_full = f"[{'/'.join(_match_type)} 置信度={desc_sim:.1f}] {reason}"
+                return [(fidx, desc_sim, _reason_full)], reason
             return [], reason
         except Exception as e:
             log("FPR", f"LLM 判断失败: {e}")
@@ -253,7 +258,13 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
                 # 1. sink 与 source 至少一个为 true，且描述相似度 >= 0.5
                 # 2. sink 与 source 都为 false，但描述相似度 >= 0.6
                 if same_vuln_type and (((same_sink or same_source) and desc_sim >= 0.5) or ((not same_sink and not same_source) and desc_sim >= 0.6)):
-                    matched_pairs.append((fidx, desc_sim))
+                    _match_type = []
+                    if same_sink: _match_type.append("sink相同")
+                    if same_source: _match_type.append("source相同")
+                    if same_vuln_type: _match_type.append("类型相同")
+                    _item_reason = result.get("reason", "")
+                    _reason_full = f"[{'/'.join(_match_type)} 置信度={desc_sim:.1f}] {_item_reason}"
+                    matched_pairs.append((fidx, desc_sim, _reason_full))
 
             if matched_pairs:
                 return matched_pairs, reason
@@ -322,7 +333,7 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
                      for f_idx in chunk_idxs]
             batches.append(batch)
 
-        all_matches: list[tuple[int, float]] = []
+        all_matches: list[tuple[int, float, str]] = []
         try:
             _bl_pool2 = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_batch"), len(batches)))
             future_to_batch: dict = {}
@@ -342,16 +353,19 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
             all_matches.sort(key=lambda x: x[1], reverse=True)
             best_fidx = all_matches[0][0]
             best_conf = all_matches[0][1]
+            best_reason = all_matches[0][2]
+            best_conf = all_matches[0][1]
         else:
             best_fidx = None
             best_conf = 0.0
+            best_reason = "无匹配"
 
         if progress_cb:
             with _count_lock:
                 _done_count[0] += 1
                 progress_cb(_done_count[0], len(baseline_rows))
 
-        return bl_idx, best_fidx, best_conf, all_matches
+        return bl_idx, best_fidx, best_conf, all_matches, best_reason
 
     bl_pool = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_workers"), len(baseline_rows)))
     try:
@@ -377,28 +391,30 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
     ]
     assigned_findings: set[int] = set()
 
-    for bl_idx, best_fidx, best_conf, all_matches in bl_results:
+    for bl_idx, best_fidx, best_conf, all_matches, best_reason in bl_results:
         bl_title = baseline_rows[bl_idx].get("title", "")
 
         # 尝试最佳候选，如果已被占用，尝试次佳
         matched_fidx = None
         matched_conf = 0.0
-        for f_idx, conf in all_matches:
+        matched_reason = best_reason
+        for f_idx, conf, reason in all_matches:
             if f_idx not in assigned_findings:
                 matched_fidx = f_idx
                 matched_conf = conf
+                matched_reason = reason
                 break
 
         if matched_fidx is not None:
             assigned_findings.add(matched_fidx)
             if len(all_matches) > 1:
-                others = [f"[{f+1}({c:.1f})]" for f, c in all_matches[1:]]
+                others = [f"[{f+1}({c:.1f})]" for f, c, _ in all_matches[1:]]
                 log("FPR", f"基线'{bl_title}' 有多个候选命中: [{matched_fidx+1}({matched_conf:.1f})] + {' '.join(others)}，取置信度最高")
             else:
                 log("FPR", f"基线'{bl_title}' 匹配 [{matched_fidx+1}] 置信度={matched_conf:.1f}")
             match_results[matched_fidx] = {
                 "match_idx": bl_idx,
-                "reason": f"置信度={matched_conf:.1f}",
+                "reason": matched_reason,
             }
             log("FPR", f"[{bl_idx+1}/{len(baseline_rows)}] 基线'{bl_title}' → 匹配漏洞中心[{matched_fidx+1}]")
         else:
