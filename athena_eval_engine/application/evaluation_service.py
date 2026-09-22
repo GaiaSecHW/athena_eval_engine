@@ -502,7 +502,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "",
         return "", "", ""
 
 
-def _fill_missing_source(case: dict, cancel_cb=None) -> None:
+def _fill_missing_source(evaluation_id: str, case: dict, cancel_cb=None) -> None:
     """如果 case 的 source_file、source_function 或 source_line 为空，用 AI 从 description 补提取。"""
     if not case.get("source_file") or not case.get("source_function") or not case.get("source_line"):
         _case_id = case.get("case_id", "")
@@ -512,7 +512,7 @@ def _fill_missing_source(case: dict, cancel_cb=None) -> None:
             case.get("locator", ""), cancel_cb=cancel_cb)
         _elapsed = time.time() - _t0
         if _elapsed >= 400:
-            log("SOURCE_FILL", f"case={_case_id} 耗时={_elapsed:.1f}s 结果=({sf}, {sfn}, {sln})")
+            log("SOURCE_FILL", f"[{evaluation_id}] case={_case_id} 耗时={_elapsed:.1f}s 结果=({sf}, {sfn}, {sln})")
         if not case.get("source_file"):
             case["source_file"] = sf
         if not case.get("source_function"):
@@ -1058,7 +1058,7 @@ def run(evaluation_id: str) -> dict:
             try:
                 _fill_cancel = lambda: _check_cancel(evaluation_id, "INGEST")
                 _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), _conc_get("source_fill_workers")))
-                futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), cd, _fill_cancel) for cd in _need_fill]
+                futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), evaluation_id, cd, _fill_cancel) for cd in _need_fill]
                 for fut, _ in iter_completed(futures, cancel_cb=_fill_cancel):
                     fut.result()
                     with _fill_lock:
