@@ -125,6 +125,7 @@ def get_active_concurrency() -> int:
 # 运行时可调配置
 _runtime_cfg = {
     "llm_enabled": LLM_ENABLED,
+    "reasoning_effort": "none",  # "none" | "low" | "high" | "max"
 }
 
 
@@ -139,17 +140,19 @@ def set_runtime_config(**kwargs):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
-            api_base=None, api_key=None, timeout=None, reasoning_effort="none",
+            api_base=None, api_key=None, timeout=None, reasoning_effort=None,
             cancel_cb=None, **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
     ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
-    ``reasoning_effort`` 控制 LLM 推理深度（"high"/"medium"/"low"），简单匹配任务
-    传 "low" 可将 80s/次降至 ~10s/次，避免线程堆积导致服务停止。
+    ``reasoning_effort`` 控制 LLM 推理深度（"none"/"low"/"high"/"max"），None 时
+    从 _runtime_cfg["reasoning_effort"] 读取全局设置。
     ``cancel_cb`` 可选，在 SSE 读取循环中每 5 秒检查一次，被取消时立即抛 TaskCancelledError。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
     LLM 并发受全局信号量控制（上限 50）。
     """
+    if reasoning_effort is None:
+        reasoning_effort = _runtime_cfg.get("reasoning_effort", "none")
     base = api_base or DEFAULT_API_BASE
     parsed = urlparse(base)
     host = parsed.hostname

@@ -28,9 +28,6 @@ def _get(path: str, retries: int = 20, retry_delay: float = 5.0) -> dict | list:
             with urllib.request.urlopen(req, timeout=180) as r:
                 return json.loads(r.read().decode("utf-8"))
         except HTTPError as e:
-            if e.code != 429 and 400 <= e.code < 500:
-                log("VBENCH", f"HTTP {e.code} 不重试: {url}")
-                raise
             last_err = e
             log("VBENCH", f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
             if attempt + 1 < retries:

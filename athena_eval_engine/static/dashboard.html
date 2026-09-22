@@ -1515,6 +1515,20 @@ async function renderSystem(){
         <div style="font-size:12px;color:var(--sub);margin:4px 0">M1-M13 bootstrap 统计并行线程数（1-20）</div>
         <input id="cfg_bootstrap_workers" type="number" min="1" max="20" value="${c.bootstrap_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
+      <div>
+        <label style="font-weight:600;font-size:14px">LLM 思考模式</label>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">控制 LLM 推理深度。关闭=不思考，开启后可选 low/high/max</div>
+        <div style="display:flex;align-items:center;gap:12px">
+          <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--sub);margin:0;cursor:pointer">
+            <input id="cfg_reasoning_enabled" type="checkbox" ${c.reasoning_effort&&c.reasoning_effort!=='none'?'checked':''} onchange="toggleReasoning(this)" style="width:auto"> 是否开启思考
+          </label>
+          <select id="cfg_reasoning_effort" style="width:100px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);${c.reasoning_effort&&c.reasoning_effort!=='none'?'':'display:none'}">
+            <option value="low" ${c.reasoning_effort==='low'?'selected':''}>low</option>
+            <option value="high" ${c.reasoning_effort==='high'?'selected':''}>high</option>
+            <option value="max" ${c.reasoning_effort==='max'?'selected':''}>max</option>
+          </select>
+        </div>
+      </div>
     </div>
     <div style="margin-top:20px;display:flex;gap:12px">
       <button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button>
@@ -1523,6 +1537,11 @@ async function renderSystem(){
     <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
     </div></div>`;
   $("view").innerHTML=h;
+}
+
+function toggleReasoning(cb){
+  var sel=$("cfg_reasoning_effort");
+  if(sel)sel.style.display=cb.checked?'':'none';
 }
 
 async function saveSystemConfig(){
@@ -1538,6 +1557,13 @@ async function saveSystemConfig(){
     var elId="cfg_"+parts[0],key=parts[1];
     var el=$(elId);
     if(el){v=parseInt(el.value);if(!isNaN(v))body[key]=v;}
+  }
+  var cb=$("cfg_reasoning_enabled");
+  if(cb&&cb.checked){
+    var sel=$("cfg_reasoning_effort");
+    if(sel)body["reasoning_effort"]=sel.value;
+  }else{
+    body["reasoning_effort"]="none";
   }
   $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
   try{
