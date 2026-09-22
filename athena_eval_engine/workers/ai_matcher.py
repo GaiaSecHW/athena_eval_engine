@@ -134,8 +134,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     _progress(f"告警中心匹配 预筛选: 0/{len(alert_center_cases)} 完成")
     _prefilter_sys = (
-        "下面是一些代码安全漏洞的标题。"
-        "请从标题分析哪些漏洞报告跟该告警中心案例可能是同一个漏洞。"
+        "下面是一些代码安全漏洞的标题和描述。"
+        "请从标题和描述分析哪些漏洞报告跟该告警中心案例可能是同一个漏洞。"
         "宁可多选不要遗漏。"
         "将可能匹配的漏洞的 ID 原样返回，便于核对。"
         "只返回 JSON：{\"possible_ids\": [\"ID1\", \"ID2\"]}。"
@@ -146,8 +146,10 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         """预筛选：告警中心 case 标题 + finding 标题 → 候选 finding 索引。"""
         ac = ac_list[ai]
         id_to_idx: dict[str, int] = {}
+        _ac_desc = (ac.get("summary", "") or "")[:500]
         lines = [
             f"告警中心案例标题：{ac.get('title', '')}",
+            f"告警中心案例描述：{_ac_desc}",
             "",
             "以下是要比较的漏洞报告：",
         ]
@@ -155,7 +157,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             fid = f.get("display_id") or f.get("finding_id", "") or str(i)
             id_to_idx[fid] = i
             _title = finding_list[i].get("title", "")
-            lines.append(f"[{fid}] {_title}")
+            _desc = (finding_list[i].get("description", "") or "")[:500]
+            lines.append(f"[{fid}] {_title}\n描述：{_desc}")
         user_msg = "\n".join(lines)
         prompt = [
             {"role": "system", "content": _prefilter_sys},
