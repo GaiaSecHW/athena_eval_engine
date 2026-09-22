@@ -39,3 +39,7 @@ reports/
 
 # codegraph index cache
 .codegraph/
+baseline.json
+baseline_data.json
+independent_fpr*.py
+null
