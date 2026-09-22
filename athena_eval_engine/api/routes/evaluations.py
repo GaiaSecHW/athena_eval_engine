@@ -244,10 +244,13 @@ app.include_router(sys_router)
 
 @app.on_event("startup")
 def _on_startup():
-    # 启动独立健康检查端口（8091），不受 GIL 竞争影响
+    # 先启动独立健康检查端口（8091），让 probe 尽快通过
     from ...infrastructure.health_server import start as _start_health
     _start_health(8091)
-    resume_stuck_evaluations()
+    # resume_stuck_evaluations 在后台线程跑，不阻塞 startup
+    # 它会做 schema migration + DB 查询 + 续跑评测，可能耗时数秒
+    _resume_thread = threading.Thread(target=resume_stuck_evaluations, name="resume-stuck", daemon=True)
+    _resume_thread.start()
 
 
 @app.on_event("shutdown")
