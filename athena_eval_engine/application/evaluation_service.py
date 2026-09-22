@@ -495,7 +495,7 @@ def _ai_extract_source_info(description: str, vulnerability_type: str = "",
         {"role": "user", "content": "\n".join(user_parts)},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low", cancel_cb=cancel_cb)
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none", cancel_cb=cancel_cb)
         return result.get("source_file", ""), result.get("source_function", ""), str(result.get("source_line", ""))
     except Exception as e:
         log("CREATE", f"AI 提取 source_file/source_function/source_line 失败: {e}")
@@ -582,7 +582,7 @@ def _ai_identify_finding(ac_title: str, ac_summary: str, ac_sink: str,
         )},
     ]
     try:
-        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none")
         results_raw = result.get("results", [])
         if isinstance(results_raw, dict):
             results_raw = [results_raw]

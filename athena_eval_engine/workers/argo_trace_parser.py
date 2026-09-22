@@ -797,7 +797,7 @@ class ArgoTraceParser(TraceParser):
                 payload = self._llm.chat_json(
                     [{"role": "user", "content": prompt + "\n\n" + text}],
                     temperature=0,
-                    reasoning_effort="low",
+                    reasoning_effort="none",
                 )
                 if isinstance(payload, dict):
                     _add(payload)

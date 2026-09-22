@@ -139,7 +139,7 @@ def set_runtime_config(**kwargs):
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
-            api_base=None, api_key=None, timeout=None, reasoning_effort="low",
+            api_base=None, api_key=None, timeout=None, reasoning_effort="none",
             cancel_cb=None, **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 

@@ -164,7 +164,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             {"role": "system", "content": _prefilter_sys},
             {"role": "user", "content": user_msg},
         ]
-        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+        result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none")
         indices = []
         if isinstance(result, dict):
             raw_ids = result.get("possible_ids", [])
@@ -251,7 +251,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             )},
         ]
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none")
             same_sink = _parse_bool(result.get("same_sink", False))
             same_source = _parse_bool(result.get("same_source", False))
             same_vuln_type = _parse_bool(result.get("same_vuln_type", False))

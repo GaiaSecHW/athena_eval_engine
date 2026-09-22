@@ -135,7 +135,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
             },
         ]
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none")
             same_sink = _parse_bool(result.get("same_sink", False))
             same_source = _parse_bool(result.get("same_source", False))
             same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
@@ -214,7 +214,7 @@ def _llm_match_batch(baseline_content: str, baseline_sink: str,
             },
         ]
         try:
-            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="low")
+            result = llm_mod.chat_json(prompt, temperature=0, reasoning_effort="none")
             results_raw = result.get("results", [])
             reason = result.get("reason", "")
             if isinstance(results_raw, dict):
