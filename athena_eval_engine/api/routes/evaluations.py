@@ -243,6 +243,19 @@ app.include_router(sys_router)
 
 
 @app.on_event("startup")
+def _on_startup():
+    # 启动独立健康检查端口（8091），不受 GIL 竞争影响
+    from ...infrastructure.health_server import start as _start_health
+    _start_health(8091)
+    resume_stuck_evaluations()
+
+
+@app.on_event("shutdown")
+def _on_shutdown():
+    from ...infrastructure.health_server import stop as _stop_health
+    _stop_health()
+
+
 def resume_stuck_evaluations():
     """Pod 重启后自动续跑卡住的评测。
 
