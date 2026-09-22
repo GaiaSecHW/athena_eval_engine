@@ -277,6 +277,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         reasoning_parts = []
         finish_reason = None
         _last_content_ts = time.time()  # 从 Phase 2 开始计时，keepalive 不重置
+        _stream_start_ts = None  # 首 token 到达时间，用于总超时
+        STREAM_TOTAL_TIMEOUT = 600  # 首 token 后 10 分钟内必须完成全部输出
         while True:
             _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
             _elapsed = time.time() - _last_content_ts
@@ -284,6 +286,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                 _phase = "首 token" if first_token else "后续 token 断流"
                 log("LLM", f"stream content stall ({_timeout}s no content, {_phase}), aborting")
                 raise RuntimeError(f"LLM {_phase}超时（{_timeout}s 无实际内容）")
+            # 首 token 后总超时：10 分钟内必须完成
+            if _stream_start_ts is not None:
+                _stream_elapsed = time.time() - _stream_start_ts
+                if _stream_elapsed > STREAM_TOTAL_TIMEOUT:
+                    _c = len("".join(content_parts))
+                    _r = len("".join(reasoning_parts)) if reasoning_parts else 0
+                    log("LLM", f"stream 总超时（{STREAM_TOTAL_TIMEOUT}s，首 token 后未完成），content_len={_c} reasoning_len={_r}，aborting")
+                    raise RuntimeError(f"LLM stream 总超时（{STREAM_TOTAL_TIMEOUT}s，首 token 后未完成）")
             # ── 用 select 等待数据可用，避免 readline() 无限阻塞 ──
             # socket.timeout 是 per-recv 的，readline 逐字节读取时每次 recv 都重置计时器，
             # 导致整体永不超时。select 带剩余超时确保即使无数据也能在超时后退出。
@@ -318,6 +328,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                     conn.sock.settimeout(STREAM_TIMEOUT)
                 _first_token_ts = time.time()
                 _last_content_ts = _first_token_ts
+                _stream_start_ts = _first_token_ts
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
             if usage:
