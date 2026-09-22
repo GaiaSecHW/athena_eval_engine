@@ -174,7 +174,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
-    pre_pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
+    pre_pool = ThreadPoolExecutor(max_workers=min(len(alert_center_cases), _conc_get("ai_match_workers")))
     try:
         pre_futures = {}
         for ai in range(len(alert_center_cases)):
@@ -293,7 +293,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # 全量并行 1vs1
     pair_results: dict[tuple[int, int], float] = {}
     if all_pairs:
-        pool = ThreadPoolExecutor(max_workers=_conc_get("ai_match_workers"))
+        pool = ThreadPoolExecutor(max_workers=min(len(all_pairs), _conc_get("ai_match_workers")))
         try:
             futures = {}
             for ai, fi in all_pairs:

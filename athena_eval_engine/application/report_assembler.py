@@ -988,7 +988,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
                     try:
-                        _comp_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
+                        _comp_pool = ThreadPoolExecutor(max_workers=max(1, min(len(_uncached), get_runtime_workers()["kg_analysis"])))
                         futures = [_comp_pool.submit(with_eval_ctx(_compress_one), item) for item in _uncached]
                         for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                             _compressed.append(fut.result())
@@ -1056,7 +1056,7 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     from ..infrastructure.parallel import iter_completed
                     from .evaluation_service import get_runtime_workers
                     try:
-                        _batch_pool = ThreadPoolExecutor(max_workers=get_runtime_workers()["kg_analysis"])
+                        _batch_pool = ThreadPoolExecutor(max_workers=max(1, min(len(_batches), get_runtime_workers()["kg_analysis"])))
                         futures = [_batch_pool.submit(with_eval_ctx(_compress_batch), batch) for batch in _batches]
                         _compressed = []
                         for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):

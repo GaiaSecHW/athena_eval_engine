@@ -747,65 +747,73 @@ async def get_status(evaluation_id: str):
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/metrics")
-def get_metrics(evaluation_id: str):
-    from ...infrastructure.database import connect
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT metric_id, estimate, unit, n, calculation_status, reason_code, median, iqr "
-                    "FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
-        return {"evaluation_id": evaluation_id, "metrics": [dict(zip(["metric_id", "estimate", "unit", "n",
-                            "calculation_status", "reason_code", "median", "iqr"], row)) for row in cur.fetchall()]}
-    finally:
-        conn.close()
+async def get_metrics(evaluation_id: str):
+    def _query():
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT metric_id, estimate, unit, n, calculation_status, reason_code, median, iqr "
+                        "FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
+            return {"evaluation_id": evaluation_id, "metrics": [dict(zip(["metric_id", "estimate", "unit", "n",
+                                "calculation_status", "reason_code", "median", "iqr"], row)) for row in cur.fetchall()]}
+        finally:
+            conn.close()
+    return await asyncio.to_thread(_query)
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/report")
-def get_report(evaluation_id: str):
-    return _build_report(evaluation_id)
+async def get_report(evaluation_id: str):
+    return await asyncio.to_thread(_build_report, evaluation_id)
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/report/fpr")
-def get_fpr_report(evaluation_id: str):
+async def get_fpr_report(evaluation_id: str):
     """误报率分析段：FPR 结果 + match_details + M13 实际值 + fpr_match_lookup。"""
-    import os as _os
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-    _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-    if not _os.path.isfile(_fpr_path):
-        raise HTTPException(status_code=404, detail="FPR report not found")
-    import json as _json
-    with open(_fpr_path, "r", encoding="utf-8") as _f:
-        return _json.loads(_f.read())
+    def _read():
+        import os as _os
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+        if not _os.path.isfile(_fpr_path):
+            raise HTTPException(status_code=404, detail="FPR report not found")
+        import json as _json
+        with open(_fpr_path, "r", encoding="utf-8") as _f:
+            return _json.loads(_f.read())
+    return await asyncio.to_thread(_read)
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/report/kg")
-def get_kg_report(evaluation_id: str):
+async def get_kg_report(evaluation_id: str):
     """知识图谱与记忆介入分析段：per_case_kg_analysis + 增强版 case_results。"""
-    import os as _os
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-    _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
-    if not _os.path.isfile(_kg_path):
-        raise HTTPException(status_code=404, detail="KG report not found")
-    import json as _json
-    with open(_kg_path, "r", encoding="utf-8") as _f:
-        return _json.loads(_f.read())
+    def _read():
+        import os as _os
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+        if not _os.path.isfile(_kg_path):
+            raise HTTPException(status_code=404, detail="KG report not found")
+        import json as _json
+        with open(_kg_path, "r", encoding="utf-8") as _f:
+            return _json.loads(_f.read())
+    return await asyncio.to_thread(_read)
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/report/status")
-def get_report_status(evaluation_id: str):
+async def get_report_status(evaluation_id: str):
     """返回各段报告文件的就绪状态，供前端分段加载。"""
-    import os as _os
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-    _base = _os.path.join(_reports_dir, f"{evaluation_id}.json")
-    _fpr = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-    _kg = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
-    _html = _os.path.join(_reports_dir, f"{evaluation_id}.html")
-    return {
-        "base": _os.path.isfile(_base),
-        "fpr": _os.path.isfile(_fpr),
-        "kg": _os.path.isfile(_kg),
-        "html": _os.path.isfile(_html),
-    }
+    def _check():
+        import os as _os
+        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+        _base = _os.path.join(_reports_dir, f"{evaluation_id}.json")
+        _fpr = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
+        _kg = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
+        _html = _os.path.join(_reports_dir, f"{evaluation_id}.html")
+        return {
+            "base": _os.path.isfile(_base),
+            "fpr": _os.path.isfile(_fpr),
+            "kg": _os.path.isfile(_kg),
+            "html": _os.path.isfile(_html),
+        }
+    return await asyncio.to_thread(_check)
 
 
 @app.post("/api/v1/evaluations/{evaluation_id}/rerun-fpr")
@@ -1405,37 +1413,39 @@ def get_static_report(request: Request, evaluation_id: str):
 
 
 @app.get("/api/v1/evaluations/{evaluation_id}/pipeline")
-def get_pipeline(evaluation_id: str):
+async def get_pipeline(evaluation_id: str):
     """分析过程日志：管线各阶段数据（parse→resolve→pair→metric）。"""
-    from ...infrastructure.database import connect
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
-        # task_run
-        cur.execute("SELECT task_run_id,task_id,`condition`,trace_valid,runtime_valid,kg_runtime_state FROM task_run WHERE evaluation_id=%s", (evaluation_id,))
-        runs = [dict(zip(["task_run_id","task_id","condition","trace_valid","runtime_valid","kg_runtime_state"], r)) for r in cur.fetchall()]
-        # facts
-        cur.execute("SELECT 'outcome' AS t, task_run_id, outcome, prediction, resolver_status, validation_result FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
-        outcomes = [dict(zip(["type","task_run_id","outcome","prediction","resolver_status","validation_result"], r)) for r in cur.fetchall()]
-        cur.execute("SELECT task_run_id, access, delivery, mount_status FROM knowledge_interaction_fact WHERE evaluation_id=%s", (evaluation_id,))
-        knowledge = [dict(zip(["task_run_id","access","delivery","mount_status"], r)) for r in cur.fetchall()]
-        cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
-        tools = [dict(zip(["task_run_id","kg","finding","code","shell","other","total"], r)) for r in cur.fetchall()]
-        cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
-        resources = [dict(zip(["task_run_id","tokens","steps","duration","time_valid"], r)) for r in cur.fetchall()]
-        # pair
-        cur.execute("SELECT pair_match_status, pair_experiment_valid, outcome_valid, pair_transition FROM task_pair WHERE evaluation_id=%s", (evaluation_id,))
-        pairs = [dict(zip(["match_status","exp_valid","outcome_valid","transition"], r)) for r in cur.fetchall()]
-        cur.execute("SELECT derived_fact_type, value_numeric, value_string, status, reason_code FROM pair_derived_fact WHERE evaluation_id=%s", (evaluation_id,))
-        derived = [dict(zip(["type","value_num","value_str","status","reason"], r)) for r in cur.fetchall()]
-        # metrics
-        cur.execute("SELECT metric_id, calculation_status, reason_code, n FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
-        metrics = [dict(zip(["metric_id","status","reason","n"], r)) for r in cur.fetchall()]
-        return {"evaluation_id": evaluation_id, "task_runs": runs, "outcomes": outcomes,
-                "knowledge": knowledge, "tools": tools, "resources": resources,
-                "pairs": pairs, "derived": derived, "metrics": metrics}
-    finally:
-        conn.close()
+    def _query():
+        from ...infrastructure.database import connect
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            # task_run
+            cur.execute("SELECT task_run_id,task_id,`condition`,trace_valid,runtime_valid,kg_runtime_state FROM task_run WHERE evaluation_id=%s", (evaluation_id,))
+            runs = [dict(zip(["task_run_id","task_id","condition","trace_valid","runtime_valid","kg_runtime_state"], r)) for r in cur.fetchall()]
+            # facts
+            cur.execute("SELECT 'outcome' AS t, task_run_id, outcome, prediction, resolver_status, validation_result FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
+            outcomes = [dict(zip(["type","task_run_id","outcome","prediction","resolver_status","validation_result"], r)) for r in cur.fetchall()]
+            cur.execute("SELECT task_run_id, access, delivery, mount_status FROM knowledge_interaction_fact WHERE evaluation_id=%s", (evaluation_id,))
+            knowledge = [dict(zip(["task_run_id","access","delivery","mount_status"], r)) for r in cur.fetchall()]
+            cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
+            tools = [dict(zip(["task_run_id","kg","finding","code","shell","other","total"], r)) for r in cur.fetchall()]
+            cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
+            resources = [dict(zip(["task_run_id","tokens","steps","duration","time_valid"], r)) for r in cur.fetchall()]
+            # pair
+            cur.execute("SELECT pair_match_status, pair_experiment_valid, outcome_valid, pair_transition FROM task_pair WHERE evaluation_id=%s", (evaluation_id,))
+            pairs = [dict(zip(["match_status","exp_valid","outcome_valid","transition"], r)) for r in cur.fetchall()]
+            cur.execute("SELECT derived_fact_type, value_numeric, value_string, status, reason_code FROM pair_derived_fact WHERE evaluation_id=%s", (evaluation_id,))
+            derived = [dict(zip(["type","value_num","value_str","status","reason"], r)) for r in cur.fetchall()]
+            # metrics
+            cur.execute("SELECT metric_id, calculation_status, reason_code, n FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
+            metrics = [dict(zip(["metric_id","status","reason","n"], r)) for r in cur.fetchall()]
+            return {"evaluation_id": evaluation_id, "task_runs": runs, "outcomes": outcomes,
+                    "knowledge": knowledge, "tools": tools, "resources": resources,
+                    "pairs": pairs, "derived": derived, "metrics": metrics}
+        finally:
+            conn.close()
+    return await asyncio.to_thread(_query)
 
 
 # ===== SPA catch-all：必须最后注册，确保不拦截已有路由 =====

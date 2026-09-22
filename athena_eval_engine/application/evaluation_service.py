@@ -1731,7 +1731,8 @@ def run(evaluation_id: str) -> dict:
             session_graph = parser.build_session_graph(events) if parser else {}
             log("MATCH", f"[{_trid}] {cond.value} session_graph built ({len(session_graph.get('sessions',{}))} sessions) "
                   f"in {int(time.time()-_trace_start)}s")
-            inner_pool = ThreadPoolExecutor(max_workers=_conc_get("resolver_workers"))
+            # inner_pool 只提交 4 个任务（KN/TA/RS/sink_match），cap 在 4 避免空线程
+            inner_pool = ThreadPoolExecutor(max_workers=min(4, _conc_get("resolver_workers")))
             try:
                 # KN/TA/RS 不依赖告警中心匹配，先提交并行跑
                 fut_kn = inner_pool.submit(with_eval_ctx(KnowledgeResolverImpl(EVAL_CONFIG).resolve), tr, events)
@@ -1888,10 +1889,13 @@ def run(evaluation_id: str) -> dict:
         set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
-        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，LLM 并发上限 {_conc_get('resolver_workers')}）")
-        _pool = ThreadPoolExecutor(max_workers=max(1, len(parsed)))
+        # 外层池 cap 在 parse_workers：避免 N trace × 嵌套池 → 线程数爆炸
+        # LLM 全局并发由 llm.py 信号量控制，不需要每条 trace 都创建线程
+        _outer_workers = max(1, min(len(parsed), _conc_get("parse_workers")))
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，外层并发={_outer_workers}，LLM 并发上限 {_conc_get('resolver_workers')}）")
+        _pool = ThreadPoolExecutor(max_workers=_outer_workers)
         _match_start = time.time()
-        log("MATCH", f"pool.map start: {len(parsed)} traces, max_workers={max(1, len(parsed))}")
+        log("MATCH", f"pool.map start: {len(parsed)} traces, max_workers={_outer_workers}")
         try:
             results = list(_pool.map(_resolve_trace, parsed))
         except Exception as e:

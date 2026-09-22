@@ -1,5 +1,6 @@
 """System + V-Bench 路由。系统参数管理 + V-Bench 只读。"""
 from __future__ import annotations
+import asyncio
 import threading
 import time
 from fastapi import APIRouter
@@ -34,6 +35,7 @@ class SystemConfigUpdate(BaseModel):
     fpr_baseline_batch: int | None = Field(default=None, ge=1, le=1000)
     kg_analysis_workers: int | None = Field(default=None, ge=1, le=1000)
     bootstrap_workers: int | None = Field(default=None, ge=1, le=20)
+    reasoning_effort: str | None = Field(default=None, pattern="^(none|low|high|max)$")
 
 
 def _apply_config(key: str, value: str):
@@ -45,6 +47,8 @@ def _apply_config(key: str, value: str):
         _conc_set("llm_max_concurrency", int(value))
     elif key == "max_concurrent_evals":
         set_max_concurrent_evals(int(value))
+    elif key == "reasoning_effort":
+        llm.set_runtime_config(reasoning_effort=value)
     elif key in _CONFIG_KEYS:
         _conc_set(key, int(value))
 
@@ -59,7 +63,7 @@ def load_system_config():
             cur.execute("SELECT config_key, config_value FROM system_config")
             rows = cur.fetchall()
             for key, value in rows:
-                if key in _CONFIG_KEYS:
+                if key in _CONFIG_KEYS or key == "reasoning_effort":
                     _apply_config(key, value)
                     log("SYS_CFG", f"loaded {key}={value}")
             if rows:
@@ -105,10 +109,11 @@ def _start_config_watcher():
                     if db_ts is not None and db_ts != _config_version:
                         with _config_version_lock:
                             _config_version = db_ts
+                        _reload_keys = tuple(_CONFIG_KEYS) + ("reasoning_effort",)
                         cur.execute(
                             "SELECT config_key, config_value FROM system_config "
-                            "WHERE config_key IN (%s)" % ",".join(["%s"] * len(_CONFIG_KEYS)),
-                            tuple(_CONFIG_KEYS))
+                            "WHERE config_key IN (%s)" % ",".join(["%s"] * len(_reload_keys)),
+                            _reload_keys)
                         for key, value in cur.fetchall():
                             _apply_config(key, value)
                         log("SYS_CFG", f"配置已重载 (timestamp={db_ts})")
@@ -253,21 +258,29 @@ def _load_config_from_db() -> dict:
 
 
 @sys_r.get("/config")
-def get_system_config():
-    """获取系统参数（从 DB 读取，确保多 worker 一致）。"""
+async def get_system_config():
+    """获取系统参数（从 DB 读取，确保多 worker 一致）。
+    async + to_thread 避免 sync 端点在 GIL 竞争时阻塞事件循环。
+    """
     from ...infrastructure import llm
-    from .evaluations import _running_futures, _pending_evals, _paused_evals, _pausing_eids, _running_lock
-    db_cfg = _load_config_from_db()
-    with _running_lock:
-        running = len(_running_futures) - len(_pausing_eids)
-        pending = len(_pending_evals)
-        paused = len(_paused_evals)
+    db_cfg = await asyncio.to_thread(_load_config_from_db)
+    # _running_lock 是 threading.Lock，持有时间极短（几个 len() 调用）
+    # 但在 GIL 竞争下仍可能阻塞，用 to_thread 避免占用事件循环
+    def _get_counts():
+        from .evaluations import _running_futures, _pending_evals, _paused_evals, _pausing_eids, _running_lock
+        with _running_lock:
+            running = len(_running_futures) - len(_pausing_eids)
+            pending = len(_pending_evals)
+            paused = len(_paused_evals)
+        return running, pending, paused
+    running, pending, paused = await asyncio.to_thread(_get_counts)
     # 所有并发参数：DB 有值用 DB 值，否则用内存默认值
     result = {}
     for key in _CONFIG_KEYS:
         result[key] = int(db_cfg.get(key, _conc_get(key)))
     # llm_max_concurrency 单独走 llm 模块（信号量）
     result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
+    result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
@@ -293,6 +306,8 @@ def update_system_config(params: SystemConfigUpdate):
             _conc_set("llm_max_concurrency", value)
         elif field_name == "max_concurrent_evals":
             set_max_concurrent_evals(value)
+        elif field_name == "reasoning_effort":
+            llm.set_runtime_config(reasoning_effort=value)
         else:
             _conc_set(field_name, value)
         _save_config(field_name, str(value))
