@@ -177,16 +177,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         for ai in range(len(alert_center_cases)):
             fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
             pre_futures[fut] = ai
-        def _pre_resubmit(old_fut):
-            ai = pre_futures[old_fut]
-            new_fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
-            pre_futures[new_fut] = ai
-            return new_fut
-        for fut, _timeout in iter_completed(
-            pre_futures, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
-            resubmit_fn=_pre_resubmit,
-            log_tag="AC_PREFILTER",
-        ):
+        for fut, _ in iter_completed(pre_futures, cancel_cb=cancel_cb):
             ai = pre_futures[fut]
             try:
                 _, indices = fut.result()
@@ -311,23 +302,8 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                     finding_list[fi].get("description", ""),
                     finding_list[fi].get("sink", ""))
                 futures[fut] = (ai, fi)
-            def _pair_resubmit(old_fut):
-                ai, fi = futures[old_fut]
-                new_fut = pool.submit(with_eval_ctx(_check_pair), ai, fi,
-                    ac_list[ai].get("title", ""),
-                    ac_list[ai].get("summary", ""),
-                    ac_list[ai].get("locator", ""),
-                    finding_list[fi].get("title", ""),
-                    finding_list[fi].get("description", ""),
-                    finding_list[fi].get("sink", ""))
-                futures[new_fut] = (ai, fi)
-                return new_fut
             done = 0
-            for fut, _timeout in iter_completed(
-                futures, cancel_cb=cancel_cb, per_task_timeout=1800, max_retries=2,
-                resubmit_fn=_pair_resubmit,
-                log_tag="AC_MATCH",
-            ):
+            for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                 ai, fi = futures[fut]
                 try:
                     _, _, score = fut.result()
