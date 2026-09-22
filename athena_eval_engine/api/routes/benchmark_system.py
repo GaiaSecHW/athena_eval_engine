@@ -272,6 +272,7 @@ def get_system_config():
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
     result["llm_active"] = llm.get_active_concurrency()
+    result["thread_count"] = threading.active_count()
     return result
 
 
