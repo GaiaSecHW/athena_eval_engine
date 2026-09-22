@@ -3,7 +3,8 @@
 配置来自 config_loader。失败自动重试（最多 3 次）。
 SSE 流式读取：首 token 超时 2 分钟，后续 token 断流超时 10 分钟。
 429 限流：有限重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
-LLM 全局并发上限由信号量控制（默认 50）。
+LLM 全局共享线程池固定 1000 线程，实际并发由 gate 控制（DB 配 llm_max_concurrency）。
+LLM 调用通过 submit_llm_batch（逐个提交+gate 控制）或 submit_pool（编排函数不占 gate）提交到共享池。
 """
 from __future__ import annotations
 import json
@@ -12,6 +13,7 @@ import socket
 import select
 import threading
 import http.client
+from concurrent.futures import ThreadPoolExecutor, Future
 from urllib.parse import urlparse
 from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY, LLM_ENABLED
 from .log_util import log
@@ -28,9 +30,84 @@ FIRST_TOKEN_TIMEOUT = 350   # 首 token 超时：5 分 50 秒
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 100
 
-# LLM 全局并发上限（信号量，模块加载时即创建）
+# LLM 全局共享线程池 — 固定大小 1000，不重建
+# 实际并发由 _llm_gate 控制（DB 配 llm_max_concurrency）
+# 池里的线程拿到 gate 许可才执行 LLM 调用，拿不到就等
+# 但线程总数固定 1000，不会随任务数增长
+_MAX_POOL_SIZE = 1000
+_llm_pool: ThreadPoolExecutor | None = None
+_llm_pool_lock = threading.Lock()
+
+
+class _DynamicGate:
+    """可动态调整上限的并发门控。
+
+    与 threading.Semaphore 的区别：
+    - 上限可运行时调整（增大立即放行等待者，减小等运行数降到新上限后才放行）
+    - 同一个对象，acquire/release 始终在同一实例上（不像 Semaphore 替换会丢失旧许可）
+
+    语义（用户需求）：
+    - 池固定 1000 线程，gate 控制实际并发
+    - DB 设 300，正在运行 200 → 新任务直接进入
+    - DB 设 300，正在运行 300 → 新任务等待
+    - DB 从 300→100，正在运行 200 → 等运行数降到 <100 才放行新任务
+    """
+
+    def __init__(self, limit: int):
+        self._limit = limit
+        self._active = 0
+        self._cond = threading.Condition(threading.Lock())
+
+    def acquire(self):
+        """获取许可。如果当前运行数 >= limit，阻塞等待。"""
+        with self._cond:
+            while self._active >= self._limit:
+                self._cond.wait()
+            self._active += 1
+
+    def try_acquire(self) -> bool:
+        """非阻塞获取许可。成功返回 True，满返回 False。"""
+        with self._cond:
+            if self._active >= self._limit:
+                return False
+            self._active += 1
+            return True
+
+    def release(self):
+        """释放许可。如果有等待者且运行数 < limit，唤醒一个。"""
+        with self._cond:
+            self._active -= 1
+            self._cond.notify()
+
+    def set_limit(self, new_limit: int):
+        """调整上限。
+
+        增大：立即唤醒等待者（新上限 > 运行数时放行）。
+        减小：不主动阻塞已运行的，但新任务会等到运行数降到新上限以下。
+        """
+        with self._cond:
+            old = self._limit
+            self._limit = new_limit
+            if new_limit > old:
+                # 增大：唤醒所有等待者，它们会重新检查 _active < _limit
+                self._cond.notify_all()
+            # 减小：不唤醒，等待者继续等，直到运行数自然降到新上限以下
+
+    @property
+    def limit(self) -> int:
+        return self._limit
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+
+# LLM 并发门控（DB 可配，控制实际 LLM 调用数）
 _MAX_CONCURRENCY = 50
-_llm_semaphore = threading.Semaphore(_MAX_CONCURRENCY)
+_llm_gate = _DynamicGate(_MAX_CONCURRENCY)
+
+# 线程本地：标记当前线程是否已持有 gate 许可（submit_llm/try_submit_llm 预获取）
+_gate_holder = threading.local()
 
 # LLM 当前并发计数器（线程安全）
 _active_lock = threading.Lock()
@@ -94,25 +171,130 @@ def is_enabled() -> bool:
     return _runtime_cfg["llm_enabled"]
 
 
-def set_max_concurrency(n: int):
-    """设置全局 LLM 并发上限。运行时可调用，替换信号量。
+def _ensure_llm_pool():
+    """懒初始化共享 LLM 线程池（固定 1000，不重建）。"""
+    global _llm_pool
+    if _llm_pool is not None:
+        return _llm_pool
+    with _llm_pool_lock:
+        if _llm_pool is None:
+            _llm_pool = ThreadPoolExecutor(
+                max_workers=_MAX_POOL_SIZE,
+                thread_name_prefix="llm-worker")
+            log("LLM", f"共享线程池已创建 (max_workers={_MAX_POOL_SIZE})")
+    return _llm_pool
 
-    替换前释放旧信号量的全部许可，避免等待中的线程被永久搁置。
+
+def set_max_concurrency(n: int):
+    """设置全局 LLM 并发上限。运行时可调用，不重建线程池。
+
+    池固定 1000 线程，gate 控制实际能进入 LLM 调用的数量。
+    增大：立即放行等待者。
+    减小：等运行数降到新上限以下才放行新任务。
     """
-    global _llm_semaphore, _MAX_CONCURRENCY
+    global _MAX_CONCURRENCY
     n = max(1, min(n, 1000))
     old_n = _MAX_CONCURRENCY
-    old = _llm_semaphore
     _MAX_CONCURRENCY = n
-    _llm_semaphore = threading.Semaphore(n)
-    if old is not None:
-        for _ in range(old_n):
-            old.release()
-    log("LLM", f"set_max_concurrency: {old_n} → {n}")
+    _llm_gate.set_limit(n)
+    log("LLM", f"set_max_concurrency: {old_n} → {n} (gate adjusted, pool unchanged)")
 
 
 def get_max_concurrency() -> int:
     return _MAX_CONCURRENCY
+
+
+def submit_llm(fn, *args, **kwargs) -> Future:
+    """提交一个 LLM 调用任务到全局共享线程池（阻塞式获取 gate）。
+
+    池固定 1000 线程，不随任务数增长。
+    提交前先 acquire gate（DB 配 llm_max_concurrency），拿到才提交到池。
+    池线程执行 fn → fn 调用 chat_json/chat → _chat_once 检测到已持有 gate，跳过 acquire。
+    fn 执行完后释放 gate。
+
+    注意：此函数适用于 fn 内部直接调 chat_json/chat 的场景。
+    如果 fn 内部会再次调 submit_llm/submit_llm_batch，请用 submit_pool（不占 gate）避免死锁。
+    """
+    pool = _ensure_llm_pool()
+    _llm_gate.acquire()
+
+    def _wrapper():
+        _gate_holder.held = True
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _gate_holder.held = False
+            _llm_gate.release()
+
+    return pool.submit(_wrapper)
+
+
+def submit_pool(fn, *args, **kwargs) -> Future:
+    """提交任务到共享线程池，不占 gate 槽位。
+
+    适用于编排函数：fn 内部会调 submit_llm_batch/submit_llm 提交子任务。
+    如果用 submit_llm 提交编排函数，外层占 gate + 内层也要 gate → 死锁。
+    submit_pool 不占 gate，fn 内部的 chat_json/chat 会自行 acquire gate。
+    """
+    pool = _ensure_llm_pool()
+    return pool.submit(fn, *args, **kwargs)
+
+
+def try_submit_llm(fn, *args, **kwargs) -> Future | None:
+    """尝试提交一个 LLM 调用任务（非阻塞获取 gate）。
+
+    gate 满 → 返回 None（调用方应 sleep 后重试）。
+    gate 有空位 → 提交到池，返回 Future。
+    """
+    pool = _ensure_llm_pool()
+    if not _llm_gate.try_acquire():
+        return None
+
+    def _wrapper():
+        _gate_holder.held = True
+        try:
+            return fn(*args, **kwargs)
+        finally:
+            _gate_holder.held = False
+            _llm_gate.release()
+
+    return pool.submit(_wrapper)
+
+
+def submit_llm_batch(fn, items, *, args_fn=None, kwargs_fn=None,
+                     cancel_cb=None) -> list[Future]:
+    """逐个提交 LLM 任务，gate 满则 sleep(1) 等待，直到全部提交成功。
+
+    fn: 要执行的函数
+    items: 可迭代对象，每个元素对应一个任务
+    args_fn(item): 可选，返回 fn 的位置参数 tuple。无则用 (item,)
+    kwargs_fn(item): 可选，返回 fn 的关键字参数 dict
+    cancel_cb: 可选，取消检查回调，被取消时立即停止提交
+
+    返回 Future 列表（与 items 等长，顺序对应）。
+    cancel_cb 抛异常时，已提交的 future 会被 cancel 后再传播异常。
+    """
+    import time as _time
+    futures = []
+    try:
+        for item in items:
+            if cancel_cb:
+                cancel_cb()
+            _args = args_fn(item) if args_fn else (item,)
+            _kwargs = kwargs_fn(item) if kwargs_fn else {}
+            while True:
+                if cancel_cb:
+                    cancel_cb()
+                fut = try_submit_llm(fn, *_args, **_kwargs)
+                if fut is not None:
+                    futures.append(fut)
+                    break
+                _time.sleep(1)
+    except Exception:
+        for f in futures:
+            f.cancel()
+        raise
+    return futures
 
 
 def get_active_concurrency() -> int:
@@ -148,7 +330,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
     从 _runtime_cfg["reasoning_effort"] 读取全局设置。
     ``cancel_cb`` 可选，在 SSE 读取循环中每 5 秒检查一次，被取消时立即抛 TaskCancelledError。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
-    LLM 并发受全局信号量控制（上限 50）。
+    LLM 并发受全局 gate 控制（DB 配 llm_max_concurrency）。
     """
     if reasoning_effort is None:
         reasoning_effort = _runtime_cfg.get("reasoning_effort", "none")
@@ -191,11 +373,11 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "Accept": "text/event-stream",
     }
 
-    # 获取 LLM 并发槽位（全局信号量）
-    # 保存引用，确保 acquire/release 在同一个信号量对象上
-    _sem = _llm_semaphore
-    if _sem is not None:
-        _sem.acquire()
+    # 获取 LLM 并发槽位（gate，DB 可配）
+    # submit_llm/try_submit_llm 已预获取 gate 时跳过（线程本地标记）
+    _gate_already_held = getattr(_gate_holder, 'held', False)
+    if not _gate_already_held:
+        _llm_gate.acquire()
     global _active_count
     conn = None
     first_token = True
@@ -381,8 +563,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         if _counted:
             with _active_lock:
                 _active_count -= 1
-        if _sem is not None:
-            _sem.release()
+        if not _gate_already_held:
+            _llm_gate.release()
 
 
 def chat(messages, **kwargs) -> str:

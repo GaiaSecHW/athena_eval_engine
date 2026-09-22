@@ -984,19 +984,16 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                             _fallback = {"session_id": sid, "mining_summary": "压缩失败", "tool_count": len(acts)}
                             _session_compress_cache[sid] = _fallback
                             return _fallback
-                    from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
-                    from .evaluation_service import get_runtime_workers
                     try:
-                        _comp_pool = ThreadPoolExecutor(max_workers=max(1, min(len(_uncached), get_runtime_workers()["kg_analysis"])))
-                        futures = [_comp_pool.submit(with_eval_ctx(_compress_one), item) for item in _uncached]
+                        futures = llm_mod.submit_llm_batch(
+                            with_eval_ctx(_compress_one), _uncached, cancel_cb=cancel_cb)
                         for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                             _compressed.append(fut.result())
                     except Exception:
-                        _comp_pool.shutdown(wait=False, cancel_futures=True)
+                        for f in futures:
+                            f.cancel()
                         raise
-                    else:
-                        _comp_pool.shutdown(wait=True)
                 data["mining_actions"] = _compressed
                 log("KG_ANALYSIS", f"mining_actions 按 session 压缩: {len(_by_session)} sessions ({_cache_hits} cache hits) → {len(_compressed)} 摘要")
                 del _uncached, _by_session
@@ -1052,20 +1049,17 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                         except Exception as _e:
                             log("KG_ANALYSIS", f"批次压缩失败: {_e}")
                             return {"mining_summary": "压缩失败"}
-                    from concurrent.futures import ThreadPoolExecutor
                     from ..infrastructure.parallel import iter_completed
-                    from .evaluation_service import get_runtime_workers
                     try:
-                        _batch_pool = ThreadPoolExecutor(max_workers=max(1, min(len(_batches), get_runtime_workers()["kg_analysis"])))
-                        futures = [_batch_pool.submit(with_eval_ctx(_compress_batch), batch) for batch in _batches]
+                        futures = llm_mod.submit_llm_batch(
+                            with_eval_ctx(_compress_batch), _batches, cancel_cb=cancel_cb)
                         _compressed = []
                         for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                             _compressed.append(fut.result())
                     except Exception:
-                        _batch_pool.shutdown(wait=False, cancel_futures=True)
+                        for f in futures:
+                            f.cancel()
                         raise
-                    else:
-                        _batch_pool.shutdown(wait=True)
                     data["mining_actions"] = _compressed
                     _data_str = json.dumps(data, ensure_ascii=False)
                     log("KG_ANALYSIS", f"第{_round}轮压缩后 {len(_data_str)} chars")
@@ -1135,11 +1129,10 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
 
     # Phase 2: 并行执行 LLM 调用
     if _pending_llm:
-        from concurrent.futures import ThreadPoolExecutor
         from ..infrastructure.parallel import iter_completed
         from .evaluation_service import get_runtime_workers
         _kg_workers = get_runtime_workers()["kg_analysis"]
-        log("KG_ANALYSIS", f"Phase 2: {_total - _fast_done} 个 case 需要 LLM 分析 (并发={_kg_workers})")
+        log("KG_ANALYSIS", f"Phase 2: {_total - _fast_done} 个 case 需要 LLM 分析 (LLM gate={llm_mod.get_max_concurrency()})")
         _done_count = [0]
         import threading as _th
         _count_lock = _th.Lock()
@@ -1193,10 +1186,9 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
             except Exception:
                 return _build_fallback(task)
 
-        _workers = max(1, min(len(_pending_llm), get_runtime_workers()["kg_analysis"]))
-        pool = ThreadPoolExecutor(max_workers=_workers)
         try:
-            futures = [pool.submit(with_eval_ctx(_run_llm), t) for t in _pending_llm]
+            futures = llm_mod.submit_llm_batch(
+                with_eval_ctx(_run_llm), _pending_llm, cancel_cb=cancel_cb)
             for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                 _ci, result = fut.result()
                 results[_ci] = result
@@ -1205,9 +1197,8 @@ def ai_per_case_kg_analysis(case_results, interactions, bench_by_task=None, sess
                     if progress_cb:
                         progress_cb(_fast_done + _done_count[0], _total)
         except Exception:
-            pool.shutdown(wait=False, cancel_futures=True)
+            for f in futures:
+                f.cancel()
             raise
-        else:
-            pool.shutdown(wait=True)
 
     return [r for r in results if r is not None]

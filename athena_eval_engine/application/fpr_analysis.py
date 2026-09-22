@@ -7,13 +7,11 @@
 基线数据来源：case_details（benchmark_item 表），不再使用 CSV。
 """
 from __future__ import annotations
-from concurrent.futures import ThreadPoolExecutor
 from ..infrastructure.parallel import iter_completed
 
 from ..infrastructure import vuln_center_client
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, with_eval_ctx
-from ..infrastructure.concurrency import get as _conc_get
 
 _BATCH_SIZE = 10
 
@@ -335,19 +333,19 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
         all_matches: list[tuple[int, float, str]] = []
         try:
-            _bl_pool2 = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_batch"), len(batches)))
             future_to_batch: dict = {}
-            for batch in batches:
-                fut = _bl_pool2.submit(with_eval_ctx(_llm_match_batch), bl_content, bl_sink, batch)
+            _batch_futs = llm_mod.submit_llm_batch(
+                with_eval_ctx(_llm_match_batch), batches,
+                args_fn=lambda b: (bl_content, bl_sink, b))
+            for fut, batch in zip(_batch_futs, batches):
                 future_to_batch[fut] = batch
             for fut, _ in iter_completed(future_to_batch):
                 matched_pairs, _ = fut.result()
                 all_matches.extend(matched_pairs)
         except Exception:
-            _bl_pool2.shutdown(wait=False, cancel_futures=True)
+            for f in future_to_batch:
+                f.cancel()
             raise
-        else:
-            _bl_pool2.shutdown(wait=True)
 
         if all_matches:
             all_matches.sort(key=lambda x: x[1], reverse=True)
@@ -367,16 +365,15 @@ def _run_matching(findings: list[dict], baseline_rows: list[dict],
 
         return bl_idx, best_fidx, best_conf, all_matches, best_reason
 
-    bl_pool = ThreadPoolExecutor(max_workers=min(_conc_get("fpr_baseline_workers"), len(baseline_rows)))
     try:
-        futures = [bl_pool.submit(with_eval_ctx(_match_one_baseline), i) for i in range(len(baseline_rows))]
+        _bl_items = list(range(len(baseline_rows)))
+        futures = [llm_mod.submit_pool(with_eval_ctx(_match_one_baseline), i) for i in _bl_items]
         for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
             bl_results.append(fut.result())
     except Exception:
-        bl_pool.shutdown(wait=False, cancel_futures=True)
+        for f in futures:
+            f.cancel()
         raise
-    else:
-        bl_pool.shutdown(wait=True)
 
     # 阶段 2：冲突解决 — 1:1 分配
     # 按置信度降序排列所有基线的最佳匹配，贪心分配
@@ -593,7 +590,7 @@ def run_fpr_analysis(project_id: str, task_id: str,
         log("FPR", f"{source_label}无数据，跳过 FPR 分析")
         return None
 
-    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE}, 基线并发={_conc_get('fpr_baseline_workers')})")
+    log("FPR", f"批量 LLM 匹配: {len(baseline_rows)} 条基线 × {len(findings)} 条{source_label}数据 (batch={_BATCH_SIZE})")
     if progress_cb:
         progress_cb(0, len(baseline_rows))
     match_results = _run_matching(findings, baseline_rows, progress_cb, cancel_cb)

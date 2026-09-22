@@ -28,6 +28,37 @@ from athena_eval_engine.infrastructure.database import connect
 from athena_eval_engine.infrastructure import vuln_center_client
 from athena_eval_engine.application.fpr_analysis import run_fpr_analysis
 from athena_eval_engine.infrastructure.log_util import log, set_eval_ctx
+from athena_eval_engine.infrastructure import llm as _llm_mod
+from athena_eval_engine.infrastructure.concurrency import set_val as _conc_set, get_keys as _conc_keys
+
+
+def _load_db_config():
+    """从 DB system_config 表加载系统参数到当前进程内存。
+
+    独立脚本进程不走 uvicorn startup，需要手动加载 DB 配置才能用
+    运行时并发参数（而非 concurrency.py 默认值）。
+    """
+    try:
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT config_key, config_value FROM system_config")
+            rows = cur.fetchall()
+        finally:
+            conn.close()
+    except Exception as e:
+        log("MINI-FPR", f"从 DB 加载系统参数失败（用默认值）: {e}")
+        return
+
+    _cfg_keys = _conc_keys()
+    for key, value in rows:
+        if key in _cfg_keys:
+            _conc_set(key, int(value))
+        elif key == "llm_max_concurrency":
+            _llm_mod.set_max_concurrency(int(value))
+        elif key == "reasoning_effort":
+            _llm_mod.set_runtime_config(reasoning_effort=value)
+    log("MINI-FPR", f"从 DB 加载 {len(rows)} 项系统参数，llm_max_concurrency={_llm_mod.get_max_concurrency()}")
 
 
 def _extract_source_task_id(entry: dict) -> str:
@@ -336,6 +367,15 @@ def main():
 
     evaluation_id = sys.argv[1]
     set_eval_ctx(evaluation_id)
+
+    # 从 DB 加载系统参数（独立进程不走 uvicorn startup）
+    _load_db_config()
+
+    # 硬编码 LLM 并发=300，基线并发=300，batch 并发=30
+    _llm_mod.set_max_concurrency(300)
+    _conc_set("fpr_baseline_workers", 300)
+    _conc_set("fpr_baseline_batch", 30)
+    log("MINI-FPR", f"硬编码并发: llm=300, fpr_baseline_workers=300, fpr_baseline_batch=30")
 
     log("MINI-FPR", f"开始: {evaluation_id}")
 

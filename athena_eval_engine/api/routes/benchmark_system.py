@@ -278,7 +278,7 @@ async def get_system_config():
     result = {}
     for key in _CONFIG_KEYS:
         result[key] = int(db_cfg.get(key, _conc_get(key)))
-    # llm_max_concurrency 单独走 llm 模块（信号量）
+    # llm_max_concurrency 单独走 llm 模块（共享线程池）
     result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
     result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
     result["running_tasks"] = running

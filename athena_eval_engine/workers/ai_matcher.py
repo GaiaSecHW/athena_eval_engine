@@ -14,7 +14,7 @@ from __future__ import annotations
 import json, re
 from ..infrastructure import llm as llm_mod
 from ..infrastructure.log_util import log, with_eval_ctx
-from ..infrastructure.concurrency import get as _conc_get
+from ..infrastructure.parallel import iter_completed
 
 
 def _norm_path(path: str) -> str:
@@ -79,8 +79,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
       matched: {finding_idx: ac_case_idx} — 匹配上的 finding → 告警中心 case
       unmatched_ac_indices: set[int] — 未匹配上任何 finding 的告警中心 case 索引
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from ..infrastructure.parallel import iter_completed
+    from ..infrastructure import llm as _llm_for_submit
 
     def _progress(text):
         if progress_cb:
@@ -174,11 +173,12 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
 
     prefilter_candidates: dict[int, list[int]] = {}
     prefilter_done = 0
-    pre_pool = ThreadPoolExecutor(max_workers=min(len(alert_center_cases), _conc_get("ai_match_workers")))
     try:
         pre_futures = {}
-        for ai in range(len(alert_center_cases)):
-            fut = pre_pool.submit(with_eval_ctx(_prefilter_one), ai)
+        _pre_items = list(range(len(alert_center_cases)))
+        _pre_futs = _llm_for_submit.submit_llm_batch(
+            with_eval_ctx(_prefilter_one), _pre_items, cancel_cb=cancel_cb)
+        for fut, ai in zip(_pre_futs, _pre_items):
             pre_futures[fut] = ai
         for fut, _ in iter_completed(pre_futures, cancel_cb=cancel_cb):
             ai = pre_futures[fut]
@@ -194,11 +194,9 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             prefilter_done += 1
             _progress(f"告警中心匹配 预筛选: {prefilter_done}/{len(alert_center_cases)} 完成")
     except Exception:
-        pre_pool.shutdown(wait=False, cancel_futures=True)
+        for f in pre_futures:
+            f.cancel()
         raise
-    else:
-        # wait=True：确保所有 LLM 线程完成，结果不丢弃
-        pre_pool.shutdown(wait=True)
 
     total_cand = sum(len(v) for v in prefilter_candidates.values())
     log("AC_MATCH", f"prefilter: {len(alert_center_cases)} ac_cases, {total_cand} candidates "
@@ -293,18 +291,20 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
     # 全量并行 1vs1
     pair_results: dict[tuple[int, int], float] = {}
     if all_pairs:
-        pool = ThreadPoolExecutor(max_workers=min(len(all_pairs), _conc_get("ai_match_workers")))
         try:
             futures = {}
-            for ai, fi in all_pairs:
-                fut = pool.submit(with_eval_ctx(_check_pair), ai, fi,
-                    ac_list[ai].get("title", ""),
-                    ac_list[ai].get("summary", ""),
-                    ac_list[ai].get("locator", ""),
-                    finding_list[fi].get("title", ""),
-                    finding_list[fi].get("description", ""),
-                    finding_list[fi].get("sink", ""))
-                futures[fut] = (ai, fi)
+            _pair_futs = _llm_for_submit.submit_llm_batch(
+                with_eval_ctx(_check_pair), all_pairs,
+                args_fn=lambda p: (p[0], p[1],
+                    ac_list[p[0]].get("title", ""),
+                    ac_list[p[0]].get("summary", ""),
+                    ac_list[p[0]].get("locator", ""),
+                    finding_list[p[1]].get("title", ""),
+                    finding_list[p[1]].get("description", ""),
+                    finding_list[p[1]].get("sink", "")),
+                cancel_cb=cancel_cb)
+            for fut, p in zip(_pair_futs, all_pairs):
+                futures[fut] = (p[0], p[1])
             done = 0
             for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                 ai, fi = futures[fut]
@@ -317,10 +317,9 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
                 done += 1
                 _progress(f"告警中心匹配 详细对比: {done}/{len(all_pairs)} LLM 调用完成")
         except Exception:
-            pool.shutdown(wait=False, cancel_futures=True)
+            for f in futures:
+                f.cancel()
             raise
-        else:
-            pool.shutdown(wait=True)
 
     # 串行冲突解决：按 AC case 顺序分配，先到先得（一对一约束）
     for ai in range(len(alert_center_cases)):

@@ -1049,7 +1049,6 @@ def run(evaluation_id: str) -> dict:
     if _need_fill:
         from ..infrastructure import llm as llm_mod
         if llm_mod.is_enabled():
-            from concurrent.futures import ThreadPoolExecutor
             from ..infrastructure.parallel import iter_completed
             log("INGEST", f"并行补提取 source 信息: {len(_need_fill)} 条 case")
             _fill_done = [0]
@@ -1057,8 +1056,10 @@ def run(evaluation_id: str) -> dict:
             _fill_lock = _th.Lock()
             try:
                 _fill_cancel = lambda: _check_cancel(evaluation_id, "INGEST")
-                _fill_pool = ThreadPoolExecutor(max_workers=min(len(_need_fill), _conc_get("source_fill_workers")))
-                futures = [_fill_pool.submit(with_eval_ctx(_fill_missing_source), evaluation_id, cd, _fill_cancel) for cd in _need_fill]
+                futures = llm_mod.submit_llm_batch(
+                    with_eval_ctx(_fill_missing_source), _need_fill,
+                    args_fn=lambda cd: (evaluation_id, cd, _fill_cancel),
+                    cancel_cb=_fill_cancel)
                 for fut, _ in iter_completed(futures, cancel_cb=_fill_cancel):
                     fut.result()
                     with _fill_lock:
@@ -1066,10 +1067,9 @@ def run(evaluation_id: str) -> dict:
                         if _fill_done[0] % 5 == 0 or _fill_done[0] == len(_need_fill):
                             set_progress(evaluation_id, f"补提取 source: {_fill_done[0]}/{len(_need_fill)}")
             except Exception:
-                _fill_pool.shutdown(wait=False, cancel_futures=True)
+                for f in futures:
+                    f.cancel()
                 raise
-            else:
-                _fill_pool.shutdown(wait=True)
 
     # 0c. 获取告警中心数据（T001 提交的漏洞 + T002 引擎判定结论）
     _ac_pairs: list[tuple[str, str]] = []
@@ -1883,16 +1883,16 @@ def run(evaluation_id: str) -> dict:
                 _parse_done += 1
                 set_progress(evaluation_id, f"解析 Trace: {_parse_done}/{len(entries)} 完成")
         # Phase AI_MATCHING: 漏洞匹配 + resolve（含 LLM，慢）
-        # 所有 trace 同时启动；LLM 并发由 llm.py 全局信号量控制（上限 50）
-        # 非 LLM 的 resolver 不占信号量，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
+        # 所有 trace 同时启动；LLM 并发由 llm.py 全局 gate 控制（DB 配 llm_max_concurrency）
+        # 非 LLM 的 resolver 不占 gate，KG trace 的 resolver 先跑完 → LLM 槽位立刻给 No-KG
         llm_mod.reset_token_usage()
         set_progress(evaluation_id, "漏洞匹配: 准备中...")
         _set_status_short(evaluation_id, "AI_MATCHING")
         _check_cancel(evaluation_id, "AI_MATCHING")
         # 外层池 cap 在 parse_workers：避免 N trace × 嵌套池 → 线程数爆炸
-        # LLM 全局并发由 llm.py 信号量控制，不需要每条 trace 都创建线程
+        # LLM 全局并发由 llm.py gate 控制，不需要每条 trace 都创建线程
         _outer_workers = max(1, min(len(parsed), _conc_get("parse_workers")))
-        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，外层并发={_outer_workers}，LLM 并发上限 {_conc_get('resolver_workers')}）")
+        log("EVAL", f"漏洞匹配 + resolve 开始（{len(parsed)} 条 trace，外层并发={_outer_workers}，LLM 并发上限 {llm_mod.get_max_concurrency()}）")
         _pool = ThreadPoolExecutor(max_workers=_outer_workers)
         _match_start = time.time()
         log("MATCH", f"pool.map start: {len(parsed)} traces, max_workers={_outer_workers}")
@@ -2267,10 +2267,13 @@ def run(evaluation_id: str) -> dict:
         # 并行提交所有 LLM 识别调用
         _llm_results: dict[tuple[str, str], int | None] = {}  # (cond, case_id) -> best_idx
         if _llm_tasks:
-            from concurrent.futures import ThreadPoolExecutor as _TPE
             log("EVAL", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
-            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), _conc_get("ac_llm_workers")))
-            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4], t[5]): (t[0], t[1]) for t in _llm_tasks}
+            _llm_futs_list = llm_mod.submit_llm_batch(
+                with_eval_ctx(_ai_identify_finding), _llm_tasks,
+                args_fn=lambda t: (t[2], t[3], t[4], t[5]))
+            _llm_futs = {}
+            for fut, t in zip(_llm_futs_list, _llm_tasks):
+                _llm_futs[fut] = (t[0], t[1])
             for fut in _llm_futs:
                 _cond, _cid = _llm_futs[fut]
                 try:
@@ -2278,7 +2281,6 @@ def run(evaluation_id: str) -> dict:
                 except Exception as _e:
                     log("MATCH", f"AI 识别 finding 失败 (cond={_cond} case={_cid}): {_e}")
                     _llm_results[(_cond, _cid)] = None
-            _llm_pool.shutdown(wait=True)
 
         for _g_case in _g_kg_cases:
             _g_case_id = _g_case.get("case_id")
@@ -2577,29 +2579,34 @@ def run(evaluation_id: str) -> dict:
     _fpr_match_data = _fpr_res["fpr_match_data"]
 
     from ..infrastructure.llm import is_enabled as _llm_enabled
+    from ..infrastructure import llm as llm_mod
     if _llm_enabled():
-        from concurrent.futures import ThreadPoolExecutor as _TP
         # ── Phase 6: 知识与记忆介入分析（逐漏洞 KG 归因）──
         log("EVAL", f"知识与记忆介入分析: 分类 per_case_kg...")
         set_progress(evaluation_id, "知识与记忆介入分析: 准备中...")
-        with _TP(max_workers=max(1, len(_metric_groups))) as kg_pool:
-            fut_group_pcka = {}
-            for group in _metric_groups:
-                (_g_cases, _g_interactions, _g_session_graph,
-                 _g_nogk_cases, _g_events, _g_mem_interactions,
-                 _g_parser) = _group_kg_inputs[group["task_id"]]
-                _g_label = group.get("label", group["task_id"])
-                def _cb(done, total, _label=_g_label):
-                    set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
-                fut_group_pcka[group["task_id"]] = kg_pool.submit(
-                    with_eval_ctx(ai_per_case_kg_analysis), _g_cases, _g_interactions,
-                    bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
-                    _g_mem_interactions, group["category"], _g_parser, _cb,
-                    has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup,
-                    cancel_cb=lambda: _check_cancel(evaluation_id, "REPORTING"))
+        fut_group_pcka = {}
+        _pcka_cancel = lambda: _check_cancel(evaluation_id, "REPORTING")
+        for group in _metric_groups:
+            (_g_cases, _g_interactions, _g_session_graph,
+             _g_nogk_cases, _g_events, _g_mem_interactions,
+             _g_parser) = _group_kg_inputs[group["task_id"]]
+            _g_label = group.get("label", group["task_id"])
+            def _cb(done, total, _label=_g_label):
+                set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
+            fut_group_pcka[group["task_id"]] = llm_mod.submit_pool(
+                with_eval_ctx(ai_per_case_kg_analysis), _g_cases, _g_interactions,
+                bench_by_task, _g_session_graph, _g_nogk_cases, _g_events,
+                _g_mem_interactions, group["category"], _g_parser, _cb,
+                has_nogk=has_nogk, fpr_match_lookup=_fpr_match_lookup,
+                cancel_cb=_pcka_cancel)
+        try:
             for group in _metric_groups:
                 group["per_case_kg_analysis"] = fut_group_pcka[group["task_id"]].result()
                 _group_kg_inputs.pop(group["task_id"], None)
+        except Exception:
+            for f in fut_group_pcka.values():
+                f.cancel()
+            raise
         log("EVAL", f"知识与记忆介入分析完成")
         set_progress(evaluation_id, "知识与记忆介入分析完成，生成报告中...")
     else:
@@ -3583,10 +3590,13 @@ def _build_enhanced_case_results(evaluation_id: str, task_runs: list, entries: l
 
         _llm_results = {}
         if _llm_tasks:
-            from concurrent.futures import ThreadPoolExecutor as _TPE
             log("RERUN-KG", f"并行 AC→finding LLM 识别: {len(_llm_tasks)} 条")
-            _llm_pool = _TPE(max_workers=min(len(_llm_tasks), _conc_get("ac_llm_workers")))
-            _llm_futs = {_llm_pool.submit(with_eval_ctx(_ai_identify_finding), t[2], t[3], t[4], t[5]): (t[0], t[1]) for t in _llm_tasks}
+            _llm_futs_list = llm_mod.submit_llm_batch(
+                with_eval_ctx(_ai_identify_finding), _llm_tasks,
+                args_fn=lambda t: (t[2], t[3], t[4], t[5]))
+            _llm_futs = {}
+            for fut, t in zip(_llm_futs_list, _llm_tasks):
+                _llm_futs[fut] = (t[0], t[1])
             for fut in _llm_futs:
                 _cond, _cid = _llm_futs[fut]
                 try:
@@ -3594,7 +3604,6 @@ def _build_enhanced_case_results(evaluation_id: str, task_runs: list, entries: l
                 except Exception as _e:
                     log("RERUN-KG", f"AI 识别 finding 失败: {_e}")
                     _llm_results[(_cond, _cid)] = None
-            _llm_pool.shutdown(wait=True)
 
         _g_case_results = []
         for _g_case in _kg_cases:
@@ -3776,8 +3785,8 @@ def rerun_kg(evaluation_id: str):
     """
     import os as _os
     from ..infrastructure.llm import is_enabled as _llm_enabled
+    from ..infrastructure import llm as llm_mod
     from ..infrastructure.log_util import with_eval_ctx
-    from concurrent.futures import ThreadPoolExecutor as _TP
 
     set_eval_ctx(evaluation_id)
     set_progress(evaluation_id, "重跑知识与记忆分析中...")
@@ -3886,29 +3895,33 @@ def rerun_kg(evaluation_id: str):
         if _llm_enabled():
             log("RERUN-KG", f"知识与记忆介入分析: 分类 per_case_kg... ({len(_kg_groups)} groups)")
             set_progress(evaluation_id, "重跑知识与记忆: AI 分析中...")
-            with _TP(max_workers=max(1, len(_kg_groups))) as kg_pool:
-                fut_group = {}
-                for group in _kg_groups:
-                    _g_label = group.get("label", group["task_id"])
-                    def _cb(done, total, _label=_g_label):
-                        set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
-                    fut_group[group["task_id"]] = kg_pool.submit(
-                        with_eval_ctx(ai_per_case_kg_analysis),
-                        group["case_results"],
-                        group["_interactions"],
-                        bench_by_task,
-                        group["_session_graph"],
-                        group["_nogk_cases"],
-                        group["_events"],
-                        group["_mem_interactions"],
-                        group["category"],
-                        group["_parser"],
-                        _cb,
-                        has_nogk=has_nogk,
-                        fpr_match_lookup=_fpr_match_lookup,
-                        cancel_cb=None)
+            fut_group = {}
+            for group in _kg_groups:
+                _g_label = group.get("label", group["task_id"])
+                def _cb(done, total, _label=_g_label):
+                    set_task_progress(evaluation_id, _label, f"知识与记忆 {done}/{total}")
+                fut_group[group["task_id"]] = llm_mod.submit_pool(
+                    with_eval_ctx(ai_per_case_kg_analysis),
+                    group["case_results"],
+                    group["_interactions"],
+                    bench_by_task,
+                    group["_session_graph"],
+                    group["_nogk_cases"],
+                    group["_events"],
+                    group["_mem_interactions"],
+                    group["category"],
+                    group["_parser"],
+                    _cb,
+                    has_nogk=has_nogk,
+                    fpr_match_lookup=_fpr_match_lookup,
+                    cancel_cb=None)
+            try:
                 for group in _kg_groups:
                     group["per_case_kg_analysis"] = fut_group[group["task_id"]].result()
+            except Exception:
+                for f in fut_group.values():
+                    f.cancel()
+                raise
             log("RERUN-KG", "知识与记忆介入分析完成")
         else:
             log("RERUN-KG", "LLM 未启用，使用规则化分析")
