@@ -390,13 +390,24 @@ def chat(messages, **kwargs) -> str:
     last_err = None
     retries = kwargs.get("retries", MAX_RETRIES)
     _cancel_cb = kwargs.get("cancel_cb")
+    _no_reasoning = False  # reasoning 过长后关闭推理重试
     for attempt in range(retries):
         if _cancel_cb:
             _cancel_cb()
+        _call_kwargs = {k: v for k, v in kwargs.items() if k != "retries"}
+        if _no_reasoning:
+            _call_kwargs["reasoning_effort"] = "none"
         try:
-            return _chat_once(messages, **{k: v for k, v in kwargs.items() if k != "retries"})[0]
+            return _chat_once(messages, **_call_kwargs)[0]
         except Exception as e:
             last_err = str(e)[:300]
+            err_lower = last_err.lower()
+            if "content 为空" in err_lower or "stream 总超时" in err_lower:
+                if not _no_reasoning:
+                    _no_reasoning = True
+                    log("LLM", f"chat reasoning 过长，下次关闭推理重试 attempt={attempt+1}/{retries}")
+                    time.sleep(1)
+                    continue
             log("LLM", f"chat attempt {attempt+1}/{retries} failed: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
@@ -621,25 +632,25 @@ def chat_json(messages, **kwargs) -> dict:
             )):
                 log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
                 break
-            # content 为空 = reasoning 占满，下次关闭推理重试
-            if "content 为空" in err_lower:
+            # content 为空 或 stream 总超时 = reasoning 太长，下次关闭推理重试
+            if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 _msg_chars = sum(len(str(m.get("content", ""))) for m in msgs)
                 _sys_msg = str(msgs[0].get("content", ""))[:80] if msgs else ""
                 if not _no_reasoning:
                     _no_reasoning = True
-                    log("LLM", f"chat_json reasoning 占满 max_tokens，下次关闭推理重试 "
+                    log("LLM", f"chat_json reasoning 过长，下次关闭推理重试 "
                           f"attempt={attempt+1}/{retries} msgs={len(msgs)} input_chars={_msg_chars} "
                           f"max_tokens={kwargs.get('max_tokens')} sys_prompt=\"{_sys_msg}\"")
                     time.sleep(1)
                     continue
-                # 关闭推理后仍 content 为空
-                log("LLM", f"chat_json 关闭推理后仍 content 为空 "
+                # 关闭推理后仍失败
+                log("LLM", f"chat_json 关闭推理后仍失败 "
                       f"attempt={attempt+1}/{retries} input_chars={_msg_chars} "
-                      f"reasoning_len={last_err}")
+                      f"err={last_err}")
                 if last_err == _prev_err:
                     _empty_repeat += 1
                     if _empty_repeat >= 2:
-                        log("LLM", f"chat_json 关闭推理后连续 {_empty_repeat} 次 content 为空，停止重试")
+                        log("LLM", f"chat_json 关闭推理后连续 {_empty_repeat} 次失败，停止重试")
                         break
                 else:
                     _empty_repeat = 0
