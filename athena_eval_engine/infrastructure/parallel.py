@@ -31,7 +31,7 @@ def iter_completed(futures, *, cancel_cb=None, wait_timeout=10, per_task_timeout
         (future, timed_out: bool) — future 正常完成时 False，超时时 True
     """
     remaining = set(futures)
-    submit_ts = {f: time.time() for f in remaining} if per_task_timeout > 0 else {}
+    submit_ts = {}  # future → 开始执行时间（RUNNING 时才记录）
     retry_count: dict = {f: 0 for f in remaining} if max_retries > 0 else {}
     while remaining:
         if cancel_cb:
@@ -43,13 +43,18 @@ def iter_completed(futures, *, cancel_cb=None, wait_timeout=10, per_task_timeout
         if per_task_timeout > 0:
             now = time.time()
             for fut in list(remaining):
-                if now - submit_ts[fut] > per_task_timeout:
+                # 排队中（PENDING）不计入超时，只从开始执行（RUNNING）计时
+                if fut._state == 'PENDING':
+                    continue
+                if fut not in submit_ts:
+                    submit_ts[fut] = now  # 首次发现 RUNNING，记录开始时间
+                elapsed = now - submit_ts[fut]
+                if elapsed > per_task_timeout:
                     remaining.discard(fut)
-                    _elapsed = now - submit_ts[fut]
                     _retries = retry_count.get(fut, 0)
                     if (max_retries > 0 and resubmit_fn
                             and _retries < max_retries):
-                        log("TIMEOUT", f"[{log_tag}] 任务超时（{_elapsed:.0f}s），"
+                        log("TIMEOUT", f"[{log_tag}] 任务超时（{elapsed:.0f}s），"
                             f"重试 {_retries + 1}/{max_retries}")
                         fut.cancel()
                         try:
@@ -59,12 +64,11 @@ def iter_completed(futures, *, cancel_cb=None, wait_timeout=10, per_task_timeout
                             yield fut, True
                             continue
                         remaining.add(new_fut)
-                        submit_ts[new_fut] = time.time()
                         retry_count[new_fut] = _retries + 1
                     else:
                         if max_retries > 0:
-                            log("TIMEOUT", f"[{log_tag}] 任务超时（{_elapsed:.0f}s），"
+                            log("TIMEOUT", f"[{log_tag}] 任务超时（{elapsed:.0f}s），"
                                 f"重试耗尽（{max_retries}次），放弃")
                         else:
-                            log("TIMEOUT", f"[{log_tag}] 任务超时（{_elapsed:.0f}s）")
+                            log("TIMEOUT", f"[{log_tag}] 任务超时（{elapsed:.0f}s）")
                         yield fut, True
