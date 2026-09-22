@@ -507,12 +507,12 @@ def _fill_missing_source(case: dict, cancel_cb=None) -> None:
     if not case.get("source_file") or not case.get("source_function") or not case.get("source_line"):
         _case_id = case.get("case_id", "")
         _t0 = time.time()
-        _desc_len = len(case.get("description", "") or "")
-        log("SOURCE_FILL", f"case={_case_id} desc_len={_desc_len} 开始 LLM 提取")
         sf, sfn, sln = _ai_extract_source_info(
             case.get("description", ""), case.get("vulnerability_type", ""),
             case.get("locator", ""), cancel_cb=cancel_cb)
-        log("SOURCE_FILL", f"case={_case_id} 耗时={time.time()-_t0:.1f}s 结果=({sf}, {sfn}, {sln})")
+        _elapsed = time.time() - _t0
+        if _elapsed >= 400:
+            log("SOURCE_FILL", f"case={_case_id} 耗时={_elapsed:.1f}s 结果=({sf}, {sfn}, {sln})")
         if not case.get("source_file"):
             case["source_file"] = sf
         if not case.get("source_function"):
