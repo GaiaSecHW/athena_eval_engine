@@ -213,12 +213,9 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             if _phase1_elapsed > first_token_timeout:
                 log("LLM", f"Phase 1 总超时（{first_token_timeout}s，含 429/500 重试），放弃")
                 raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s，含 {_429_count} 次 429 + {_500_count} 次 500 重试）")
-            # 用短 timeout 创建连接，配合应用层总超时计时
             # socket.timeout 是 per-recv 的，TCP keepalive 会导致永不超时
-            # 所以用 min(剩余时间, 30) 作为 socket timeout，确保不会在单个 recv 上无限阻塞
-            _phase1_remaining = first_token_timeout - _phase1_elapsed
-            _conn_timeout = min(_phase1_remaining, 30)
-            conn = http.client.HTTPConnection(host, port, timeout=_conn_timeout)
+            # 用 first_token_timeout 作为 socket timeout，Phase 1 应用层总超时检查作为安全网
+            conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
             try:
                 conn.request("POST", path, body=body, headers=headers)
                 resp = conn.getresponse()
