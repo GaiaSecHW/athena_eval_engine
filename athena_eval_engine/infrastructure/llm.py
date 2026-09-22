@@ -22,7 +22,6 @@ DEFAULT_API_KEY = LLM_API_KEY
 
 MAX_RETRIES = 20
 RETRY_DELAY = 5  # 秒，重试间隔
-MAX_NETWORK_RETRIES = 3  # chat_json 对网络错误的重试次数（不叠加 _chat_once 内部的 429/500 重试）
 
 # SSE 流式超时（秒）
 FIRST_TOKEN_TIMEOUT = 300   # 首 token 超时：5 分钟（大 prompt 需要更长时间处理）
@@ -590,7 +589,6 @@ def chat_json(messages, **kwargs) -> dict:
     _prev_err = None
     _empty_repeat = 0
     _no_reasoning = False  # reasoning 占满后关闭推理重试
-    _network_retries = 0  # 网络错误重试计数（不叠加 _chat_once 内部的 429/500 重试）
     for attempt in range(retries):
         # 取消检查：外部超时后立即停止重试，释放信号量
         if _cancel_cb:
@@ -638,12 +636,7 @@ def chat_json(messages, **kwargs) -> dict:
                 if attempt < retries - 1:
                     time.sleep(RETRY_DELAY)
                 continue
-            # 网络错误重试不叠加 _chat_once 内部的 429/500 重试
-            _network_retries += 1
-            if _network_retries > MAX_NETWORK_RETRIES:
-                log("LLM", f"chat_json 网络错误重试耗尽（{MAX_NETWORK_RETRIES} 次，不叠加 _chat_once 内部重试）: {last_err}")
-                break
-            log("LLM", f"chat_json attempt {attempt+1}/{retries} 网络错误（{_network_retries}/{MAX_NETWORK_RETRIES}）: {last_err}")
+            log("LLM", f"chat_json attempt {attempt+1}/{retries} LLM error: {last_err}")
             if attempt < retries - 1:
                 time.sleep(RETRY_DELAY)
             continue
