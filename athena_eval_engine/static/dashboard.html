@@ -1462,8 +1462,8 @@ async function renderSystem(){
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">Source 补提取并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-50）</div>
-        <input id="cfg_source_fill_workers" type="number" min="1" max="50" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-1000）</div>
+        <input id="cfg_source_fill_workers" type="number" min="1" max="1000" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">告警中心数据获取并发</label>
@@ -1472,18 +1472,18 @@ async function renderSystem(){
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">单 Trace 内 resolver 并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-100）</div>
-        <input id="cfg_resolver_workers" type="number" min="1" max="100" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-1000）</div>
+        <input id="cfg_resolver_workers" type="number" min="1" max="1000" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">AI Matcher 并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-100）</div>
-        <input id="cfg_ai_match_workers" type="number" min="1" max="100" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-1000）</div>
+        <input id="cfg_ai_match_workers" type="number" min="1" max="1000" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">AC→Finding LLM 识别并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-50）</div>
-        <input id="cfg_ac_llm_workers" type="number" min="1" max="50" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-1000）</div>
+        <input id="cfg_ac_llm_workers" type="number" min="1" max="1000" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">FPR KG/NOGK 并行</label>
@@ -1492,18 +1492,18 @@ async function renderSystem(){
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">FPR 基线匹配并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-100）</div>
-        <input id="cfg_fpr_baseline_workers" type="number" min="1" max="100" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-1000）</div>
+        <input id="cfg_fpr_baseline_workers" type="number" min="1" max="1000" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">FPR 基线 Batch 并行</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-50）</div>
-        <input id="cfg_fpr_baseline_batch" type="number" min="1" max="50" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-1000）</div>
+        <input id="cfg_fpr_baseline_batch" type="number" min="1" max="1000" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">KG 分析并发数</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-100）</div>
-        <input id="cfg_kg_analysis_workers" type="number" min="1" max="100" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-1000）</div>
+        <input id="cfg_kg_analysis_workers" type="number" min="1" max="1000" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
       </div>
       <div>
         <label style="font-weight:600;font-size:14px">Bootstrap 统计并发</label>
