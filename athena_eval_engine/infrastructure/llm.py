@@ -316,32 +316,27 @@ def submit_llm(fn, *args, **kwargs) -> Future:
 
 
 def submit_pool(fn, *args, **kwargs) -> Future:
-    """提交任务到 dict 管理的线程，不占 gate 槽位。
+    """提交编排任务到裸线程，不占 gate、不占 dict。
 
     适用于编排函数：fn 内部会调 submit_llm_batch/submit_llm 提交子任务。
     如果用 submit_llm 提交编排函数，外层占 gate + 内层也要 gate → 死锁。
     submit_pool 不占 gate，fn 内部的 chat_json/chat 会自行 acquire gate。
+
+    编排线程不纳入 dict 管理：它们不执行 LLM 调用，只是协调子任务。
+    dict 只管理实际执行 LLM 调用的线程（submit_llm/try_submit_llm）。
     """
     fut: Future = Future()
     fut.set_running_or_notify_cancel()
 
     def _wrapper():
-        tid = threading.current_thread().ident
-        with _llm_threads_lock:
-            _thread_state[tid] = 1
         try:
             result = fn(*args, **kwargs)
             fut.set_result(result)
         except BaseException as e:
             fut.set_exception(e)
-        finally:
-            with _llm_threads_lock:
-                _thread_state[tid] = 2
-            _remove_thread(tid)
 
-    t = _create_thread(_wrapper, name="llm-pool")
-    if t is None:
-        raise RuntimeError("LLM 线程 dict 已满（1000），无法创建新线程")
+    t = threading.Thread(target=_wrapper, name="llm-pool", daemon=True)
+    t.start()
     return fut
 
 
