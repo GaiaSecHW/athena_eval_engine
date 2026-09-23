@@ -187,6 +187,14 @@ def _start_config_watcher():
                     _first_tick = False
                 finally:
                     conn.close()
+
+                # ── 5. LLM 线程 dict watchdog ──
+                # 清理已完成/卡死的线程，释放 dict 空间
+                try:
+                    from ..infrastructure import llm as _llm_mod
+                    _llm_mod.watchdog_cleanup()
+                except Exception as _e:
+                    log("WATCHDOG", f"LLM 线程清理异常: {_e}")
             except Exception as e:
                 log("WATCHDOG", f"watcher 异常: {e}")
 
@@ -278,13 +286,14 @@ async def get_system_config():
     result = {}
     for key in _CONFIG_KEYS:
         result[key] = int(db_cfg.get(key, _conc_get(key)))
-    # llm_max_concurrency 单独走 llm 模块（共享线程池）
+    # llm_max_concurrency 单独走 llm 模块（dict 管理线程）
     result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
     result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
     result["llm_active"] = llm.get_active_concurrency()
+    result["llm_thread_count"] = llm.get_thread_count()
     result["thread_count"] = threading.active_count()
     return result
 

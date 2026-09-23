@@ -3,8 +3,8 @@
 配置来自 config_loader。失败自动重试（最多 3 次）。
 SSE 流式读取：首 token 超时 2 分钟，后续 token 断流超时 10 分钟。
 429 限流：有限重试，间隔 3 秒（不占用 MAX_RETRIES 额度）。
-LLM 全局共享线程池固定 1000 线程，实际并发由 gate 控制（DB 配 llm_max_concurrency）。
-LLM 调用通过 submit_llm_batch（逐个提交+gate 控制）或 submit_pool（编排函数不占 gate）提交到共享池。
+LLM 线程按需创建，用 dict 管理（tid→Thread），map 最大 1000，实际并发由 gate 控制（DB 配 llm_max_concurrency）。
+LLM 调用通过 submit_llm_batch（逐个提交+gate 控制）或 submit_pool（编排函数不占 gate）提交。
 """
 from __future__ import annotations
 import json
@@ -13,7 +13,7 @@ import socket
 import select
 import threading
 import http.client
-from concurrent.futures import ThreadPoolExecutor, Future
+from concurrent.futures import Future
 from urllib.parse import urlparse
 from ..config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY, LLM_ENABLED
 from .log_util import log
@@ -30,13 +30,17 @@ FIRST_TOKEN_TIMEOUT = 350   # 首 token 超时：5 分 50 秒
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 100
 
-# LLM 全局共享线程池 — 固定大小 1000，不重建
+# LLM 线程按需创建，用 dict 管理（tid→Thread），map 最大 1000
 # 实际并发由 _llm_gate 控制（DB 配 llm_max_concurrency）
-# 池里的线程拿到 gate 许可才执行 LLM 调用，拿不到就等
-# 但线程总数固定 1000，不会随任务数增长
-_MAX_POOL_SIZE = 1000
-_llm_pool: ThreadPoolExecutor | None = None
-_llm_pool_lock = threading.Lock()
+# 线程执行完自动从 dict 移除；watchdog 定期清理卡死的线程
+_MAX_THREADS = 1000
+_llm_threads: dict[int, threading.Thread] = {}
+_llm_threads_lock = threading.Lock()
+# 线程创建时间，用于 watchdog 检测卡死线程
+_thread_start_ts: dict[int, float] = {}
+# 线程执行状态：0=等待gate, 1=执行中, 2=已完成(待清理)
+_thread_state: dict[int, int] = {}
+_THREAD_STALE_SEC = 700  # 超过 700 秒视为卡死（STREAM_TIMEOUT=600 + 余量）
 
 
 class _DynamicGate:
@@ -47,7 +51,7 @@ class _DynamicGate:
     - 同一个对象，acquire/release 始终在同一实例上（不像 Semaphore 替换会丢失旧许可）
 
     语义（用户需求）：
-    - 池固定 1000 线程，gate 控制实际并发
+    - 线程按需创建，gate 控制实际并发
     - DB 设 300，正在运行 200 → 新任务直接进入
     - DB 设 300，正在运行 300 → 新任务等待
     - DB 从 300→100，正在运行 200 → 等运行数降到 <100 才放行新任务
@@ -171,33 +175,99 @@ def is_enabled() -> bool:
     return _runtime_cfg["llm_enabled"]
 
 
-def _ensure_llm_pool():
-    """懒初始化共享 LLM 线程池（固定 1000，不重建）。"""
-    global _llm_pool
-    if _llm_pool is not None:
-        return _llm_pool
-    with _llm_pool_lock:
-        if _llm_pool is None:
-            _llm_pool = ThreadPoolExecutor(
-                max_workers=_MAX_POOL_SIZE,
-                thread_name_prefix="llm-worker")
-            log("LLM", f"共享线程池已创建 (max_workers={_MAX_POOL_SIZE})")
-    return _llm_pool
+def _create_thread(target, name="llm-worker") -> threading.Thread:
+    """创建线程并存入 dict 管理。dict 满时拒绝（返回 None）。
+
+    线程必须先 start() 才有 ident，所以先创建+启动，再存入 dict。
+    线程可能在线程被加入 dict 前就执行完毕，_remove_thread 用 pop(tid, None) 安全处理。
+    """
+    with _llm_threads_lock:
+        _cleanup_finished_locked()
+        if len(_llm_threads) >= _MAX_THREADS:
+            return None
+    t = threading.Thread(target=target, name=name, daemon=True)
+    t.start()
+    # start() 后 ident 才有值；线程可能已执行完毕，_remove_thread 的 pop(tid, None) 安全
+    with _llm_threads_lock:
+        # 只在线程仍在 dict 中不存在时插入（避免覆盖 _wrapper 已设的状态）
+        if t.ident not in _llm_threads:
+            _llm_threads[t.ident] = t
+            _thread_start_ts[t.ident] = time.time()
+            _thread_state[t.ident] = 0
+    return t
+
+
+def _remove_thread(tid: int):
+    """线程执行完毕后从 dict 移除。"""
+    with _llm_threads_lock:
+        _llm_threads.pop(tid, None)
+        _thread_start_ts.pop(tid, None)
+        _thread_state.pop(tid, None)
+
+
+def _cleanup_finished_locked():
+    """清理已完成或卡死的线程（调用方需持有 _llm_threads_lock）。"""
+    now = time.time()
+    stale_tids = []
+    for tid, t in list(_llm_threads.items()):
+        if not t.is_alive():
+            # 线程已结束，直接移除
+            _llm_threads.pop(tid, None)
+            _thread_start_ts.pop(tid, None)
+            _thread_state.pop(tid, None)
+            continue
+        # 检测卡死线程：存活时间超过 _THREAD_STALE_SEC
+        start_ts = _thread_start_ts.get(tid)
+        if start_ts and (now - start_ts) > _THREAD_STALE_SEC:
+            stale_tids.append(tid)
+    for tid in stale_tids:
+        t = _llm_threads.get(tid)
+        if t and t.is_alive():
+            # 卡死线程：强制释放 gate，从 dict 移除
+            # Thread 无法强制 kill，但可以从管理 dict 移除
+            # gate 的 release 会让等待的线程获得许可
+            try:
+                _llm_gate.release()
+            except Exception:
+                pass
+            try:
+                t.join(timeout=0.1)
+            except Exception:
+                pass
+        _llm_threads.pop(tid, None)
+        _thread_start_ts.pop(tid, None)
+        _thread_state.pop(tid, None)
+        log("LLM", f"watchdog: 清理卡死线程 tid={tid} (存活>{_THREAD_STALE_SEC}s)")
+
+
+def watchdog_cleanup():
+    """定期清理已完成/卡死的线程。由外部 watchdog 调用。"""
+    with _llm_threads_lock:
+        _cleanup_finished_locked()
+    alive = len(_llm_threads)
+    if alive > 0:
+        log("LLM", f"watchdog: dict 中 {alive} 个线程, gate active={_llm_gate.active}")
+
+
+def get_thread_count() -> int:
+    """返回 dict 中当前线程数。"""
+    with _llm_threads_lock:
+        return len(_llm_threads)
 
 
 def set_max_concurrency(n: int):
-    """设置全局 LLM 并发上限。运行时可调用，不重建线程池。
+    """设置全局 LLM 并发上限。运行时可调用，不重建线程。
 
-    池固定 1000 线程，gate 控制实际能进入 LLM 调用的数量。
+    线程按需创建，gate 控制实际能进入 LLM 调用的数量。
     增大：立即放行等待者。
     减小：等运行数降到新上限以下才放行新任务。
     """
     global _MAX_CONCURRENCY
-    n = max(1, min(n, 1000))
+    n = max(1, min(n, _MAX_THREADS))
     old_n = _MAX_CONCURRENCY
     _MAX_CONCURRENCY = n
     _llm_gate.set_limit(n)
-    log("LLM", f"set_max_concurrency: {old_n} → {n} (gate adjusted, pool unchanged)")
+    log("LLM", f"set_max_concurrency: {old_n} → {n} (gate adjusted, threads on-demand)")
 
 
 def get_max_concurrency() -> int:
@@ -205,60 +275,110 @@ def get_max_concurrency() -> int:
 
 
 def submit_llm(fn, *args, **kwargs) -> Future:
-    """提交一个 LLM 调用任务到全局共享线程池（阻塞式获取 gate）。
+    """提交一个 LLM 调用任务（阻塞式获取 gate）。
 
-    池固定 1000 线程，不随任务数增长。
-    提交前先 acquire gate（DB 配 llm_max_concurrency），拿到才提交到池。
-    池线程执行 fn → fn 调用 chat_json/chat → _chat_once 检测到已持有 gate，跳过 acquire。
-    fn 执行完后释放 gate。
+    线程按需创建，存入 dict 管理，map 最大 1000。
+    提交前先 acquire gate（DB 配 llm_max_concurrency），拿到才创建线程。
+    线程执行 fn → fn 调用 chat_json/chat → _chat_once 检测到已持有 gate，跳过 acquire。
+    fn 执行完后释放 gate，线程从 dict 自动移除。
 
     注意：此函数适用于 fn 内部直接调 chat_json/chat 的场景。
     如果 fn 内部会再次调 submit_llm/submit_llm_batch，请用 submit_pool（不占 gate）避免死锁。
     """
-    pool = _ensure_llm_pool()
     _llm_gate.acquire()
 
+    fut: Future = Future()
+    fut.set_running_or_notify_cancel()  # 标记为已运行，cancel() 会返回 False
+
     def _wrapper():
+        tid = threading.current_thread().ident
+        with _llm_threads_lock:
+            _thread_state[tid] = 1  # 执行中
         _gate_holder.held = True
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            fut.set_result(result)
+        except BaseException as e:
+            fut.set_exception(e)
         finally:
             _gate_holder.held = False
             _llm_gate.release()
+            with _llm_threads_lock:
+                _thread_state[tid] = 2  # 已完成
+            _remove_thread(tid)
 
-    return pool.submit(_wrapper)
+    t = _create_thread(_wrapper)
+    if t is None:
+        # dict 满，释放 gate 并抛异常
+        _llm_gate.release()
+        raise RuntimeError("LLM 线程 dict 已满（1000），无法创建新线程")
+    return fut
 
 
 def submit_pool(fn, *args, **kwargs) -> Future:
-    """提交任务到共享线程池，不占 gate 槽位。
+    """提交任务到 dict 管理的线程，不占 gate 槽位。
 
     适用于编排函数：fn 内部会调 submit_llm_batch/submit_llm 提交子任务。
     如果用 submit_llm 提交编排函数，外层占 gate + 内层也要 gate → 死锁。
     submit_pool 不占 gate，fn 内部的 chat_json/chat 会自行 acquire gate。
     """
-    pool = _ensure_llm_pool()
-    return pool.submit(fn, *args, **kwargs)
+    fut: Future = Future()
+    fut.set_running_or_notify_cancel()
+
+    def _wrapper():
+        tid = threading.current_thread().ident
+        with _llm_threads_lock:
+            _thread_state[tid] = 1
+        try:
+            result = fn(*args, **kwargs)
+            fut.set_result(result)
+        except BaseException as e:
+            fut.set_exception(e)
+        finally:
+            with _llm_threads_lock:
+                _thread_state[tid] = 2
+            _remove_thread(tid)
+
+    t = _create_thread(_wrapper, name="llm-pool")
+    if t is None:
+        raise RuntimeError("LLM 线程 dict 已满（1000），无法创建新线程")
+    return fut
 
 
 def try_submit_llm(fn, *args, **kwargs) -> Future | None:
     """尝试提交一个 LLM 调用任务（非阻塞获取 gate）。
 
     gate 满 → 返回 None（调用方应 sleep 后重试）。
-    gate 有空位 → 提交到池，返回 Future。
+    gate 有空位 → 创建线程，返回 Future。
     """
-    pool = _ensure_llm_pool()
     if not _llm_gate.try_acquire():
         return None
 
+    fut: Future = Future()
+    fut.set_running_or_notify_cancel()
+
     def _wrapper():
+        tid = threading.current_thread().ident
+        with _llm_threads_lock:
+            _thread_state[tid] = 1
         _gate_holder.held = True
         try:
-            return fn(*args, **kwargs)
+            result = fn(*args, **kwargs)
+            fut.set_result(result)
+        except BaseException as e:
+            fut.set_exception(e)
         finally:
             _gate_holder.held = False
             _llm_gate.release()
+            with _llm_threads_lock:
+                _thread_state[tid] = 2
+            _remove_thread(tid)
 
-    return pool.submit(_wrapper)
+    t = _create_thread(_wrapper)
+    if t is None:
+        _llm_gate.release()
+        return None
+    return fut
 
 
 def submit_llm_batch(fn, items, *, args_fn=None, kwargs_fn=None,

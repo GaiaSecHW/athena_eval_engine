@@ -527,11 +527,16 @@ def derive_fpr_from_subset(alert_result: dict, vuln_center_case_ids: set[str]) -
 def run_fpr_analysis(project_id: str, task_id: str,
                      progress_cb=None, source: str = "vuln_center",
                      case_details: dict | None = None,
-                     cancel_cb=None) -> dict | None:
+                     cancel_cb=None,
+                     preloaded_findings: list[dict] | None = None) -> dict | None:
     """主入口：基线 vs 漏洞中心/告警中心数据 → FPR + 匹配明细。
 
     source="vuln_center"  → 漏洞中心数据（E2E 分析）
     source="alert_center" → 告警中心数据（漏洞挖掘误报率）
+
+    preloaded_findings: 预拉取的告警中心 case 列表，传入时跳过 list_alert_center_cases 调用。
+    需包含 FPR 下游消费的字段：title, summary/display_summary, subject.locator, id, confirmation_status。
+    仅 source="alert_center" 时有效。
 
     基线数据来自 case_details（与 benchmark_item 表同源，来自 benchmark.zip），
     不再依赖外部 CSV 文件。
@@ -570,12 +575,16 @@ def run_fpr_analysis(project_id: str, task_id: str,
     log("FPR", f"基线 {len(baseline_rows)} 条（漏洞={_vuln_n} 非漏洞={_nonvuln_n}）")
 
     if source == "alert_center":
-        log("FPR", f"从告警中心获取数据: project={project_id}, task={task_id}")
-        findings = vuln_center_client.list_alert_center_cases(
-            project_id=project_id,
-            source_task_id=task_id,
-        )
-        log("FPR", f"告警中心返回 {len(findings)} 条")
+        if preloaded_findings is not None:
+            findings = preloaded_findings
+            log("FPR", f"使用预拉取告警中心数据: {len(findings)} 条 (project={project_id})")
+        else:
+            log("FPR", f"从告警中心获取数据: project={project_id}, task={task_id}")
+            findings = vuln_center_client.list_alert_center_cases(
+                project_id=project_id,
+                source_task_id=task_id,
+            )
+            log("FPR", f"告警中心返回 {len(findings)} 条")
         source_label = "告警中心"
     else:
         log("FPR", f"从漏洞中心获取数据: project={project_id}, task={task_id}")

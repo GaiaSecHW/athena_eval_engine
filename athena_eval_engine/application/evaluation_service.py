@@ -1111,8 +1111,12 @@ def run(evaluation_id: str) -> dict:
                 _all_cases.extend(
                     {
                         "case_id": c.get("id") or c.get("case_id") or "",
+                        "id": c.get("id") or c.get("case_id") or "",
                         "title": c.get("title") or "",
                         "summary": c.get("summary") or "",
+                        "display_summary": c.get("display_summary") or "",
+                        "subject": c.get("subject") or {},
+                        "confirmation_status": c.get("confirmation_status") or "",
                         "validation_result": c.get("validation_result"),
                         "current_stage": c.get("current_stage"),
                         "current_status": c.get("current_status"),
@@ -1297,12 +1301,19 @@ def run(evaluation_id: str) -> dict:
                 _fpr_tid = _mining_entry.get("task_id", "")
 
             log("FPR", f"误报率分析 ({cond_label}): project={_fpr_pid}, task={_fpr_tid}")
+            # 从 INGEST 阶段已拉取的 _alert_center_data 按项目过滤，避免重复调 API
+            _preloaded_ac: list[dict] | None = None
+            if _alert_center_data and _alert_center_data.get("cases"):
+                _preloaded_ac = [c for c in _alert_center_data["cases"]
+                                 if c.get("project_id") == _fpr_pid]
+                log("FPR", f"预拉取告警中心数据: {len(_preloaded_ac)} 条 (project={_fpr_pid})")
             try:
                 def _fpr_cb(done, total, _cl=cond_label):
                     set_task_progress(evaluation_id, f"误报率分析{_cl}", f"误报率匹配 {done}/{total}")
                 _ac_result = run_fpr_analysis(_fpr_pid, _fpr_tid, progress_cb=_fpr_cb,
                                                source="alert_center", case_details=case_details,
-                                               cancel_cb=_cancel_cb)
+                                               cancel_cb=_cancel_cb,
+                                               preloaded_findings=_preloaded_ac)
             except Exception as _fpr_err:
                 log("FPR", f"FPR 分析失败 ({cond_label}): {_fpr_err}")
                 _ac_result = None
@@ -1414,6 +1425,7 @@ def run(evaluation_id: str) -> dict:
         }
 
     _fpr_future = _bg_executor.submit(with_eval_ctx(_run_fpr_bg))
+    _fpr_running = True  # FPR 在后台运行，PARSING 阶段可跳过 AC 匹配（FPR 会覆盖结果）
     log("EVAL", "FPR 分析已提交后台（与 PARSING 并行）")
 
     # ===== Phase 2: 解析 trace + 提取 facts（无 DB 连接 — 慢操作）=====
@@ -1761,19 +1773,25 @@ def run(evaluation_id: str) -> dict:
                     log("MATCH", f"[{_trid}] {cond.value} parser findings={len(_parser_findings)} ac_cases={len(_ac_cases)} "
                           f"(is_verify={is_verify})")
 
-                    # Step 2: 告警中心 case ↔ finding AI 匹配（告警中心为锚点，跟基线一样）
-                    _matched, _unmatched_ac = match_alert_center_to_findings(
-                        _ac_cases, _parser_findings,
-                        progress_cb=lambda text: set_task_progress(
-                            evaluation_id, tr.task_run_id,
-                            f"[{tr.condition.value}] {text}"),
-                        cancel_cb=lambda: _check_cancel(evaluation_id, "AI_MATCHING"))
+                    if _fpr_running:
+                        # FPR 在后台运行，会覆盖 AC 匹配结果 → 跳过 PARSING 阶段 AC 匹配
+                        log("MATCH", f"[{_trid}] {cond.value} 跳过 AC 匹配（FPR 在后台运行，结果将被覆盖）")
+                        _matched = {}
+                        _unmatched_ac = set(range(len(_ac_cases)))
+                    else:
+                        # Step 2: 告警中心 case ↔ finding AI 匹配（告警中心为锚点，跟基线一样）
+                        _matched, _unmatched_ac = match_alert_center_to_findings(
+                            _ac_cases, _parser_findings,
+                            progress_cb=lambda text: set_task_progress(
+                                evaluation_id, tr.task_run_id,
+                                f"[{tr.condition.value}] {text}"),
+                            cancel_cb=lambda: _check_cancel(evaluation_id, "AI_MATCHING"))
 
-                    # Step 3: 匹配上的 finding 记录 AC 关联（不改 validation_result，不参与指标计算）
-                    for fi, ai in _matched.items():
-                        ac = _ac_cases[ai]
-                        _parser_findings[fi]["ac_case_id"] = ac.get("case_id", "")
-                        log("MATCH", f"[{_trid}] {cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')}")
+                        # Step 3: 匹配上的 finding 记录 AC 关联（不改 validation_result，不参与指标计算）
+                        for fi, ai in _matched.items():
+                            ac = _ac_cases[ai]
+                            _parser_findings[fi]["ac_case_id"] = ac.get("case_id", "")
+                            log("MATCH", f"[{_trid}] {cond.value} finding[{fi}] ← ac_case={ac.get('case_id','')}")
 
                     _findings_override = _parser_findings
                     _ac_confirmed = sum(1 for f in _parser_findings if f.get("validation_result") == "CONFIRMED")
