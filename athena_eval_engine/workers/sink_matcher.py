@@ -30,6 +30,34 @@ def _basename(path: str) -> str:
     return parts[-1] if parts else path
 
 
+def build_session_event_index(events: list) -> dict[str, list[int]]:
+    """预建 session_id → [event_indices] 索引（一次 O(N) 扫描）。
+
+    供 collect_chain_actions 和 build_session_chain 使用，
+    避免每个基线都全量扫描 events（O(N*B) → O(N)）。
+    同时返回 session_id → first_ts 映射。
+    """
+    import time as _time
+    _n = len(events)
+    _start = _time.time()
+    index: dict[str, list[int]] = {}
+    first_ts: dict[str, int] = {}
+    for idx, ev in enumerate(events):
+        if _n > 10000 and idx > 0 and idx % 50000 == 0:
+            log("SINK_MATCH", f"build_session_event_index {idx}/{_n} "
+                  f"elapsed={int(_time.time()-_start)}s sessions={len(index)}")
+        sid = ev.session_id
+        if not sid:
+            continue
+        index.setdefault(sid, []).append(idx)
+        ts = ev.timestamp_ms or 0
+        if sid not in first_ts or ts < first_ts[sid]:
+            first_ts[sid] = ts
+    log("SINK_MATCH", f"session_event_index: {len(index)} sessions, "
+          f"{_n} events in {int(_time.time()-_start)}s")
+    return index, first_ts
+
+
 def build_file_read_index(events: list) -> list[dict]:
     """从 trace 事件中提取所有文件读取操作。
 
@@ -221,24 +249,40 @@ def group_chains(sink_session_ids: list[str], session_graph: dict) -> list[set[s
 
 
 def collect_chain_actions(chain_sessions: set[str], events: list, parser,
-                          session_chain_order: list[str] | None = None) -> list[dict]:
+                          session_chain_order: list[str] | None = None,
+                          session_event_index: dict[str, list[int]] | None = None) -> list[dict]:
     """收集链上所有 session 的工具调用行为。
 
     有 session_chain_order 时按 (链位置, 时间) 排序，无时按时间排序。
     复用 parser._extract_action 提取工具行为摘要。
+
+    session_event_index: 可选，session_id → [event_indices] 预建索引。
+    有索引时按 session 直接定位事件，避免 O(N*B) 全量扫描。
     """
     if parser is None:
         return []
     actions = []
-    _n = len(events)
-    for idx, ev in enumerate(events):
-        if not ev.is_tool_call():
-            continue
-        if ev.session_id not in chain_sessions:
-            continue
-        a = parser._extract_action(ev)
-        if a:
-            actions.append(a)
+    if session_event_index is not None:
+        # 有索引：按 session 直接定位事件，O(chain_sessions) 而非 O(N)
+        for sid in chain_sessions:
+            for idx in session_event_index.get(sid, ()):
+                ev = events[idx]
+                if not ev.is_tool_call():
+                    continue
+                a = parser._extract_action(ev)
+                if a:
+                    actions.append(a)
+    else:
+        # 无索引：全量扫描（向后兼容）
+        _n = len(events)
+        for idx, ev in enumerate(events):
+            if not ev.is_tool_call():
+                continue
+            if ev.session_id not in chain_sessions:
+                continue
+            a = parser._extract_action(ev)
+            if a:
+                actions.append(a)
     if session_chain_order:
         _pos = {sid: i for i, sid in enumerate(session_chain_order)}
         actions.sort(key=lambda a: (_pos.get(a.get("session_id", ""), 999), a.get("ts", 0)))
@@ -255,12 +299,16 @@ def collect_chain_findings(chain_sessions: set[str], findings: list[dict]) -> li
 def build_session_chain(chain_sessions: set[str], events: list,
                         sink_hit_sessions: list[str] | None = None,
                         finding_sessions: list[str] | None = None,
-                        session_graph: dict | None = None) -> list[dict]:
+                        session_graph: dict | None = None,
+                        session_first_ts: dict[str, int] | None = None) -> list[dict]:
     """构建 session 链，按 parent_map 调用关系排序，标注 sink/finding。
 
     有 parent_map 时从 finding session 向上追溯排列（根→子→孙），
     无 parent_map 时退化为时间排序。
     返回: [{session_id, has_sink, has_finding, first_ts}, ...]
+
+    session_first_ts: 可选，session_id → 最早时间戳 预建索引。
+    有索引时直接使用，避免 O(N*B) 全量扫描。
     """
     if not chain_sessions:
         return []
@@ -269,14 +317,15 @@ def build_session_chain(chain_sessions: set[str], events: list,
     finding_set = set(finding_sessions or [])
 
     # 找每个 session 的最早事件时间戳
-    session_first_ts: dict[str, int] = {}
-    for e in events:
-        sid = e.session_id
-        if sid not in chain_sessions:
-            continue
-        ts = e.timestamp_ms or 0
-        if sid not in session_first_ts or ts < session_first_ts[sid]:
-            session_first_ts[sid] = ts
+    if session_first_ts is None:
+        session_first_ts = {}
+        for e in events:
+            sid = e.session_id
+            if sid not in chain_sessions:
+                continue
+            ts = e.timestamp_ms or 0
+            if sid not in session_first_ts or ts < session_first_ts[sid]:
+                session_first_ts[sid] = ts
 
     parent_map: dict[str, str] = {}
     if session_graph:
@@ -449,8 +498,9 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
             validation_result=None, resolver_status="NO_FINDING",
         ), case_results
 
-    # Step 2: 构建文件读取索引
+    # Step 2: 构建文件读取索引 + session 事件索引（一次 O(N)，避免后续 O(N*B) 重复扫描）
     file_reads = build_file_read_index(events)
+    session_event_index, session_first_ts = build_session_event_index(events)
 
     # Step 3: 构建 session graph（如调用方已构建则复用，避免重复遍历百万级 events）
     if session_graph is None:
@@ -532,9 +582,11 @@ def sink_match_baselines(task_run, benchmarks: list, events: list, parser=None,
                 _chain_sessions = trace_ancestor_chain(finding_session, session_graph)
             _finding_sessions = [f.get("session_id", "") for f in active_findings if f.get("session_id")]
             _session_chain = build_session_chain(_chain_sessions, events, sr["sink_sessions"],
-                                                  _finding_sessions, session_graph) if _chain_sessions else []
+                                                  _finding_sessions, session_graph,
+                                                  session_first_ts) if _chain_sessions else []
             _chain_order = [e["session_id"] for e in _session_chain]
-            chain_actions = collect_chain_actions(_chain_sessions, events, parser, _chain_order) if _chain_sessions else []
+            chain_actions = collect_chain_actions(_chain_sessions, events, parser, _chain_order,
+                                                   session_event_index) if _chain_sessions else []
             chain_finds = collect_chain_findings(_chain_sessions, active_findings) if _chain_sessions else []
             if not chain_finds and active_findings:
                 chain_finds = list(active_findings)
