@@ -943,7 +943,8 @@ function renderReport(d){
         const summary=String(d.finding_summary||'').slice(0,200);
         const matchKey=d.match_status==="已匹配"?"matched":"unmatched";
         const verdictKey=isRejected?"rejected":(d.validation_result||"unknown");
-        return `<tr data-condition="${d.condition||''}" data-match="${matchKey}" data-verdict="${verdictKey}">
+        const blLabelKey=d.bl_label||"unknown";
+        return `<tr data-condition="${d.condition||''}" data-match="${matchKey}" data-verdict="${verdictKey}" data-bllabel="${blLabelKey}">
           <td>${d.seq||''}</td>
           <td>${condBadge}</td>
           <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
@@ -981,6 +982,12 @@ function renderReport(d){
           <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="inconclusive" onclick="fprFilter(this,'verdict','inconclusive')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">无法判定</button>
           <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="unknown" onclick="fprFilter(this,'verdict','unknown')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">未判定</button>
           ${isAc?`<button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="rejected" onclick="fprFilter(this,'verdict','rejected')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">验证翻转</button>`:''}
+        </div>
+        <div style="display:flex;gap:4px;align-items:center" data-fpr-filter-group="bllabel">
+          <span style="font-size:12px;color:var(--gray);margin-right:4px">基线标签</span>
+          <button class="fpr-filter-btn" data-fpr-filter="bllabel" data-val="ALL" onclick="fprFilter(this,'bllabel','ALL')" style="padding:2px 10px;border:1px solid var(--acc);border-radius:4px;background:var(--acc);color:#fff;font-size:12px;cursor:pointer">全部</button>
+          <button class="fpr-filter-btn" data-fpr-filter="bllabel" data-val="VULNERABLE" onclick="fprFilter(this,'bllabel','VULNERABLE')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">漏洞</button>
+          <button class="fpr-filter-btn" data-fpr-filter="bllabel" data-val="NON_VULNERABLE" onclick="fprFilter(this,'bllabel','NON_VULNERABLE')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">非漏洞</button>
         </div>
         <span style="font-size:12px;color:var(--gray);margin-left:auto" data-fpr-count>共 ${allDetails.length} 条</span>
       </div>`;
