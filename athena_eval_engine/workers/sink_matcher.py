@@ -411,7 +411,7 @@ def collect_chain_knowledge_interactions(chain_sessions: set[str], events: list,
 
 
 def _match_finding_to_baseline(baseline_metadata: dict, findings: list[dict]) -> dict | None:
-    """确定性匹配：baseline source_file basename vs finding source/sink/file basename。"""
+    """确定性匹配：baseline source_file basename vs finding source/sink/file/evidence_files basename。"""
     baseline_file = _basename(baseline_metadata.get("source_file", ""))
     if not baseline_file:
         return None
@@ -419,6 +419,10 @@ def _match_finding_to_baseline(baseline_metadata: dict, findings: list[dict]) ->
         for field in ("source", "sink", "file", "source_file"):
             val = f.get(field, "")
             if val and _basename(val) == baseline_file:
+                return f
+        # CVulnVerify verdict evidence 可能引用多个文件，逐一检查
+        for ef in f.get("evidence_files", []):
+            if ef and _basename(ef) == baseline_file:
                 return f
     return None
 

@@ -601,22 +601,67 @@ class CVulnVerifyTraceParser(TraceParser):
                 m = re.search(pattern, content)
                 if m:
                     vdata[field] = m.group(1)
+            # evidence[].location 提取（regex 回退路径）
+            locs = re.findall(r'"location"\s*:\s*"([^"]+)"', content)
+            if locs:
+                vdata["evidence_locations"] = locs
             return vdata
         return None
 
     @staticmethod
     def _build_finding(vdata: dict, e) -> dict | None:
-        """从解析后的 verdict dict 构建 finding dict。"""
+        """从解析后的 verdict dict 构建 finding dict。
+
+        CVulnVerify verdict JSON 结构：
+          {case_id, verdict, dimensions, evidence: [{type, location, claim, ...}], ...}
+        文件路径在 evidence[].location 中（格式 "path/to/file.c:line"），
+        不在 top-level source_file/source 字段中。
+        """
         case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
         verdict = vdata.get("verdict", "")
         vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else "UNCERTAIN")
         case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
         vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
-        src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
-        fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
         desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
         if not desc:
             desc = str(vdata.get("ruled_out_by", ""))
+
+        # 从 evidence 数组提取文件路径
+        # evidence[].location 格式: "path/to/file.c:line" 或 "path/to/file.c"
+        src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
+        fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
+        evidence_files: list[str] = []
+        evidence = vdata.get("evidence")
+        if isinstance(evidence, list):
+            for ev_item in evidence:
+                if not isinstance(ev_item, dict):
+                    continue
+                loc = str(ev_item.get("location", "") or "")
+                if not loc:
+                    continue
+                # location 格式 "path/to/file.c:line-range" → 取文件路径部分
+                loc_file = loc.split(":")[0] if ":" in loc else loc
+                if loc_file and loc_file not in evidence_files:
+                    evidence_files.append(loc_file)
+                if not src:
+                    src = loc_file
+                etype = str(ev_item.get("type", "") or "")
+                if etype == "source" and not fn:
+                    claim = str(ev_item.get("claim", "") or "")
+                    if claim:
+                        fn = claim[:200]
+        # regex 回退路径：evidence_locations 是扁平字符串列表
+        if not evidence_files:
+            for loc in vdata.get("evidence_locations", []):
+                loc = str(loc or "")
+                if not loc:
+                    continue
+                loc_file = loc.split(":")[0] if ":" in loc else loc
+                if loc_file and loc_file not in evidence_files:
+                    evidence_files.append(loc_file)
+                if not src:
+                    src = loc_file
+
         return {
             "finding_id": case_id,
             "display_id": case_id,
@@ -626,6 +671,7 @@ class CVulnVerifyTraceParser(TraceParser):
             "severity": str(vdata.get("severity", "")),
             "source": src,
             "sink": fn,
+            "evidence_files": evidence_files,
             "validation_result": vr,
             "platform": "cvuln-verify",
             "session_id": e.session_id,
