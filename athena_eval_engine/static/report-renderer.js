@@ -127,7 +127,7 @@ function fprFilter(btn,filterType,val){
     if(show)visible++;
   });
   var countEl=card.querySelector('[data-fpr-count]');
-  if(countEl)countEl.textContent='共 '+visible+' / '+rows.length+' 条';
+  if(countEl)countEl.textContent=visible+' / '+rows.length+' 条';
 }
 
 function filterKgCases(btn,filter){
@@ -989,7 +989,7 @@ function renderReport(d){
           <button class="fpr-filter-btn" data-fpr-filter="bllabel" data-val="VULNERABLE" onclick="fprFilter(this,'bllabel','VULNERABLE')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">漏洞</button>
           <button class="fpr-filter-btn" data-fpr-filter="bllabel" data-val="NON_VULNERABLE" onclick="fprFilter(this,'bllabel','NON_VULNERABLE')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">非漏洞</button>
         </div>
-        <span style="font-size:12px;color:var(--gray);margin-left:auto" data-fpr-count>共 ${allDetails.length} 条</span>
+        <span style="font-size:13px;font-weight:600;color:var(--sub);margin-left:auto" data-fpr-count>${allDetails.length} / ${allDetails.length} 条</span>
       </div>`;
       // mining_fpr tab：汇总表（漏洞挖掘误报率 vs 最终误报率）
       let _summaryCard='';
