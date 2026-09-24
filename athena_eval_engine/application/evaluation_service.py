@@ -1641,7 +1641,7 @@ def run(evaluation_id: str) -> dict:
             # CVulnVerify 的目录由多个平台任务共享，解析时必须只保留本次选择
             # 的原始平台任务所关联、且属于当前 benchmark 的 case 文件。
             if e.get("trace_kind") == "cvuln_verify":
-                task_id_actual = e.get("task_id_actual", "") or _extract_source_task_id(e)
+                task_id_actual = e.get("task_id_actual", "")
                 trace_case_ids = [str(c) for c in e.get("trace_case_ids", []) if c]
                 # CVulnVerify 的 JSONL 文件在项目目录下（非任务目录），
                 # 需要任务 ID 来过滤出本次评测的文件。
@@ -1656,15 +1656,23 @@ def run(evaluation_id: str) -> dict:
                               f"{task_id_actual}")
                     except Exception as err:
                         log("CVULN", f"从告警中心获取 task_id 失败: {err}")
-                trace_source["source_task_id"] = task_id_actual
+                # _extract_source_task_id 从 source_uri 提取 "c_vuln_verify"（非 24 位 UUID），
+                # 不能作为 source_task_id 用于 parser 文件过滤——会导致所有文件被过滤掉。
+                # 只在 task_id_actual 是有效 24 位 UUID 时才设 source_task_id。
+                import re as _re_uuid
+                _is_valid_uuid = bool(task_id_actual and _re_uuid.fullmatch(r'[0-9a-f]{24}', task_id_actual))
+                trace_source["source_task_id"] = task_id_actual if _is_valid_uuid else ""
                 # trace_case_ids 与 benchmark_item_id 属于不同命名空间，
                 # 不能用它过滤基线。它只传给 parser 做 JSONL 文件过滤。
                 trace_source["source_case_ids"] = trace_case_ids
                 if trace_case_ids:
                     log("CVULN", f"task={task_id_actual} "
                           f"benchmark={len(bench)} trace_case_ids={len(trace_case_ids)}")
+                elif _is_valid_uuid:
+                    log("CVULN", f"task={task_id_actual} "
+                          f"benchmark={len(bench)} 无 trace_case_ids，按 task_id 过滤文件")
                 else:
-                    log("CVULN", f"未提供 trace_case_ids，parser 将不过滤文件")
+                    log("CVULN", f"无 task_id_actual 和 trace_case_ids，parser 不过滤文件")
             log("PARSE", f"{cond.value} parser={parser.__class__.__name__}")
             try:
                 events = list(parser.parse(trace_source))
