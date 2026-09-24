@@ -191,7 +191,7 @@ def _start_config_watcher():
                 # ── 5. LLM 线程 dict watchdog ──
                 # 清理已完成/卡死的线程，释放 dict 空间
                 try:
-                    from ..infrastructure import llm as _llm_mod
+                    from ...infrastructure import llm as _llm_mod
                     _llm_mod.watchdog_cleanup()
                 except Exception as _e:
                     log("WATCHDOG", f"LLM 线程清理异常: {_e}")
