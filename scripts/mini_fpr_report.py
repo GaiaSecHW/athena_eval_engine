@@ -371,11 +371,12 @@ def main():
     # 从 DB 加载系统参数（独立进程不走 uvicorn startup）
     _load_db_config()
 
-    # 硬编码 LLM 并发=300，基线并发=300，batch 并发=30
+    # 硬编码 LLM 并发=300
     _llm_mod.set_max_concurrency(300)
-    _conc_set("fpr_baseline_workers", 300)
-    _conc_set("fpr_baseline_batch", 30)
-    log("MINI-FPR", f"硬编码并发: llm=300, fpr_baseline_workers=300, fpr_baseline_batch=30")
+    log("MINI-FPR", f"硬编码并发: llm=300")
+
+    # 调大 GIL 切换间隔，减少 600 线程下的切换开销
+    sys.setswitchinterval(0.015)
 
     log("MINI-FPR", f"开始: {evaluation_id}")
 

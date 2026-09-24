@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, Future
@@ -18,6 +19,9 @@ from ...application import evaluation_service as es
 from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, log_error
 from ...infrastructure.concurrency import get as _conc_get, set_val as _conc_set
 from ...persistence.repositories import fact_repo
+
+# 调大 GIL 切换间隔：600 线程下减少切换开销，让 HTTP 处理器能及时拿到 GIL
+sys.setswitchinterval(0.015)
 from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
