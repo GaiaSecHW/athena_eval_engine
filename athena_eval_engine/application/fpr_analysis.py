@@ -450,6 +450,7 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
         )
         finding_id = finding.get("id", "")
         finding_status = finding.get("confirmation_status", "")
+        validation_result = finding.get("validation_result", "")
         _subject = finding.get("subject", {}) or {}
         finding_sink = _subject.get("locator", "") if isinstance(_subject, dict) else ""
 
@@ -478,6 +479,7 @@ def _build_match_detail(match_results: list[dict], findings: list[dict],
             "finding_summary": finding_summary,
             "finding_sink": finding_sink,
             "finding_status": finding_status,
+            "validation_result": validation_result,
             "match_status": match_status,
             "bl_case_id": bl_case_id,
             "bl_title": bl_title,
