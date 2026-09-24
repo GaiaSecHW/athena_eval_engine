@@ -927,13 +927,13 @@ function renderReport(d){
           ${gr[2].map(m=>mCard(m[0],m[1])).join("")}
         </div>
       </div>`).join("")}`;
-      // 合并 match_details，检查告警中心 finding 是否被漏洞验证否决（不在漏洞中心 case ID 集合中 = 被否决）
+      // 合并 match_details，检查告警中心 finding 是否被漏洞验证翻转（不在漏洞中心 case ID 集合中 = 被翻转）
       let allDetails=[];
       if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG',verified:(kg.vc_ids||[]).includes(d.finding_id)})));
       if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG',verified:(nogk.vc_ids||[]).includes(d.finding_id)})));
       const rows=allDetails.map(d=>{
         const isRejected=isAc&&d.verified===false&&d.match_status==="已匹配";
-        const rejectBadge=isRejected?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证否决</span>":"";
+        const rejectBadge=isRejected?" <span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(220,38,38,.18);color:var(--red)'>验证翻转</span>":"";
         const verdict=d.is_fp?"fp":d.match_status==="已匹配"?"tp":"unmatched";
         const badge=(d.is_fp?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(217,119,6,.18);color:var(--amber)'>误报</span>"
           :d.match_status==="已匹配"?"<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:rgba(22,163,74,.18);color:var(--green)'>真正</span>"
@@ -979,7 +979,7 @@ function renderReport(d){
           <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="tp" onclick="fprFilter(this,'verdict','tp')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">真正</button>
           <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="fp" onclick="fprFilter(this,'verdict','fp')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">误报</button>
           <button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="unmatched" onclick="fprFilter(this,'verdict','unmatched')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">未匹配</button>
-          ${isAc?`<button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="rejected" onclick="fprFilter(this,'verdict','rejected')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">验证否决</button>`:''}
+          ${isAc?`<button class="fpr-filter-btn" data-fpr-filter="verdict" data-val="rejected" onclick="fprFilter(this,'verdict','rejected')" style="padding:2px 10px;border:1px solid var(--bd);border-radius:4px;background:var(--panel);color:var(--sub);font-size:12px;cursor:pointer">验证翻转</button>`:''}
         </div>
         <span style="font-size:12px;color:var(--gray);margin-left:auto" data-fpr-count>共 ${allDetails.length} 条</span>
       </div>`;
