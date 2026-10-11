@@ -922,7 +922,7 @@ async function saveSystemConfig(){
 // ===== Agent 数据源配置 =====
 let _dsData=null;
 async function loadDatasources(){
-  try{const d=await jget("/api/v2/datasources");_dsData=d||[];renderDsContainer();}
+  try{const d=await jget("/api/v2/datasources");_dsData=d.datasources||d||[];renderDsContainer();}
   catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';}
 }
 function renderDsContainer(){
