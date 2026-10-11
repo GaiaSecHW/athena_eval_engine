@@ -928,6 +928,7 @@ def _build_report(evaluation_id: str):
             manifest = cfg.get("manifest", {})
             entries = manifest.get("entries", [])
             r["benchmark_source"] = manifest.get("benchmark_source", "vbench_zip")
+            r["eval_mode"] = manifest.get("eval_mode", "dev")
             r["vbench_project_name"] = manifest.get("vbench_project_name", "")
             r["vc_source_project_name"] = manifest.get("vc_source_project_name", "")
             r["vc_source_task_name"] = manifest.get("vc_source_task_name", "")

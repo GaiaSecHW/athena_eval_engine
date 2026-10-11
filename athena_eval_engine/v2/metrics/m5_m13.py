@@ -147,5 +147,5 @@ def run_all_metrics(*, kg_access_events=0, kg_successful_reads=0,
     s10 = StatisticalResult("M10", "wilcoxon_signed_rank", testing_tier="SECONDARY",
                             status=NA, reason_code="NO_NOGK_CONTROL")
     mrs = [m13, m5, m6, m7, m8, m9, m10, m11, m12]
-    srs = s13 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
+    srs = s13 + s5 + s6 + [s7, s8, s9, s10] + s11 + s12
     return {"metric_results": mrs, "statistical_results": srs}

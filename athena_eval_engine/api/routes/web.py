@@ -36,6 +36,7 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
             kg_proj = kg_task = nogk_proj = nogk_task = ""
             kg_proj_name = kg_task_name = nogk_proj_name = nogk_task_name = ""
             bm_source = ""
+            eval_mode = "dev"
             vbench_project_name = ""
             vc_source_project_name = ""
             vc_source_task_name = ""
@@ -44,6 +45,7 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                     cfg = json.loads(r[5])
                     manifest = cfg.get("manifest", {})
                     bm_source = manifest.get("benchmark_source", "vbench_zip")
+                    eval_mode = manifest.get("eval_mode", "dev")
                     vbench_project_name = manifest.get("vbench_project_name", "")
                     vc_source_project_name = manifest.get("vc_source_project_name", "")
                     vc_source_task_name = manifest.get("vc_source_task_name", "")
@@ -66,6 +68,7 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                           "kg_project": kg_proj_name, "kg_task": kg_task_name,
                           "nogk_project": nogk_proj_name, "nogk_task": nogk_task_name,
                           "benchmark_source": bm_source,
+                          "eval_mode": eval_mode,
                           "vbench_project_name": vbench_project_name,
                           "vc_source_project_name": vc_source_project_name,
                           "vc_source_task_name": vc_source_task_name,

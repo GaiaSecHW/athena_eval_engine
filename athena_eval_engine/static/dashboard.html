@@ -171,6 +171,10 @@ async function renderEvals(){
     <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:300px" value="${_q}">
     <div style="display:flex;gap:6px">
       <button class="ef-btn${_f==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
+      <button class="ef-btn${_f==='dev'?' active':''}" onclick="setEvFilter('dev',this)">开发态</button>
+      <button class="ef-btn${_f==='runtime'?' active':''}" onclick="setEvFilter('runtime',this)">运行态</button>
+    </div>
+    <div style="display:flex;gap:6px">
       <button class="ef-btn${_f==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
       <button class="ef-btn${_f==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
       <button class="ef-btn${_f==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
@@ -188,7 +192,8 @@ const EV_PAGE_SIZE=12;
 function renderEvList(){
   const evs=window._evData||[];const f=window._evFilter||"all";const q=window._evQ||"";
   let filtered=evs;
-  if(f!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(f));
+  if(f==='dev'||f==='runtime')filtered=filtered.filter(e=>(e.eval_mode||'dev')===f);
+  else if(f!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(f));
   if(q)filtered=filtered.filter(e=>(e.evaluation_id+e.name).toLowerCase().includes(q));
   const total=filtered.length;
   const pages=Math.ceil(total/EV_PAGE_SIZE)||1;
@@ -211,7 +216,7 @@ function renderEvList(){
       '</span>':'';
     return '<div class="ev-card '+(e.evaluation_id===activeId?'act':'')+'" onclick="Router.navigate(\'/evaluations/'+e.evaluation_id+'\')">'+
       '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
-      '<div class="ev-meta"><span class="bdg b-'+badge+'">'+phaseLabel+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '<div class="ev-meta"><span class="bdg b-'+badge+'">'+phaseLabel+'</span><span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
@@ -320,7 +325,7 @@ async function selEv(id){
 
 // ===== v2 报告加载 + 渲染 =====
 async function loadV2Report(id,st,rs){
-  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress}};
+  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info};
   // 加载基础报告
   if(rs.base){
     try{d.base=await jget(`/api/v2/evaluations/${id}/report`);}catch(e){d.base={};}
