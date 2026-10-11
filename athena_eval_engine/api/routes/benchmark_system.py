@@ -292,7 +292,15 @@ async def get_system_config():
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
-    result["llm_active"] = llm.get_active_concurrency()
+    # v2 pipeline 使用 v2.infra.llm，与 v1 infrastructure.llm 是独立模块
+    # 合并两者的 active count 才能反映真实并发
+    _v2_active = 0
+    try:
+        from ...v2.infra import llm as _v2_llm
+        _v2_active = _v2_llm.get_active_concurrency()
+    except Exception:
+        pass
+    result["llm_active"] = llm.get_active_concurrency() + _v2_active
     result["llm_thread_count"] = llm.get_thread_count()
     result["thread_count"] = threading.active_count()
     return result

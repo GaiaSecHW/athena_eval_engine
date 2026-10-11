@@ -494,7 +494,8 @@ class LifecycleAnalyzer:
 
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
+                                         reasoning_effort="none",
+                                         max_tokens=4096)
         except Exception as e:
             log("LIFECYCLE",
                 f"Prompt 1 LLM failed, falling back to first phase in coarse label: {str(e)[:200]}",
@@ -800,7 +801,8 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
+                                         reasoning_effort="none",
+                                         max_tokens=1024)
             return bool(result.get("need_knowledge", False))
         except Exception as e:
             log("LIFECYCLE",
@@ -843,7 +845,8 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
+                                         reasoning_effort="none",
+                                         max_tokens=1024)
             return bool(result.get("query_accurate", False))
         except Exception as e:
             log("LIFECYCLE",
@@ -877,7 +880,8 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
+                                         reasoning_effort="none",
+                                         max_tokens=1024)
             return bool(result.get("used", False))
         except Exception as e:
             log("LIFECYCLE",
@@ -1014,16 +1018,19 @@ class LifecycleAnalyzer:
         """调用 LLM chat_json，支持注入的客户端和模块级函数。"""
         cancel_cb = kwargs.pop("cancel_cb", None)
         reasoning_effort = kwargs.pop("reasoning_effort", "none")
+        max_tokens = kwargs.pop("max_tokens", None)
 
         if self.llm is not None:
             # 注入的客户端
             if hasattr(self.llm, "chat_json"):
                 return self.llm.chat_json(messages, temperature=0,
                                           reasoning_effort=reasoning_effort,
+                                          max_tokens=max_tokens,
                                           cancel_cb=cancel_cb)
         # 使用模块级函数
         return llm_mod.chat_json(messages, temperature=0,
                                 reasoning_effort=reasoning_effort,
+                                max_tokens=max_tokens,
                                 cancel_cb=cancel_cb)
 
     def _determine_cause_code(self, l1, l2, l3, l4, l5, l6) -> str | None:
