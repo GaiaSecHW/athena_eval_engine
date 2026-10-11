@@ -811,6 +811,11 @@ class Orchestrator:
         if bench:
             dp.benchmark_item = bench[0]
 
+        # 将 project_id 写入 session_meta，供 inventory 使用
+        project_id = task.get("project_id", "")
+        if project_id and isinstance(dp.session_meta, dict):
+            dp.session_meta.setdefault("project_id", project_id)
+
         return dp
 
     # ── PAIRING ──────────────────────────────────────
@@ -1198,17 +1203,21 @@ class Orchestrator:
         }
 
         def _do(cur):
-            # INSERT ... ON DUPLICATE KEY UPDATE
+            # 适配 evaluation_report 表 schema（与老代码一致）
             cur.execute(
                 "INSERT INTO evaluation_report "
-                "(evaluation_id, report_path, report_json, created_at) "
-                "VALUES (%s, %s, %s, NOW(3)) "
+                "(report_id, evaluation_id, calculation_run_id, snapshot_id, "
+                "report_version, json_uri, report_config_json, status) "
+                "VALUES (%s, %s, %s, %s, '1.0', %s, %s, 'READY') "
                 "ON DUPLICATE KEY UPDATE "
-                "report_path=VALUES(report_path), "
-                "report_json=VALUES(report_json), "
-                "created_at=NOW(3)",
+                "json_uri=VALUES(json_uri), "
+                "report_config_json=VALUES(report_config_json), "
+                "status='READY'",
                 (
+                    f"rp-{evaluation_id}",
                     evaluation_id,
+                    f"cr-{evaluation_id}",
+                    f"snap-{evaluation_id}",
                     base_path,
                     json.dumps(report_data, ensure_ascii=False),
                 ),
