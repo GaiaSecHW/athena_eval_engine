@@ -901,20 +901,31 @@ class Orchestrator:
             insert_extracted_findings, insert_session_graph,
             insert_knowledge_fact, insert_tool_action_fact,
             insert_outcome_fact, insert_resource_fact,
-            insert_task_run,
+            insert_task_run, insert_trace_source,
         )
         from ..core.task_run import TaskRun
         from ..core.enums import Condition, ConditionSource
 
         def _do(cur):
             for dp in data_packs:
-                # 先写 task_run（FK 约束：fact 表引用 task_run）
+                trace_id = (dp.session_meta.get("trace_id", "")
+                            if isinstance(dp.session_meta, dict) else "")
+                if not trace_id:
+                    trace_id = dp.task_run_id  # 回退用 task_run_id
+
+                # 先写 trace_source（FK 约束：task_run.trace_id 引用 trace_source）
+                insert_trace_source(
+                    cur, trace_id, evaluation_id,
+                    dp.session_meta.get("source_uri", "")
+                    if isinstance(dp.session_meta, dict) else "",
+                )
+
+                # 再写 task_run（FK 约束：fact 表引用 task_run）
                 tr = TaskRun(
                     task_run_id=dp.task_run_id,
                     evaluation_id=evaluation_id,
                     task_id=dp.task_id,
-                    trace_id=dp.session_meta.get("trace_id", "")
-                              if isinstance(dp.session_meta, dict) else "",
+                    trace_id=trace_id,
                     condition=Condition.KG if dp.condition == "KG"
                     else Condition.UNKNOWN,
                     condition_source=ConditionSource.MANIFEST,
