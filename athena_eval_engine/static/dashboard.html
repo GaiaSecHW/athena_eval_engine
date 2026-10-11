@@ -1743,13 +1743,101 @@ async function renderSystem(){
       <button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button>
     </div>
     <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
+    </div>
+    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3>
+    <div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div>
+    <div id="ds-container"><div style="color:var(--sub)">加载中...</div></div>
     </div></div>`;
   $("view").innerHTML=h;
+  loadDatasources();
 }
 
 function toggleReasoning(cb){
   var sel=$("cfg_reasoning_effort");
   if(sel)sel.style.display=cb.checked?'':'none';
+}
+
+// ===== Agent 数据源配置 =====
+var _dsData=[];
+async function loadDatasources(){
+  var c=null;
+  try{c=await jget("/api/v2/datasources");}catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败：'+e+'</div>';return;}
+  _dsData=c.datasources||[];
+  if(!_dsData.length){$("ds-container").innerHTML='<div style="color:var(--sub)">无数据源配置</div>';return;}
+  var html=_dsData.map(function(ds,i){
+    var enabled=ds.enabled!==false;
+    var statusBadge=ds.last_error?'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(248,113,113,.18);color:var(--red)">连接异常</span>'
+      :ds.last_connected_at?'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(74,222,128,.18);color:var(--green)">已连接</span>'
+      :'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--p2);color:var(--sub)">未测试</span>';
+    return '<div style="border:1px solid var(--bd);border-radius:8px;padding:14px;margin-bottom:12px'+(enabled?'':';opacity:.6')+'">'
+      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
+      +'<span style="font-size:16px;font-weight:600">'+(ds.display_name||ds.agent_type)+'</span>'
+      +'<span style="font-size:12px;padding:2px 8px;border-radius:4px;background:var(--p2);color:var(--sub)">'+ds.db_type+'</span>'
+      +statusBadge
+      +'<label style="margin-left:auto;display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);cursor:pointer;margin:0">'
+      +'<input type="checkbox" '+(enabled?'checked':'')+' onchange="toggleDs('+i+',this.checked)" style="width:auto"> 启用'
+      +'</label></div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
+      +'<div><label style="font-size:12px;color:var(--sub);margin:0">Host</label><input id="ds_'+i+'_host" value="'+(ds.host||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
+      +'<div><label style="font-size:12px;color:var(--sub);margin:0">Port</label><input id="ds_'+i+'_port" type="number" value="'+(ds.port||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
+      +'<div><label style="font-size:12px;color:var(--sub);margin:0">用户名</label><input id="ds_'+i+'_username" value="'+(ds.username||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
+      +'<div><label style="font-size:12px;color:var(--sub);margin:0">密码</label><input id="ds_'+i+'_password" type="password" placeholder="***" value="'+(ds.password||'***')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
+      +'<div style="grid-column:1/-1"><label style="font-size:12px;color:var(--sub);margin:0">数据库名</label><input id="ds_'+i+'_database" value="'+(ds.database_name||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
+      +'</div>'
+      +'<div style="margin-top:10px;display:flex;gap:8px">'
+      +'<button onclick="saveDatasource('+i+')" style="padding:5px 14px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:13px">保存</button>'
+      +'<button onclick="testDatasource('+i+')" style="padding:5px 14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:13px">测试连接</button>'
+      +'</div>'
+      +'<div id="ds_'+i+'_msg" style="margin-top:8px;font-size:12px"></div>'
+      +(ds.last_error?'<div style="margin-top:6px;font-size:12px;color:var(--red)">上次错误：'+String(ds.last_error).slice(0,200)+'</div>':'')
+      +'</div>';
+  }).join('');
+  $("ds-container").innerHTML=html;
+}
+
+function toggleDs(i,checked){
+  // 即时切换 enabled
+  jput("/api/v2/datasources/"+_dsData[i].agent_type,{enabled:checked}).then(function(){
+    _dsData[i].enabled=checked;
+    loadDatasources();
+  }).catch(function(e){
+    var el=$("ds_"+i+"_msg");if(el)el.innerHTML='<span style="color:var(--red)">切换失败：'+e+'</span>';
+  });
+}
+
+async function saveDatasource(i){
+  var ds=_dsData[i];if(!ds)return;
+  var body={};
+  var h=$("ds_"+i+"_host"),p=$("ds_"+i+"_port"),u=$("ds_"+i+"_username"),pw=$("ds_"+i+"_password"),db=$("ds_"+i+"_database");
+  if(h&&h.value)body.host=h.value;
+  if(p&&p.value)body.port=parseInt(p.value);
+  if(u&&u.value)body.username=u.value;
+  if(pw&&pw.value&&pw.value!=='***')body.password=pw.value;
+  if(db&&db.value)body.database_name=db.value;
+  var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中...</span>';
+  try{
+    await jput("/api/v2/datasources/"+ds.agent_type,body);
+    if(msg)msg.innerHTML='<span style="color:var(--green)">已保存</span>';
+    loadDatasources();
+  }catch(e){
+    if(msg)msg.innerHTML='<span style="color:var(--red)">保存失败：'+e+'</span>';
+  }
+}
+
+async function testDatasource(i){
+  var ds=_dsData[i];if(!ds)return;
+  var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">测试中...</span>';
+  try{
+    var r=await jpost("/api/v2/datasources/"+ds.agent_type+"/test");
+    if(r.success){
+      if(msg)msg.innerHTML='<span style="color:var(--green)">连接成功</span>';
+    }else{
+      if(msg)msg.innerHTML='<span style="color:var(--red)">连接失败：'+(r.error||'未知错误')+'</span>';
+    }
+    loadDatasources();
+  }catch(e){
+    if(msg)msg.innerHTML='<span style="color:var(--red)">测试失败：'+e+'</span>';
+  }
 }
 
 async function saveSystemConfig(){
