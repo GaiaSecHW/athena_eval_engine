@@ -26,7 +26,8 @@ import re
 import glob as _glob
 from typing import Any
 
-import httpx
+import urllib.request
+from urllib.error import URLError, HTTPError
 
 from ..infra.llm import chat_json, is_enabled as llm_is_enabled
 from ...infrastructure.log_util import log
@@ -47,7 +48,7 @@ _L7_CONFIDENCE_THRESHOLD = float(
     os.environ.get("L7_CONFIDENCE_THRESHOLD", "0.6")
 )
 
-# httpx 请求超时（秒）— 知识库 API 可能返回大文件
+# HTTP 请求超时（秒）— 知识库 API 可能返回大文件
 _HTTP_TIMEOUT = 30.0
 
 # ── 漏洞类型关键词映射（用于从知识文档 topic/文件名匹配漏洞类型）──
@@ -369,16 +370,13 @@ class KnowledgeInventory:
     def _http_get_json(self, url: str) -> dict | None:
         """HTTP GET 返回 JSON。失败时 log 警告并返回 None。"""
         try:
-            with httpx.Client(timeout=_HTTP_TIMEOUT) as client:
-                resp = client.get(url)
-                if resp.status_code != 200:
-                    log(
-                        "INVENTORY",
-                        f"HTTP {resp.status_code} from {url}: {resp.text[:200]}",
-                    )
-                    return None
-                return resp.json()
-        except Exception as e:
+            req = urllib.request.Request(url)
+            with urllib.request.urlopen(req, timeout=_HTTP_TIMEOUT) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except HTTPError as e:
+            log("INVENTORY", f"HTTP {e.code} from {url}: {str(e)[:200]}")
+            return None
+        except (URLError, TimeoutError, OSError) as e:
             log("INVENTORY", f"HTTP 请求失败 {url}: {str(e)[:200]}")
             return None
 
