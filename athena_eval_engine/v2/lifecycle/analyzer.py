@@ -494,8 +494,7 @@ class LifecycleAnalyzer:
 
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none",
-                                         max_tokens=4096)
+                                         reasoning_effort="none")
         except Exception as e:
             log("LIFECYCLE",
                 f"Prompt 1 LLM failed, falling back to first phase in coarse label: {str(e)[:200]}",
@@ -801,8 +800,7 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none",
-                                         max_tokens=1024)
+                                         reasoning_effort="none")
             return bool(result.get("need_knowledge", False))
         except Exception as e:
             log("LIFECYCLE",
@@ -845,8 +843,7 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none",
-                                         max_tokens=1024)
+                                         reasoning_effort="none")
             return bool(result.get("query_accurate", False))
         except Exception as e:
             log("LIFECYCLE",
@@ -880,8 +877,7 @@ class LifecycleAnalyzer:
         ]
         try:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none",
-                                         max_tokens=1024)
+                                         reasoning_effort="none")
             return bool(result.get("used", False))
         except Exception as e:
             log("LIFECYCLE",

@@ -433,14 +433,12 @@ class EvidenceChain:
             return self.llm.chat_json(
                 messages, temperature=0,
                 reasoning_effort="high",
-                max_tokens=4096,
                 cancel_cb=cancel_cb,
             )
 
         return llm_mod.chat_json(
             messages, temperature=0,
             reasoning_effort="high",
-            max_tokens=4096,
             cancel_cb=cancel_cb,
         )
 

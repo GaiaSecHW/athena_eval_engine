@@ -577,7 +577,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         finish_reason = None
         _last_content_ts = time.time()  # 从 Phase 2 开始计时，keepalive 不重置
         _stream_start_ts = None  # 首 token 到达时间，用于总超时
-        STREAM_TOTAL_TIMEOUT = 600  # 首 token 后 10 分钟内必须完成全部输出
+        STREAM_TOTAL_TIMEOUT = 1800  # 首 token 后 30 分钟内必须完成全部输出
         while True:
             _timeout = first_token_timeout if first_token else STREAM_TIMEOUT
             _elapsed = time.time() - _last_content_ts
