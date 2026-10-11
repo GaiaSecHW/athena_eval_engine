@@ -3,8 +3,8 @@
 用法:
     from ..infra.concurrency import get, set_val, get_all, set_all
 
-    pool = ThreadPoolExecutor(max_workers=get("ai_match_workers"))
-    set_val("ai_match_workers", 30)  # 运行时动态修改
+    pool = ThreadPoolExecutor(max_workers=get("parse_workers"))
+    set_val("parse_workers", 8)  # 运行时动态修改
 
 系统配置 API 修改后，config watcher 调 set_all() 更新内存值，
 新创建的线程池立即使用新值。
@@ -23,21 +23,13 @@ _defaults = {
     "parse_workers": 4,              # Trace 解析并行（非 LLM）
 
     # ── INGESTING 阶段 ──
-    "source_fill_workers": 8,        # [已废弃] source 补提取走 LLM 共享池
     "ac_fetch_workers": 4,           # 告警中心数据获取并行（非 LLM）
 
     # ── AI_MATCHING 阶段 ──
     "resolver_workers": 50,          # 单 trace 内 resolver 并行（非 LLM）
-    "ai_match_workers": 20,          # [已废弃] AI matcher 走 LLM 共享池
-    "ac_llm_workers": 8,             # [已废弃] AC→finding LLM 识别走 LLM 共享池
 
     # ── FPR 阶段 ──
     "fpr_cond_workers": 2,           # FPR 编排并行（非 LLM）
-    "fpr_baseline_workers": 20,      # [已废弃] FPR 基线匹配走 LLM 共享池
-    "fpr_baseline_batch": 10,        # [已废弃] FPR batch 走 LLM 共享池
-
-    # ── REPORTING 阶段 ──
-    "kg_analysis_workers": 4,        # [已废弃] KG 分析走 LLM 共享池
 
     # ── 统计 ──
     "bootstrap_workers": 4,          # bootstrap 统计并行（非 LLM）
@@ -52,15 +44,9 @@ _RANGES = {
     "max_concurrent_evals": (1, 10),
     "eval_pool_max": (1, 50),
     "parse_workers": (1, 50),
-    "source_fill_workers": (1, 1000),
     "ac_fetch_workers": (1, 50),
     "resolver_workers": (1, 1000),
-    "ai_match_workers": (1, 1000),
-    "ac_llm_workers": (1, 1000),
     "fpr_cond_workers": (1, 10),
-    "fpr_baseline_workers": (1, 1000),
-    "fpr_baseline_batch": (1, 1000),
-    "kg_analysis_workers": (1, 1000),
     "bootstrap_workers": (1, 20),
 }
 

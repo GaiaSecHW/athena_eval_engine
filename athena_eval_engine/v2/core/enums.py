@@ -32,20 +32,6 @@ class ExpectedLabel(str, Enum):
     NON_VULNERABLE = "NON_VULNERABLE"
 
 
-class PairTransition(str, Enum):
-    PRESERVED = "PRESERVED"
-    REGRESSED = "REGRESSED"
-    RECOVERED = "RECOVERED"
-    PERSISTED_FAILURE = "PERSISTED_FAILURE"
-    NA = "NA"
-
-
-class PairMatchStatus(str, Enum):
-    VALID_PAIR = "VALID_PAIR"
-    INCOMPLETE = "INCOMPLETE"
-    UNMATCHED = "UNMATCHED"
-
-
 class CalculationStatus(str, Enum):
     CALCULATED = "CALCULATED"
     NA = "NA"

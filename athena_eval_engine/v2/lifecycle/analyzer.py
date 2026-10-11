@@ -25,7 +25,6 @@ from typing import Any
 from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
-from ..infra.concurrency import get as get_concurrency
 from ..infra.parallel import iter_completed
 from .case_filter import CaseFilter
 from ..persistence.kad_repo import upsert_knowledge_access_details

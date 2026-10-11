@@ -12,7 +12,6 @@ from __future__ import annotations
 from typing import Any
 
 from ..infra import llm as llm_mod
-from ..infra.concurrency import get as get_concurrency
 from ..infra.parallel import iter_completed
 from ..core.task_run import BenchmarkItem
 from ...infrastructure.log_util import log, with_eval_ctx, get_eval_ctx

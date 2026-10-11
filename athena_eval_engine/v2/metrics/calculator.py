@@ -5,18 +5,12 @@
 """
 from __future__ import annotations
 
-from .m5_m13 import run_all_metrics as _run_m5_m13, PairView
+from .m5_m13 import run_all_metrics as _run_m5_m13
 from .m15_m26 import calc_all_lifecycle_metrics
 
 
 def run_all_metrics(
-    pairs: list[PairView],
     *,
-    confusion_pairs=None,
-    kg_access=0,
-    kg_valid=0,
-    kg_delivery=0,
-    access=0,
     kg_access_events=0,
     kg_successful_reads=0,
     mem_read_count=0,
@@ -29,7 +23,6 @@ def run_all_metrics(
     """跑全部指标 M5–M13 + M15–M21 / M26。
 
     参数:
-        pairs: 配对视图列表（保留兼容，当前方案不使用配对）。
         knowledge_access_details: ``knowledge_access_detail`` 记录列表（M15–M26 用）。
             为 None 或空列表时不计算 M15–M26，返回结果中不含 lifecycle_metrics。
         其余参数同 ``m5_m13.run_all_metrics``。
@@ -44,12 +37,6 @@ def run_all_metrics(
     """
     # 1. 计算现有 M5–M13
     base = _run_m5_m13(
-        pairs,
-        confusion_pairs=confusion_pairs,
-        kg_access=kg_access,
-        kg_valid=kg_valid,
-        kg_delivery=kg_delivery,
-        access=access,
         kg_access_events=kg_access_events,
         kg_successful_reads=kg_successful_reads,
         mem_read_count=mem_read_count,

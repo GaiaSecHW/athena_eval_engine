@@ -1,38 +1,16 @@
-"""Metric Engine — M1-M13（§9.2 / §9.5-9.10）。
+"""Metric Engine — M5-M13。
 
-每个 Metric.calculate(context) → (MetricResult, [StatisticalResult])。
-- M1/M4：dataset-level confusion + GT-stratified bootstrap CI
-- M2/M3：IR=C/(C+D), RR=B/(A+B) + Paired Bootstrap CI + 联合 McNemar
-- M5/M6：Wilson CI
-- M7：JSD median + IQR + Paired Bootstrap
-- M8-M10：ΔToken/Steps/Time median + IQR + Paired Bootstrap CI + Wilcoxon
-- M11/M12：记忆访问率/交付率（Wilson CI，同 M5/M6）
-- M13：误报率（FPR），占位由 REPORTING 阶段 _update_m13_fpr 填充
-分母=0 → 该率为 0（CALCULATED）；UNDETERMINED 不计。
+方案不含 No-KG 对照组：
+- M5/M6/M11/M12：从计数参数直接计算（Wilson CI）
+- M7-M10（JSD/ΔToken/ΔSteps/ΔTime）：需要 KG vs No-KG 配对，返回 NA
+- M13：误报率占位，实际值由 REPORTING 阶段填充
+分母=0 → NA；UNDETERMINED 不计。
 """
 from __future__ import annotations
-import math
 from dataclasses import dataclass, field
-from typing import Callable
-import numpy as np
 from .engine import wilson
 
 CALCULATED = "CALCULATED"; NA = "NA"; BLOCKED = "BLOCKED"
-
-
-@dataclass
-class PairView:
-    """配对视图（保留兼容，当前方案不使用配对）。"""
-    kg_success: bool
-    gt: str  # VULNERABLE / NON_VULNERABLE
-    kg_outcome: str
-    jsd: float | None = None
-    delta_token: float | None = None
-    delta_steps: float | None = None
-    delta_time: float | None = None
-    kg_confusion: str = ""
-    kg_mined: bool = False
-    kg_sink_hit: bool = False
 
 
 @dataclass
@@ -53,7 +31,7 @@ class MetricResult:
 
 @dataclass
 class StatisticalResult:
-    metric_id: str | None  # METRIC 行=M1-M13；JOINT 行=None
+    metric_id: str | None
     test_name: str
     statistic: float | None = None
     p_value: float | None = None
@@ -69,11 +47,9 @@ class StatisticalResult:
 
 
 # ===== M13 误报率（FPR） =====
-def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    """M13 误报率占位：实际值由 REPORTING 阶段 _update_m13_fpr 用 LLM 基线匹配结果填充。
-    这里只创建 NA 状态的 M13 对象，不计算 sink-point 匹配 FPR。
-    """
-    return (MetricResult("M13", None, "ratio", len(pairs), "primary_analysis",
+def calc_m13() -> tuple[MetricResult, list[StatisticalResult]]:
+    """M13 误报率占位：实际值由 REPORTING 阶段 _update_m13_fpr 用 LLM 基线匹配结果填充。"""
+    return (MetricResult("M13", None, "ratio", 0, "primary_analysis",
                          calculation_status=NA, reason_code="PENDING_FPR_ANALYSIS",
                          method={}),
             [StatisticalResult("M13", "none",
@@ -83,9 +59,7 @@ def calc_m13(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[Stat
 
 # ===== M5 KAR / M6 KDR =====
 def calc_m5(kg_tool_calls: int, total_tool_calls: int, confidence=0.95) -> tuple[MetricResult, list[StatisticalResult]]:
-    """M5 KAR 知识访问率 = 知识查询次数 / 总工具调用次数（交互级）。
-    kg_tool_calls: 所有 KG 运行中分类为 KG 的工具调用数（Σ kg_count）
-    total_tool_calls: 所有 KG 运行中总工具调用数（Σ total_tool_calls）"""
+    """M5 KAR 知识访问率 = 知识查询次数 / 总工具调用次数（交互级）。"""
     if total_tool_calls == 0:
         m = MetricResult("M5", None, "ratio", 0, "kg_enabled_valid", calculation_status=NA, reason_code="NO_TOOL_CALLS")
         return m, [StatisticalResult("M5", "wilson", testing_tier="SECONDARY", status=NA, reason_code="NO_TOOL_CALLS")]
@@ -128,13 +102,10 @@ def calc_m12(mem_successful_reads: int, mem_read_events: int, confidence=0.95) -
 
 
 def calc_m6(successful_read_count: int, access_event_count: int, confidence=0.95) -> tuple[MetricResult, list[StatisticalResult]]:
-    """M6 KDR 知识交付率 = 有效回复次数 / 总查询次数（交互级，非任务级）。
-    successful_read_count: 所有 KG 运行中匹配到成功回复的事件数（Σ successful_read_count）
-    access_event_count: 所有 KG 运行中知识访问事件数（Σ access_event_count）"""
+    """M6 KDR 知识交付率 = 有效回复次数 / 总查询次数（交互级，非任务级）。"""
     if access_event_count == 0:
         m = MetricResult("M6", None, "ratio", 0, "access_valid", calculation_status=NA, reason_code="NO_ACCESS_EVENT")
         return m, [StatisticalResult("M6", "wilson", testing_tier="SECONDARY", status=NA, reason_code="NO_ACCESS_EVENT")]
-    # cap：successful_read_count 可能 > access_event_count（RESULT 匹配 success 但 CALL 未归类 access）
     capped_reads = min(successful_read_count, access_event_count)
     lo, hi, st, rc = wilson(capped_reads, access_event_count, confidence)
     kdr = capped_reads / access_event_count
@@ -145,32 +116,19 @@ def calc_m6(successful_read_count: int, access_event_count: int, confidence=0.95
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
 
-
-
-def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0, kg_valid=0, kg_delivery=0, access=0,
-                     kg_access_events=0, kg_successful_reads=0,
+def run_all_metrics(*, kg_access_events=0, kg_successful_reads=0,
                      mem_read_count=0, mem_successful_reads=0,
                      kg_tool_calls=0, total_tool_calls=0, seed=42) -> dict:
     """跑全部指标 + 统计证据。返回 {metric_results, statistical_results}。
 
-    方案不含 No-KG 对照组，M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要 KG vs No-KG
-    对比，这里不计算，返回 NA。
+    方案不含 No-KG 对照组，M7-M10（JSD/ΔToken/ΔSteps/ΔTime）返回 NA。
     M5/M6/M11/M12 不依赖配对，直接从计数参数计算。
     """
-    from concurrent.futures import ThreadPoolExecutor
-    from ..infra.concurrency import get as _conc_get
-    mrs = []; srs = []
-    cp = confusion_pairs if confusion_pairs is not None else pairs
-    # M5/M6 无 bootstrap，瞬时完成，直接算
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
     m6, s6 = calc_m6(kg_successful_reads, kg_access_events)
-    # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M13 占位（实际值由 REPORTING 阶段填充）
-    with ThreadPoolExecutor(max_workers=_conc_get("bootstrap_workers")) as pool:
-        fut_m13 = pool.submit(calc_m13, cp, seed=seed)
-        m13, s13 = fut_m13.result()
+    m13, s13 = calc_m13()
     # M7-M10 需要 KG vs No-KG 配对，方案无 No-KG，返回 NA
     m7 = MetricResult("M7", None, "ratio", 0, "jsd_valid",
                       calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
@@ -188,7 +146,6 @@ def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0,
                        calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
     s10 = StatisticalResult("M10", "wilcoxon_signed_rank", testing_tier="SECONDARY",
                             status=NA, reason_code="NO_NOGK_CONTROL")
-    # 按顺序排列
     mrs = [m13, m5, m6, m7, m8, m9, m10, m11, m12]
     srs = s13 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12
     return {"metric_results": mrs, "statistical_results": srs}

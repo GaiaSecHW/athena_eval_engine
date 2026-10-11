@@ -846,10 +846,6 @@ class Orchestrator:
         from ..metrics.calculator import run_all_metrics
 
         # 从 data_packs 提取计数
-        kg_access = 0
-        kg_valid = 0
-        kg_delivery = 0
-        access = 0
         kg_access_events = 0
         kg_successful_reads = 0
         mem_read_count = 0
@@ -860,23 +856,13 @@ class Orchestrator:
         for dp in data_packs:
             kf = dp.knowledge_fact
             taf = dp.tool_action_fact
-            rf = dp.resource_fact
 
             if kf:
-                if getattr(kf, "access", False):
-                    access += 1
-                    if dp.condition == "KG":
-                        kg_access += 1
-                if getattr(kf, "delivery", False):
-                    if dp.condition == "KG":
-                        kg_delivery += 1
-                # 统计 KG 交互事件
                 kg_access_events += len(kf.interactions or [])
                 kg_successful_reads += sum(
                     1 for i in (kf.interactions or [])
                     if i.get("output_preview")
                 )
-                # 记忆交互
                 mem_read_count += len(kf.memory_interactions or [])
                 mem_successful_reads += sum(
                     1 for i in (kf.memory_interactions or [])
@@ -885,25 +871,16 @@ class Orchestrator:
 
             if taf:
                 total_tool_calls += taf.total_tool_calls or 0
-                # KG 工具调用
                 dist = taf.action_distribution or {}
                 kg_tool_calls += dist.get("KG", 0)
 
         return run_all_metrics(
-            pairs=[],
-            confusion_pairs=None,
-            kg_access=kg_access,
-            kg_valid=kg_valid,
-            kg_delivery=kg_delivery,
-            access=access,
             kg_access_events=kg_access_events,
             kg_successful_reads=kg_successful_reads,
             mem_read_count=mem_read_count,
             mem_successful_reads=mem_successful_reads,
             kg_tool_calls=kg_tool_calls,
             total_tool_calls=total_tool_calls,
-            # knowledge_access_details 在 LIFECYCLE_ANALYSIS 完成后传入
-            # 这里先不传，后续在 _assemble_report 中补充
         )
 
     # ── INVENTORY ───────────────────────────────────

@@ -110,18 +110,3 @@ class ResourceFact(BaseModel):
     time_valid: bool = False
     validity_status: str | None = None  # VALID / INVALID / PARTIAL
     evidence: list[Evidence] = Field(default_factory=list)
-
-
-class PairDerivedFact(BaseModel):
-    """§7.26 — L2 Pair Derived Fact（JSD_i / ΔToken_i / ΔSteps_i / ΔTime_i / PairTransition）。"""
-    derived_fact_id: str
-    evaluation_id: str
-    task_pair_id: str
-    derived_fact_type: str  # PAIR_TRANSITION / JSD / DELTA_TOKEN / DELTA_STEPS / DELTA_TIME
-    value_numeric: float | None = None
-    value_string: str | None = None
-    status: str = "CALCULATED"  # CALCULATED / NA / BLOCKED
-    reason_code: str | None = None
-    resolver_version: str = "1.0"
-    evidence: list[Evidence] = Field(default_factory=list)
-    source_fact_refs: list[dict] = Field(default_factory=list)  # {fact_type, fact_id, condition}
