@@ -353,7 +353,7 @@ def _run_bg_resume(evaluation_id: str):
         try:
             cur = conn.cursor()
             cur.execute(
-                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
+                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
                 f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
                 (evaluation_id, *stuck_states))
             if cur.rowcount == 0:
@@ -430,7 +430,7 @@ def create_evaluation(req: CreateRequest):
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
                     "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
                     (req.evaluation_id,))
                 if cur.rowcount == 0:
@@ -644,7 +644,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             try:
                 cur = conn.cursor()
                 cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL "
+                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
                     "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
                     (evaluation_id,))
                 if cur.rowcount == 0:
