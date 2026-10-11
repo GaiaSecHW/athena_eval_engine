@@ -661,7 +661,7 @@ async function renderCreate(){
       <input id="eval-name" placeholder="输入评测名称" oninput="updateRunBtn()">
       <div style="margin-top:14px">
         <label style="font-weight:600;font-size:14px">评测模式</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">开发态=Agent 发布新版本时触发，基线来自预置基线集；运行态=项目测试完成时触发，基线来自漏洞中心人工确认</div>
+        <div style="font-size:12px;color:var(--sub);margin:4px 0">开发态=Agent 发布新版本时触发，基线来自预置基线集；运行态=项目测试完成时触发，基线=自身项目任务的人工确认漏洞</div>
         <div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px">
           <button id="mode-dev-btn" onclick="switchEvalMode('dev')" style="border:none;cursor:pointer;padding:8px 18px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)">🔧 开发态</button>
           <button id="mode-runtime-btn" onclick="switchEvalMode('runtime')" style="border:none;cursor:pointer;padding:8px 18px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;background:transparent;color:var(--sub)">🚀 运行态</button>
@@ -678,6 +678,8 @@ function switchEvalMode(m){
   var d=$("mode-dev-btn"),r=$("mode-runtime-btn");
   if(m==='dev'){d.style.background='var(--acc)';d.style.color='#fff';d.style.boxShadow='0 1px 3px rgba(37,99,235,.3)';r.style.background='transparent';r.style.color='var(--sub)';r.style.boxShadow='none';}
   else{r.style.background='var(--acc)';r.style.color='#fff';r.style.boxShadow='0 1px 3px rgba(37,99,235,.3)';d.style.background='transparent';d.style.color='var(--sub)';d.style.boxShadow='none';}
+  // 运行态：基线=自身项目任务，强制 vuln_center 且清除独立选择
+  if(m==='runtime'){sel.bsrc='vuln_center';sel.vcProj='';sel.vcProjName='';sel.vcTask='';sel.vcTaskName='';_vcCases=null;_vcTasks=null;}
   renderRunConf();
 }
 function renderMainSide(){
@@ -742,47 +744,69 @@ function _toolLabel(k){var m={'turing':'Turing','argo':'Argo','secmate':'SecMate
 async function renderRunConf(){
   const kgReady=sel.traceReady;
   const ready=kgReady;
-  const isVb=sel.bsrc!=='vuln_center';
   const modeLabel=sel.evalMode==='dev'?'开发态':'运行态';
-  const srcToggle=`<div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px;margin-bottom:14px">
-    <button onclick="switchBsrc('vbench_zip')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">📦 测评数据集基线</button>
-    <button onclick="switchBsrc('vuln_center')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${!isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">🔍 漏洞中心数据</button>
-  </div>`;
   let bodyHtml="";let bound=false;
-  if(sel.bsrc==='vuln_center'){
-    if(!sel.vcProj){
-      if(!_allProjs.length)try{_allProjs=(await jget("/api/v1/platform/projects")).projects||[];}catch(e){}
-      bodyHtml=`<div style="margin-bottom:8px;font-size:13px;color:var(--sub)">从漏洞中心取基线：先选项目，再选任务，自动拉取该任务的人工确认漏洞</div><input id="vc-search" placeholder="搜索项目名…" oninput="filterVcList()" style="margin-bottom:8px"><div class="sel" id="vc-list" style="max-height:200px"></div>`;
-    }else if(!sel.vcTask){
-      if(!_vcTasks)try{_vcTasks=(await jget(`/api/v1/platform/tasks?project_id=${sel.vcProj}`)).tasks||[];}catch(e){_vcTasks=[];}
-      bodyHtml=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${sel.vcProjName}</b> <span class="ci">(${sel.vcProj})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vcProj='';sel.vcProjName='';_vcTasks=null;renderRunConf()">重选</button></div><input id="vc-search" placeholder="搜索任务名…" oninput="filterVcList()" style="margin-bottom:8px"><div class="sel" id="vc-list" style="max-height:200px"></div>`;
+  if(sel.evalMode==='runtime'){
+    // 运行态：基线=自身项目任务的漏洞中心数据，无需单独选择
+    bound=!!sel.proj&&!!sel.task;
+    if(sel.proj&&sel.task){
+      bodyHtml=`<div style="padding:12px 14px;border-radius:10px;background:rgba(91,156,246,.08);border:1px solid var(--acc);font-size:14px;line-height:1.7">
+        <span style="color:var(--acc);font-weight:600">🔍 运行态基线</span><br>
+        <span style="color:var(--sub)">基线来源：漏洞中心（与被评测项目任务相同）</span><br>
+        <span style="color:var(--sub)">项目：</span><b>${sel.projName}</b> <span class="ci">(${sel.proj})</span><br>
+        <span style="color:var(--sub)">任务：</span><b>${sel.taskName}</b> <span class="ci">(${sel.task})</span>
+      </div>`;
     }else{
-      const vcKey=sel.vcProj+"|"+sel.vcTask;
-      if(_vcCases===null||_vcKey!==vcKey){_vcKey=vcKey;_vcCases=null;try{_vcCases=(await jget(`/api/v1/vbench/vuln-center/${sel.vcProj}/${sel.vcTask}`)).cases||[];}catch(e){_vcCases=[];}}
-      const nVuln=_vcCases.length;
-      bound=_vcCases.length>0;
-      bodyHtml=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${sel.vcProjName}</b> <span class="ci">(${sel.vcProj})</span> · 任务：<b>${sel.vcTaskName}</b> <span class="ci">(${sel.vcTask})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vcTask='';sel.vcTaskName='';_vcCases=null;renderRunConf()">重选任务</button></div><div style="font-size:14px">漏洞中心基线 · 确认漏洞 <b style="color:var(--green)">${nVuln}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="_vcCases=null;renderRunConf()">刷新</button></div>`;
+      bodyHtml=`<div style="padding:12px 14px;border-radius:10px;background:var(--p2);font-size:14px;color:var(--sub)">请先选择项目与任务，基线将自动绑定到该任务的人工确认漏洞</div>`;
     }
+    $("run-conf").innerHTML=`<h3>基线数据源</h3>
+    <div style="display:none"><input id="eid" value="${genId()}"></div>
+    ${bodyHtml}
+    <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ Trace 已就绪</span><br>':(sel.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 trace…</span><br>':'请选完项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定（自身项目任务）</span><br>':'<span style="color:var(--amber)">未绑定基线</span><br>'}<span style="color:var(--sub)">评测模式：<b style="color:var(--acc)">${modeLabel}</b></span></div>
+    <div class="st" id="run-st"></div>
+    <button class="btn" id="run-btn" ${ready&&bound&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready&&bound?"开始评测":"请先选完项目和任务"}</button>`;
   }else{
-    if(!_allVbProjs.length){try{_allVbProjs=(await jget("/api/v1/vbench/projects")).projects||[];}catch(e){}}
-    if(!sel.vbProj){
-      bodyHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div></div>`;
+    // 开发态：选择基线来源（漏洞中心 或 测评数据集）
+    const isVb=sel.bsrc!=='vuln_center';
+    const srcToggle=`<div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px;margin-bottom:14px">
+      <button onclick="switchBsrc('vbench_zip')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">📦 测评数据集基线</button>
+      <button onclick="switchBsrc('vuln_center')" style="border:none;cursor:pointer;padding:9px 20px;border-radius:9px;font-size:15px;font-weight:500;font-family:inherit;transition:.15s;${!isVb?'background:var(--acc);color:#fff;box-shadow:0 1px 3px rgba(37,99,235,.3)':'background:transparent;color:var(--sub)'}">🔍 漏洞中心数据</button>
+    </div>`;
+    if(sel.bsrc==='vuln_center'){
+      if(!sel.vcProj){
+        if(!_allProjs.length)try{_allProjs=(await jget("/api/v1/platform/projects")).projects||[];}catch(e){}
+        bodyHtml=`<div style="margin-bottom:8px;font-size:13px;color:var(--sub)">从漏洞中心取基线：先选项目，再选任务，自动拉取该任务的人工确认漏洞</div><input id="vc-search" placeholder="搜索项目名…" oninput="filterVcList()" style="margin-bottom:8px"><div class="sel" id="vc-list" style="max-height:200px"></div>`;
+      }else if(!sel.vcTask){
+        if(!_vcTasks)try{_vcTasks=(await jget(`/api/v1/platform/tasks?project_id=${sel.vcProj}`)).tasks||[];}catch(e){_vcTasks=[];}
+        bodyHtml=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${sel.vcProjName}</b> <span class="ci">(${sel.vcProj})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vcProj='';sel.vcProjName='';_vcTasks=null;renderRunConf()">重选</button></div><input id="vc-search" placeholder="搜索任务名…" oninput="filterVcList()" style="margin-bottom:8px"><div class="sel" id="vc-list" style="max-height:200px"></div>`;
+      }else{
+        const vcKey=sel.vcProj+"|"+sel.vcTask;
+        if(_vcCases===null||_vcKey!==vcKey){_vcKey=vcKey;_vcCases=null;try{_vcCases=(await jget(`/api/v1/vbench/vuln-center/${sel.vcProj}/${sel.vcTask}`)).cases||[];}catch(e){_vcCases=[];}}
+        const nVuln=_vcCases.length;
+        bound=_vcCases.length>0;
+        bodyHtml=`<div style="margin-bottom:8px;font-size:14px">项目：<b>${sel.vcProjName}</b> <span class="ci">(${sel.vcProj})</span> · 任务：<b>${sel.vcTaskName}</b> <span class="ci">(${sel.vcTask})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vcTask='';sel.vcTaskName='';_vcCases=null;renderRunConf()">重选任务</button></div><div style="font-size:14px">漏洞中心基线 · 确认漏洞 <b style="color:var(--green)">${nVuln}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="_vcCases=null;renderRunConf()">刷新</button></div>`;
+      }
     }else{
-      if(!_vbCases){_vbCases=(await jget(`/api/v1/vbench/projects/${sel.vbProj}/benchmark`)).cases||[];}
-      const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vulnerability_type||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");
-      bodyHtml=`<div style="margin-bottom:8px;font-size:14px">V-Bench 项目：<b>${sel.vbProjName}</b> · 基线漏洞 <b>${_vbCases.length}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vbProj='';sel.vbProjName='';_vbCases=null;renderRunConf()">重选</button></div><div class="sel" style="max-height:150px;margin-bottom:10px">${casesHtml||'<div style="padding:16px;color:var(--sub)">无 case</div>'}</div>`;
+      if(!_allVbProjs.length){try{_allVbProjs=(await jget("/api/v1/vbench/projects")).projects||[];}catch(e){}}
+      if(!sel.vbProj){
+        bodyHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div></div>`;
+      }else{
+        if(!_vbCases){_vbCases=(await jget(`/api/v1/vbench/projects/${sel.vbProj}/benchmark`)).cases||[];}
+        const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vulnerability_type||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");
+        bodyHtml=`<div style="margin-bottom:8px;font-size:14px">V-Bench 项目：<b>${sel.vbProjName}</b> · 基线漏洞 <b>${_vbCases.length}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vbProj='';sel.vbProjName='';_vbCases=null;renderRunConf()">重选</button></div><div class="sel" style="max-height:150px;margin-bottom:10px">${casesHtml||'<div style="padding:16px;color:var(--sub)">无 case</div>'}</div>`;
+      }
+      bound=!!sel.vbProj;
     }
-    bound=!!sel.vbProj;
+    $("run-conf").innerHTML=`<h3>基线数据源</h3>
+    <div style="display:none"><input id="eid" value="${genId()}"></div>
+    ${srcToggle}
+    ${bodyHtml}
+    <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ Trace 已就绪</span><br>':(sel.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 trace…</span><br>':'请选完项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式</span><br>'}<span style="color:var(--sub)">评测模式：<b style="color:var(--acc)">${modeLabel}</b></span></div>
+    <div class="st" id="run-st"></div>
+    <button class="btn" id="run-btn" ${ready&&bound&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready&&bound?"开始评测":"请先选完项目和任务"}</button>`;
+    if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
+    else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
   }
-  $("run-conf").innerHTML=`<h3>基线数据源</h3>
-  <div style="display:none"><input id="eid" value="${genId()}"></div>
-  ${srcToggle}
-  ${bodyHtml}
-  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ Trace 已就绪</span><br>':(sel.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 trace…</span><br>':'请选完项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式</span><br>'}<span style="color:var(--sub)">评测模式：<b style="color:var(--acc)">${modeLabel}</b></span></div>
-  <div class="st" id="run-st"></div>
-  <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完项目和任务"}</button>`;
-  if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
-  else if(sel.bsrc!=='vuln_center'&&!sel.vbProj){renderVbList();}
 }
 function switchBsrc(s){sel.bsrc=s;renderRunConf();}
 function filterVcList(){
@@ -823,8 +847,15 @@ async function runEval(){
   let eid=$("eid").value.trim()||genId();
   $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
   const evalName=$("eval-name")?$("eval-name").value.trim():"";
-  const bSetId=sel.bsrc==='vuln_center'?(sel.vcProj||undefined):(sel.vbProj||undefined);
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,kg_project_id:sel.proj,kg_task_id:sel.task,benchmark_source:sel.bsrc,benchmark_set_id:bSetId,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,eval_mode:sel.evalMode});
+  var bSetId,vcTaskId,bsrc;
+  if(sel.evalMode==='runtime'){
+    // 运行态：基线=自身项目任务的漏洞中心数据
+    bsrc='vuln_center';bSetId=sel.proj;vcTaskId=sel.task;
+  }else{
+    // 开发态：用户选择的基线来源
+    bsrc=sel.bsrc;bSetId=bsrc==='vuln_center'?(sel.vcProj||undefined):(sel.vbProj||undefined);vcTaskId=bsrc==='vuln_center'?(sel.vcTask||undefined):undefined;
+  }
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,kg_project_id:sel.proj,kg_task_id:sel.task,benchmark_source:bsrc,benchmark_set_id:bSetId,vc_source_task_id:vcTaskId,eval_mode:sel.evalMode});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;Router.navigate('/evaluations/'+r.evaluation_id);
   }
