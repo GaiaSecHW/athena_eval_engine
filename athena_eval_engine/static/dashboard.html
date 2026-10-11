@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>知识测评</title>
+<title>知识效果评测</title>
 <style>
 :root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--bd:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -23,21 +23,11 @@ main{flex:1;overflow:hidden;padding:28px}
 @keyframes spin{from{transform:rotate(0deg)}to{transform:rotate(360deg)}}
 .empty h3{color:var(--txt);font-size:19px}
 .empty p{max-width:440px;font-size:16px}
-.cols{display:flex;gap:20px;height:100%}
-.lst{width:360px;background:var(--panel);border:1px solid var(--bd);border-radius:14px;display:flex;flex-direction:column;overflow:hidden}
-.lst .h{padding:16px 18px;border-bottom:1px solid var(--bd);font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;display:flex;justify-content:space-between;align-items:center}
-.lst .b{flex:1;overflow-y:auto;padding:8px}
-.it{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;transition:background .15s}
-.it:hover{background:var(--p2)}
-.it.act{background:rgba(91,156,246,.12)}
-.it .n{font-size:17px;font-weight:500;margin-bottom:4px}
-.it .m{font-size:14px;color:var(--sub);display:flex;gap:8px;align-items:center}
 .ev-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}
 .ev-card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px;cursor:pointer;transition:all .2s;display:flex;flex-direction:column;gap:8px}
 .ev-card:hover{border-color:var(--acc);box-shadow:0 4px 16px rgba(0,0,0,.06);transform:translateY(-1px)}
 .ev-card .ev-name{font-size:16px;font-weight:600;line-height:1.4;word-break:break-all}
 .ev-card .ev-meta{font-size:14px;color:var(--sub);display:flex;gap:8px;align-items:center;flex-wrap:wrap}
-.ev-card .ev-actions{display:flex;gap:4px;margin-left:auto}
 .back-bar{display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-shrink:0}
 .back-bar .back-btn{background:var(--p2);border:1px solid var(--bd);border-radius:10px;padding:8px 16px;cursor:pointer;font-size:15px;color:var(--txt);display:flex;align-items:center;gap:6px;transition:.15s}
 .back-bar .back-btn:hover{background:var(--bd)}
@@ -49,14 +39,9 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
 .b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-RESOLVING,.b-CALCULATING,.b-INVENTORY,.b-LIFECYCLE_ANALYSIS,.b-CAUSAL_CHAIN{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
 .card.f{grid-column:1/-1}
 .card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.tier{font-size:14px;padding:3px 8px;border-radius:12px;font-weight:600}
-.t-p0{background:rgba(91,156,246,.18);color:var(--acc)}
-.t-p1{background:rgba(251,191,36,.18);color:var(--amber)}
-.t-p2{background:rgba(107,114,128,.18);color:var(--gray)}
 table{width:100%;border-collapse:collapse;font-size:17px}
 th{color:var(--sub);font-weight:500;text-align:left;padding:10px 8px;border-bottom:1px solid var(--bd);font-size:14px;text-transform:uppercase;letter-spacing:.4px}
 td{padding:12px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
@@ -64,43 +49,7 @@ td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
 .ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
 .na{color:var(--red);font-style:italic;font-size:16px}
 .dp{color:var(--green)}.dn{color:var(--red)}
-.diag{background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:12px 14px;margin:8px 0}
-.diag .rid{color:var(--amber);font-weight:600;font-size:14px;font-family:monospace}
-.diag .ob{font-weight:500;font-size:17px}.diag .ip{color:var(--sub);font-size:15px;margin-top:4px}
-.narr{font-size:17px;line-height:1.8}.narr b{color:var(--sub);font-weight:500}
-.note{font-size:14px;color:var(--sub);margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
-svg{display:block;margin:0 auto;max-width:100%}
-.lg{display:flex;gap:18px;justify-content:center;margin-top:10px}.lg span{font-size:14px;color:var(--sub);display:flex;align-items:center;gap:6px}.lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
-.sel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px;max-height:300px;overflow-y:auto}
-.opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:grid;grid-template-columns:minmax(0,.85fr) 96px minmax(0,1.15fr);align-items:center;column-gap:12px;font-size:17px}
-.opt:hover{background:var(--p2)}
-/* 自定义弹窗 */
-.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;animation:fade .15s}
-@keyframes fade{from{opacity:0}to{opacity:1}}
-.modal{background:var(--panel);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.25);max-width:440px;width:90%;overflow:hidden;animation:pop .15s}
-@keyframes pop{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
-.modal .modal-head{padding:20px 24px 12px;display:flex;align-items:center;gap:12px}
-.modal .modal-head .modal-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
-.modal .modal-head h3{font-size:18px;font-weight:600}
-.modal .modal-body{padding:4px 24px 16px;font-size:15px;color:var(--sub);line-height:1.7}
-.modal .modal-body ul{list-style:none;padding:0;margin:8px 0}
-.modal .modal-body li{padding:3px 0;padding-left:18px;position:relative}
-.modal .modal-body li:before{content:"•";position:absolute;left:0;color:var(--amber)}
-.modal .modal-foot{padding:14px 24px;display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--bd)}
-.opt.sel{background:rgba(91,156,246,.12);border-left:3px solid var(--acc)}
-.opt .l{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.opt .r{font-size:14px;color:var(--sub)}
-.opt .opt-main{display:flex;align-items:center;gap:8px;min-width:0}.opt .opt-mid,.opt .opt-right{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.opt .opt-right{text-align:right}
-.btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
-label{display:block;font-size:15px;color:var(--sub);margin:12px 0 5px}
-input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:var(--txt);border-radius:10px;padding:11px 13px;font-size:17px;font-family:inherit}
-.inp-row{display:grid;grid-template-columns:1fr 1fr;gap:14px}
-.st{font-size:16px;color:var(--amber);margin:10px 0;min-height:18px}
-.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
-.knd.k-opencode{background:rgba(74,222,128,.18);color:var(--green)}
-.knd.k-argo{background:rgba(96,165,250,.18);color:var(--acc)}
-.knd.k-turing{background:rgba(217,119,6,.18);color:var(--amber)}.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px 16px;text-align:center;transition:transform .15s}
+.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px 16px;text-align:center;transition:transform .15s}
 .mcard:hover{transform:translateY(-2px);border-color:var(--acc)}
 .mc-icon{font-size:24px;margin-bottom:6px}
 .mc-label{font-size:14px;color:var(--sub);margin-bottom:6px}
@@ -121,11 +70,36 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 .ef-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:14px;flex:1}
 .ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
 .ef-btn:hover{border-color:var(--acc)}
+.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+.sel{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:16px;margin-bottom:16px;max-height:300px;overflow-y:auto}
+.opt{padding:12px 14px;border-radius:10px;cursor:pointer;margin-bottom:4px;display:grid;grid-template-columns:minmax(0,.85fr) 96px minmax(0,1.15fr);align-items:center;column-gap:12px;font-size:17px}
+.opt:hover{background:var(--p2)}
+.modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:center;justify-content:center;z-index:9999;animation:fade .15s}
+@keyframes fade{from{opacity:0}to{opacity:1}}
+.modal{background:var(--panel);border-radius:16px;box-shadow:0 20px 60px rgba(0,0,0,.25);max-width:440px;width:90%;overflow:hidden;animation:pop .15s}
+@keyframes pop{from{transform:scale(.95);opacity:0}to{transform:scale(1);opacity:1}}
+.modal .modal-head{padding:20px 24px 12px;display:flex;align-items:center;gap:12px}
+.modal .modal-head .modal-icon{width:44px;height:44px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px;flex-shrink:0}
+.modal .modal-head h3{font-size:18px;font-weight:600}
+.modal .modal-body{padding:4px 24px 16px;font-size:15px;color:var(--sub);line-height:1.7}
+.modal .modal-body ul{list-style:none;padding:0;margin:8px 0}
+.modal .modal-body li{padding:3px 0;padding-left:18px;position:relative}
+.modal .modal-body li:before{content:"•";position:absolute;left:0;color:var(--amber)}
+.modal .modal-foot{padding:14px 24px;display:flex;justify-content:flex-end;gap:10px;border-top:1px solid var(--bd)}
+.opt.sel{background:rgba(91,156,246,.12);border-left:3px solid var(--acc)}
+.opt .l{font-size:17px;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.opt .r{font-size:14px;color:var(--sub)}
+.opt .opt-main{display:flex;align-items:center;gap:8px;min-width:0}.opt .opt-mid,.opt .opt-right{min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px}.opt .opt-right{text-align:right}
+.btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
+.btn:disabled{opacity:.4;cursor:not-allowed}
+.btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
+label{display:block;font-size:15px;color:var(--sub);margin:12px 0 5px}
+input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:var(--txt);border-radius:10px;padding:11px 13px;font-size:17px;font-family:inherit}
+.st{font-size:16px;color:var(--amber);margin:10px 0;min-height:18px}
 </style>
 </head>
 <body>
 <div class="wrap">
-  <header><div class="title" id="h-title">知识测评</div><div class="sub" id="h-sub"></div><div class="sp"></div>
+  <header><div class="title" id="h-title">知识效果评测</div><div class="sub" id="h-sub"></div><div class="sp"></div>
     <button class="ghost" data-route="create" onclick="Router.navigate('/create')">+ 新建评测</button>
     <button class="ghost" data-route="system" id="sys-btn" onclick="Router.navigate('/system')" style="display:none">系统</button>
     <button class="ghost" id="theme-btn" onclick="toggleTheme()" style="font-size:18px;padding:8px 12px">🌙</button>
@@ -136,10 +110,10 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
 if(DEBUG){var _sb=document.getElementById("sys-btn");if(_sb)_sb.style.display="";}
 const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
-const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u.indexOf("/reports")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
+const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
-  light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--nav-bg":"#1a1d23","--td-bd":"var(--bd)","--card-bg":"linear-gradient(145deg,#ffffff,#f8f9fa)","--mc-glow":"0 2px 16px rgba(22,163,74,.08)","--mc-neg-glow":"0 2px 16px rgba(220,38,38,.08)","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
-  dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--nav-bg":"#080b10","--td-bd":"rgba(255,255,255,.04)","--card-bg":"linear-gradient(145deg,var(--panel),var(--p2))","--mc-glow":"0 0 24px rgba(74,222,128,.08)","--mc-neg-glow":"0 0 24px rgba(248,113,113,.08)","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
+  light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
+  dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
 };
 function applyTheme(t){
   const v=THEMES[t];const r=document.documentElement;
@@ -150,30 +124,23 @@ function applyTheme(t){
 function toggleTheme(){const cur=localStorage.getItem("eval-theme")||"light";applyTheme(cur==="light"?"dark":"light");}
 applyTheme(localStorage.getItem("eval-theme")||"light");
 
-let w={proj:"",task:"",kg:"",nogk:"",biid:"BI-T001",tfid:"F-T001",eid:""};
+let w={proj:"",task:"",kg:"",biid:"BI-T001",tfid:"F-T001",eid:""};
 
 function $(i){return document.getElementById(i);}
 function el(h){const d=document.createElement("div");d.innerHTML=h;return d.firstChild;}
-function fmtMtime(mt){if(!mt)return'-';const d=new Date(mt*1000+8*3600000);const p=n=>String(n).padStart(2,'0');return d.getUTCFullYear()+'-'+p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes());}
 function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
 function fmtTs(ts){if(!ts)return'';const d=new Date(ts+8*3600000);const p=n=>String(n).padStart(2,'0');return p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds());}
 async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
 async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
 async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
 
-// 返回列表的全局函数（避免 onclick 内单引号转义问题）
 function goBack(){Router.navigate('/');}
 
-// ===== 页面路由器（整页跳转，一个功能一个 URL） =====
+// ===== 路由器 =====
 const Router={
   base:'',
-  init(){
-    this.base=_INGRESS;
-    this.handle();
-  },
-  navigate(path){
-    window.location.href=this.base+path;
-  },
+  init(){this.base=_INGRESS;this.handle();},
+  navigate(path){window.location.href=this.base+path;},
   handle(){
     var path=location.pathname.substring(this.base.length)||'/';
     updateNavActive(path);
@@ -191,19 +158,11 @@ function updateNavActive(path){
   document.querySelectorAll('header button.ghost').forEach(function(b){
     b.classList.remove('nav-active');
     var r=b.getAttribute('data-route');
-    if(r){
-      if((r==='create'&&path==='/create')||(r==='system'&&path==='/system')){b.classList.add('nav-active');}
-    }
+    if(r){if((r==='create'&&path==='/create')||(r==='system'&&path==='/system')){b.classList.add('nav-active');}}
   });
 }
 
-async function render(){
-  const v=$("view");v.innerHTML='<div class="empty"><div class="ic">⏳</div><h3>加载中…</h3></div>';
-  try{await renderEvals();}
-  catch(e){v.innerHTML='<div class="empty"><div class="ic">⚠️</div><h3>错误</h3><p>'+e+'</p></div>';}
-}
-
-// ===== 评测列表 =====
+// ===== ① 评测列表 =====
 async function renderEvals(){
   const d=await jget("/api/v1/evaluations?page_size=9999");const evs=d.evaluations||[];
   window._evData=evs;window._evPage=1;
@@ -242,7 +201,6 @@ function renderEvList(){
     var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","RESOLVING":"事实写入","PAIRING":"任务配对","CALCULATING":"计算指标","INVENTORY":"知识盘点","LIFECYCLE_ANALYSIS":"生命周期分析","CAUSAL_CHAIN":"因果链分析","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
-    // REPORTING 时通过 progress 文本区分"知识与记忆介入分析"和"生成报告"
     var phaseLabel=_phaseLabels[e.status]||e.status||'-';
     if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
@@ -256,13 +214,11 @@ function renderEvList(){
       '<div class="ev-meta"><span class="bdg b-'+badge+'">'+phaseLabel+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
-        '<div><span style="color:var(--gray)">KG：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
-        (e.nogk_project?'<div><span style="color:var(--gray)">No-KG：</span><b>'+(e.nogk_project||'-')+'</b> / '+(e.nogk_task||'-')+'</div>':'')+
+        '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
         '<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>'+
       '</div>'+
       '</div>';
   }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
-  // 分页控件
   if(pages>1){
     let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:16px 0 0;grid-column:1/-1">';
     pgHtml+=`<button class="ef-btn" ${page<=1?'disabled':''} onclick="evPage(${page-1})" style="padding:6px 12px;font-size:14px">‹ 上一页</button>`;
@@ -281,20 +237,21 @@ function renderEvList(){
   el.innerHTML=html;
 }
 
+// ===== ② 评测详情 + 报告 =====
 async function selEv(id){
   activeId=id;
-  try{const s=await jget(`/api/v1/evaluations/${id}`);
-    // FAILED: 直接显示错误 + 重试
+  try{const s=await jget(`/api/v2/evaluations/${id}`);
+    // FAILED: 显示错误 + 重试
     if(s.status==="FAILED"){
       var errMsg=s.error_message||"无详细错误信息";
       $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
       var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
       return;
     }
-    // 运行中: 显示进度（非终态即运行中）
+    // 运行中：显示进度
     if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
-      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"INVENTORY",label:"知识盘点"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZING",label:"完成"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"INVENTORY":6,"LIFECYCLE_ANALYSIS":7,"CAUSAL_CHAIN":8,"REPORTING":9,"FINALIZING":10};
+      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"INVENTORY",label:"知识盘点"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZE",label:"完成"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"INVENTORY":6,"LIFECYCLE_ANALYSIS":7,"CAUSAL_CHAIN":8,"REPORTING":9,"FINALIZE":10};
       var curStep=phaseMap[s.status]||0;
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
@@ -315,50 +272,34 @@ async function selEv(id){
         stepsHtml+='</div></div>';
       });
       stepsHtml+='</div>';
-      // 运行中也可强制重跑（卡住时用户可手动重启），仅 debug 模式显示
       if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button> <button class="btn" id="cancel-btn" style="font-size:14px;padding:8px 20px;background:var(--amber)">取消任务</button></div>';
       var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
       $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
       var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
       var cb=$("cancel-btn");if(cb)cb.onclick=function(){cancelEval(id);};
-      let cnt=0;let _partialLoaded=false;let _lastRsKey="";const poll=async()=>{cnt++;if(cnt>14400)return;
-        if(activeId!==id)return;  // 用户已切走，停止旧评测轮询
-        try{const st=await jget(`/api/v1/evaluations/${id}`);
+      // 轮询
+      let cnt=0;let _partialLoaded=false;const poll=async()=>{cnt++;if(cnt>14400)return;
+        if(activeId!==id)return;
+        try{const st=await jget(`/api/v2/evaluations/${id}`);
           if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){
-            // 优先固化 HTML（HEAD 探测）
+            selEv(id);return;
+          }
+          else if(st.status==="FAILED"){selEv(id);return;}
+          else{
+            // 检查段文件就绪
             try{
-              const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
-              if(probe.ok){
-                loadIframeReport(id);
+              const rs=await jget(`/api/v2/evaluations/${id}/report/status`);
+              if(rs.base&&!_partialLoaded){
+                _partialLoaded=true;
+                loadV2Report(id,st,rs);
                 return;
               }
             }catch(e){}
-            const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);
-          }
-          else if(st.status==="FAILED"){selEv(id);}
-          else{
-            // 运行中：检查是否有段文件已就绪
-            try{
-              const rs=await jget(`/api/v1/evaluations/${id}/report/status`);
-              if(rs.base){  // 基础报告就绪才切换到部分报告视图（FPR/KG 段需要合并到基础报告）
-                var _rsKey=rs.base+'|'+rs.fpr+'|'+rs.kg;
-                if(!_partialLoaded||_rsKey!==_lastRsKey){
-                  _partialLoaded=true;
-                  _lastRsKey=_rsKey;
-                  loadPartialReport(id,st);
-                }
-              }
-            }catch(e){}
-            // 更新进度文本
             var pe=$("eval-progress");
             if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
             if(st.status!==s.status){
               if(window._evData){var ev=window._evData.find(e=>e.evaluation_id===id);if(ev){ev.status=st.status;ev.progress=st.progress;}}
-              if(!_partialLoaded){selEv(id);return;}  // 状态变更时刷新步骤图标（无段文件时）
-              // 部分报告已加载：更新横幅进度文本
-              var _bn=$("partial-banner-status");
-              if(_bn){_bn.textContent=st.progress||st.status||'';}
-              s.status=st.status;
+              if(!_partialLoaded){selEv(id);return;}
             }
             setTimeout(poll,20000);
           }
@@ -366,321 +307,124 @@ async function selEv(id){
       setTimeout(poll,20000);return;
     }
   }catch(e){}
-  // COMPLETED: 加载报告（优先固化 HTML iframe，回退动态接口）
+  // COMPLETED: 加载报告
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
   try{
-    // 先探测固化 HTML 是否存在（HEAD 请求不下载 body）
-    const probe=await F(`/reports/${id}.html`,{method:'HEAD'});
-    if(probe.ok){
-      loadIframeReport(id);
-      return;
-    }
-  }catch(e){}
-  try{const r=await jget(`/api/v1/evaluations/${id}/report`);renderReport(r);}
-  catch(e){$("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';}
-}
-function loadIframeReport(id){
-  var rep=$("view");
-  if(!rep)return;
-  rep.style.overflow='hidden';
-  rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="width:100%;flex:1;overflow:hidden"><iframe src="'+U('/reports/'+id+'.html')+'" style="width:100%;height:100%;border:none;background:#fff;display:block"></iframe></div>';
-}
-function retryEval(eid){
-  showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
-    desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
-    risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
-    confirmText:'重跑',confirmColor:'var(--acc)',
-    onConfirm:function(){
-      activeId=eid;
-      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
-      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-        if(d.status==='QUEUED'||d.status==='RUNNING'){
-          var pollCnt=0;
-          var retryPoll=function(){
-            pollCnt++;if(pollCnt>30)return;
-            if(activeId!==eid)return;  // 用户已切走，停止重跑轮询
-            jget('/api/v1/evaluations/'+eid).then(function(s){
-              if(s.status==='FAILED'){setTimeout(retryPoll,1000);}
-              else{selEv(eid);}
-            }).catch(function(){setTimeout(retryPoll,1000);});
-          };
-          setTimeout(retryPoll,500);
-        }else{
-          alert('重试失败: '+JSON.stringify(d));
-        }
-      }).catch(function(e){alert('重试失败: '+e);});
-    }
-  });
-}
-function rerunSection(eid,section){
-  var title=section==='fpr'?'重跑误报率分析':'重跑知识图谱与记忆分析';
-  var desc=section==='fpr'?'重新运行基线 vs 告警中心/漏洞中心 LLM 匹配 + M13 指标计算。':'重新解析 trace + 重新运行逐漏洞 KG 归因分析。前置：FPR 段必须存在。';
-  var risks=section==='fpr'?['LLM 调用可能较慢','旧 FPR 报告会被覆盖']:['需要重新解析 trace','LLM 调用可能较慢','旧 KG 报告会被覆盖'];
-  showConfirm({icon:'🔄',iconBg:'rgba(37,99,235,.15)',iconColor:'var(--acc)',title:title,
-    desc:desc,risks:risks,confirmText:'重跑',confirmColor:'var(--acc)',
-    onConfirm:function(){
-      F('/api/v1/evaluations/'+eid+'/rerun-'+section+'?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-        if(d.status==='submitted'){
-          // 轮询进度
-          var cnt=0;
-          var poll=function(){
-            cnt++;if(cnt>3600)return;
-            if(activeId!==eid)return;
-            jget('/api/v1/evaluations/'+eid).then(function(s){
-              var prog=(s.progress||'');
-              var isRunning=prog.indexOf(section==='fpr'?'重跑误报率':'重跑知识与记忆')>=0;
-              if(isRunning){
-                // 更新进度提示
-                var el=$('section-loading-'+section);
-                if(el){el.textContent=prog;el.style.display='block';}
-                setTimeout(poll,5000);
-              }else{
-                // 完成，重新加载报告
-                selEv(eid);
-              }
-            }).catch(function(){setTimeout(poll,5000);});
-          };
-          setTimeout(poll,1000);
-        }else{
-          alert('重跑失败: '+JSON.stringify(d));
-        }
-      }).catch(function(e){alert('重跑失败: '+e);});
-    }
-  });
-}
-function deleteEval(eid,name){
-  showConfirm({icon:'🗑️',iconBg:'rgba(248,113,113,.15)',iconColor:'var(--red)',title:'删除评测',
-    desc:'删除将永久清除该评测的全部数据，不可恢复。',
-    risks:['trace 解析结果（facts、events）','指标计算结果（M1-M13、统计检验）','AI 分析报告（叙述、漏洞对比）','基线匹配数据'],
-    confirmText:'永久删除',confirmColor:'var(--red)',
-    onConfirm:function(){
-  F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
-    if(d.status==='ok'){
-      Router.navigate('/');
-      $("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="goBack()">返回列表</button></div>';
-    }else{
-      alert('删除失败: '+JSON.stringify(d));
-    }
-  }).catch(e=>alert('删除失败: '+e));
-    }
-  });
-}
-function cancelEval(eid){
-  showConfirm({icon:'⚠️',iconBg:'rgba(245,158,11,.15)',iconColor:'var(--amber)',title:'取消评测',
-    desc:'取消后评测将停止运行，状态设为已取消。此操作不可撤销。',
-    confirmText:'确认取消',confirmColor:'var(--amber)',
-    onConfirm:function(){
-      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-        if(d.status==='CANCELLED'){
-          renderEvals();
-        }else{
-          alert('取消失败: '+JSON.stringify(d));
-        }
-      }).catch(function(e){alert('取消失败: '+e);});
-    }
-  });
-}
-function showConfirm(opts){
-  var ov=document.createElement('div');ov.className='modal-overlay';
-  var risksHtml=(opts.risks||[]).map(function(r){return '<li>'+r+'</li>'}).join('');
-  ov.innerHTML='<div class="modal">'+
-    '<div class="modal-head"><div class="modal-icon" style="background:'+opts.iconBg+';color:'+opts.iconColor+'">'+opts.icon+'</div><h3>'+opts.title+'</h3></div>'+
-    '<div class="modal-body"><p>'+opts.desc+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'+
-    '<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'+
-    '<button class="btn" style="font-size:15px;padding:8px 20px;background:'+opts.confirmColor+'" id="modal-confirm">'+opts.confirmText+'</button></div></div>';
-  document.body.appendChild(ov);
-  ov.addEventListener('click',function(e){if(e.target===ov)ov.remove()});
-  document.getElementById('modal-confirm').onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm()};
+    const rs=await jget(`/api/v2/evaluations/${id}/report/status`);
+    const st=await jget(`/api/v2/evaluations/${id}`);
+    loadV2Report(id,st,rs);
+  }catch(e){
+    $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';
+  }
 }
 
-function fmtDur(ms){
-  if(ms===null||ms===undefined||isNaN(ms))return'<span class="na">NA</span>';
-  var abs=Math.abs(ms);var sign=ms<0?'-':'';
-  if(abs>=3600000){var h=Math.floor(abs/3600000);var m=Math.floor((abs%3600000)/60000);return sign+h+'<span class="ci">时</span> '+m+'<span class="ci">分</span>';}
-  if(abs>=60000){var m2=Math.floor(abs/60000);var s=Math.floor((abs%60000)/1000);return sign+m2+'<span class="ci">分</span> '+s+'<span class="ci">秒</span>';}
-  if(abs>=1000){return sign+(abs/1000).toFixed(1)+'<span class="ci">秒</span>';}
-  return sign+Math.round(abs)+'<span class="ci">ms</span>';
+// ===== v2 报告加载 + 渲染 =====
+async function loadV2Report(id,st,rs){
+  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress}};
+  // 加载基础报告
+  if(rs.base){
+    try{d.base=await jget(`/api/v2/evaluations/${id}/report`);}catch(e){d.base={};}
+  }
+  // 加载生命周期段
+  if(rs.lifecycle){
+    try{d.lifecycle=await jget(`/api/v2/evaluations/${id}/report/lifecycle`);}catch(e){}
+  }
+  // 加载知识盘点段
+  if(rs.inventory){
+    try{d.inventory=await jget(`/api/v2/evaluations/${id}/report/inventory`);}catch(e){}
+  }
+  renderV2Report(d);
+  // 异步补加载未就绪段
+  if(!d.lifecycle){
+    jget(`/api/v2/evaluations/${id}/report/lifecycle`).then(lc=>{if(lc&&!lc.error){d.lifecycle=lc;renderV2Report(d);}}).catch(()=>{});
+  }
+  if(!d.inventory){
+    jget(`/api/v2/evaluations/${id}/report/inventory`).then(iv=>{if(iv&&!iv.error){d.inventory=iv;renderV2Report(d);}}).catch(()=>{});
+  }
 }
-function fmt(v,u){
-  if(v===null||v===undefined||isNaN(v))return'<span class="na">NA</span>';
-  if(u==="ratio")return (v*100).toFixed(2)+'<span class="ci">%</span>';
-  if(u==="ms")return fmtDur(v);
-  if(u==="steps"||u==="tokens"){const a=Math.abs(v);let s;
-    if(a>=1e9)s=(v/1e9).toFixed(2)+'B';else if(a>=1e6)s=(v/1e6).toFixed(2)+'M';else if(a>=1e3)s=(v/1e3).toFixed(1)+'K';else s=Math.round(v).toString();
-    return s+'<span class="ci">'+(u==="tokens"?" tok":" steps")+'</span>';}
-  return Number(v).toFixed(3);
-}
+
+// 指标定义
+const MI={
+  M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例。",u:"ratio",
+     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到知识访问":`知识访问率 ${(v*100).toFixed(2)}%`},
+  M6:{n:"知识交付率",short:"知识交付",d:"知识查询中平台有效回复的比例。",u:"ratio",
+     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到知识交付":`知识交付率 ${(v*100).toFixed(2)}%`},
+  M11:{n:"记忆访问率",short:"记忆访问",d:"Agent 工具调用中记忆读取所占比例。",u:"ratio",
+     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到记忆访问":`记忆访问率 ${(v*100).toFixed(2)}%`},
+  M12:{n:"记忆交付率",short:"记忆交付",d:"记忆读取中成功返回的比例。",u:"ratio",
+     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
+     interp:(v)=>v==null?"未观测到记忆交付":`记忆交付率 ${(v*100).toFixed(2)}%`},
+  M13:{n:"误报率",short:"误报率",d:"Agent 上报漏洞中误报的比例。",u:"ratio",
+     range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
+     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(2)}%`},
+  M15:{n:"L1知识需求率",short:"L1知识需求",d:"需要知识支撑的业务阶段占比。",u:"ratio",
+     range:[{v:0,t:"无需求",c:"gray"},{v:0.5,t:"部分需求",c:"amber"},{v:0.8,t:"高度依赖",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识需求率 ${(v*100).toFixed(1)}%`},
+  M16:{n:"L2知识发起率",short:"L2知识发起",d:"需要知识的阶段中实际发起知识访问的比例。",u:"ratio",
+     range:[{v:0,t:"未发起",c:"red"},{v:0.5,t:"部分发起",c:"amber"},{v:0.8,t:"充分发起",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识发起率 ${(v*100).toFixed(1)}%`},
+  M17:{n:"L3查询准确率",short:"L3查询准确",d:"发起的知识查询中内容聚焦于当前阶段任务的比例。",u:"ratio",
+     range:[{v:0,t:"全不准确",c:"red"},{v:0.5,t:"部分准确",c:"amber"},{v:0.8,t:"高度准确",c:"green"}],
+     interp:(v)=>v==null?"无数据":`查询准确率 ${(v*100).toFixed(1)}%`},
+  M18:{n:"L4知识存在率",short:"L4知识存在",d:"准确查询的知识库中实际存在对应知识的比例。",u:"ratio",
+     range:[{v:0,t:"全不存在",c:"red"},{v:0.5,t:"部分存在",c:"amber"},{v:0.8,t:"充分存在",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识存在率 ${(v*100).toFixed(1)}%`},
+  M19:{n:"L5召回成功率",short:"L5召回成功",d:"存在的知识被成功取回的比例。",u:"ratio",
+     range:[{v:0,t:"全失败",c:"red"},{v:0.5,t:"部分成功",c:"amber"},{v:0.8,t:"高度稳定",c:"green"}],
+     interp:(v)=>v==null?"无数据":`召回成功率 ${(v*100).toFixed(1)}%`},
+  M20:{n:"L6知识使用率",short:"L6知识使用",d:"成功取回的知识在推理文本中被引用的比例。",u:"ratio",
+     range:[{v:0,t:"全未使用",c:"red"},{v:0.5,t:"部分使用",c:"amber"},{v:0.8,t:"充分使用",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识使用率 ${(v*100).toFixed(1)}%`},
+  M21:{n:"L7知识影响率",short:"L7知识影响",d:"使用的知识实际影响判定结论的比例。",u:"ratio",
+     range:[{v:0,t:"全未影响",c:"red"},{v:0.5,t:"部分影响",c:"amber"},{v:0.8,t:"高度影响",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识影响率 ${(v*100).toFixed(1)}%`},
+  M26:{n:"阶段误报承担率",short:"M26阶段误报",d:"误报 case 在某业务阶段存在断点的比例。",u:"ratio",
+     range:[{v:0,t:"无断点",c:"green"},{v:0.3,t:"部分承担",c:"amber"},{v:0.7,t:"高度承担",c:"red"}],
+     interp:(v)=>v==null?"无数据":`阶段误报承担率 ${(v*100).toFixed(1)}%`}
+};
+
 function fmtNum(v){if(v==null||isNaN(v))return'<span class="na">NA</span>';const a=Math.abs(v);
   if(a>=1e9)return(v/1e9).toFixed(2)+'B';
   if(a>=1e6)return(v/1e6).toFixed(2)+'M';
   if(a>=1e3)return(v/1e3).toFixed(1)+'K';
   return Math.round(v).toString();}
-const MI={
-  M13:{n:"误报率",short:"误报率",d:"Agent 上报漏洞中误报的比例。KG 和 No-KG 各自独立对比基线计算。",u:"ratio",
-     range:[{v:0,t:"无误报",c:"green"},{v:0.3,t:"中等",c:"amber"},{v:1,t:"全误报",c:"red"}],
-     interp:(v)=>v==null?"无数据":`误报率 ${(v*100).toFixed(2)}%`,
-     formula:"误报率 = 误报数 / (误报数 + 真正数)"},
-  M5:{n:"知识访问率",short:"知识访问",d:"Agent 工具调用中知识查询所占比例（交互级）。衡量 Agent 对知识的依赖程度。",u:"ratio",
-     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到知识访问":v>=0.15?`知识访问率 ${(v*100).toFixed(2)}%, 充分`:v>=0.05?`知识访问率 ${(v*100).toFixed(2)}%, 少量`:`知识访问率 ${(v*100).toFixed(2)}%, 占比低`,
-     formula:"kg_count / total_tool_calls (知识查询次数 / 总工具调用次数)"},
-  M6:{n:"知识交付率",short:"知识交付",d:"知识查询中平台有效回复的比例（交互级）。衡量知识质量。",u:"ratio",
-     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到知识交付":v>=0.8?`知识交付率 ${v*100}%, 充分`:v>=0.5?`知识交付率 ${v*100}%, 部分`:`知识交付率 ${v*100}%, 不足`,
-     formula:"successful_read_count / access_event_count (有效回复次数 / 总查询次数)"},
-  M11:{n:"记忆访问率",short:"记忆访问",d:"Agent 工具调用中记忆读取/检索所占比例。与知识访问率同算法。",u:"ratio",
-     range:[{v:0,t:"无访问",c:"red"},{v:0.05,t:"少量",c:"amber"},{v:0.15,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到记忆访问":v>=0.15?`记忆访问率 ${(v*100).toFixed(2)}%, 充分`:v>=0.05?`记忆访问率 ${(v*100).toFixed(2)}%, 少量`:`记忆访问率 ${(v*100).toFixed(2)}%, 占比低`,
-     formula:"memory_access_event_count / total_tool_calls (记忆读取次数 / 总工具调用次数)"},
-  M12:{n:"记忆交付率",short:"记忆交付",d:"记忆读取中成功返回的比例。与知识交付率同算法。",u:"ratio",
-     range:[{v:0,t:"无交付",c:"red"},{v:0.5,t:"部分",c:"amber"},{v:0.8,t:"充分",c:"green"}],
-     interp:(v)=>v==null?"未观测到记忆交付":v>=0.8?`记忆交付率 ${v*100}%, 充分`:v>=0.5?`记忆交付率 ${v*100}%, 部分`:`记忆交付率 ${v*100}%, 不足`,
-     formula:"memory_successful_read_count / memory_access_event_count (成功读取次数 / 记忆读取次数)"},
-  M7:{n:"行为偏移",short:"行为偏移",d:"KG vs No-KG 工具使用分布差异。0=完全相同，1=完全不同。",u:"ratio",
-     range:[{v:0,t:"无差异",c:"green"},{v:0.1,t:"轻微",c:"amber"},{v:0.3,t:"显著",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0.1?`行为偏移 ${v*100}%, 轻微`:v<0.3?`行为偏移 ${v*100}%, 明显`:`行为偏移 ${v*100}%, 显著`,
-     formula:"median(JSD_i), JSD_i=(0.5*KL(P||M)+0.5*KL(Q||M))/ln2, M=(P+Q)/2, P/Q=工具使用概率分布"},
-  M8:{n:"Token变化",short:"Token",d:"KG - No-KG 有效 token 消耗。负值=KG 更省。",u:"tokens",
-     range:[{v:-1,t:"KG 更省",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更耗",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 少用 ${fmtNum(Math.abs(v))} token`:v>0?`KG 多用 ${fmtNum(v)} token`:"token 消耗无差异",
-     formula:"median(KG_tokens - NoKG_tokens)"},
-  M9:{n:"步数变化",short:"步数",d:"KG - No-KG 推理步数。负值=KG 更少步。",u:"steps",
-     range:[{v:-1,t:"KG 更少",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更多",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 少 ${fmtNum(Math.abs(v))} 步`:v>0?`KG 多 ${fmtNum(v)} 步`:"步数无差异",
-     formula:"median(KG_steps - NoKG_steps)"},
-  M10:{n:"时长变化",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
-     range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
-     interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${fmtDur(-v)}`:v>0?`KG 慢 ${fmtDur(v)}`:"时长无差异",
-     formula:"median(KG_duration_ms - NoKG_duration_ms)"},
-  M15:{n:"L1知识需求率",short:"L1知识需求",d:"需要知识支撑的业务阶段占比。L0-L7 生命周期第一道关卡。",u:"ratio",
-     range:[{v:0,t:"无需求",c:"gray"},{v:0.5,t:"部分需求",c:"amber"},{v:0.8,t:"高度依赖",c:"green"}],
-     interp:(v)=>v==null?"无数据":`知识需求率 ${(v*100).toFixed(1)}%`,
-     formula:"l1_need_knowledge=True / 有效记录数"},
-  M16:{n:"L2知识发起率",short:"L2知识发起",d:"需要知识的阶段中实际发起知识访问的比例。L1=True 中 L2=True 的占比。",u:"ratio",
-     range:[{v:0,t:"未发起",c:"red"},{v:0.5,t:"部分发起",c:"amber"},{v:0.8,t:"充分发起",c:"green"}],
-     interp:(v)=>v==null?"无数据":`知识发起率 ${(v*100).toFixed(1)}%`,
-     formula:"l2_initiated=True / l1_need_knowledge=True"},
-  M17:{n:"L3查询准确率",short:"L3查询准确",d:"发起的知识查询中内容聚焦于当前阶段任务的比例。",u:"ratio",
-     range:[{v:0,t:"全不准确",c:"red"},{v:0.5,t:"部分准确",c:"amber"},{v:0.8,t:"高度准确",c:"green"}],
-     interp:(v)=>v==null?"无数据":`查询准确率 ${(v*100).toFixed(1)}%`,
-     formula:"l3_query_accurate=True / l2_initiated=True"},
-  M18:{n:"L4知识存在率",short:"L4知识存在",d:"准确查询的知识库中实际存在对应知识的比例。",u:"ratio",
-     range:[{v:0,t:"全不存在",c:"red"},{v:0.5,t:"部分存在",c:"amber"},{v:0.8,t:"充分存在",c:"green"}],
-     interp:(v)=>v==null?"无数据":`知识存在率 ${(v*100).toFixed(1)}%`,
-     formula:"l4_knowledge_exists=True / l3_query_accurate=True"},
-  M19:{n:"L5召回成功率",short:"L5召回成功",d:"存在的知识被成功取回的比例。衡量链路稳定性。",u:"ratio",
-     range:[{v:0,t:"全失败",c:"red"},{v:0.5,t:"部分成功",c:"amber"},{v:0.8,t:"高度稳定",c:"green"}],
-     interp:(v)=>v==null?"无数据":`召回成功率 ${(v*100).toFixed(1)}%`,
-     formula:"l5_retrieved=True / l4_knowledge_exists=True"},
-  M20:{n:"L6知识使用率",short:"L6知识使用",d:"成功取回的知识在推理文本中被引用的比例。",u:"ratio",
-     range:[{v:0,t:"全未使用",c:"red"},{v:0.5,t:"部分使用",c:"amber"},{v:0.8,t:"充分使用",c:"green"}],
-     interp:(v)=>v==null?"无数据":`知识使用率 ${(v*100).toFixed(1)}%`,
-     formula:"l6_used=True / l5_retrieved=True"},
-  M21:{n:"L7知识影响率",short:"L7知识影响",d:"使用的知识实际影响判定结论的比例。L0-L7 最后一道关卡。",u:"ratio",
-     range:[{v:0,t:"全未影响",c:"red"},{v:0.5,t:"部分影响",c:"amber"},{v:0.8,t:"高度影响",c:"green"}],
-     interp:(v)=>v==null?"无数据":`知识影响率 ${(v*100).toFixed(1)}%`,
-     formula:"l7_influenced=True / l6_used=True"},
-  M26:{n:"阶段误报承担率",short:"M26阶段误报",d:"误报 case 在某业务阶段存在断点的比例。按阶段分组展示。",u:"ratio",
-     range:[{v:0,t:"无断点",c:"green"},{v:0.3,t:"部分承担",c:"amber"},{v:0.7,t:"高度承担",c:"red"}],
-     interp:(v)=>v==null?"无数据":`阶段误报承担率 ${(v*100).toFixed(1)}%`,
-     formula:"阶段FP断点用例数 / FP用例总数"}
-};
-function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
-function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
-function ci(m){if(!m||m.ci_lower==null||m.ci_upper==null||isNaN(m.ci_lower)||isNaN(m.ci_upper))return"";const u=m.unit==="ratio"?"pp":(m.unit==="ms"?"s":(m.unit||""));const lo=m.unit==="ratio"?(m.ci_lower*100).toFixed(2):(m.unit==="ms"?(m.ci_lower/1000).toFixed(1):Number(m.ci_lower).toFixed(2));const hi=m.unit==="ratio"?(m.ci_upper*100).toFixed(2):(m.unit==="ms"?(m.ci_upper/1000).toFixed(1):Number(m.ci_upper).toFixed(2));return`<div class="ci">95% CI [${lo}, ${hi}] ${u}</div>`;}
-function row(m,l){const mid=l.split(" ")[0];const mi=MI[mid]||{n:l,u:""};const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足"};if(!m)return`<tr><td><b>${mi.n||l}</b><div style="font-size:14px;color:var(--sub)">${mi.d||""}</div></td><td class="na">未计算</td><td>-</td><td></td><td></td></tr>`;const c=m.calculation_status!=="CALCULATED"?`<span class="na">${m.calculation_status}<br><span style="font-size:14px">${RC[m.reason_code]||m.reason_code||""}</span></span>`:`<span class="${dc(m.estimate,m.unit)}">${fmt(m.estimate,m.unit)}</span>`;const n=m.n!=null?`<span class="ci">N=${m.n}</span>${m.median!=null?'<br><span class="ci">med '+fmt(m.median,m.unit)+'</span>':''}`:"-";const p=m.p_value!=null&&!isNaN(m.p_value)?`<span class="ci">p=${m.p_value<0.001?'<0.001':m.p_value.toFixed(3)}</span>`:(m.median!=null?'<span class="ci">Wilcoxon</span>':"");return`<tr><td><b>${mi.n||l}</b><div style="font-size:15px;color:var(--sub);line-height:1.5">${mi.d||""}<br><span style="color:var(--gray);font-size:14px">单位：${mi.u}</span></div></td><td class="num">${c}</td><td>${n}</td><td>${ci(m)}</td><td>${p}</td></tr>`;}
+function fmt(v,u){
+  if(v===null||v===undefined||isNaN(v))return'<span class="na">NA</span>';
+  if(u==="ratio")return (v*100).toFixed(2)+'<span class="ci">%</span>';
+  return Number(v).toFixed(3);}
 
-function selectReportTab(button,paneId){
-  document.querySelectorAll('[data-report-tab]').forEach(el=>{el.style.display=el.id===paneId?'block':'none';});
-  document.querySelectorAll('[data-report-tab-btn]').forEach(el=>{el.style.background='var(--panel)';el.style.color='var(--sub)';el.style.borderColor='var(--bd)';el.style.boxShadow='none';el.style.transform='none';el.setAttribute('aria-selected','false');});
-  button.style.background='var(--acc)';button.style.color='#fff';button.style.borderColor='var(--acc)';button.style.boxShadow='0 8px 20px rgba(124,58,237,.28)';button.style.transform='translateY(-2px)';button.setAttribute('aria-selected','true');
+function mCard(mid,m){
+  const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
+  const RC={"NO_DATA":"无数据","NO_TOOL_CALLS":"无工具调用","NO_ACCESS_EVENT":"无知识访问事件","NO_VALID":"数据不足","PENDING_FPR_ANALYSIS":"等待误报率分析","NO_NEED_KNOWLEDGE":"无知识需求","NO_INITIATED_ACCESS":"未发起访问","NO_QUERY_ACCURATE_ACCESS":"无准确查询","NO_EXISTS_ACCESS":"无知识存在","NO_RETRIEVED_ACCESS":"未召回","NO_USED_ACCESS":"未使用","NO_FP_CASE":"无误报case"};
+  if(!m||m.calculation_status!=="CALCULATED"){
+    const rc=m?m.reason_code||m.calculation_status:"无数据";
+    const reason=RC[rc]||rc||"无数据";
+    return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">${reason}</div></div>`;
+  }
+  const v=m.estimate;
+  if(v==null||isNaN(v))return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">estimate 缺失</div></div>`;
+  const interp=mi.interp?mi.interp(v):"";
+  let col="var(--gray)";
+  if(mi.range){
+    for(let i=mi.range.length-1;i>=0;i--){if(v>=mi.range[i].v){col=mi.range[i].c==="green"?"var(--green)":mi.range[i].c==="red"?"var(--red)":"var(--amber)";break;}}
+  }
+  const valStr=fmt(v,mi.u);
+  let rangeBar="";
+  if(mi.range&&mi.range.length>=2){
+    const min=mi.range[0].v,max=mi.range[mi.range.length-1].v;
+    const pct=Math.min(100,Math.max(0,((v-min)/(max-min))*100));
+    rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
+  }
+  var formulaHtml=mi.d?"<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+mi.d+"</div>":"";
+  var nHtml=m.n!=null?'<div class="mc-n">N='+m.n+'</div>':'';
+  return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div>'+rangeBar+formulaHtml+nHtml+'</div>';
 }
 
-function filterKgCases(btn,filter){
-  var container=btn.closest('details')||btn.closest('.card')||btn.parentElement;
-  if(!container)return;
-  var btns=container.querySelectorAll('.kg-filter-btn');
-  btns.forEach(function(b){b.style.opacity=b===btn?'1':'0.5';b.style.fontWeight=b===btn?'700':'400';});
-  var cards=container.querySelectorAll('.kg-case-card');
-  cards.forEach(function(card){
-    var impact=card.getAttribute('data-impact');
-    card.style.display=(filter==='ALL'||impact===filter)?'':'none';
-  });
-  var headers=container.querySelectorAll('.kg-group-header');
-  headers.forEach(function(header){
-    var next=header.nextElementSibling;
-    var hasVisible=false;
-    while(next&&!next.classList.contains('kg-group-header')){
-      if(next.classList.contains('kg-case-card')&&next.style.display!=='none'){hasVisible=true;break;}
-      next=next.nextElementSibling;
-    }
-    header.style.display=hasVisible?'':'none';
-  });
-}
-
-// 分阶段加载报告：运行中时加载已就绪的段，未就绪段显示占位
-async function loadPartialReport(id,st){
-  try{
-    const rs=await jget(`/api/v1/evaluations/${id}/report/status`);
-    let report={evaluation_id:id,status:st.status,evaluation_name:st.evaluation_name||""};
-    let r={};
-    // 加载基础报告（指标版或完整版）
-    if(rs.base){
-      try{
-        const base=await jget(`/api/v1/evaluations/${id}/report`);
-        r=base.report||base;
-        report.evaluation_name=report.evaluation_name||base.evaluation_name||"";
-      }catch(e){}
-    }
-    // 合并 FPR 段
-    if(rs.fpr){
-      try{
-        const fpr=await jget(`/api/v1/evaluations/${id}/report/fpr`);
-        if(fpr){
-          if(fpr.e2e_fpr_kg||fpr.e2e_fpr_nogk){
-            (r.metric_groups||[]).forEach(function(g){
-              if(g.category==='verify'||g.category==='verification'){
-                if(fpr.e2e_fpr_kg)g.e2e_fpr_kg=fpr.e2e_fpr_kg;
-                if(fpr.e2e_fpr_nogk)g.e2e_fpr_nogk=fpr.e2e_fpr_nogk;
-              }
-            });
-          }
-          if(fpr.mining_fpr_group&&!(r.metric_groups||[]).some(function(g){return g.category==='mining_fpr';})){
-            (r.metric_groups=r.metric_groups||[]).push(fpr.mining_fpr_group);
-          }
-          if(fpr.m13_top){(r.p0=r.p0||{}).M13=fpr.m13_top;}
-          if(fpr.group_m13){
-            (r.metric_groups||[]).forEach(function(g){
-              if(fpr.group_m13[g.task_id]){(g.p0=g.p0||{}).M13=fpr.group_m13[g.task_id];}
-            });
-          }
-        }
-      }catch(e){}
-    }
-    // 合并 KG 段
-    if(rs.kg){
-      try{
-        const kg=await jget(`/api/v1/evaluations/${id}/report/kg`);
-        if(kg&&kg.groups){
-          const kgMap={};
-          kg.groups.forEach(function(g){kgMap[g.task_id]=g;});
-          (r.metric_groups||[]).forEach(function(g){
-            if(kgMap[g.task_id]){
-              if(kgMap[g.task_id].per_case_kg_analysis)g.per_case_kg_analysis=kgMap[g.task_id].per_case_kg_analysis;
-              if(kgMap[g.task_id].case_results)g.case_results=kgMap[g.task_id].case_results;
-            }
-          });
-        }
-      }catch(e){}
-    }
-    report.report=r;
-    report._partial={base:rs.base,fpr:rs.fpr,kg:rs.kg,html:rs.html,lifecycle:rs.lifecycle,inventory:rs.inventory,running:true,status:st.status,progress:st.progress};
-    renderReport(report);
-  }catch(e){}
-}
-
-// ===== v2 生命周期报告段渲染 =====
-function _renderLifecycle(lc){
+// 生命周期报告段渲染
+function renderLifecycle(lc){
   if(!lc)return'';
   const bp=lc.breakpoint_distribution||{};
   const cs=lc.cause_summary||{};
@@ -690,7 +434,6 @@ function _renderLifecycle(lc){
   const ss=lc.suggestions_summary||{};
   const l0=lc.l0_origin_distribution||{};
 
-  // 断点分布矩阵
   const phases=['ENTRY_IDENTIFICATION','DATA_FLOW_TRACKING','VULN_PATTERN_RECOGNITION','SINK_POINT_LOCALIZATION','VULN_VERDICT_REPORTING','VULN_UNDERSTANDING','CODE_LOCALIZATION','VERIFICATION_EXECUTION','VERDICT_REPORTING'];
   const phaseLabels={'ENTRY_IDENTIFICATION':'入口识别','DATA_FLOW_TRACKING':'数据流追踪','VULN_PATTERN_RECOGNITION':'漏洞模式识别','SINK_POINT_LOCALIZATION':'Sink点定位','VULN_VERDICT_REPORTING':'漏洞判定与上报','VULN_UNDERSTANDING':'漏洞理解','CODE_LOCALIZATION':'代码定位','VERIFICATION_EXECUTION':'验证执行','VERDICT_REPORTING':'判定上报'};
   const levels=['L2','L3','L4','L5','L6','L7'];
@@ -705,38 +448,27 @@ function _renderLifecycle(lc){
     return '<tr><td style="font-size:14px">'+(phaseLabels[p]||p)+'</td>'+cells+'</tr>';
   }).join('');
 
-  // 成因汇总
   var causeTotal=Object.values(cs).reduce(function(a,b){return a+(b||0);},0);
   var causeBars=Object.keys(causeLabels).map(function(c){
     var v=cs[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
   }).join('');
 
-  // 效果标签分布
   var elTotal=(el.POSITIVE||0)+(el.NEGATIVE||0)+(el.NEUTRAL||0)+(el.NULL||0);
   var elBars=[['POSITIVE','正向(推动判定)','var(--green)'],['NEGATIVE','负向(导致误判)','var(--red)'],['NEUTRAL','中性(未推动)','var(--amber)'],['NULL','证据不足','var(--gray)']].map(function(e){
     var v=el[e[0]]||0;var pct=elTotal>0?(v/elTotal*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+e[1]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+e[2]+'"></div></div><span class="bar-v">'+v+'</span></div>';
   }).join('');
 
-  // L0 来源分布
   var l0Total=Object.values(l0).reduce(function(a,b){return a+(b||0);},0);
   var l0Bars=Object.keys(l0).map(function(k){
     var v=l0[k]||0;var pct=l0Total>0?(v/l0Total*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+k+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:var(--acc)"></div></div><span class="bar-v">'+v+'</span></div>';
   }).join('');
 
-  // 生命周期指标 M15-M21
-  var lcMetricsHtml=m15_21.map(function(m){
+  var lcMetricsHtml=m15_21.filter(function(m){return m.metric_id!=='M26';}).map(function(m){
     var mid=m.metric_id||'';
-    var mi=MI[mid]||{n:mid,short:mid,d:"",u:""};
-    if(m.calculation_status!=='CALCULATED'){
-      return '<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+mi.short+'</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">'+(m.reason_code||m.calculation_status||'无数据')+'</div></div>';
-    }
-    var v=m.estimate;
-    var pct=mi.u==='ratio'?(v*100).toFixed(1)+'%':fmtNum(v);
-    var interp=mi.interp?mi.interp(v):'';
-    return '<div class="mcard"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+mi.short+'</div><div class="mc-val">'+pct+'</div><div style="font-size:13px;color:var(--sub);margin-top:4px">'+interp+'</div>'+(m.n!=null?'<div class="mc-n">N='+m.n+'</div>':'')+'</div>';
+    return mCard(mid,m);
   }).join('');
 
   // M26 按阶段展示
@@ -746,7 +478,7 @@ function _renderLifecycle(lc){
     m26Html='<div class="card" style="margin-bottom:16px"><h3>M26 阶段误报承担率</h3><table><thead><tr><th>业务阶段</th><th>FP用例数</th><th>FP总数</th><th>承担率</th><th>95% CI</th></tr></thead><tbody>';
     Object.keys(m26.per_phase).forEach(function(p){
       var v=m26.per_phase[p];
-      m26Html+='<tr><td>'+(phaseLabels[p]||p)+'</td><td class="num">'+(v.fp_count||0)+'</td><td class="num">'+(v.total_fp||0)+'</td><td class="num">'+(v.estimate!=null?(v.estimate*100).toFixed(1)+'%':'-')+'</td><td style="font-size:14px;color:var(--sub)">'+(v.ci_lower!=null?('['+(v.ci_lower*100).toFixed(1)+'%, '+(v.ci_upper*100).toFixed(1)+'%]'):'-')+'</td></tr>';
+      m26Html+='<tr><td>'+(phaseLabels[p]||p)+'</td><td class="num">'+(v.numerator||0)+'</td><td class="num">'+(v.denominator||0)+'</td><td class="num">'+(v.estimate!=null?(v.estimate*100).toFixed(1)+'%':'-')+'</td><td style="font-size:14px;color:var(--sub)">'+(v.ci_lower!=null?('['+(v.ci_lower*100).toFixed(1)+'%, '+(v.ci_upper*100).toFixed(1)+'%]'):'-')+'</td></tr>';
     });
     m26Html+='</tbody></table></div>';
   }
@@ -764,7 +496,7 @@ function _renderLifecycle(lc){
   // Per-case 断点详情
   var pcHtml='';
   if(pc.length){
-    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">📋 逐 Case 断点详情 <span style="font-size:12px;color:var(--gray)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
+    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">逐 Case 断点详情 <span style="font-size:12px;color:var(--gray)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
     pc.forEach(function(c){
       var bps=c.breakpoints||[];
       if(!bps.length)return;
@@ -777,47 +509,45 @@ function _renderLifecycle(lc){
     pcHtml+='</div></details>';
   }
 
-  return '<div class="card" style="margin-bottom:16px"><h3>🔬 L0-L7 生命周期分析</h3>'
+  return '<div class="card" style="margin-bottom:16px"><h3>L0-L7 生命周期分析</h3>'
     +(l0Total>0?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">L0 知识原始来源分布</h4>'+l0Bars+'</div>':'')
     +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（阶段 × 级别）</h4>'
     +'<div style="overflow-x:auto"><table><thead><tr><th>业务阶段</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
     +matrixRows+'</tbody></table></div></div>'
-    +(lcMetricsHtml?'<div class="card" style="margin-bottom:16px"><h3>📊 生命周期指标 M15-M21</h3><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'+lcMetricsHtml+'</div></div>':'')
+    +(lcMetricsHtml?'<div class="card" style="margin-bottom:16px"><h3>生命周期指标 M15-M21</h3><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'+lcMetricsHtml+'</div></div>':'')
     +m26Html
     +'<div class="card" style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>'+causeBars+'<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：'+causeTotal+'</div></div>'
     +'<div class="card" style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">效果标签分布</h4>'+elBars+'<div style="font-size:14px;color:var(--sub);margin-top:8px">总记录数：'+elTotal+'</div></div>'
     +ssHtml+pcHtml;
 }
 
-// ===== v2 知识盘点报告段渲染 =====
-function _renderInventory(iv){
+// 知识盘点报告段渲染
+function renderInventory(iv){
   if(!iv)return'';
   var cov=iv.coverage||{};
   var missing=cov.missing_vuln_types||[];
   var covered=cov.covered_vuln_types||[];
   var items=iv.knowledge_items||[];
   var accessed=iv.accessed_items||[];
-  var quality=iv.quality_assessment||[];
+  var quality=iv.quality_assessment||iv.quality||[];
 
-  // 覆盖度
   var covRate=covered.length+missing.length>0?(covered.length/(covered.length+missing.length)*100).toFixed(1):'0.0';
 
-  // 质量标注
-  var qCorrect=quality.filter(function(q){return q.quality==='correct';}).length;
-  var qIncomplete=quality.filter(function(q){return q.quality==='incomplete';}).length;
-  var qOutdated=quality.filter(function(q){return q.quality==='outdated';}).length;
+  var qCorrect=Array.isArray(quality)?quality.filter(function(q){return q.quality==='correct';}).length:0;
+  var qIncomplete=Array.isArray(quality)?quality.filter(function(q){return q.quality==='incomplete';}).length:0;
+  var qOutdated=Array.isArray(quality)?quality.filter(function(q){return q.quality==='outdated';}).length:0;
 
-  return '<div class="card" style="margin-bottom:16px"><h3>📚 知识盘点</h3>'
+  return '<div class="card" style="margin-bottom:16px"><h3>知识盘点</h3>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px">'
     +'<div class="mcard"><div class="mc-label">覆盖漏洞类型</div><div class="mc-val" style="color:var(--green)">'+covered.length+'</div></div>'
     +'<div class="mcard"><div class="mc-label">未覆盖漏洞类型</div><div class="mc-val" style="color:var(--red)">'+missing.length+'</div></div>'
     +'<div class="mcard"><div class="mc-label">覆盖率</div><div class="mc-val">'+covRate+'%</div></div>'
-    +'<div class="mcard"><div class="mc-label">知识条目总数</div><div class="mc-val">'+items.length+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">知识条目总数</div><div class="mc-val">'+(items.length||(cov.total_vuln_types||0))+'</div></div>'
     +'<div class="mcard"><div class="mc-label">已访问知识</div><div class="mc-val" style="color:var(--acc)">'+accessed.length+'</div></div>'
     +'</div>'
     +(missing.length?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px;color:var(--red)">未覆盖的漏洞类型</h4><div style="display:flex;flex-wrap:wrap;gap:6px">'+missing.map(function(t){return'<span class="knd" style="background:rgba(248,113,113,.18);color:var(--red)">'+t+'</span>';}).join('')+'</div></div>':'')
     +(covered.length?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px;color:var(--green)">已覆盖的漏洞类型</h4><div style="display:flex;flex-wrap:wrap;gap:6px">'+covered.map(function(t){return'<span class="knd" style="background:rgba(74,222,128,.18);color:var(--green)">'+t+'</span>';}).join('')+'</div></div>':'')
-    +(quality.length?'<div><h4 style="font-size:16px;margin-bottom:8px">知识质量标注</h4><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'
+    +(quality&&quality.length?'<div><h4 style="font-size:16px;margin-bottom:8px">知识质量标注</h4><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'
       +'<div class="mcard"><div class="mc-label">正确</div><div class="mc-val" style="color:var(--green)">'+qCorrect+'</div></div>'
       +'<div class="mcard"><div class="mc-label">不完整</div><div class="mc-val" style="color:var(--amber)">'+qIncomplete+'</div></div>'
       +'<div class="mcard"><div class="mc-label">过时</div><div class="mc-val" style="color:var(--red)">'+qOutdated+'</div></div>'
@@ -825,633 +555,104 @@ function _renderInventory(iv){
     +'</div>';
 }
 
-function renderReport(d){
+// v2 报告主渲染
+function renderV2Report(d){
   var _evalId=d.evaluation_id||activeId||'';
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button>'+(DEBUG?'<div style="margin-left:auto;display:flex;gap:8px"><button class="btn" style="font-size:12px;padding:4px 10px" onclick="rerunSection(\''+_evalId+'\',\'fpr\')">重跑误报率</button><button class="btn" style="font-size:12px;padding:4px 10px" onclick="rerunSection(\''+_evalId+'\',\'kg\')">重跑知识分析</button></div>':'')+'</div><div id="rep-content" style="flex:1;overflow-y:auto"></div>';
-  var rep=$("rep-content");
-  if(!rep)return;
-  rep.style.overflowY='auto';
-  const r=d.report||{},p0=r.p0||{},p1=r.p1||{},p2=r.p2||{},h=r.diagnostic_hits||[],nt=r.notes||[],rw=r.raw_stats||{};
   var _partial=d._partial||null;
+  var base=d.base||{};
+  var metrics=base.metrics||{};
+  var metricResults=metrics.metric_results||[];
+  var statResults=metrics.statistical_results||[];
+  var invSum=base.inventory_summary||{};
+  var ccSum=base.causal_chain_summary||{};
 
-  // 指标卡片：名称 + 值 + 解读 + 参考范围条
-  function mCard(mid,m){
-    const mi=MI[mid]||{n:mid,short:mid,d:"",u:"",range:[],interp:()=>""};
-    const RC={"NO_STRATUM":"基线全部为漏洞型，无对照样本","NO_VALID_DENOMINATOR":mid==="M3"?"No-KG 全部失败，无回归可能":"No-KG 全部成功，无改善空间","NO_POSITIVE_GT":"无漏洞型基线","BOOTSTRAP_UNSTABLE":"样本量不足，bootstrap 不稳定","NO_VALID":"数据不足","INSUFFICIENT_DATA":"样本量不足","NO_DISCORDANT_PAIRS":"KG 与 No-KG 结果一致，无差异对","INSUFFICIENT_PAIRS":"配对数不足","ALL_ZERO_DIFFERENCES":"所有配对差异为零","TOOL_EVENT_MISSING":"工具事件缺失","TOKEN_INVALID":"Token 数据无效","STEP_INVALID":"步数数据无效","TIME_INVALID":"时长数据无效","FPR_ANALYSIS_FAILED":"误报率分析失败（基线与告警中心/漏洞中心数据匹配失败）","PENDING_FPR_ANALYSIS":"等待误报率分析","NO_DATA":"无数据","NO_CONFUSION_LABELS":"无混淆矩阵标签"};
-    if(!m||m.calculation_status!=="CALCULATED"){
-      const rc=m?m.reason_code||m.calculation_status:"无数据";
-      const reason=RC[rc]||rc||"无数据";
-      const nNote=m&&m.n!=null?` (N=${m.n})`:"";
-      return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">${reason}${nNote}</div></div>`;
-    }
-    const v=m.estimate;
-    if(v==null||isNaN(v))return `<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">${mid}</span> ${mi.short||""}</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">estimate 缺失</div></div>`;
-    const interp=mi.interp?mi.interp(v):"";
-    let col="var(--gray)";
-    if(mi.range){
-      for(let i=mi.range.length-1;i>=0;i--){if(v>=mi.range[i].v){col=mi.range[i].c==="green"?"var(--green)":mi.range[i].c==="red"?"var(--red)":"var(--amber)";break;}}
-    }
-    const valStr=fmt(v,m.unit);
-    let rangeBar="";
-    if(mi.range&&mi.range.length>=2){
-      const min=mi.range[0].v,max=mi.range[mi.range.length-1].v;
-      const pct=Math.min(100,Math.max(0,((v-min)/(max-min))*100));
-      rangeBar=`<div class="bar-track" style="margin-top:6px;height:4px"><div class="bar-fill" style="width:${pct}%;background:${col}"></div></div>`;
-    }
-    var formulaHtml=mi.formula?"<details style='margin-top:4px'><summary style='cursor:pointer;font-size:12px;color:var(--gray)'>计算公式</summary><div style='font-size:12px;color:var(--sub);font-family:monospace;background:var(--p2);padding:4px 6px;border-radius:4px;margin-top:4px'>"+mi.formula+"</div></details>":"";
-    // 混淆矩阵值：显示计算过程
-    if(m.cm){
-      var cmParts=[];
-      if(mid==="M13"){
-        cmParts.push("误报="+m.cm.fp,"真正="+m.cm.tp);
-        cmParts.push("→ "+m.cm.fp+"/("+m.cm.fp+"+"+m.cm.tp+")");
-      }
-      if(cmParts.length){
-        formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px'>"+cmParts.join("，")+"</div>";
-      }
-    }
-    // M13 额外展示中文公式与具体数值
-    if(mid==="M13"&&m.formulaDetail){
-      formulaHtml+="<div style='font-size:12px;color:var(--sub);margin-top:4px;font-family:monospace'>"+m.formulaDetail+"</div>";
-    }
-    return '<div class="mcard" style="border-color:'+col+'33"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+(mi.short||"")+'</div><div class="mc-val" style="color:'+col+'">'+valStr+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px;line-height:1.4">'+(m.d||mi.d||"")+'</div>'+rangeBar+formulaHtml+'</div>';
+  // 指标分组
+  var mById={};
+  metricResults.forEach(function(m){mById[m.metric_id]=m;});
+  // M5/M6/M11/M12/M13 基础指标
+  var baseMetrics=['M5','M6','M11','M12','M13'].map(function(mid){return mCard(mid,mById[mid]);}).join('');
+  // M15-M21 生命周期指标（从 lifecycle 段取）
+  var lcMetrics='';
+  if(d.lifecycle&&(d.lifecycle.lifecycle_metrics||[]).length){
+    lcMetrics=(d.lifecycle.lifecycle_metrics||[]).filter(function(m){return m.metric_id!=='M26';}).map(function(m){return mCard(m.metric_id,m);}).join('');
   }
 
-  // 知识图谱与记忆介入情况：两种方案分别统计
-  function buildKnowledgeHtml(group){
-  const groupP1=group?(group.p1||{}):p1;
-  const kar=groupP1.M5,kdr=groupP1.M6;
-  const mar=groupP1.M11,mdr=groupP1.M12;
-  const kgAccess=kar&&kar.calculation_status==="CALCULATED"?kar.estimate:null;
-  const kgDelivery=kdr&&kdr.calculation_status==="CALCULATED"?kdr.estimate:null;
-  const memAccess=mar&&mar.calculation_status==="CALCULATED"?mar.estimate:null;
-  const memDelivery=mdr&&mdr.calculation_status==="CALCULATED"?mdr.estimate:null;
-  const taskId=group&&group.task_id;
-  const kgData=taskId?(d.knowledge_interactions||[]).filter(k=>k.task_run_id.includes("-"+taskId+"-KG")):(d.knowledge_interactions||[]);
-
-  // 分别提取知识图谱交互和记忆交互
-  const kgAll=[],memAll=[];
-  kgData.forEach(k=>{
-    (k.interactions||[]).forEach(i=>kgAll.push(i));
-    const mem=k.memory||{};
-    (mem.interactions||[]).forEach(i=>memAll.push(i));
-  });
-
-  // 统计辅助函数：计算主动查询、返回结果、有效返回、返回失败、知识盲区
-  function _stats(arr){
-    const callCount=arr.filter(function(iv){return iv.type==="CALL";}).length;
-    const resultCount=arr.filter(function(iv){return iv.type==="RESULT";}).length;
-    const noResponse=Math.max(0,callCount-resultCount);
-    var fail=0,blind=0,success=0;
-    arr.forEach(function(iv){
-      if(iv.type!=="RESULT"||!iv.output)return;
-      var out=(iv.output||"").toLowerCase();
-      if(out.indexOf("terminated")>=0||out.indexOf("timeout")>=0||out.indexOf("error")>=0||out.indexOf("404")>=0||out.indexOf("failed")>=0||out.indexOf("exception")>=0||out.indexOf("unreachable")>=0||out.indexOf("connection refused")>=0){
-        fail++;
-      }else if(out.indexOf("知识库暂无此类知识")>=0||out.indexOf("no memory")>=0||out.indexOf("not found")>=0||out.indexOf("empty")>=0){
-        blind++;
-      }else{
-        success++;
-      }
-    });
-    fail+=noResponse;
-    return {callCount:callCount,resultCount:resultCount,noResponse:noResponse,fail:fail,blind:blind,success:success};
-  }
-
-  // 单个方案统计区块
-  function _sectionHtml(title,icon,stats,accessRate,deliveryRate){
-    const active=(accessRate!==null&&accessRate>0)||stats.callCount>0;
-    var html="<div style='display:flex;gap:12px;align-items:center;margin-bottom:8px'>";
-    html+=active?"<span style='font-size:24px'>"+icon+"</span>":"<span style='font-size:24px'>❌</span>";
-    html+="<div><span style='font-weight:600;font-size:15px'>"+title+(active?"已介入":"未介入")+"</span>";
-    html+="<div style='font-size:13px;color:var(--sub)'>主动查询：<b style='color:var(--txt)'>"+stats.callCount+"</b> 次 · 返回结果：<b style='color:var(--txt)'>"+stats.resultCount+"</b> 次</div></div></div>";
-    if(stats.callCount>0){
-      html+="<div style='display:flex;gap:12px;flex-wrap:wrap;margin-bottom:12px;padding-left:36px'>";
-      html+="<span class='bdg b-COMPLETED' style='font-size:13px'>有效返回 "+stats.success+"</span>";
-      html+="<span class='bdg b-FAILED' style='font-size:13px'>返回失败 "+stats.fail+"</span>";
-      html+="<span class='bdg b-CREATED' style='font-size:13px'>知识盲区 "+stats.blind+"</span>";
-      if(accessRate!=null&&!isNaN(accessRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>访问率 "+(accessRate*100).toFixed(2)+"%</span>";
-      if(deliveryRate!=null&&!isNaN(deliveryRate))html+="<span class='bdg' style='font-size:13px;background:var(--p3);color:var(--sub)'>交付率 "+(deliveryRate*100).toFixed(2)+"%</span>";
-      html+="</div>";
-    }
-    return html;
-  }
-
-  const kgStats=_stats(kgAll);
-  const memStats=_stats(memAll);
-  const kgActive=(kgAccess!==null&&kgAccess>0)||kgStats.callCount>0;
-  let kgHtml="";
-  kgHtml+=_sectionHtml("知识图谱","🔍",kgStats,kgAccess,kgDelivery);
-  kgHtml+=_sectionHtml("记忆","🧠",memStats,memAccess,memDelivery);
-
-  // 知识对漏洞判定的影响（正向/负向/中性），来源 per_case_kg_analysis.impact
-  var pcAnalysis=group?(group.per_case_kg_analysis||[]):(r.per_case_kg_analysis||[]);
-  if(pcAnalysis.length){
-    var posCount=pcAnalysis.filter(p=>p.impact==="POSITIVE").length;
-    var negCount=pcAnalysis.filter(p=>p.impact==="NEGATIVE").length;
-    var neuCount=pcAnalysis.filter(p=>p.impact==="NEUTRAL").length;
-    kgHtml+="<div style='display:flex;gap:8px;margin-bottom:12px'>";
-    kgHtml+="<button class='bdg b-COMPLETED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"POSITIVE\")'>正向 "+posCount+"</button>";
-    kgHtml+="<button class='bdg b-FAILED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEGATIVE\")'>负向 "+negCount+"</button>";
-    kgHtml+="<button class='bdg b-CREATED kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;opacity:0.5' onclick='filterKgCases(this,\"NEUTRAL\")'>中性 "+neuCount+"</button>";
-    kgHtml+="<button class='bdg kg-filter-btn' style='font-size:14px;cursor:pointer;border:none;background:var(--p2);color:var(--sub);opacity:1;font-weight:700' onclick='filterKgCases(this,\"ALL\")'>全部 "+pcAnalysis.length+"</button>";
-    kgHtml+="</div>";
-  }
-
-  // 基线漏洞 per-case 分析
-  var caseResults=group?(group.case_results||[]):(d.case_results||[]);
-  if(caseResults.length){
-    kgHtml+="<div class='kg-group-header' style='font-size:15px;margin-bottom:8px'>基线漏洞逐个对比：<b>"+caseResults.length+"</b> 个</div>";
-    caseResults.forEach(function(c,idx){
-      var conf=c.confusion||"NA";
-      var nogkConf=c.nogk_confusion||"NA";
-      function confBadge(label,conf){
-        var isCorrect=conf==="TP"||conf==="TN";
-        var isFound=conf==="TP"||conf==="FP";
-        var icon=isCorrect?'✅':'❌';
-        var color=isCorrect?"var(--green)":"var(--red)";
-        var judgment=isFound?"漏洞":"未发现";
-        var correctness=isCorrect?"正确":"错误";
-        return "<span style='font-weight:600;font-size:13px;color:"+color+"'>"+icon+" "+label+": "+judgment+" ("+correctness+")</span>";
-      }
-      var pcKa=pcAnalysis.find(function(p){return p.case_id===c.case_id;});
-      var _impact=(pcKa&&pcKa.impact)?pcKa.impact:"NEUTRAL";
-      kgHtml+="<div class='kg-case-card' data-impact='"+_impact+"' style='background:var(--p2);border-radius:10px;padding:12px;margin-bottom:10px'>";
-      kgHtml+="<div style='display:flex;gap:8px;align-items:center;margin-bottom:6px'>";
-      kgHtml+="<span class='bdg b-COMPLETED' style='font-size:11px'>问题"+(idx+1)+"</span>";
-      var _exp=c.expected_label||"";
-      var _expBadge=_exp==="VULNERABLE"?"<span class='bdg b-FAILED' style='font-size:11px'>基线: 漏洞</span>":_exp==="NON_VULNERABLE"?"<span class='bdg b-CREATED' style='font-size:11px'>基线: 非漏洞</span>":"";
-      kgHtml+=_expBadge;
-      kgHtml+="<span style='font-weight:600;font-size:14px'>"+(c.vulnerability_type||c.source_function||c.source_file||"漏洞")+"</span>";
-      kgHtml+="<span style='font-size:12px;color:var(--gray);font-family:monospace'>"+(c.case_id||"").slice(0,8)+"</span>";
-      kgHtml+="</div>";
-      // per-case 知识介入分析（仅在知识图谱已介入时显示，否则与上方"未介入"矛盾）
-      // AI 分析结论放最前面
-      if(pcKa&&kgActive&&(pcKa.reason||pcKa.query_summary)){
-        var impColor=pcKa.impact==="POSITIVE"?"var(--green)":pcKa.impact==="NEGATIVE"?"var(--red)":"var(--amber)";
-        var impText=pcKa.impact==="POSITIVE"?"正向 ✅":pcKa.impact==="NEGATIVE"?"负向 ❌":"中性 ⏳";
-        var jText=conf==="TP"?"漏洞（真阳性）":conf==="FP"?"漏洞（假阳性）":conf==="FN"?"未找到（假阴性）":conf==="TN"?"非漏洞（真阴性）":"未判定";
-        kgHtml+="<div style='background:var(--p3);border-radius:8px;padding:10px;margin-bottom:8px'>";
-        kgHtml+="<div style='font-weight:600;font-size:13px;margin-bottom:4px'>📝 AI 分析结论</div>";
-        kgHtml+="<div style='display:flex;gap:16px;margin-bottom:4px'><span style='font-size:13px'>判定: <b>"+jText+"</b></span><span style='font-size:13px;color:"+impColor+"'>影响: "+impText+"</span></div>";
-        if(pcKa.reason)kgHtml+="<div style='font-size:12px;color:var(--txt);margin-top:4px;line-height:1.5'>"+pcKa.reason+"</div>";
-        kgHtml+="</div>";
-      }
-      var _hasNogk=r.has_nogk!==false;
-      kgHtml+="<div style='display:flex;gap:16px;margin-bottom:6px'>"+confBadge("KG",conf)+(_hasNogk?confBadge("No-KG",nogkConf):"")+"</div>";
-      // JSONL trace 文件名（KG/NO-KG 各自匹配到的 session 所在文件）
-      function jsonlName(uri,sid){
-        if(!uri)return '';
-        var base=uri.split('/').pop();
-        // 目录 → session_id.jsonl；单文件 → 文件名
-        if(base&&(base.endsWith('.jsonl')||base.endsWith('.db')))return base;
-        if(sid)return sid+'.jsonl';
-        return base||'';
-      }
-      var kgJsonl=jsonlName(c.kg_source_uri,c.session_id);
-      var nogkJsonl=_hasNogk?jsonlName(c.nogk_source_uri,c.nogk_session_id):"";
-      if(kgJsonl||nogkJsonl){
-        kgHtml+="<div style='font-size:11px;color:var(--gray);margin-top:2px;font-family:monospace'>";
-        if(kgJsonl)kgHtml+="KG trace: "+kgJsonl;
-        if(kgJsonl&&nogkJsonl)kgHtml+=" · ";
-        if(nogkJsonl)kgHtml+="NO-KG trace: "+nogkJsonl;
-        kgHtml+="</div>";
-      }
-      if(c.description){
-        var desc=String(c.description).replace(/</g,"&lt;");
-        var firstSec=desc.indexOf("## ",3); if(firstSec>0)desc=desc.slice(0,firstSec);
-        kgHtml+="<div style='font-size:13px;color:var(--sub);margin-top:4px;line-height:1.5'>"+desc.slice(0,300)+"</div>";
-      }
-      // 知识与记忆交互明细
-      if(pcKa&&kgActive){
-        // 知识图谱交互
-        var ivs=pcKa.interactions||[];
-        if(ivs.length){
-          kgHtml+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
-          kgHtml+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🔍 知识交互（"+ivs.length+" 条）</summary>";
-          ivs.forEach(function(iv,i){
-            kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            var src=iv.session_id?("session: "+String(iv.session_id)):"";
-            if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>知识"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
-            var qp=iv.command_parsed||iv.question||"";
-            var op=iv.output_parsed||iv.answer||"";
-            var rawQ=iv.command||iv.question||"";
-            var rawA=iv.answer||"";
-            if(qp){
-              kgHtml+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
-            }
-            if(op){
-              kgHtml+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
-            }
-            if(rawQ||rawA){
-              kgHtml+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
-              if(rawQ)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
-              if(rawA)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
-              kgHtml+="</details>";
-            }
-            kgHtml+="</div>";
-          });
-          kgHtml+="</details>";
-        }
-        // 记忆交互
-        var memIvs=pcKa.memory_interactions||[];
-        if(memIvs.length){
-          kgHtml+="<details style='margin-top:6px;border-top:1px solid var(--border);padding-top:6px'>";
-          kgHtml+="<summary style='font-size:12px;font-weight:600;color:var(--sub);margin-bottom:4px;cursor:pointer'>🧠 记忆交互（"+memIvs.length+" 条）</summary>";
-          memIvs.forEach(function(iv,i){
-            kgHtml+="<div style='margin-bottom:6px;padding:6px;background:var(--p2);border-radius:6px'>";
-            var src=iv.session_id?("session: "+String(iv.session_id)):"";
-            if(iv.timestamp){src+=" · "+fmtTs(iv.timestamp);}
-            kgHtml+="<div style='font-size:11px;color:var(--gray);margin-bottom:2px'>记忆"+(i+1)+"："+(iv.tool||"")+(src?" <span style='color:var(--gray);font-size:10px'>["+src+"]</span>":"")+"</div>";
-            var qp=iv.command_parsed||iv.question||"";
-            var op=iv.output_parsed||iv.answer||"";
-            var rawQ=iv.command||iv.question||"";
-            var rawA=iv.answer||"";
-            if(qp){
-              kgHtml+="<div style='font-size:12px;color:var(--txt);line-height:1.4'><b>查询:</b> "+qp.replace(/</g,"&lt;")+"</div>";
-            }
-            if(op){
-              kgHtml+="<div style='font-size:12px;color:var(--sub);line-height:1.4;margin-top:2px'><b>回答:</b> "+op.replace(/</g,"&lt;")+"</div>";
-            }
-            if(rawQ||rawA){
-              kgHtml+="<details style='margin-top:2px'><summary style='font-size:11px;color:var(--gray);cursor:pointer'>原始数据</summary>";
-              if(rawQ)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawQ).replace(/</g,"&lt;").slice(0,400)+"</code></div>";
-              if(rawA)kgHtml+="<div style='font-size:11px;color:var(--gray);word-break:break-all'><code>"+String(rawA).replace(/</g,"&lt;").slice(0,600)+"</code></div>";
-              kgHtml+="</details>";
-            }
-            kgHtml+="</div>";
-          });
-          kgHtml+="</details>";
-        }
-      }
-      kgHtml+="</div>";
-    });
-  }
-  return kgHtml;
-  }
+  // 因果链汇总
+  var causeSum=ccSum.cause_summary||{};
+  var effectSum=ccSum.effect_label_distribution||{};
+  var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
+  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'G根因(内容有误)'};
+  var causeBars=Object.keys(causeLabels).map(function(c){
+    var v=causeSum[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+  var effectTotal=(effectSum.POSITIVE||0)+(effectSum.NEGATIVE||0)+(effectSum.NEUTRAL||0)+(effectSum.NULL||0);
+  var effectBars=[['POSITIVE','正向(推动判定)','var(--green)'],['NEGATIVE','负向(导致误判)','var(--red)'],['NEUTRAL','中性(未推动)','var(--amber)'],['NULL','证据不足','var(--gray)']].map(function(e){
+    var v=effectSum[e[0]]||0;var pct=effectTotal>0?(v/effectTotal*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+e[1]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+e[2]+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
 
   // 评测元信息
-  const evalName=d.evaluation_name||d.evaluation_id;
-  const vbenchName=d.vbench_project_name||"";
-  const entriesInfo=d.entries_info||[];
-  const kgInfo=entriesInfo.find(e=>e.condition==="KG")||{};
-  const nogkInfo=entriesInfo.find(e=>e.condition==="NOGK")||{};
+  var entriesInfo=d.entries_info||(base.entries_info||[]);
+  var kgInfo=entriesInfo.find(function(e){return e.condition==="KG";})||{};
+  var bsrc=d.benchmark_source||(base.benchmark_source||'vuln_center');
+  var vcProj=d.vc_source_project_name||(base.vc_source_project_name||'');
+  var vcTask=d.vc_source_task_name||(base.vc_source_task_name||'');
+  var evalMode=d.eval_mode||(base.eval_mode||'dev');
 
-  rep.innerHTML=`
+  var html=`
   ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
     <div style="width:20px;height:20px;border:2px solid var(--acc);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0"></div>
-    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容，未完成段会标注"计算中"${_partial.base?'':' · 基础报告计算中'}${_partial.fpr?'':' · 误报率分析计算中'}${_partial.kg?'':' · 知识图谱分析计算中'}${_partial.lifecycle?'':' · 生命周期分析计算中'}${_partial.inventory?'':' · 知识盘点计算中'}</div></div>
+    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容${d.lifecycle?'':' · 生命周期分析计算中'}${d.inventory?'':' · 知识盘点计算中'}</div></div>
   </div>`:""}
   <div style="margin-bottom:22px">
-    <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
+    <h2 style="font-size:22px;margin-bottom:6px">${d.evaluation_name||d.evaluation_id}</h2>
     <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
-    ${(r.warnings&&r.warnings.length)?`<div style="background:rgba(251,191,36,.12);border:1px solid var(--amber);border-radius:8px;padding:10px 14px;margin-bottom:8px;font-size:14px"><b>告警：</b><ul style="margin:6px 0 0;padding-left:20px">${r.warnings.map(w=>`<li>${w}</li>`).join("")}</ul></div>`:""}
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
-      <div><span style="color:var(--gray)">KG 项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
-      ${(r.has_nogk!==false)?`<div><span style="color:var(--gray)">No-KG 项目：</span><b>${nogkInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${nogkInfo.task_name||"-"}</b></div>`:""}
-      <div><span style="color:var(--gray)">基线来源：</span><b>${d.benchmark_source==='vuln_center'?`漏洞中心 · ${d.vc_source_project_name||'-'} / ${d.vc_source_task_name||'-'}`:(vbenchName||'无（无 GT 模式）')}</b></div>
+      <div><span style="color:var(--gray)">项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
+      <div><span style="color:var(--gray)">基线来源：</span><b>${bsrc==='vuln_center'?('漏洞中心 · '+vcProj+' / '+vcTask):'测评数据集'}</b></div>
+      <div><span style="color:var(--gray)">评测模式：</span><b style="color:var(--acc)">${evalMode==='dev'?'开发态':'运行态'}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
     </div>
   </div>
 
-  <!-- 1. 按评测类别展示详情 -->
-  ${(()=>{
-    const rawGroups=r.metric_groups||[];
-    const mg=(rawGroups.length?rawGroups:[{task_id:"",label:"评测结果",p0,p1,p2,diagnostic_hits:h}]).slice().sort((a,b)=>{
-      const order={e2e:0,mining:1,verify:2};return (order[a.category]??3)-(order[b.category]??3);
-    });
-    function _statsTable(tid,label){
-      const tools=d.tool_stats||[];const res=d.resource_stats||[];const oc=d.outcome_details||[];
-      const hasNogk=(r.has_nogk!==false);
-      const kgTool=tools.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||tools.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkTool=hasNogk?(tools.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||tools.find(t=>t.task_run_id.includes("NOGK"))||{}):{};
-      const kgRes=res.find(t=>t.task_run_id.includes("-"+tid+"-KG"))||res.find(t=>t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK"))||{};
-      const nogkRes=hasNogk?(res.find(t=>t.task_run_id.includes("-"+tid+"-NOGK"))||res.find(t=>t.task_run_id.includes("NOGK"))||{}):{};
-      const kgOc=oc.find(o=>o.task_run_id.includes("-"+tid+"-KG"))||oc.find(o=>o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK"))||{};
-      const nogkOc=hasNogk?(oc.find(o=>o.task_run_id.includes("-"+tid+"-NOGK"))||oc.find(o=>o.task_run_id.includes("NOGK"))||{}):{};
-      const kgFound=kgTool.finding_count||0;const nogkFound=nogkTool.finding_count||0;
-      const kgFP=kgTool.false_positive_count||0;const nogkFP=nogkTool.false_positive_count||0;
-      const kgRecv=kgTool.analyze_received_count||(kgFound+kgFP);const nogkRecv=nogkTool.analyze_received_count||(nogkFound+nogkFP);
-      const isVerify=label.includes("验证");
-      const kgKi=(d.knowledge_interactions||[]).find(k=>k.task_run_id.includes("-"+tid+"-KG"))||{};
-      const kgKg=(kgKi.interactions||[]).filter(iv=>iv.type==="CALL").length;
-      const nogkKg=0;
-      const kgMem=((kgKi.memory||{}).interactions||[]).filter(iv=>iv.type==="CALL").length;
-      const nogkMem=0;
-      const kgTokens=kgRes.tokens||0;const nogkTokens=nogkRes.tokens||0;
-      const kgTools=kgTool.total_tools||0;const nogkTools=nogkTool.total_tools||0;
-      const kgSteps=kgRes.steps||0;const nogkSteps=nogkRes.steps||0;
-      const kgDur=kgRes.duration||0;const nogkDur=nogkRes.duration||0;
-      const group=mg.find(g=>g.task_id===tid);
-      const cr=Array.isArray(group&&group.case_results)?group.case_results:[];
-      const baseline=cr.length||(d.baseline_count||0);
-      const vulnN=cr.filter(c=>c.expected_label==="VULNERABLE").length;
-      const nonVulnN=cr.filter(c=>c.expected_label==="NON_VULNERABLE").length;
-      const nogkTh=hasNogk?'<th>No-KG（对照）</th>':'';
-      const nc=v=>hasNogk?`<td class="num">${v}</td>`:'';
-      return `<div class="card" style="margin-bottom:16px">
-        <h3>📊 ${label} — 漏洞检测统计</h3>
-        <div style="font-size:16px;margin-bottom:12px">基准漏洞数：<b style="font-size:18px">${baseline}</b>${cr.length?`<span style="margin-left:12px;font-size:14px;color:var(--gray)">漏洞 <b>${vulnN}</b> · 非漏洞 <b>${nonVulnN}</b></span>`:""}</div>
-        <table><tr><th>统计项</th><th>KG（开知识图谱与记忆）</th>${nogkTh}</tr>
-        <tr><td>${isVerify?"验证接收总数":"提交疑似漏洞数"}</td><td class="num">${kgRecv}</td>${nc(nogkRecv)}</tr>
-        <tr><td>${isVerify?"确认漏洞数":"Agent 确认漏洞数"}</td><td class="num">${kgFound}</td>${nc(nogkFound)}</tr>
-        <tr><td>误报数（非漏洞）</td><td class="num">${kgFP}</td>${nc(nogkFP)}</tr>
-        <tr><td>知识图谱查询次数</td><td class="num">${kgKg}</td>${nc(nogkKg)}</tr>
-        <tr><td>记忆查询次数</td><td class="num">${kgMem}</td>${nc(nogkMem)}</tr>
-        <tr><td>Token 消耗</td><td class="num">${fmtNum(kgTokens)}</td>${nc(fmtNum(nogkTokens))}</tr>
-        <tr><td>工具调用次数</td><td class="num">${kgTools}</td>${nc(nogkTools)}</tr>
-        <tr><td>执行步数</td><td class="num">${kgSteps}</td>${nc(nogkSteps)}</tr>
-        <tr><td>运行时长</td><td class="num">${fmtDur(kgDur)}</td>${nc(fmtDur(nogkDur))}</tr>
-        <tr><td>检测结果</td><td class="num">${kgOc.outcome||"N/A"}</td>${nc(nogkOc.outcome||"N/A")}</tr>
-        <tr><td>验证结果</td><td class="num">${kgOc.validation||"N/A"}</td>${nc(nogkOc.validation||"N/A")}</tr>
-        </table></div>`;
-    }
-    function _metricCards(gp0,gp1,gp2,glabel,cat){
-      const isVerify=cat==="verify";
-      function _absMetric(metric,key,desc){
-        if(!metric) return null;
-        if(metric.calculation_status!=="CALCULATED") return metric;
-        const method=metric.method||{};
-        const val=method[key];
-        if(val==null) return {calculation_status:"NO_DATA",reason_code:"NO_DATA",n:metric.n};
-        var cm=null;
-        var formulaDetail="";
-        if(key.endsWith("_kg")){
-          if(method.tp_kg!=null){cm={tp:method.tp_kg,fp:method.fp_kg,fn:method.fn_kg,tn:method.tn_kg};}
-          formulaDetail=method.formula_kg||"";
-        }else{
-          if(method.tp_n!=null){cm={tp:method.tp_n,fp:method.fp_n,fn:method.fn_n,tn:method.tn_n};}
-          formulaDetail=method.formula_nogk||"";
-        }
-        return {estimate:val,calculation_status:"CALCULATED",n:metric.n,unit:metric.unit||"ratio",method:{},d:desc,cm:cm,formulaDetail:formulaDetail};
-      }
-      const hasNogk=(r.has_nogk!==false); // 默认 true（兼容旧报告）
-      const groups=[
-        ["① KG vs 基线","开知识图谱条件下的漏洞判定准确性",
-          [["M13",_absMetric(gp0.M13,"fpr_kg","KG 条件下与基线对比的误报率")]]],
-        ...(hasNogk?[["② No-KG vs 基线","无知识图谱条件下的漏洞判定准确性",
-          [["M13",_absMetric(gp0.M13,"fpr_nogk","No-KG 条件下与基线对比的误报率")]]]]:[]),
-        ["③ 作用机制","揭示知识访问/交付/记忆的介入情况"+(hasNogk&&!isVerify?"（含行为偏移）":""),
-          (isVerify||!hasNogk)?[["M5",gp1.M5],["M6",gp1.M6],["M11",gp1.M11],["M12",gp1.M12]]:[["M5",gp1.M5],["M6",gp1.M6],["M7",gp1.M7],["M11",gp1.M11],["M12",gp1.M12]]],
-        ...(!isVerify&&hasNogk?[["④ 成本效率","对比 KG 与 No-KG 的资源消耗",
-          [["M8",gp2.M8],["M9",gp2.M9],["M10",gp2.M10]]]]:[])
-      ];
-      return `${groups.map(g=>`<div style="margin-bottom:14px">
-        <div style="display:flex;align-items:center;gap:8px;margin-bottom:8px;padding:6px 12px;background:var(--p3);border-left:4px solid var(--acc);border-radius:0 8px 8px 0">
-          <span style="font-weight:700;font-size:15px">${g[0]}</span>
-          <span style="font-size:12px;color:var(--sub)">— ${g[1]}</span>
-        </div>
-        <div class="mcards" style="display:grid;grid-template-columns:repeat(4,1fr);gap:12px">
-          ${g[2].map(m=>mCard(m[0],m[1])).join("")}
-        </div>
-      </div>`).join("")}`;
-    }
-    function _diagnostics(hits){
-      return ""; // 诊断发现不再在 UI 单独展示
-    }
-    function _buildFprHtml(g){
-      const fpr=g.fpr_analysis||{};
-      const details=fpr.match_details||[];
-      const fprPct=fpr.fpr!=null?(fpr.fpr*100).toFixed(2)+'%':'—';
-      const tp=fpr.tp||0,fp=fpr.fp||0,matched=fpr.matched||0;
-      const totalF=fpr.total_findings||0,totalBl=fpr.total_baseline||0;
-      const isMining=g.category==='mining_fpr';
-      const srcLabel=isMining?'告警中心数据':'漏洞中心数据';
-      const srcIcon=isMining?'📈':'📊';
-      const srcDesc=isMining?'基线 vs 告警中心数据误报率分析':'基线 vs 漏洞中心数据误报率分析';
-      const stats=`<div style="display:flex;gap:24px;flex-wrap:wrap;margin-bottom:8px">
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--red)">${fprPct}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">误报率</div></div>
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--txt)">${totalF}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">${srcLabel}</div></div>
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--acc)">${matched}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">已匹配</div></div>
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--green)">${tp}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">真正(基线=漏洞)</div></div>
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--amber)">${fp}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">误报(基线=非漏洞)</div></div>
-        <div style="text-align:center;min-width:100px"><div style="font-size:36px;font-weight:700;color:var(--txt)">${totalBl}</div><div style="font-size:14px;color:var(--sub);margin-top:4px">基线总数</div></div>
-      </div>
-      <div style="font-size:13px;color:var(--sub);margin-top:8px;padding:8px 12px;background:var(--p2);border-radius:6px">
-        <b>计算公式：</b>误报率 = 误报数 / (误报数 + 真正数) = ${fp} / (${fp} + ${tp}) = ${fprPct}<br>
-        <span style="font-size:12px;color:var(--gray)">误报 = 匹配到"非漏洞"基线的漏洞上报；真正 = 匹配到"漏洞"基线的漏洞上报；未匹配的漏洞不参与计算</span>
-      </div>`;
-      const rows=details.map(d=>{
-        const vr=d.validation_result||"";
-        const vrText=vr==="vulnerable"?"漏洞":vr==="not_vulnerable"?"非漏洞":vr==="inconclusive"?"无法判定":vr||"—";
-        const vrColor=vr==="vulnerable"?"var(--red)":vr==="not_vulnerable"?"var(--gray)":"var(--amber)";
-        const badge=`<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:${vrColor}'>${vrText}</span>`;
-        const blLabel=d.bl_label==="VULNERABLE"?"<span style='font-size:11px;color:var(--red)'>漏洞</span>":d.bl_label==="NON_VULNERABLE"?"<span style='font-size:11px;color:var(--gray)'>非漏洞</span>":"-";
-        const summary=String(d.finding_summary||'').slice(0,200);
-        return `<tr>
-          <td>${d.seq||''}</td>
-          <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis">${summary.replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px">${String(d.finding_status||'').replace(/</g,'&lt;')}</td>
-          <td>${d.match_status||''}</td>
-          <td style="font-size:12px">${String(d.bl_case_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
-          <td>${blLabel}</td>
-          <td style="font-size:12px">${String(d.bl_category||'').replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px">${String(d.reason||'').replace(/</g,'&lt;')}</td>
-          <td>${badge}</td>
-        </tr>`;
-      }).join('');
-      return `<div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${srcIcon}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">${srcDesc}</span></div>
-      <div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率统计</h3>${stats}</div>
-      <div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 基线与${srcLabel}匹配明细</h3>
-      <table><thead><tr><th>#</th><th>${isMining?'告警中心':'漏洞中心'}ID</th><th>${isMining?'告警中心':'漏洞中心'}标题</th><th>${isMining?'告警中心':'漏洞中心'}摘要</th><th>确认状态</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>基线分类</th><th>匹配理由</th><th>判定</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`;
-    }
-    function _buildE2eFprInVerify(g){
-      const kg=g.e2e_fpr_kg,nogk=g.e2e_fpr_nogk;
-      if(!kg&&!nogk) return '';
-      const isAc=g.category==='mining_fpr';
-      const srcLabel=isAc?'告警中心':'漏洞中心';
-      const srcIcon=isAc?'📈':'📊';
-      function _fprStr(r){return r&&r.fpr!=null?(r.fpr*100).toFixed(2)+'%':'—';}
-      function _fprLine(label,r){
-        if(!r) return '';
-        const p=label?label+' ':'';
-        return `${p}误报率=${_fprStr(r)}（误报数=${r.fp||0} / (误报数+真正数)=${(r.tp||0)+(r.fp||0)}）`;
-      }
-      const stats=kg&&nogk
-        ? `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('KG',kg)}<span style="margin-left:16px">${_fprLine('No-KG',nogk)}</span></div>`
-        : `<div style="font-size:14px;color:var(--sub);margin-bottom:12px;padding:8px 12px;background:var(--p2);border-radius:8px">${_fprLine('',kg||nogk)}</div>`;
-      let allDetails=[];
-      if(kg&&kg.match_details) allDetails=allDetails.concat(kg.match_details.map(d=>({...d,condition:'KG'})));
-      if(nogk&&nogk.match_details) allDetails=allDetails.concat(nogk.match_details.map(d=>({...d,condition:'No-KG'})));
-      const rows=allDetails.map(d=>{
-        const vr=d.validation_result||"";
-        const vrText=vr==="vulnerable"?"漏洞":vr==="not_vulnerable"?"非漏洞":vr==="inconclusive"?"无法判定":vr||"—";
-        const vrColor=vr==="vulnerable"?"var(--red)":vr==="not_vulnerable"?"var(--gray)":"var(--amber)";
-        const badge=`<span style='display:inline-block;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600;background:var(--p2);color:${vrColor}'>${vrText}</span>`;
-        const blLabel=d.bl_label==="VULNERABLE"?"<span style='font-size:11px;color:var(--red)'>漏洞</span>":d.bl_label==="NON_VULNERABLE"?"<span style='font-size:11px;color:var(--gray)'>非漏洞</span>":"-";
-        const condBadge=d.condition==='KG'?"<span style='font-size:11px;font-weight:600;color:var(--acc)'>KG</span>":"<span style='font-size:11px;font-weight:600;color:var(--gray)'>No-KG</span>";
-        const summary=String(d.finding_summary||'').slice(0,200);
-        return `<tr>
-          <td>${d.seq||''}</td>
-          <td>${condBadge}</td>
-          <td style="font-size:12px">${String(d.finding_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.finding_title||'').replace(/</g,'&lt;')}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px;overflow:hidden;text-overflow:ellipsis">${summary.replace(/</g,'&lt;')}</td>
-          <td>${d.match_status||''}</td>
-          <td style="font-size:12px">${String(d.bl_case_id||'').replace(/</g,'&lt;')}</td>
-          <td>${String(d.bl_title||'').replace(/</g,'&lt;')}</td>
-          <td>${blLabel}</td>
-          <td style="font-size:12px;color:var(--sub);max-width:300px">${String(d.reason||'').replace(/</g,'&lt;')}</td>
-          <td>${badge}</td>
-        </tr>`;
-      }).join('');
-      return `${isAc?'':`<div class="card" style="margin-bottom:16px"><h3>${srcIcon} 误报率（基线 vs ${srcLabel}数据）</h3>${stats}</div>`}
-      ${allDetails.length?`<div class="card" style="margin-bottom:16px;overflow-x:auto"><h3>📋 ${srcLabel}匹配明细</h3>
-      <table><thead><tr><th>#</th><th>条件</th><th>${srcLabel}ID</th><th>标题</th><th>摘要</th><th>匹配状态</th><th>基线case_id</th><th>基线标题</th><th>基线标签</th><th>匹配理由</th><th>判定</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>`:''}`;
-    }
-    const tabs=mg.length>1?`<div role="tablist" aria-label="报告类别" style="display:grid;grid-template-columns:repeat(${mg.length},minmax(0,1fr));gap:12px;margin:0 0 20px">${mg.map((g,i)=>{const mfpr=g.category==='mining_fpr';const mining=g.category!=="verify"&&!mfpr;const icon=mfpr?'📈':mining?'🔎':'✅';const desc=mfpr?'告警中心 case 与基线漏洞匹配对比':mining?'发现与提交潜在漏洞':'验证候选漏洞是否成立';return`<button class="btn" role="tab" data-report-tab-btn aria-selected="${i===0?'true':'false'}" style="text-align:left;display:flex;gap:10px;align-items:center;padding:13px 15px;border:1px solid ${i===0?'var(--acc)':'var(--bd)'};background:${i===0?'var(--acc)':'var(--panel)'};color:${i===0?'#fff':'var(--sub)'};${i===0?'box-shadow:0 8px 20px rgba(124,58,237,.28);transform:translateY(-2px)':''}" onclick="selectReportTab(this,'report-tab-${i}')"><span style="font-size:24px">${icon}</span><span><b style="display:block;font-size:16px">${g.label}</b><small style="display:block;margin-top:3px;opacity:.82">${desc}</small></span></button>`}).join("")}</div><div style="font-size:14px;color:var(--sub);margin:-8px 0 16px;padding:8px 10px;background:var(--p2);border-radius:8px">当前选中的类别决定下方全部统计、效果指标和诊断的范围。</div>`:"";
-    const panes=mg.map((g,i)=>{if(g.category==='mining_fpr'){return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">${_buildE2eFprInVerify(g)}</div>`;}return `<div id="report-tab-${i}" data-report-tab style="display:${i===0?'block':'none'}">
-      <div style="display:flex;align-items:center;gap:8px;margin:0 0 12px"><span style="font-size:18px">${g.category==='verify'?'✅':'🔎'}</span><b style="font-size:18px">当前查看：${g.label}</b><span style="font-size:13px;color:var(--sub)">以下内容仅属于此类别</span></div>
-      ${_statsTable(g.task_id,g.label)}
-      ${g.category==='verify'&&_buildE2eFprInVerify(g)||''}
-      <div class="card" style="margin-bottom:16px"><h3>🎯 ${g.label} — 效果指标</h3>${_metricCards(g.p0||{},g.p1||{},g.p2||{},g.label,g.category)}</div>
-      ${_diagnostics(g.diagnostic_hits||h)}
-      <details class="card" style="margin-bottom:16px">
-        <summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">🧠 ${g.label} — 知识图谱与记忆介入分析 <span style="font-size:12px;color:var(--gray)">（点击展开）</span></summary>
-        <div style="margin-top:16px">
-        ${Array.isArray(g.case_results)&&Array.isArray(g.per_case_kg_analysis)
-          ?buildKnowledgeHtml(g)
-          :mg.length===1
-            ?buildKnowledgeHtml(null)
-            :'<div style="font-size:14px;color:var(--sub)">该历史报告未保存按类别拆分的逐漏洞知识图谱与记忆分析；请重跑评测以生成此数据。</div>'}
-        </div>
-      </details>
-    </div>`;}).join("");
-    return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
-  })()}
+  <!-- 基础指标 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>基础效果指标</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+      ${baseMetrics}
+    </div>
+  </div>
 
-  ${_partial&&_partial.lifecycle===false?'':(d._lifecycle?_renderLifecycle(d._lifecycle):'')}
-  ${_partial&&_partial.inventory===false?'':(d._inventory?_renderInventory(d._inventory):'')}
+  <!-- 知识盘点摘要 -->
+  ${d.inventory?renderInventory(d.inventory):(invSum.coverage_rate!=null?`<div class="card" style="margin-bottom:16px"><h3>知识盘点摘要</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+      <div class="mcard"><div class="mc-label">覆盖率</div><div class="mc-val">${(invSum.coverage_rate*100).toFixed(1)}%</div></div>
+      <div class="mcard"><div class="mc-label">已覆盖漏洞类型</div><div class="mc-val" style="color:var(--green)">${invSum.covered_vuln_types||0}</div></div>
+      <div class="mcard"><div class="mc-label">总漏洞类型</div><div class="mc-val">${invSum.total_vuln_types||0}</div></div>
+    </div></div>`:'')}
+
+  <!-- 因果链汇总 -->
+  ${(causeTotal>0||effectTotal>0)?`<div class="card" style="margin-bottom:16px"><h3>因果链汇总</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
+      <div><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>${causeBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：${causeTotal}</div></div>
+      <div><h4 style="font-size:16px;margin-bottom:8px">效果标签分布</h4>${effectBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总记录数：${effectTotal}</div></div>
+    </div></div>`:''}
+
+  <!-- 生命周期分析段 -->
+  ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L7 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
 
   `;
 
-  // 异步加载 FPR 段和 KG 段（三段拆分后主报告不含这些大字段）
-  // 仅在非部分加载模式下执行（部分加载已由 loadPartialReport 处理）
-  if(_evalId&&!_partial){
-    var _mg=r.metric_groups||[];
-    var _hasFprUri=!!r.fpr_uri,_hasKgUri=!!r.kg_uri;
-    // 检查是否已有内嵌 FPR/KG 数据（旧报告兼容）
-    var _hasInlineFpr=_mg.some(function(g){return g.e2e_fpr_kg||g.e2e_fpr_nogk||g.category==='mining_fpr';});
-    var _hasInlineKg=_mg.some(function(g){return g.per_case_kg_analysis&&g.per_case_kg_analysis.length>0;});
-
-    // FPR 段
-    if(_hasFprUri||!_hasInlineFpr){
-      jget('/api/v1/evaluations/'+_evalId+'/report/fpr').then(function(fpr){
-        if(!fpr||fpr.error)return;
-        // 合并 FPR 数据到 r
-        var _e2e_kg=fpr.e2e_fpr_kg,_e2e_nogk=fpr.e2e_fpr_nogk;
-        var _ac_kg=fpr.ac_fpr_kg,_ac_nogk=fpr.ac_fpr_nogk;
-        for(var i=0;i<_mg.length;i++){
-          if(_mg[i].category==='verify'){
-            if(_e2e_kg)_mg[i].e2e_fpr_kg=_e2e_kg;
-            if(_e2e_nogk)_mg[i].e2e_fpr_nogk=_e2e_nogk;
-          }
-        }
-        // mining_fpr group
-        var _mining=fpr.mining_fpr_group;
-        if(_mining&&!_mg.some(function(g){return g.category==='mining_fpr';})){
-          if(_ac_kg)_mining.e2e_fpr_kg=Object.assign({},_ac_kg,{vc_ids:fpr.vc_ids_kg||[]});
-          if(_ac_nogk)_mining.e2e_fpr_nogk=Object.assign({},_ac_nogk,{vc_ids:fpr.vc_ids_nogk||[]});
-          _mg.push(_mining);
-        }
-        // M13
-        if(fpr.m13_top){r.p0=r.p0||{};r.p0.M13=fpr.m13_top;}
-        // 重新渲染报告
-        renderReport(d);
-      }).catch(function(){});
-    }
-    // KG 段
-    if(_hasKgUri||!_hasInlineKg){
-      jget('/api/v1/evaluations/'+_evalId+'/report/kg').then(function(kg){
-        if(!kg||kg.error)return;
-        var _kgGroups={};
-        (kg.groups||[]).forEach(function(g){_kgGroups[g.task_id]=g;});
-        for(var i=0;i<_mg.length;i++){
-          var _tid=_mg[i].task_id||'';
-          if(_kgGroups[_tid]){
-            if(_kgGroups[_tid].per_case_kg_analysis)
-              _mg[i].per_case_kg_analysis=_kgGroups[_tid].per_case_kg_analysis;
-            if(_kgGroups[_tid].case_results)
-              _mg[i].case_results=_kgGroups[_tid].case_results;
-          }
-        }
-        renderReport(d);
-      }).catch(function(){});
-    }
-  }
-
-  // 异步加载 lifecycle 段和 inventory 段
-  if(_evalId){
-    if(_partial?_partial.lifecycle:true){
-      jget('/api/v2/evaluations/'+_evalId+'/report/lifecycle').then(function(lc){
-        if(!lc||lc.error)return;
-        d._lifecycle=lc;
-        renderReport(d);
-      }).catch(function(){});
-    }
-    if(_partial?_partial.inventory:true){
-      jget('/api/v2/evaluations/'+_evalId+'/report/inventory').then(function(iv){
-        if(!iv||iv.error)return;
-        d._inventory=iv;
-        renderReport(d);
-      }).catch(function(){});
-    }
-  }
-
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto">'+html+'</div>';
 }
 
-function loadPipeline(eid){
-  F(`/api/v1/evaluations/${eid}/pipeline`).then(r=>r.json()).then(d=>{
-    const el=$("pipeline-card");if(!el)return;
-    const tr=d.task_runs||[],oc=d.outcomes||[],kn=d.knowledge||[],to=d.tools||[],rs=d.resources||[],pr=d.pairs||[],dv=d.derived||[],me=d.metrics||[];
-    const calc=me.filter(m=>m.status==="CALCULATED").length;
-    const na=me.filter(m=>m.status!=="CALCULATED").length;
-    const stages=[
-      {n:"INGESTING",label:"基线数据获取",det:tr.length?tr.length+" benchmark_items":"无数据"},
-      {n:"PARSING",label:"Trace 解析",det:tr.map(t=>`${t.condition} ${t.task_id}: trace_valid=${t.trace_valid} · kg_state=${t.kg_runtime_state}`).join(" · ")||"无"},
-      {n:"RESOLVING",label:"事实写入",det:oc.length+kn.length+to.length+rs.length+" facts 写入完成"},
-      {n:"PAIRING",label:"KG/No-KG 配对",det:pr.length?pr.map(p=>`${p.match_status} · exp_valid=${p.exp_valid} · transition=${p.transition||"NA"}`).join(" · "):"无配对"},
-      {n:"CALCULATING",label:"指标计算",det:`CALCULATED=${calc} · NA=${na} · 总计=${me.length}`},
-      {n:"INVENTORY",label:"知识盘点",det:"覆盖度 + 漏洞类型 + 质量标注"},
-      {n:"LIFECYCLE_ANALYSIS",label:"L0-L7 生命周期分析",det:"全链路知识访问效果分析"},
-      {n:"CAUSAL_CHAIN",label:"因果链分析",det:"断点定位 + 成因归因"},
-      {n:"REPORTING",label:"报告生成",det:"报告组装 + 改进建议"},
-      {n:"FINALIZE",label:"完成",det:"status=READY"}
-    ];
-    let steps=`<div style="display:flex;flex-direction:column;gap:0">`;
-    stages.forEach((s,i)=>{
-      steps+=`<div class="ps"><span class="ps-n done">${i+1}</span><div class="ps-body"><b>${s.label}</b> <span style="font-size:12px;color:var(--gray)">(${s.n})</span><br><span class="ps-det">${s.det}</span></div></div>`;
-    });
-    steps+=`</div>`;
-    // 详细数据折叠区
-    steps+=`<details style="margin-top:14px"><summary style="cursor:pointer;font-size:15px;color:var(--sub)">展开详细数据</summary>
-    <div style="margin-top:10px">
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">TaskRuns</b><br>${tr.map(t=>`<span class="ps-det">${t.condition} ${t.task_id}: trace_valid=${t.trace_valid} · runtime_valid=${t.runtime_valid} · kg_state=${t.kg_runtime_state}</span>`).join("<br>")||"无"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Outcomes</b><br>${oc.map(o=>`<span class="ps-det">${o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK")?"KG":"No-KG"}: outcome=${o.outcome} · prediction=${o.prediction} · resolver=${o.resolver_status} · validation=${o.validation_result||"NA"}</span>`).join("<br>")||"无"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Knowledge</b><br>${kn.map(k=>`<span class="ps-det">${k.task_run_id.includes("KG")&&!k.task_run_id.includes("NOGK")?"KG":"No-KG"}: access=${k.access} · delivery=${k.delivery} · mount=${k.mount_status}</span>`).join("<br>")||"无"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Tools</b><br>${to.map(t=>`<span class="ps-det">${t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK")?"KG":"No-KG"}: tools=${t.total} (KG=${t.kg} F=${t.finding} C=${t.code} S=${t.shell} O=${t.other})</span>`).join("<br>")||"无"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Resources</b><br>${rs.map(r=>`<span class="ps-det">${r.task_run_id.includes("KG")&&!r.task_run_id.includes("NOGK")?"KG":"No-KG"}: tokens=${r.tokens} · steps=${r.steps} · duration=${r.duration}ms · time_valid=${r.time_valid}</span>`).join("<br>")||"无"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Pairs</b><br>${pr.length?pr.map(p=>`<span class="ps-det">${p.match_status} · exp_valid=${p.exp_valid} · outcome_valid=${p.outcome_valid} · transition=${p.transition||"NA"}</span>`).join("<br>"):"无配对"}</div>
-    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Derived Facts</b><br>${dv.length?dv.map(d=>`<span class="ps-det">${d.type}: ${d.value_num!=null&&!isNaN(Number(d.value_num))?Number(d.value_num).toFixed(3):d.value_str||"-"} [${d.status}]${d.reason?" "+d.reason:""}</span>`).join("<br>"):"无"}</div>
-    <div><b style="font-size:14px;color:var(--sub)">Metrics</b><br>${me.map(m=>`<span class="ps-det">${m.metric_id}: ${m.status}${m.reason?" ("+m.reason+")":""} N=${m.n}</span>`).join("<br>")||"无"}</div>
-    </div></details>`;
-    el.innerHTML="<h3>v2 Pipeline 分析过程（10 阶段）</h3>"+steps;
-  }).catch(e=>{const el=$("pipeline-card");if(el)el.innerHTML="<h3>v2 Pipeline 分析过程</h3><div style=color:var(--red)>加载失败："+e+"</div>";});
-}
-
-// ===== ② 新建评测（v2：选项目+任务，选开发态/运行态，No-KG 可选）=====
-let sel={proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:"",nogkProj:"",nogkProjName:"",nogkTask:"",nogkTaskName:"",nogkTraceReady:false,nogkTraceInfo:"",vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vuln_center",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:"",evalMode:"dev"};
+// ===== ③ 新建评测 =====
+let sel={proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:"",vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vuln_center",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:"",evalMode:"dev"};
 let _allVbProjs=[];let _vbCases=null;let _vcCases=null;let _vcKey="";let _vcTasks=null;
 let _allProjs=[];let _sideData={tasks:null};
 async function renderCreate(){
-  // 重置上轮选择，避免残留数据
-  sel={proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:"",nogkProj:"",nogkProjName:"",nogkTask:"",nogkTaskName:"",nogkTraceReady:false,nogkTraceInfo:"",vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vuln_center",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:"",evalMode:"dev"};
+  sel={proj:"",projName:"",task:"",taskName:"",traceReady:false,traceKind:"",traceInfo:"",vbProj:"",vbProjName:"",vbCase:"",vbCaseDesc:"",biid:"",tfid:"",eid:"",bsrc:"vuln_center",vcProj:"",vcProjName:"",vcTask:"",vcTaskName:"",evalMode:"dev"};
   _sideData={tasks:null};
   _vbCases=null;_vcCases=null;_vcTasks=null;_vcKey="";
   $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div style="width:100%;flex:1;overflow-y:auto">
@@ -1468,10 +669,9 @@ async function renderCreate(){
       </div>
     </div>
     <div class="card" id="main-col" style="margin-bottom:16px"></div>
-    <div class="card" id="nogk-col" style="margin-bottom:16px"></div>
     <div class="card" id="run-conf"></div>`;
   if(!_allProjs.length) _allProjs=(await jget("/api/v1/platform/projects")).projects||[];
-  renderMainSide();renderNogkSide();renderRunConf();
+  renderMainSide();renderRunConf();
 }
 function switchEvalMode(m){
   sel.evalMode=m;
@@ -1537,46 +737,11 @@ function _checkTraceMain(){
     renderMainSide();renderRunConf();
   });
 }
-function renderNogkSide(){
-  const s=sel;
-  if(!s.nogkProj){
-    $("nogk-col").innerHTML=`<h3>No-KG 对照组（可选）</h3><div style="font-size:13px;color:var(--sub);margin-bottom:10px">不选则仅评测 KG 组，无对照组（M5-M13=NA）</div><div class="sel" style="max-height:200px" id="nogk-list"></div>`;
-    filterNogkList();
-  }else if(!s.nogkTask){
-    $("nogk-col").innerHTML=`<h3>No-KG 对照组</h3><div style="margin-bottom:8px;font-size:14px">项目：<b>${s.nogkProjName}</b> <span class="ci">(${s.nogkProj})</span> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.nogkProj='';sel.nogkProjName='';sel.nogkTask='';sel.nogkTaskName='';sel.nogkTraceReady=false;renderNogkSide();renderRunConf()">重选</button></div><div class="sel" style="max-height:200px" id="nogk-list"></div>`;
-    jget(`/api/v1/platform/tasks?project_id=${s.nogkProj}`).then(d=>{_nogkTasks=d.tasks||[];filterNogkList();});
-  }else{
-    $("nogk-col").innerHTML=`<h3>No-KG 对照组</h3><div style="margin-bottom:8px;font-size:14px">项目：<b>${s.nogkProjName}</b> · 任务：<b>${s.nogkTaskName}</b> <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.nogkTask='';sel.nogkTaskName='';sel.nogkTraceReady=false;renderNogkSide();renderRunConf()">重选任务</button></div><div id="nogk-trace-info" style="padding:8px 12px;border-radius:8px;background:var(--p2);font-size:13px">${s.nogkTraceReady?`<span style="color:var(--green)">✓ ${s.nogkTraceInfo}</span>`:`<span style="color:var(--sub)">⏳ 检查 trace…</span>`}</div>`;
-    if(!s.nogkTraceReady){_checkTraceNogk();}
-  }
-}
-let _nogkTasks=null;
-function filterNogkList(){
-  var list=$("nogk-list");if(!list)return;
-  if(!sel.nogkProj){
-    if(!_allProjs)return;
-    list.innerHTML=_allProjs.slice(0,30).map(p=>`<div class="opt" onclick="pickNogk('proj','${p.id}','${p.name.replace(/'/g,"")}')"><span class="l">${p.name}</span><span class="opt-right" style="color:var(--sub)">${p.department_name||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无项目</div>';
-  }else if(!sel.nogkTask){
-    if(!_nogkTasks)return;
-    list.innerHTML=_nogkTasks.slice(0,30).map(t=>`<div class="opt" onclick="pickNogk('task','${t.id}','${(t.name||"").replace(/'/g,"")}')"><span class="l">${t.name||t.id}</span><span class="opt-right" style="color:var(--sub)">${t.task_type||""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无任务</div>';
-  }
-}
-function pickNogk(field,id,name){
-  if(field==="proj"){sel.nogkProj=id;sel.nogkProjName=name;sel.nogkTask="";sel.nogkTaskName="";sel.nogkTraceReady=false;_nogkTasks=null;}
-  else if(field==="task"){sel.nogkTask=id;sel.nogkTaskName=name;sel.nogkTraceReady=false;}
-  renderNogkSide();renderRunConf();
-}
-function _checkTraceNogk(){
-  jget(`/api/v1/platform/tasks/${sel.nogkProj}/${sel.nogkTask}/trace-check`).then(d=>{
-    if(d.ready){sel.nogkTraceReady=true;sel.nogkTraceInfo="trace 已就绪";}
-    else{sel.nogkTraceReady=false;sel.nogkTraceInfo="未发现 trace";}
-    renderNogkSide();renderRunConf();
-  }).catch(e=>{sel.nogkTraceReady=false;sel.nogkTraceInfo="检查失败";renderNogkSide();renderRunConf();});
-}
+function _toolLabel(k){var m={'turing':'Turing','argo':'Argo','secmate':'SecMate','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify','dataflow_vuln_scan':'DataflowVulnScan'};return m[k]||k||'-';}
+
 async function renderRunConf(){
-  const kgReady=sel.traceReady,nogkReady=sel.nogkTraceReady;
-  const hasNogk=!!sel.nogkProj;
-  const ready=kgReady&&(!hasNogk||nogkReady);
+  const kgReady=sel.traceReady;
+  const ready=kgReady;
   const isVb=sel.bsrc!=='vuln_center';
   const modeLabel=sel.evalMode==='dev'?'开发态':'运行态';
   const srcToggle=`<div style="display:inline-flex;gap:4px;background:var(--p2);border:1px solid var(--bd);border-radius:12px;padding:4px;margin-bottom:14px">
@@ -1613,7 +778,7 @@ async function renderRunConf(){
   <div style="display:none"><input id="eid" value="${genId()}"></div>
   ${srcToggle}
   ${bodyHtml}
-  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ Trace 已就绪'+(hasNogk?' + No-KG trace 已就绪':'（无对照组）')+'</span><br>':(sel.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 trace…</span><br>':'请选完项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式，M1-M4=NA</span><br>'}<span style="color:var(--sub)">评测模式：<b style="color:var(--acc)">${modeLabel}</b></span></div>
+  <div style="margin-top:12px;font-size:14px;color:var(--sub);line-height:1.7">${ready?'<span style="color:var(--green)">✓ Trace 已就绪</span><br>':(sel.task&&!kgReady?'<span style="color:var(--amber)">⏳ 正在检查 trace…</span><br>':'请选完项目和任务<br>')}${bound?'<span style="color:var(--green)">✓ 基线已绑定</span><br>':'<span style="color:var(--amber)">未绑定基线 → 无 GT 模式</span><br>'}<span style="color:var(--sub)">评测模式：<b style="color:var(--acc)">${modeLabel}</b></span></div>
   <div class="st" id="run-st"></div>
   <button class="btn" id="run-btn" ${ready&&$("eval-name")&&$("eval-name").value.trim()?"":"disabled"} onclick="runEval()">${ready?"开始评测":"请先选完项目和任务"}</button>`;
   if(sel.bsrc==='vuln_center'&&!sel.vcTask){filterVcList();}
@@ -1638,7 +803,7 @@ function pickVc(field,id,name){
   renderRunConf();
 }
 function renderVbList(){filterVbList();}
-function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const kgReady=sel.traceReady,nogkReady=sel.nogkTraceReady;const hasNogk=!!sel.nogkProj;const ready=kgReady&&(!hasNogk||nogkReady);btn.disabled=!(ready&&name);}
+function updateRunBtn(){const btn=$("run-btn");if(!btn)return;const name=$("eval-name")?$("eval-name").value.trim():"";const ready=sel.traceReady;btn.disabled=!(ready&&name);}
 function filterVbList(){
   if(!_allVbProjs)return;
   const list=$("vb-list");if(!list)return;
@@ -1647,9 +812,8 @@ function filterVbList(){
   list.innerHTML=f.slice(0,30).map(p=>`<div class="opt" onclick="pickVbProj('${p.id}','${p.name.replace(/'/g,"")}')"><span class="l" title="${p.name}">${p.name}</span><span class="opt-mid"><span class="bdg b-${p.status==='EXPORTED'?'COMPLETED':'RUNNING'}">${p.status}</span></span><span class="opt-right" style="color:var(--sub)">${p.tags&&p.tags.length?p.tags.join(" · "):""}</span></div>`).join("")||'<div style="padding:16px;color:var(--sub)">无匹配</div>';
 }
 function pickVbProj(id,name){
-  if(sel.vbProj) return;          // 已在加载中，防重复点击
+  if(sel.vbProj) return;
   sel.vbProj=id;sel.vbProjName=name;_vbCases=null;
-  // 立即替换列表为加载态，避免 await 期间仍可点击
   var rc=$("run-conf");
   if(rc) rc.innerHTML='<h3>测评数据集基线</h3><div style="padding:16px;color:var(--sub)">⏳ 加载基线数据…</div>';
   renderRunConf();
@@ -1660,12 +824,12 @@ async function runEval(){
   $("eid").value=eid;sel.eid=eid;$("run-st").textContent="⏳ 提交中…";$("run-btn").disabled=true;
   const evalName=$("eval-name")?$("eval-name").value.trim():"";
   const bSetId=sel.bsrc==='vuln_center'?(sel.vcProj||undefined):(sel.vbProj||undefined);
-  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,kg_project_id:sel.proj,kg_task_id:sel.task,nogk_project_id:sel.nogkProj||undefined,nogk_task_id:sel.nogkTask||undefined,benchmark_source:sel.bsrc,benchmark_set_id:bSetId,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,eval_mode:sel.evalMode});
+  try{const r=await jpost("/api/v1/evaluations",{evaluation_id:eid,evaluation_name:evalName||undefined,kg_project_id:sel.proj,kg_task_id:sel.task,benchmark_source:sel.bsrc,benchmark_set_id:bSetId,vc_source_task_id:sel.bsrc==='vuln_center'?(sel.vcTask||undefined):undefined,eval_mode:sel.evalMode});
     $("run-st").textContent="✅ 评测已创建，排队中…";
     activeId=r.evaluation_id;Router.navigate('/evaluations/'+r.evaluation_id);
-    // selEv 内部已启动轮询，不再重复轮询
   }
-  catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}}
+  catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}
+}
 
 // ===== ④ 系统参数设置 =====
 async function renderSystem(){
@@ -1680,197 +844,77 @@ async function renderSystem(){
     <div class="card"><h3>系统参数设置</h3>
     <div style="font-size:13px;color:var(--sub);margin-bottom:16px">修改后立即生效并持久化到数据库，Pod 重启后保留配置。</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;padding:14px;border:1px solid var(--bd);border-radius:8px;background:var(--p2)">
-      <div style="text-align:center;min-width:100px">
-        <div style="font-size:28px;font-weight:700;color:var(--acc)">${rt}<span style="font-size:16px;color:var(--sub)">/${evalMax}</span></div>
-        <div style="font-size:12px;color:var(--sub);margin-top:2px">运行中任务${queued?`（${queued} 排队${paused?`，${paused} 暂停`:''}）`:(paused?`（${paused} 暂停）`:'')}</div>
-      </div>
-      <div style="text-align:center;min-width:100px">
-        <div style="font-size:28px;font-weight:700;color:${llmColor}">${llmActive}<span style="font-size:16px;color:var(--sub)">/${llmMax}</span></div>
-        <div style="font-size:12px;color:var(--sub);margin-top:2px">LLM 并发</div>
-      </div>
-      <div style="text-align:center;min-width:100px">
-        <div style="font-size:28px;font-weight:700;color:var(--acc)">${threadCount}</div>
-        <div style="font-size:12px;color:var(--sub);margin-top:2px">总线程数</div>
-      </div>
-      <div style="flex:1;min-width:120px;display:flex;align-items:center">
-        <div style="width:100%;height:8px;background:var(--bar-bg);border-radius:4px;overflow:hidden">
-          <div style="width:${llmPct}%;height:100%;background:${llmColor};transition:width .3s"></div>
-        </div>
-      </div>
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:var(--acc)">${rt}<span style="font-size:16px;color:var(--sub)">/${evalMax}</span></div><div style="font-size:12px;color:var(--sub);margin-top:2px">运行中任务${queued?`（${queued} 排队${paused?`，${paused} 暂停`:''}）`:(paused?`（${paused} 暂停）`:'')}</div></div>
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:${llmColor}">${llmActive}<span style="font-size:16px;color:var(--sub)">/${llmMax}</span></div><div style="font-size:12px;color:var(--sub);margin-top:2px">LLM 并发</div></div>
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:var(--acc)">${threadCount}</div><div style="font-size:12px;color:var(--sub);margin-top:2px">总线程数</div></div>
+      <div style="flex:1;min-width:120px;display:flex;align-items:center"><div style="width:100%;height:8px;background:var(--bar-bg);border-radius:4px;overflow:hidden"><div style="width:${llmPct}%;height:100%;background:${llmColor};transition:width .3s"></div></div></div>
     </div>
     <div style="display:flex;flex-direction:column;gap:18px">
-      <div>
-        <label style="font-weight:600;font-size:14px">LLM 最大并发量</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 请求的全局信号量上限（1-1000）</div>
-        <input id="cfg_llm_conc" type="number" min="1" max="1000" value="${c.llm_max_concurrency}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">同时启动任务数</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">评测后台线程池大小（1-10）</div>
-        <input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">评测线程池上界</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">评测线程池固定大小上界（1-50），需 ≥ 同时启动任务数</div>
-        <input id="cfg_eval_pool_max" type="number" min="1" max="50" value="${c.eval_pool_max}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">Trace 解析并发数</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div>
-        <input id="cfg_parse_workers" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">Source 补提取并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-1000）</div>
-        <input id="cfg_source_fill_workers" type="number" min="1" max="1000" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">告警中心数据获取并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心 HTTP 调用并行数（1-50）</div>
-        <input id="cfg_ac_fetch_workers" type="number" min="1" max="50" value="${c.ac_fetch_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">单 Trace 内 resolver 并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-1000）</div>
-        <input id="cfg_resolver_workers" type="number" min="1" max="1000" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">AI Matcher 并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-1000）</div>
-        <input id="cfg_ai_match_workers" type="number" min="1" max="1000" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">AC→Finding LLM 识别并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-1000）</div>
-        <input id="cfg_ac_llm_workers" type="number" min="1" max="1000" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">FPR KG/NOGK 并行</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 分析 KG/NOGK 两个条件并行线程数（1-10）</div>
-        <input id="cfg_fpr_cond_workers" type="number" min="1" max="10" value="${c.fpr_cond_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">FPR 基线匹配并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-1000）</div>
-        <input id="cfg_fpr_baseline_workers" type="number" min="1" max="1000" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">FPR 基线 Batch 并行</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-1000）</div>
-        <input id="cfg_fpr_baseline_batch" type="number" min="1" max="1000" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">KG 分析并发数</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-1000）</div>
-        <input id="cfg_kg_analysis_workers" type="number" min="1" max="1000" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">Bootstrap 统计并发</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">M1-M13 bootstrap 统计并行线程数（1-20）</div>
-        <input id="cfg_bootstrap_workers" type="number" min="1" max="20" value="${c.bootstrap_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)">
-      </div>
-      <div>
-        <label style="font-weight:600;font-size:14px">LLM 思考模式</label>
-        <div style="font-size:12px;color:var(--sub);margin:4px 0">控制 LLM 推理深度。关闭=不思考，开启后可选 low/high/max</div>
-        <div style="display:flex;align-items:center;gap:12px">
-          <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--sub);margin:0;cursor:pointer">
-            <input id="cfg_reasoning_enabled" type="checkbox" ${c.reasoning_effort&&c.reasoning_effort!=='none'?'checked':''} onchange="toggleReasoning(this)" style="width:auto"> 是否开启思考
-          </label>
-          <select id="cfg_reasoning_effort" style="width:100px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);${c.reasoning_effort&&c.reasoning_effort!=='none'?'':'display:none'}">
-            <option value="low" ${c.reasoning_effort==='low'?'selected':''}>low</option>
-            <option value="high" ${c.reasoning_effort==='high'?'selected':''}>high</option>
-            <option value="max" ${c.reasoning_effort==='max'?'selected':''}>max</option>
-          </select>
-        </div>
-      </div>
+      <div><label style="font-weight:600;font-size:14px">LLM 最大并发量</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 请求的全局信号量上限（1-1000）</div><input id="cfg_llm_conc" type="number" min="1" max="1000" value="${c.llm_max_concurrency}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">同时启动任务数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">评测后台线程池大小（1-10）</div><input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">评测线程池上界</label><div style="font-size:12px;color:var(--sub);margin:4px 0">评测线程池固定大小上界（1-50），需 ≥ 同时启动任务数</div><input id="cfg_eval_pool_max" type="number" min="1" max="50" value="${c.eval_pool_max}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Trace 解析并发数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div><input id="cfg_parse_workers" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Source 补提取并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-1000）</div><input id="cfg_source_fill_workers" type="number" min="1" max="1000" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">告警中心数据获取并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心 HTTP 调用并行数（1-50）</div><input id="cfg_ac_fetch_workers" type="number" min="1" max="50" value="${c.ac_fetch_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">单 Trace 内 resolver 并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-1000）</div><input id="cfg_resolver_workers" type="number" min="1" max="1000" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">AI Matcher 并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-1000）</div><input id="cfg_ai_match_workers" type="number" min="1" max="1000" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">AC→Finding LLM 识别并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-1000）</div><input id="cfg_ac_llm_workers" type="number" min="1" max="1000" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR KG/NOGK 并行</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 分析 KG/NOGK 两个条件并行线程数（1-10）</div><input id="cfg_fpr_cond_workers" type="number" min="1" max="10" value="${c.fpr_cond_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR 基线匹配并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-1000）</div><input id="cfg_fpr_baseline_workers" type="number" min="1" max="1000" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR 基线 Batch 并行</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-1000）</div><input id="cfg_fpr_baseline_batch" type="number" min="1" max="1000" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">KG 分析并发数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-1000）</div><input id="cfg_kg_analysis_workers" type="number" min="1" max="1000" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Bootstrap 统计并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">M1-M13 bootstrap 统计并行线程数（1-20）</div><input id="cfg_bootstrap_workers" type="number" min="1" max="20" value="${c.bootstrap_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">LLM 思考模式</label><div style="font-size:12px;color:var(--sub);margin:4px 0">控制 LLM 推理深度。关闭=不思考，开启后可选 low/high/max</div><div style="display:flex;align-items:center;gap:12px"><label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--sub);margin:0;cursor:pointer"><input id="cfg_reasoning_enabled" type="checkbox" ${c.reasoning_effort&&c.reasoning_effort!=='none'?'checked':''} onchange="toggleReasoning(this)" style="width:auto"> 是否开启思考</label><select id="cfg_reasoning_effort" style="width:100px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);${c.reasoning_effort&&c.reasoning_effort!=='none'?'':'display:none'}"><option value="low" ${c.reasoning_effort==='low'?'selected':''}>low</option><option value="high" ${c.reasoning_effort==='high'?'selected':''}>high</option><option value="max" ${c.reasoning_effort==='max'?'selected':''}>max</option></select></div></div>
     </div>
-    <div style="margin-top:20px;display:flex;gap:12px">
-      <button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button>
-      <button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button>
-    </div>
+    <div style="margin-top:20px;display:flex;gap:12px"><button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button><button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button></div>
     <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
     </div>
-    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3>
-    <div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div>
-    <div id="ds-container"><div style="color:var(--sub)">加载中...</div></div>
-    </div></div>`;
+    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div></div>`;
   $("view").innerHTML=h;
   loadDatasources();
 }
-
-function toggleReasoning(cb){
-  var sel=$("cfg_reasoning_effort");
-  if(sel)sel.style.display=cb.checked?'':'none';
+function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
+async function saveSystemConfig(){
+  var body={llm_max_concurrency:parseInt($("cfg_llm_conc").value)||50,max_concurrent_evals:parseInt($("cfg_max_evals").value)||3,eval_pool_max:parseInt($("cfg_eval_pool_max").value)||5,parse_workers:parseInt($("cfg_parse_workers").value)||4,source_fill_workers:parseInt($("cfg_source_fill_workers").value)||10,ac_fetch_workers:parseInt($("cfg_ac_fetch_workers").value)||10,resolver_workers:parseInt($("cfg_resolver_workers").value)||4,ai_match_workers:parseInt($("cfg_ai_match_workers").value)||10,ac_llm_workers:parseInt($("cfg_ac_llm_workers").value)||10,fpr_cond_workers:parseInt($("cfg_fpr_cond_workers").value)||2,fpr_baseline_workers:parseInt($("cfg_fpr_baseline_workers").value)||10,fpr_baseline_batch:parseInt($("cfg_fpr_baseline_batch").value)||5,kg_analysis_workers:parseInt($("cfg_kg_analysis_workers").value)||10,bootstrap_workers:parseInt($("cfg_bootstrap_workers").value)||4};
+  var rcb=$("cfg_reasoning_enabled");
+  if(rcb){body.reasoning_effort=rcb.checked?($("cfg_reasoning_effort").value||'low'):'none';}
+  $("cfg_msg").innerHTML='⏳ 保存中…';
+  try{await jput("/api/v1/system/config",body);$("cfg_msg").innerHTML='<span style="color:var(--green)">✓ 已保存并生效</span>';}
+  catch(e){$("cfg_msg").innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
 }
 
 // ===== Agent 数据源配置 =====
-var _dsData=[];
+let _dsData=null;
 async function loadDatasources(){
-  var c=null;
-  try{c=await jget("/api/v2/datasources");}catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败：'+e+'</div>';return;}
-  _dsData=c.datasources||[];
-  if(!_dsData.length){$("ds-container").innerHTML='<div style="color:var(--sub)">无数据源配置</div>';return;}
-  var html=_dsData.map(function(ds,i){
-    var enabled=ds.enabled!==false;
-    var statusBadge=ds.last_error?'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(248,113,113,.18);color:var(--red)">连接异常</span>'
-      :ds.last_connected_at?'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:rgba(74,222,128,.18);color:var(--green)">已连接</span>'
-      :'<span style="font-size:11px;padding:2px 6px;border-radius:4px;background:var(--p2);color:var(--sub)">未测试</span>';
-    return '<div style="border:1px solid var(--bd);border-radius:8px;padding:14px;margin-bottom:12px'+(enabled?'':';opacity:.6')+'">'
-      +'<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px">'
-      +'<span style="font-size:16px;font-weight:600">'+(ds.display_name||ds.agent_type)+'</span>'
-      +'<span style="font-size:12px;padding:2px 8px;border-radius:4px;background:var(--p2);color:var(--sub)">'+ds.db_type+'</span>'
-      +statusBadge
-      +'<label style="margin-left:auto;display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);cursor:pointer;margin:0">'
-      +'<input type="checkbox" '+(enabled?'checked':'')+' onchange="toggleDs('+i+',this.checked)" style="width:auto"> 启用'
-      +'</label></div>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px">'
-      +'<div><label style="font-size:12px;color:var(--sub);margin:0">Host</label><input id="ds_'+i+'_host" value="'+(ds.host||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
-      +'<div><label style="font-size:12px;color:var(--sub);margin:0">Port</label><input id="ds_'+i+'_port" type="number" value="'+(ds.port||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
-      +'<div><label style="font-size:12px;color:var(--sub);margin:0">用户名</label><input id="ds_'+i+'_username" value="'+(ds.username||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
-      +'<div><label style="font-size:12px;color:var(--sub);margin:0">密码</label><input id="ds_'+i+'_password" type="password" placeholder="***" value="'+(ds.password||'***')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
-      +'<div style="grid-column:1/-1"><label style="font-size:12px;color:var(--sub);margin:0">数据库名</label><input id="ds_'+i+'_database" value="'+(ds.database_name||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
-      +'</div>'
-      +((ds.database_name||'').indexOf('{project_id}')>=0?'<div style="margin-top:10px"><label style="font-size:12px;color:var(--sub);margin:0">测试用 Project ID（数据库名含 {project_id} 占位符）</label><input id="ds_'+i+'_pid" placeholder="如 1ebaa4b2dc204454" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>':'')
-      +'<div style="margin-top:10px;display:flex;gap:8px">'
-      +'<button onclick="saveDatasource('+i+')" style="padding:5px 14px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:13px">保存</button>'
-      +'<button onclick="testDatasource('+i+')" style="padding:5px 14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:13px">测试连接</button>'
-      +'</div>'
-      +'<div id="ds_'+i+'_msg" style="margin-top:8px;font-size:12px"></div>'
-      +(ds.last_error?'<div style="margin-top:6px;font-size:12px;color:var(--red)">上次错误：'+String(ds.last_error).slice(0,200)+'</div>':'')
-      +'</div>';
+  try{const d=await jget("/api/v2/datasources");_dsData=d||[];renderDsContainer();}
+  catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';}
+}
+function renderDsContainer(){
+  if(!_dsData||!_dsData.length){$("ds-container").innerHTML='<div style="color:var(--sub)">无配置</div>';return;}
+  $("ds-container").innerHTML=_dsData.map(function(ds,i){
+    var dbType=ds.db_type||'none';
+    var typeBadge=dbType==='mysql'?'<span class="bdg b-COMPLETED">MySQL</span>':dbType==='postgresql'?'<span class="bdg b-RUNNING">PostgreSQL</span>':'<span class="bdg b-CREATED">无独立DB</span>';
+    var statusBadge=ds.last_error?'<span class="bdg b-FAILED">连接异常</span>':ds.last_connected_at?'<span class="bdg b-COMPLETED">已连接</span>':'<span class="bdg b-CREATED">未测试</span>';
+    var enabledBadge=ds.enabled?'<span class="bdg b-COMPLETED">启用</span>':'<span class="bdg b-CREATED">禁用</span>';
+    var connInfo=ds.host?(ds.host+':'+(ds.port||'')):'-';
+    var dbName=ds.database_name||'-';
+    var pidInput=(ds.database_name||'').indexOf('{project_id}')>=0?'<div style="margin-top:10px"><label style="font-size:12px;color:var(--sub);margin:0">测试用 Project ID（数据库名含 {project_id} 占位符）</label><input id="ds_'+i+'_pid" placeholder="如 1ebaa4b2dc204454" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>':'';
+    return '<div style="border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px">'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><b style="font-size:16px">'+ds.display_name+'</b>'+typeBadge+enabledBadge+statusBadge+'</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:14px;color:var(--sub);margin-bottom:10px">'+
+      '<div>主机: <span style="font-family:monospace;color:var(--txt)">'+connInfo+'</span></div>'+
+      '<div>数据库: <span style="font-family:monospace;color:var(--txt)">'+dbName+'</span></div>'+
+      '<div>用户: <span style="font-family:monospace;color:var(--txt)">'+(ds.username||'-')+'</span></div>'+
+      '<div>版本: <span style="font-family:monospace;color:var(--txt)">v'+(ds._version||1)+'</span></div>'+
+      '</div>'+
+      (ds.last_error?'<div style="font-size:13px;color:var(--red);margin-bottom:8px;padding:6px 10px;background:rgba(248,113,113,.08);border-radius:6px">'+ds.last_error+'</div>':'')+
+      pidInput+
+      '<div style="display:flex;gap:8px;margin-top:10px">'+
+      '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="testDatasource('+i+')">测试连接</button>'+
+      '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="toggleDsEnabled('+i+')">'+(ds.enabled?'禁用':'启用')+'</button>'+
+      '</div><div id="ds_'+i+'_msg" style="margin-top:8px;font-size:13px"></div></div>';
   }).join('');
-  $("ds-container").innerHTML=html;
 }
-
-function toggleDs(i,checked){
-  // 即时切换 enabled
-  jput("/api/v2/datasources/"+_dsData[i].agent_type,{enabled:checked}).then(function(){
-    _dsData[i].enabled=checked;
-    loadDatasources();
-  }).catch(function(e){
-    var el=$("ds_"+i+"_msg");if(el)el.innerHTML='<span style="color:var(--red)">切换失败：'+e+'</span>';
-  });
-}
-
-async function saveDatasource(i){
-  var ds=_dsData[i];if(!ds)return;
-  var body={};
-  var h=$("ds_"+i+"_host"),p=$("ds_"+i+"_port"),u=$("ds_"+i+"_username"),pw=$("ds_"+i+"_password"),db=$("ds_"+i+"_database");
-  if(h&&h.value)body.host=h.value;
-  if(p&&p.value)body.port=parseInt(p.value);
-  if(u&&u.value)body.username=u.value;
-  if(pw&&pw.value&&pw.value!=='***')body.password=pw.value;
-  if(db&&db.value)body.database_name=db.value;
-  var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中...</span>';
-  try{
-    await jput("/api/v2/datasources/"+ds.agent_type,body);
-    if(msg)msg.innerHTML='<span style="color:var(--green)">已保存</span>';
-    loadDatasources();
-  }catch(e){
-    if(msg)msg.innerHTML='<span style="color:var(--red)">保存失败：'+e+'</span>';
-  }
-}
-
 async function testDatasource(i){
   var ds=_dsData[i];if(!ds)return;
   var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">测试中...</span>';
@@ -1879,55 +923,71 @@ async function testDatasource(i){
   var url="/api/v2/datasources/"+ds.agent_type+"/test";
   if(pid)url+="?project_id="+encodeURIComponent(pid);
   try{
-    var r=await jpost(url);
-    if(r.success){
-      if(msg)msg.innerHTML='<span style="color:var(--green)">连接成功</span>';
-    }else{
-      if(msg)msg.innerHTML='<span style="color:var(--red)">连接失败：'+(r.error||'未知错误')+'</span>';
-    }
+    var r=await jpost(url,{});
+    if(msg)msg.innerHTML=r.success?'<span style="color:var(--green)">✓ '+r.error+'</span>':'<span style="color:var(--red)">✗ '+r.error+'</span>';
     loadDatasources();
-  }catch(e){
-    if(msg)msg.innerHTML='<span style="color:var(--red)">测试失败：'+e+'</span>';
-  }
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
+}
+async function toggleDsEnabled(i){
+  var ds=_dsData[i];if(!ds)return;
+  try{await jput("/api/v2/datasources/"+ds.agent_type,{enabled:!ds.enabled});loadDatasources();}
+  catch(e){alert("切换失败: "+e);}
 }
 
-async function saveSystemConfig(){
-  var body={};
-  var v;
-  var fields=["llm_conc:llm_max_concurrency","max_evals:max_concurrent_evals","eval_pool_max:eval_pool_max",
-    "parse_workers:parse_workers","source_fill_workers:source_fill_workers","ac_fetch_workers:ac_fetch_workers",
-    "resolver_workers:resolver_workers","ai_match_workers:ai_match_workers","ac_llm_workers:ac_llm_workers",
-    "fpr_cond_workers:fpr_cond_workers","fpr_baseline_workers:fpr_baseline_workers",
-    "fpr_baseline_batch:fpr_baseline_batch","kg_analysis_workers:kg_analysis_workers","bootstrap_workers:bootstrap_workers"];
-  for(var i=0;i<fields.length;i++){
-    var parts=fields[i].split(":");
-    var elId="cfg_"+parts[0],key=parts[1];
-    var el=$(elId);
-    if(el){v=parseInt(el.value);if(!isNaN(v))body[key]=v;}
-  }
-  var cb=$("cfg_reasoning_enabled");
-  if(cb&&cb.checked){
-    var sel=$("cfg_reasoning_effort");
-    if(sel)body["reasoning_effort"]=sel.value;
-  }else{
-    body["reasoning_effort"]="none";
-  }
-  $("cfg_msg").innerHTML="<span style='color:var(--sub)'>保存中...</span>";
-  try{
-    var r=await jput("/api/v1/system/config",body);
-    $("cfg_msg").innerHTML="<span style='color:var(--green)'>已保存："+r.updated.join("， ")+"</span>";
-  }catch(e){
-    $("cfg_msg").innerHTML="<span style='color:var(--red)'>保存失败："+e+"</span>";
-  }
+// ===== 通用操作 =====
+function retryEval(eid){
+  showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
+    desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
+    risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
+    confirmText:'重跑',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      activeId=eid;
+      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='QUEUED'||d.status==='RUNNING'){
+          var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
+            jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
+          setTimeout(retryPoll,500);
+        }else{alert('重试失败: '+JSON.stringify(d));}
+      }).catch(function(e){alert('重试失败: '+e);});
+    }
+  });
+}
+function deleteEval(eid,name){
+  showConfirm({icon:'🗑️',iconBg:'rgba(248,113,113,.15)',iconColor:'var(--red)',title:'删除评测',
+    desc:'删除将永久清除该评测的全部数据，不可恢复。',
+    risks:['trace 解析结果','指标计算结果','分析报告','基线匹配数据'],
+    confirmText:'永久删除',confirmColor:'var(--red)',
+    onConfirm:function(){
+  F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
+    if(d.status==='ok'){Router.navigate('/');$("view").innerHTML='<div class="empty"><div class="ic">🗑️</div><h3>评测已删除</h3><p>'+eid+'</p><button class="btn" style="margin-top:16px" onclick="goBack()">返回列表</button></div>';}else{alert('删除失败: '+JSON.stringify(d));}
+  }).catch(e=>alert('删除失败: '+e));
+    }
+  });
+}
+function cancelEval(eid){
+  showConfirm({icon:'⚠️',iconBg:'rgba(245,158,11,.15)',iconColor:'var(--amber)',title:'取消评测',
+    desc:'取消后评测将停止运行，状态设为已取消。此操作不可撤销。',
+    confirmText:'确认取消',confirmColor:'var(--amber)',
+    onConfirm:function(){
+      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.status==='CANCELLED'){renderEvals();}else{alert('取消失败: '+JSON.stringify(d));}}).catch(function(e){alert('取消失败: '+e);});
+    }
+  });
+}
+function showConfirm(opts){
+  var ov=document.createElement("div");ov.className="modal-overlay";
+  var risksHtml=(opts.risks||[]).map(function(r){return "<li>"+r+"</li>"}).join("");
+  ov.innerHTML='<div class="modal">'+
+    '<div class="modal-head"><div class="modal-icon" style="background:'+opts.iconBg+';color:'+opts.iconColor+'">'+opts.icon+'</div><h3>'+opts.title+'</h3></div>'+
+    '<div class="modal-body"><p>'+opts.desc+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'+
+    '<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'+
+    '<button class="btn" style="font-size:15px;padding:8px 20px;background:'+opts.confirmColor+'" id="modal-confirm">'+opts.confirmText+'</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener("click",function(e){if(e.target===ov)ov.remove()});
+  document.getElementById("modal-confirm").onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm();};
 }
 
-// iframe 固化报告的重跑/删除按钮通过 postMessage 回传到 dashboard（仅 debug 模式）
-if(DEBUG) window.addEventListener("message",function(ev){
-  var d=ev.data||{};
-  if(d.action==="retry"&&d.evaluation_id){retryEval(d.evaluation_id);}
-  else if(d.action==="delete"&&d.evaluation_id){deleteEval(d.evaluation_id,d.evaluation_id);}
-});
-
+// ===== 启动 =====
 Router.init();
 </script>
 </body>
