@@ -875,12 +875,16 @@ class Orchestrator:
     # ── RESOLVING ───────────────────────────────────
 
     def _persist_findings(self, evaluation_id: str, data_packs: list):
-        """持久化 findings + session_graph 到 DB。
+        """持久化 findings + session_graph + 4 种 fact 到 DB。
 
         CaseFilter 依赖 extracted_finding 表判断 finding 是否匹配基线。
+        _calculate_metrics 和 _get_packs_with_knowledge 依赖
+        knowledge_interaction_fact 和 tool_action_fact。
         """
         from ...persistence.repositories.fact_repo import (
             insert_extracted_findings, insert_session_graph,
+            insert_knowledge_fact, insert_tool_action_fact,
+            insert_outcome_fact, insert_resource_fact,
         )
 
         def _do(cur):
@@ -891,12 +895,23 @@ class Orchestrator:
                 insert_session_graph(
                     cur, dp.task_run_id, evaluation_id, dp.session_graph or {},
                 )
+                # 持久化 4 种 fact
+                if dp.knowledge_fact:
+                    insert_knowledge_fact(cur, dp.knowledge_fact)
+                if dp.tool_action_fact:
+                    insert_tool_action_fact(cur, dp.tool_action_fact)
+                if dp.outcome_fact:
+                    insert_outcome_fact(cur, dp.outcome_fact)
+                if dp.resource_fact:
+                    insert_resource_fact(cur, dp.resource_fact)
 
         try:
             _db_query(_do)
-            log("RESOLVE", f"持久化 {len(data_packs)} data_packs 的 findings + session_graph")
+            log("RESOLVE", f"持久化 {len(data_packs)} data_packs 的 "
+                  f"findings + session_graph + 4 种 fact")
         except Exception as e:
             log("RESOLVE", f"持久化 findings 失败: {e}")
+            raise
 
     # ── CALCULATING ─────────────────────────────────
 
