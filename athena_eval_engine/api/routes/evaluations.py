@@ -245,6 +245,10 @@ app.include_router(platform_router)
 app.include_router(vbench_router)
 app.include_router(sys_router)
 
+# 挂载 v2 路由（数据源配置 + lifecycle/inventory 报告端点）
+from ...v2.api import create_v2_app
+create_v2_app(app)
+
 
 @app.on_event("startup")
 def _on_startup():

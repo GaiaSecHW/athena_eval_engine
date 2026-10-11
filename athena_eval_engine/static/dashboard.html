@@ -556,7 +556,39 @@ const MI={
   M10:{n:"时长变化",short:"时长",d:"KG - No-KG 运行时长(ms)。负值=KG 更快。",u:"ms",
      range:[{v:-1,t:"KG 更快",c:"green"},{v:0,t:"无变化",c:"amber"},{v:1,t:"KG 更慢",c:"red"}],
      interp:(v)=>v==null?"无法计算":v<0?`KG 快 ${fmtDur(-v)}`:v>0?`KG 慢 ${fmtDur(v)}`:"时长无差异",
-     formula:"median(KG_duration_ms - NoKG_duration_ms)"}
+     formula:"median(KG_duration_ms - NoKG_duration_ms)"},
+  M15:{n:"L1知识需求率",short:"L1知识需求",d:"需要知识支撑的业务阶段占比。L0-L7 生命周期第一道关卡。",u:"ratio",
+     range:[{v:0,t:"无需求",c:"gray"},{v:0.5,t:"部分需求",c:"amber"},{v:0.8,t:"高度依赖",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识需求率 ${(v*100).toFixed(1)}%`,
+     formula:"l1_need_knowledge=True / 有效记录数"},
+  M16:{n:"L2知识发起率",short:"L2知识发起",d:"需要知识的阶段中实际发起知识访问的比例。L1=True 中 L2=True 的占比。",u:"ratio",
+     range:[{v:0,t:"未发起",c:"red"},{v:0.5,t:"部分发起",c:"amber"},{v:0.8,t:"充分发起",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识发起率 ${(v*100).toFixed(1)}%`,
+     formula:"l2_initiated=True / l1_need_knowledge=True"},
+  M17:{n:"L3查询准确率",short:"L3查询准确",d:"发起的知识查询中内容聚焦于当前阶段任务的比例。",u:"ratio",
+     range:[{v:0,t:"全不准确",c:"red"},{v:0.5,t:"部分准确",c:"amber"},{v:0.8,t:"高度准确",c:"green"}],
+     interp:(v)=>v==null?"无数据":`查询准确率 ${(v*100).toFixed(1)}%`,
+     formula:"l3_query_accurate=True / l2_initiated=True"},
+  M18:{n:"L4知识存在率",short:"L4知识存在",d:"准确查询的知识库中实际存在对应知识的比例。",u:"ratio",
+     range:[{v:0,t:"全不存在",c:"red"},{v:0.5,t:"部分存在",c:"amber"},{v:0.8,t:"充分存在",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识存在率 ${(v*100).toFixed(1)}%`,
+     formula:"l4_knowledge_exists=True / l3_query_accurate=True"},
+  M19:{n:"L5召回成功率",short:"L5召回成功",d:"存在的知识被成功取回的比例。衡量链路稳定性。",u:"ratio",
+     range:[{v:0,t:"全失败",c:"red"},{v:0.5,t:"部分成功",c:"amber"},{v:0.8,t:"高度稳定",c:"green"}],
+     interp:(v)=>v==null?"无数据":`召回成功率 ${(v*100).toFixed(1)}%`,
+     formula:"l5_retrieved=True / l4_knowledge_exists=True"},
+  M20:{n:"L6知识使用率",short:"L6知识使用",d:"成功取回的知识在推理文本中被引用的比例。",u:"ratio",
+     range:[{v:0,t:"全未使用",c:"red"},{v:0.5,t:"部分使用",c:"amber"},{v:0.8,t:"充分使用",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识使用率 ${(v*100).toFixed(1)}%`,
+     formula:"l6_used=True / l5_retrieved=True"},
+  M21:{n:"L7知识影响率",short:"L7知识影响",d:"使用的知识实际影响判定结论的比例。L0-L7 最后一道关卡。",u:"ratio",
+     range:[{v:0,t:"全未影响",c:"red"},{v:0.5,t:"部分影响",c:"amber"},{v:0.8,t:"高度影响",c:"green"}],
+     interp:(v)=>v==null?"无数据":`知识影响率 ${(v*100).toFixed(1)}%`,
+     formula:"l7_influenced=True / l6_used=True"},
+  M26:{n:"阶段误报承担率",short:"M26阶段误报",d:"误报 case 在某业务阶段存在断点的比例。按阶段分组展示。",u:"ratio",
+     range:[{v:0,t:"无断点",c:"green"},{v:0.3,t:"部分承担",c:"amber"},{v:0.7,t:"高度承担",c:"red"}],
+     interp:(v)=>v==null?"无数据":`阶段误报承担率 ${(v*100).toFixed(1)}%`,
+     formula:"阶段FP断点用例数 / FP用例总数"}
 };
 function mInfo(id){const m=MI[id];return m?`<div style="font-size:15px;color:var(--sub);margin-top:4px;line-height:1.5">${m.d}<br><span style="color:var(--gray);font-size:14px">单位：${m.u}</span></div>`:"";}
 function dc(v,u){if(v===null||v===undefined||isNaN(v))return"";if(u==="ratio")return v>0?"dp":"dn";return v<0?"dp":"dn";}
@@ -647,9 +679,155 @@ async function loadPartialReport(id,st){
       }catch(e){}
     }
     report.report=r;
-    report._partial={base:rs.base,fpr:rs.fpr,kg:rs.kg,html:rs.html,running:true,status:st.status,progress:st.progress};
+    report._partial={base:rs.base,fpr:rs.fpr,kg:rs.kg,html:rs.html,lifecycle:rs.lifecycle,inventory:rs.inventory,running:true,status:st.status,progress:st.progress};
     renderReport(report);
   }catch(e){}
+}
+
+// ===== v2 生命周期报告段渲染 =====
+function _renderLifecycle(lc){
+  if(!lc)return'';
+  const bp=lc.breakpoint_distribution||{};
+  const cs=lc.cause_summary||{};
+  const el=lc.effect_label_distribution||{};
+  const m15_21=lc.lifecycle_metrics||[];
+  const pc=lc.per_case_details||[];
+  const ss=lc.suggestions_summary||{};
+  const l0=lc.l0_origin_distribution||{};
+
+  // 断点分布矩阵
+  const phases=['ENTRY_IDENTIFICATION','DATA_FLOW_TRACKING','VULN_PATTERN_RECOGNITION','SINK_POINT_LOCALIZATION','VULN_VERDICT_REPORTING','VULN_UNDERSTANDING','CODE_LOCALIZATION','VERIFICATION_EXECUTION','VERDICT_REPORTING'];
+  const phaseLabels={'ENTRY_IDENTIFICATION':'入口识别','DATA_FLOW_TRACKING':'数据流追踪','VULN_PATTERN_RECOGNITION':'漏洞模式识别','SINK_POINT_LOCALIZATION':'Sink点定位','VULN_VERDICT_REPORTING':'漏洞判定与上报','VULN_UNDERSTANDING':'漏洞理解','CODE_LOCALIZATION':'代码定位','VERIFICATION_EXECUTION':'验证执行','VERDICT_REPORTING':'判定上报'};
+  const levels=['L2','L3','L4','L5','L6','L7'];
+  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'G根因(内容有误)'};
+
+  let matrixRows=phases.map(function(p){
+    var row=bp[p]||{};
+    var cells=levels.map(function(l){
+      var v=row[l]||0;
+      return '<td class="num">'+(v>0?'<b style="color:var(--red)">'+v+'</b>':'<span style="color:var(--gray)">0</span>')+'</td>';
+    }).join('');
+    return '<tr><td style="font-size:14px">'+(phaseLabels[p]||p)+'</td>'+cells+'</tr>';
+  }).join('');
+
+  // 成因汇总
+  var causeTotal=Object.values(cs).reduce(function(a,b){return a+(b||0);},0);
+  var causeBars=Object.keys(causeLabels).map(function(c){
+    var v=cs[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+
+  // 效果标签分布
+  var elTotal=(el.POSITIVE||0)+(el.NEGATIVE||0)+(el.NEUTRAL||0)+(el.NULL||0);
+  var elBars=[['POSITIVE','正向(推动判定)','var(--green)'],['NEGATIVE','负向(导致误判)','var(--red)'],['NEUTRAL','中性(未推动)','var(--amber)'],['NULL','证据不足','var(--gray)']].map(function(e){
+    var v=el[e[0]]||0;var pct=elTotal>0?(v/elTotal*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+e[1]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+e[2]+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+
+  // L0 来源分布
+  var l0Total=Object.values(l0).reduce(function(a,b){return a+(b||0);},0);
+  var l0Bars=Object.keys(l0).map(function(k){
+    var v=l0[k]||0;var pct=l0Total>0?(v/l0Total*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+k+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:var(--acc)"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+
+  // 生命周期指标 M15-M21
+  var lcMetricsHtml=m15_21.map(function(m){
+    var mid=m.metric_id||'';
+    var mi=MI[mid]||{n:mid,short:mid,d:"",u:""};
+    if(m.calculation_status!=='CALCULATED'){
+      return '<div class="mcard na"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+mi.short+'</div><div class="mc-val na">N/A</div><div style="font-size:13px;color:var(--sub);margin-top:4px">'+(m.reason_code||m.calculation_status||'无数据')+'</div></div>';
+    }
+    var v=m.estimate;
+    var pct=mi.u==='ratio'?(v*100).toFixed(1)+'%':fmtNum(v);
+    var interp=mi.interp?mi.interp(v):'';
+    return '<div class="mcard"><div class="mc-label"><span style="font-family:monospace;font-size:12px;color:var(--gray)">'+mid+'</span> '+mi.short+'</div><div class="mc-val">'+pct+'</div><div style="font-size:13px;color:var(--sub);margin-top:4px">'+interp+'</div>'+(m.n!=null?'<div class="mc-n">N='+m.n+'</div>':'')+'</div>';
+  }).join('');
+
+  // M26 按阶段展示
+  var m26=m15_21.find(function(m){return m.metric_id==='M26';});
+  var m26Html='';
+  if(m26&&m26.per_phase){
+    m26Html='<div class="card" style="margin-bottom:16px"><h3>M26 阶段误报承担率</h3><table><thead><tr><th>业务阶段</th><th>FP用例数</th><th>FP总数</th><th>承担率</th><th>95% CI</th></tr></thead><tbody>';
+    Object.keys(m26.per_phase).forEach(function(p){
+      var v=m26.per_phase[p];
+      m26Html+='<tr><td>'+(phaseLabels[p]||p)+'</td><td class="num">'+(v.fp_count||0)+'</td><td class="num">'+(v.total_fp||0)+'</td><td class="num">'+(v.estimate!=null?(v.estimate*100).toFixed(1)+'%':'-')+'</td><td style="font-size:14px;color:var(--sub)">'+(v.ci_lower!=null?('['+(v.ci_lower*100).toFixed(1)+'%, '+(v.ci_upper*100).toFixed(1)+'%]'):'-')+'</td></tr>';
+    });
+    m26Html+='</tbody></table></div>';
+  }
+
+  // 改进建议汇总
+  var ssTotal=ss.total||0;
+  var ssByPri=ss.by_priority||{};
+  var ssHtml=ssTotal>0?'<div class="card" style="margin-bottom:16px"><h3>改进建议汇总</h3><div style="display:flex;gap:16px;margin-bottom:12px">'
+    +'<div class="mcard"><div class="mc-label">总建议数</div><div class="mc-val">'+ssTotal+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">高优先级</div><div class="mc-val" style="color:var(--red)">'+(ssByPri.high||0)+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">中优先级</div><div class="mc-val" style="color:var(--amber)">'+(ssByPri.medium||0)+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">低优先级</div><div class="mc-val" style="color:var(--gray)">'+(ssByPri.low||0)+'</div></div>'
+    +'</div></div>':'';
+
+  // Per-case 断点详情
+  var pcHtml='';
+  if(pc.length){
+    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">📋 逐 Case 断点详情 <span style="font-size:12px;color:var(--gray)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
+    pc.forEach(function(c){
+      var bps=c.breakpoints||[];
+      if(!bps.length)return;
+      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>业务阶段</th><th>断点级别</th><th>成因</th><th>证据</th></tr></thead><tbody>';
+      bps.forEach(function(b){
+        pcHtml+='<tr><td style="font-size:14px">'+(phaseLabels[b.business_phase]||b.business_phase||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;color:var(--sub);max-width:400px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
+      });
+      pcHtml+='</tbody></table></div>';
+    });
+    pcHtml+='</div></details>';
+  }
+
+  return '<div class="card" style="margin-bottom:16px"><h3>🔬 L0-L7 生命周期分析</h3>'
+    +(l0Total>0?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">L0 知识原始来源分布</h4>'+l0Bars+'</div>':'')
+    +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（阶段 × 级别）</h4>'
+    +'<div style="overflow-x:auto"><table><thead><tr><th>业务阶段</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
+    +matrixRows+'</tbody></table></div></div>'
+    +(lcMetricsHtml?'<div class="card" style="margin-bottom:16px"><h3>📊 生命周期指标 M15-M21</h3><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'+lcMetricsHtml+'</div></div>':'')
+    +m26Html
+    +'<div class="card" style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>'+causeBars+'<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：'+causeTotal+'</div></div>'
+    +'<div class="card" style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px">效果标签分布</h4>'+elBars+'<div style="font-size:14px;color:var(--sub);margin-top:8px">总记录数：'+elTotal+'</div></div>'
+    +ssHtml+pcHtml;
+}
+
+// ===== v2 知识盘点报告段渲染 =====
+function _renderInventory(iv){
+  if(!iv)return'';
+  var cov=iv.coverage||{};
+  var missing=cov.missing_vuln_types||[];
+  var covered=cov.covered_vuln_types||[];
+  var items=iv.knowledge_items||[];
+  var accessed=iv.accessed_items||[];
+  var quality=iv.quality_assessment||[];
+
+  // 覆盖度
+  var covRate=covered.length+missing.length>0?(covered.length/(covered.length+missing.length)*100).toFixed(1):'0.0';
+
+  // 质量标注
+  var qCorrect=quality.filter(function(q){return q.quality==='correct';}).length;
+  var qIncomplete=quality.filter(function(q){return q.quality==='incomplete';}).length;
+  var qOutdated=quality.filter(function(q){return q.quality==='outdated';}).length;
+
+  return '<div class="card" style="margin-bottom:16px"><h3>📚 知识盘点</h3>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px">'
+    +'<div class="mcard"><div class="mc-label">覆盖漏洞类型</div><div class="mc-val" style="color:var(--green)">'+covered.length+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">未覆盖漏洞类型</div><div class="mc-val" style="color:var(--red)">'+missing.length+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">覆盖率</div><div class="mc-val">'+covRate+'%</div></div>'
+    +'<div class="mcard"><div class="mc-label">知识条目总数</div><div class="mc-val">'+items.length+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">已访问知识</div><div class="mc-val" style="color:var(--acc)">'+accessed.length+'</div></div>'
+    +'</div>'
+    +(missing.length?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px;color:var(--red)">未覆盖的漏洞类型</h4><div style="display:flex;flex-wrap:wrap;gap:6px">'+missing.map(function(t){return'<span class="knd" style="background:rgba(248,113,113,.18);color:var(--red)">'+t+'</span>';}).join('')+'</div></div>':'')
+    +(covered.length?'<div style="margin-bottom:16px"><h4 style="font-size:16px;margin-bottom:8px;color:var(--green)">已覆盖的漏洞类型</h4><div style="display:flex;flex-wrap:wrap;gap:6px">'+covered.map(function(t){return'<span class="knd" style="background:rgba(74,222,128,.18);color:var(--green)">'+t+'</span>';}).join('')+'</div></div>':'')
+    +(quality.length?'<div><h4 style="font-size:16px;margin-bottom:8px">知识质量标注</h4><div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">'
+      +'<div class="mcard"><div class="mc-label">正确</div><div class="mc-val" style="color:var(--green)">'+qCorrect+'</div></div>'
+      +'<div class="mcard"><div class="mc-label">不完整</div><div class="mc-val" style="color:var(--amber)">'+qIncomplete+'</div></div>'
+      +'<div class="mcard"><div class="mc-label">过时</div><div class="mc-val" style="color:var(--red)">'+qOutdated+'</div></div>'
+      +'</div></div>':'')
+    +'</div>';
 }
 
 function renderReport(d){
@@ -928,7 +1106,7 @@ function renderReport(d){
   rep.innerHTML=`
   ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
     <div style="width:20px;height:20px;border:2px solid var(--acc);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0"></div>
-    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容，未完成段会标注"计算中"${_partial.base?'':' · 基础报告计算中'}${_partial.fpr?'':' · 误报率分析计算中'}${_partial.kg?'':' · 知识图谱分析计算中'}</div></div>
+    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容，未完成段会标注"计算中"${_partial.base?'':' · 基础报告计算中'}${_partial.fpr?'':' · 误报率分析计算中'}${_partial.kg?'':' · 知识图谱分析计算中'}${_partial.lifecycle?'':' · 生命周期分析计算中'}${_partial.inventory?'':' · 知识盘点计算中'}</div></div>
   </div>`:""}
   <div style="margin-bottom:22px">
     <h2 style="font-size:22px;margin-bottom:6px">${evalName}</h2>
@@ -1153,6 +1331,9 @@ function renderReport(d){
     return `<section style="margin-bottom:16px">${tabs}${panes}</section>`;
   })()}
 
+  ${_partial&&_partial.lifecycle===false?'':(d._lifecycle?_renderLifecycle(d._lifecycle):'')}
+  ${_partial&&_partial.inventory===false?'':(d._inventory?_renderInventory(d._inventory):'')}
+
   `;
 
   // 异步加载 FPR 段和 KG 段（三段拆分后主报告不含这些大字段）
@@ -1205,6 +1386,24 @@ function renderReport(d){
               _mg[i].case_results=_kgGroups[_tid].case_results;
           }
         }
+        renderReport(d);
+      }).catch(function(){});
+    }
+  }
+
+  // 异步加载 lifecycle 段和 inventory 段
+  if(_evalId){
+    if(_partial?_partial.lifecycle:true){
+      jget('/api/v2/evaluations/'+_evalId+'/report/lifecycle').then(function(lc){
+        if(!lc||lc.error)return;
+        d._lifecycle=lc;
+        renderReport(d);
+      }).catch(function(){});
+    }
+    if(_partial?_partial.inventory:true){
+      jget('/api/v2/evaluations/'+_evalId+'/report/inventory').then(function(iv){
+        if(!iv||iv.error)return;
+        d._inventory=iv;
         renderReport(d);
       }).catch(function(){});
     }
