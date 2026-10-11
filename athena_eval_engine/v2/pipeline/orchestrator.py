@@ -375,6 +375,13 @@ class Orchestrator:
             )
             log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
 
+            # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
+            try:
+                from ...application.evaluation_service import _cleanup_trace_cache
+                _cleanup_trace_cache()
+            except Exception:
+                pass
+
             # ── RESOLVING ──
             # 持久化 findings + session_graph 到 DB（CaseFilter 依赖 extracted_finding 表）
             _check_cancel(evaluation_id, stages.RESOLVING)
@@ -724,6 +731,13 @@ class Orchestrator:
         def _resolve_path(source_uri: str, project_id: str = "",
                           task_id: str = "") -> str:
             if os.path.exists(source_uri):
+                # k8s 模式：/data 在 NFS-backed PVC 上，SQLite 随机读极慢，
+                # 拷贝到 pod 本地 /tmp 加速解析，解析完删除
+                if source_uri.startswith("/data/"):
+                    from ...application.evaluation_service import (
+                        _copy_trace_to_local,
+                    )
+                    return _copy_trace_to_local(source_uri)
                 return source_uri
             # /data/ 路径 — 本地开发时从平台拉取
             if source_uri.startswith("/data/") or source_uri.startswith("data/"):
