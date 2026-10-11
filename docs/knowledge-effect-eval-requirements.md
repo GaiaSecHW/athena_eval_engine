@@ -508,19 +508,49 @@ L7（LLM）→ 正向 / 负向(G/H) / 中性(F) / NULL(无法确认)
 
 ### 4.4 有效 case 筛选模块
 
-**新建文件**：`domain/lifecycle/case_filter.py`
+**新建文件**：`v2/lifecycle/case_filter.py`
 
-**职责**：筛选有效 case，只对有效 case 内的知识访问做统计。
+**职责**：从漏洞中心人工确认数据出发，筛选 FP/FN case 对应的 DataPack，只对有效 case 内的知识访问做统计。
 
-| 触发时机 | 有效 case 标准 | 判定方法 |
-|----------|--------------|---------|
-| 开发态 | trace 里的挖掘结论（finding 上报或中途否定）与基线漏洞/非漏洞匹配上的 case | 复用现有 `finding_benchmark_match` 表 + `sink_matcher.py` 的匹配结果 |
-| 运行态 | Agent 上报了漏洞 finding 的 case | `extracted_finding` 表中有记录的 case |
+**FP（误报）筛选流程**：
+1. 基线标注 `expected_label=NON_VULNERABLE` 的 case
+2. 在 trace findings 中找对应 finding
+3. 找到且 `validation_result=CONFIRMED` → agent 误报了漏洞
+
+**FN（漏报）筛选流程**（仅开发态）：
+1. 基线标注 `expected_label=VULNERABLE` 的 case
+2. 将基线漏洞与**告警中心**数据对比
+3. 告警中心有匹配 → agent 上报了该漏洞，不是漏报，跳过
+4. 告警中心无匹配 → agent 漏报了该漏洞
+5. 对漏报的 case，提取 sink 点（`source_file` / `source_function`），用 LLM 匹配在 trace 中找对应 session
+
+**FP 的匹配方式**取决于基线来源（`benchmark_source`）：
+
+| 基线来源 | 匹配方式 | 说明 |
+|----------|---------|------|
+| 漏洞中心（`vuln_center`） | 纯代码匹配 | finding_id 直接匹配 → 标题（vulnerability_type）匹配 → 内容（description）文本匹配 |
+| V-Bench 测评集（`vbench_zip`） | LLM 匹配 | 两阶段：Phase 1 标题预筛（每基线 1 次 LLM）→ Phase 2 1vs1 详细对比（三维度 + 程序校验 sink 路径），复用 v1 `fpr_analysis.py` / `ai_matcher.py` 的方法 |
+
+**FN 的匹配方式**：
+- 基线漏洞 vs 告警中心：与 FP 相同的匹配方式（vuln_center 纯代码，vbench_zip LLM）
+- 漏报 case vs trace：始终用 LLM 匹配（因为漏报意味着 trace 里没有 finding，只能用 sink 点信息定位 session）
+
+**按 eval_mode 筛选**：
+
+| 触发时机 | 分析 case 类型 |
+|----------|--------------|
+| 开发态（`dev`） | FP + FN |
+| 运行态（`runtime`） | 只 FP |
+
+**跨 session case 处理**：一个 case 对应一个 task，但一个 task 可能有多个 agent（挖掘 agent + 验证 agent），各自一条 trace、一个 DataPack。按 `task_id` 分组，组级别聚合判定 FP/FN，组内保留有知识访问记录的 DataPack。
+
+**找不到对应 trace 的 case**：记录到 `unmatched_cases`，在报告中告警，不参与分析。
 
 **涉及文件**：
-- 新建 `domain/lifecycle/case_filter.py`
-- 复用 `workers/sink_matcher.py` 的匹配结果
-- 复用 `extracted_finding` 表
+- 新建 `v2/lifecycle/case_filter.py`
+- 复用 v1 `application/fpr_analysis.py` 的 LLM 匹配方法（`_llm_match_batch` / `_run_matching`）
+- 复用 v1 `workers/ai_matcher.py` 的 `_verify_sink` / `_norm_path` / `_parse_bool`
+- 依赖 `alert_center_data`（从 INGESTING 阶段获取，用于 FN 判定）
 
 ### 4.5 指标计算扩展
 

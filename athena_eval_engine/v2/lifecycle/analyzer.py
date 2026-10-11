@@ -187,7 +187,9 @@ class LifecycleAnalyzer:
 
     def analyze(self, evaluation_id: str, data_packs: list,
                 reports_dir: str, cancel_cb=None,
-                eval_mode: str = "dev") -> list[dict]:
+                eval_mode: str = "dev",
+                benchmark_source: str = "vbench_zip",
+                alert_center_data: dict | None = None) -> list[dict]:
         """对有效 case 的每次知识访问执行 L0-L7 分析。
 
         流程：
@@ -200,12 +202,19 @@ class LifecycleAnalyzer:
         5. L7 判定委托给 EvidenceChain（延迟 import）
         6. 写入 knowledge_access_detail 表
 
+        Args:
+            benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
+                              "vbench_zip"（V-Bench 测评集，LLM 匹配）
+            alert_center_data: 告警中心数据，用于 FN 判定
+
         Returns:
             list[dict]，每个 dict 是一条 knowledge_access_detail 记录
         """
         case_filter = CaseFilter()
         valid_packs = case_filter.filter_valid_cases(
             evaluation_id, data_packs, eval_mode=eval_mode,
+            benchmark_source=benchmark_source,
+            alert_center_data=alert_center_data,
         )
 
         all_records: list[dict] = []

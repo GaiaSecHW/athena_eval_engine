@@ -185,10 +185,42 @@ L7 是最关键的一步，还有一条异常分支——知识推动了判定�
 |------|--------|--------|
 | 触发时机 | Agent 发布新版本 | 项目测试完成 |
 | 基线来源 | 预置基线集（V-Bench / 漏洞中心已确认 case） | 漏洞中心人工确认结果 |
+| 分析 case 类型 | FP（误报）+ FN（漏报） | 只 FP（误报） |
 | 分析方法 | L0–L7 全链路判定（详见 §3） | L0–L7 全链路判定（详见 §3） |
 | 门禁 | 不达标可阻断发布 | 误报率 > 30% 时触发预警，提醒是否进入测评分析 |
 
 **协作闭环**：运行态发现的问题案例补入开发态基线集 → 下轮开发态验证是否改善 → 改进后发布 → 触发下一轮运行态测评。
+
+### 5.1 有效 case 筛选规则
+
+两种触发时机都从**漏洞中心人工确认数据**出发，但 FP 和 FN 的筛选流程不同：
+
+**FP（误报）筛选**：
+1. 基线标注 `expected_label=NON_VULNERABLE` 的 case
+2. 在 trace findings 中找对应 finding
+3. 找到且 `validation_result=CONFIRMED` → agent 误报了漏洞
+
+**FN（漏报）筛选**（仅开发态）：
+1. 基线标注 `expected_label=VULNERABLE` 的 case
+2. 将基线漏洞与**告警中心**数据对比
+3. 告警中心有匹配 → agent 上报了该漏洞，不是漏报，跳过
+4. 告警中心无匹配 → agent 漏报了该漏洞
+5. 对漏报的 case，提取 sink 点，用 LLM 匹配在 trace 中找对应 session
+
+**FP 的匹配方式**取决于基线来源（`benchmark_source`）：
+
+| 基线来源 | 匹配方式 | 说明 |
+|----------|---------|------|
+| 漏洞中心（`vuln_center`） | 纯代码匹配 | finding_id 直接匹配 → 标题匹配 → 内容匹配，不需要 LLM |
+| V-Bench 测评集（`vbench_zip`） | LLM 匹配 | 两阶段（标题预筛 → 1vs1 详细对比），复用 v1 `fpr_analysis.py` 的方法 |
+
+**FN 的匹配方式**：
+- 基线漏洞 vs 告警中心：与 FP 相同的匹配方式（vuln_center 纯代码，vbench_zip LLM）
+- 漏报 case vs trace：始终用 LLM 匹配（因为漏报意味着 trace 里没有 finding，只能用 sink 点信息定位 session）
+
+**找不到对应 trace 的 case**：在报告中告警，不参与分析。
+
+**跨 session case**：一个 case 对应一个 task，但一个 task 可能有多个 agent（挖掘 agent + 验证 agent），各自一条 trace。按 `task_id` 分组，组级别判定 FP/FN，组内保留有知识访问的 DataPack。
 
 ---
 
@@ -200,8 +232,10 @@ L7 是最关键的一步，还有一条异常分支——知识推动了判定�
 
 | 触发时机 | 有效 case 标准 |
 |----------|--------------|
-| 开发态 | trace 里的挖掘结论（finding 上报或中途否定）与基线漏洞/非漏洞匹配上的 case |
-| 运行态 | Agent 上报了漏洞 finding 的 case |
+| 开发态 | FP（误报）：基线 NON_VULNERABLE，trace 有对应 finding 且 CONFIRMED；FN（漏报）：基线 VULNERABLE，告警中心无匹配，用 sink 在 trace 中定位到 session |
+| 运行态 | 只 FP（误报）：基线 NON_VULNERABLE，trace 有对应 finding 且 CONFIRMED |
+
+匹配方式和筛选流程详见 §5.1。
 
 ### 6.1 端到端指标
 

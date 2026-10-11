@@ -85,8 +85,7 @@ athena_eval_engine/v2/
 │
 ├── report/                        # 报告生成
 │   ├── __init__.py
-│   ├── assembler.py               # 报告组装
-│   └── replay_verifier.py         # 回归验证
+│   └── assembler.py               # 报告组装
 │
 ├── infra/                         # 基础设施（从老代码拷贝）
 │   ├── __init__.py
@@ -400,12 +399,11 @@ class Orchestrator:
 | 模块 | v2 位置 | 说明 |
 |------|---------|------|
 | L0–L7 分析 | `v2/lifecycle/analyzer.py` | 漏斗过滤 + LLM 批处理 + L7 判定 |
-| 有效 case 筛选 | `v2/lifecycle/case_filter.py` | 复用 finding_benchmark_match |
+| 有效 case 筛选 | `v2/lifecycle/case_filter.py` | 从漏洞中心基线出发，FP/FN 判定 + 双匹配路径（纯代码/LLM） |
 | L7 判定 | `v2/lifecycle/evidence_chain.py` | LLM 方向一致性 + 知识正确性 |
 | 因果链分析 | `v2/causal_chain/analyzer.py` | 交叉归因矩阵 + M26 |
 | 知识盘点 | `v2/knowledge_inventory/inventory.py` | 覆盖度 + 质量判定 |
 | 新指标 | `v2/metrics/m15_m26.py` | M15–M21, M26 |
-| 回归验证 | `v2/report/replay_verifier.py` | FP 消除判定 |
 | Agent 数据源管理 | `v2/infra/agent_db.py` | 读取 agent_datasource_config 表，连接各 Agent DB（MySQL/PostgreSQL），短连接+重试 |
 | 数据源配置 API | `v2/api/datasources.py` | CRUD + 测试连接，密码脱敏，_version 版本控制 |
 

@@ -318,8 +318,11 @@ class Orchestrator:
             benchmark_items, case_details, alert_center_data, entries, cfg = \
                 self._ingest(evaluation_id)
             eval_mode = cfg.get("manifest", {}).get("eval_mode", "dev")
+            benchmark_source = cfg.get("manifest", {}).get(
+                "benchmark_source", "vbench_zip")
             log("ORCH", f"INGESTING done: {len(benchmark_items)} benchmark_items, "
-                  f"{len(case_details)} case_details, eval_mode={eval_mode}")
+                  f"{len(case_details)} case_details, eval_mode={eval_mode}, "
+                  f"benchmark_source={benchmark_source}")
 
             # ── PARSING ──
             _check_cancel(evaluation_id, stages.PARSING)
@@ -375,6 +378,8 @@ class Orchestrator:
                 access_details = self._run_lifecycle(
                     data_packs, evaluation_id, reports_dir,
                     cancel_cb=_cancel_cb, eval_mode=eval_mode,
+                    benchmark_source=benchmark_source,
+                    alert_center_data=alert_center_data,
                 )
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
@@ -905,6 +910,8 @@ class Orchestrator:
     def _run_lifecycle(
         self, data_packs: list, evaluation_id: str,
         reports_dir: str, cancel_cb=None, eval_mode: str = "dev",
+        benchmark_source: str = "vbench_zip",
+        alert_center_data: dict | None = None,
     ) -> list[dict]:
         """L0-L7 全链路分析。
 
@@ -913,6 +920,10 @@ class Orchestrator:
 
         cancel_cb 穿透到 LLM 密集内循环。
         eval_mode: "dev"（开发态，分析 FP+FN）| "runtime"（运行态，只分析 FP）
+        benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
+                          "vbench_zip"（V-Bench 测评集，LLM 匹配）
+        alert_center_data: 告警中心数据，用于 FN 判定（基线漏洞与告警中心对比，
+                          匹配上的不是漏报，没匹配上的是漏报）
         """
         from ..lifecycle.analyzer import LifecycleAnalyzer
 
@@ -920,6 +931,8 @@ class Orchestrator:
         return analyzer.analyze(
             evaluation_id, data_packs, reports_dir,
             cancel_cb=cancel_cb, eval_mode=eval_mode,
+            benchmark_source=benchmark_source,
+            alert_center_data=alert_center_data,
         )
 
     # ── CAUSAL_CHAIN ─────────────────────────────────
