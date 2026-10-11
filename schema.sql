@@ -364,7 +364,8 @@ CREATE TABLE metric_result (
     calculation_run_id    VARCHAR(64) NOT NULL,
     population_snapshot_id VARCHAR(64) NOT NULL,
     metric_id             VARCHAR(32) NOT NULL CHECK (metric_id IN
-                          ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13')),
+                          ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13',
+                           'M15','M16','M17','M18','M19','M20','M21','M26')),
     metric_name           VARCHAR(128) NOT NULL,
     metric_version        VARCHAR(64) NOT NULL DEFAULT '1.0',
     estimate              DECIMAL(20,6),
@@ -590,6 +591,222 @@ CREATE TABLE session_graph (
 ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 CREATE INDEX idx_sg_eval ON session_graph(evaluation_id);
 
+-- ===== Knowledge Access Detail (知识访问明细) =====
+
+CREATE TABLE IF NOT EXISTS knowledge_access_detail (
+    access_id            VARCHAR(128) PRIMARY KEY,
+    evaluation_id        VARCHAR(64) NOT NULL,
+    task_run_id          VARCHAR(64) NOT NULL,
+    task_id              VARCHAR(128) NOT NULL,
+    event_idx            INT NOT NULL,
+    source_system        VARCHAR(32) NOT NULL
+                         CHECK (source_system IN ('KNOWLEDGE_BASE','MEMORY_ENGINE')),
+    l0_origin            VARCHAR(64),
+    business_phase       VARCHAR(32) NOT NULL
+                         CHECK (business_phase IN
+                         ('ENTRY_IDENTIFICATION','DATA_FLOW_TRACKING','VULN_PATTERN_RECOGNITION',
+                          'SINK_POINT_LOCALIZATION','VULN_VERDICT_REPORTING',
+                          'VULN_UNDERSTANDING','CODE_LOCALIZATION','VERIFICATION_EXECUTION','VERDICT_REPORTING')),
+    l1_need_knowledge    BOOLEAN,
+    l2_initiated         BOOLEAN,
+    l3_query_accurate    BOOLEAN,
+    l4_knowledge_exists  BOOLEAN,
+    l5_retrieved         BOOLEAN,
+    l6_used              BOOLEAN,
+    l7_influenced        BOOLEAN,
+    l7_method            VARCHAR(32),
+    effect_label         VARCHAR(16)
+                         CHECK (effect_label IS NULL OR effect_label IN ('POSITIVE','NEGATIVE','NEUTRAL')),
+    cause_code           VARCHAR(8)
+                         CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H')),
+    query_content        TEXT,
+    returned_content     TEXT,
+    reasoning_ref        TEXT,
+    judgment_conclusion  TEXT,
+    evidence_json        JSON,
+    evidence_file        TEXT,
+    created_at           DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    UNIQUE (task_run_id, event_idx),
+    INDEX idx_kad_eval (evaluation_id),
+    INDEX idx_kad_phase (evaluation_id, business_phase),
+    INDEX idx_kad_effect (evaluation_id, effect_label),
+    INDEX idx_kad_cause (evaluation_id, cause_code)
+) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+-- ===== Agent Datasource Config (Agent 数据源配置) =====
+
+CREATE TABLE IF NOT EXISTS agent_datasource_config (
+    id                 INT AUTO_INCREMENT PRIMARY KEY,
+    agent_type         VARCHAR(32) NOT NULL UNIQUE
+                       CHECK (agent_type IN ('turing','argo','secmate','cvuln_verify','webvuln_verify','dataflow')),
+    display_name       VARCHAR(64) NOT NULL,
+    db_type            VARCHAR(16) NOT NULL
+                       CHECK (db_type IN ('mysql','postgresql','none')),
+    host               VARCHAR(256),
+    port               INT,
+    username           VARCHAR(64),
+    password           VARCHAR(256),
+    database_name      VARCHAR(128),
+    relation_tables    JSON,
+    phase_identifier   JSON,
+    enabled            BOOLEAN NOT NULL DEFAULT TRUE,
+    last_connected_at  DATETIME(3),
+    last_error         TEXT,
+    _version           INT NOT NULL DEFAULT 1,
+    created_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
+    updated_at         DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),
+    INDEX idx_adc_type (agent_type)
+) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+INSERT IGNORE INTO agent_datasource_config
+    (agent_type, display_name, db_type, host, port, username, password, database_name, relation_tables, phase_identifier, enabled)
+VALUES
+(
+    'turing', 'Turing MySQL', 'mysql',
+    'turing-app-security-mysql.secflow-ns.svc.cluster.local', 3306,
+    'root', 'turing_app_security_pass', 'turing_app_security',
+    JSON_OBJECT(
+        'task_table', 'turing_task',
+        'parent_field', 'parent_task_id',
+        'session_field', 'agent_session_id',
+        'task_type_field', 'task_type',
+        'agent_name_field', 'agent_name',
+        'trace_table', 'turing_task_trace',
+        'investigation_table', 'turing_investigation',
+        'investigation_parent_field', 'parent_investigation_id',
+        'investigation_origin_field', 'origin_detection_id',
+        'investigation_target_field', 'target_task_id',
+        'investigation_depth_field', 'depth'
+    ),
+    JSON_OBJECT(
+        'table', 'turing_task',
+        'id_field', 'agent_session_id',
+        'label_fields', JSON_ARRAY('agent_name', 'task_type')
+    ),
+    1
+),
+(
+    'argo', 'Argo MySQL', 'mysql',
+    'chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local', 3306,
+    'root', 'Icsl_argo', 'argo_c',
+    JSON_OBJECT(
+        'table', 'intents',
+        'session_field', 'session_id',
+        'fact_field', 'to_fact_id',
+        'suggestion_field', 'suggestion_refs',
+        'task_type_field', 'task_type'
+    ),
+    JSON_OBJECT(
+        'table', 'intents',
+        'id_field', 'session_id',
+        'label_field', 'task_type'
+    ),
+    1
+),
+(
+    'secmate', 'SecMate MySQL', 'mysql',
+    'secmate-mysql.secflow-ns.svc.cluster.local', 3306,
+    'root', 'Huawei12#$', 'secmate',
+    JSON_OBJECT(
+        'finding_table', 'finding',
+        'finding_id_field', 'id',
+        'source_field', 'source_finding_id',
+        'vuln_type_field', 'vuln_type',
+        'level_field', 'level',
+        'file_path_field', 'file_path',
+        'fingerprint_field', 'fingerprint',
+        'task_table', 'task',
+        'task_tool_task_id_field', 'tool_task_id',
+        'task_external_task_id_field', 'external_task_id',
+        'task_file_path_field', 'file_path'
+    ),
+    JSON_OBJECT(
+        'source', 'trace',
+        'note', 'persona and finding level extracted from JSONL trace; DB has no persona field'
+    ),
+    1
+),
+(
+    'dataflow', 'DataflowVulnScan MySQL', 'mysql',
+    'secflow-app-dataflow-vuln-scan-mysql.secflow-ns.svc.cluster.local', 3306,
+    'root', 'Huawei12#$', 'dvs_{project_id}',
+    JSON_OBJECT(
+        'sessions_table', 'dvs_task_graph_sessions',
+        'session_relpath_field', 'session_relpath',
+        'session_task_id_field', 'task_id',
+        'session_node_id_field', 'node_id',
+        'session_edge_id_field', 'edge_id',
+        'session_role_field', 'session_role',
+        'session_kind_field', 'session_kind',
+        'nodes_table', 'dvs_task_graph_nodes',
+        'node_id_field', 'node_id',
+        'node_task_id_field', 'task_id',
+        'node_depth_field', 'depth',
+        'node_primary_session_field', 'primary_session_relpath',
+        'edges_table', 'dvs_task_graph_edges',
+        'edge_id_field', 'edge_id',
+        'edge_task_id_field', 'task_id',
+        'edge_source_node_field', 'source_node_id',
+        'edge_target_node_field', 'target_node_id',
+        'edge_source_func_field', 'source_func_id',
+        'edge_target_func_field', 'target_func_id',
+        'fallback_table', 'orchestration',
+        'fallback_edge_id_field', 'edge_id',
+        'fallback_path_id_field', 'path_id',
+        'fallback_source_func_field', 'source_func_id',
+        'fallback_target_func_field', 'target_func_id',
+        'fallback_task_id_field', 'task_id'
+    ),
+    JSON_OBJECT(
+        'source', 'filename',
+        'field', 'analysisType',
+        'note', 'analysisType extracted from JSONL filename; DB has no direct phase identifier column'
+    ),
+    1
+),
+(
+    'cvuln_verify', 'CVulnVerify PostgreSQL', 'postgresql',
+    'secflow-app-vuln-verify-v2-postgres.secflow-ns.svc.cluster.local', 5432,
+    'postgres', 'secflow123', 'secflow_vuln_verify_v2',
+    JSON_OBJECT(
+        'attempt_table', 'vuln_verify_attempt',
+        'attempt_id_field', 'id',
+        'attempt_task_id_field', 'task_id',
+        'worker_type_field', 'worker_type',
+        'predecessor_field', 'predecessor_attempt_id',
+        'successor_reason_field', 'successor_reason',
+        'status_field', 'status',
+        'task_table', 'vuln_verify_task',
+        'task_id_field', 'id',
+        'task_project_id_field', 'project_id',
+        'task_case_id_field', 'case_id',
+        'task_vuln_id_field', 'vuln_id',
+        'task_file_field', 'file',
+        'task_function_field', 'function',
+        'task_business_task_id_field', 'business_task_id'
+    ),
+    JSON_OBJECT(
+        'table', 'vuln_verify_attempt',
+        'id_field', 'id',
+        'label_field', 'worker_type'
+    ),
+    1
+),
+(
+    'webvuln_verify', 'WebVulnVerify (无独立DB)', 'none',
+    NULL, NULL, NULL, NULL, NULL,
+    JSON_OBJECT(
+        'source', 'trace',
+        'parent_field', 'session.parent_id',
+        'vuln_id_field', 'metadata.vulnerability_id'
+    ),
+    JSON_OBJECT(
+        'source', 'trace',
+        'tool_field', 'tool_call.name'
+    ),
+    1
+);
+
 -- ===== §7.27 显式 FOREIGN KEY =====
 
 ALTER TABLE evaluation_snapshot
@@ -748,6 +965,10 @@ ALTER TABLE session_graph
     ADD CONSTRAINT fk_sg_trun
     FOREIGN KEY (evaluation_id, task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
 
+ALTER TABLE knowledge_access_detail
+    ADD CONSTRAINT fk_kad_trun
+    FOREIGN KEY (evaluation_id, task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
+
 ALTER TABLE evaluation
     ADD CONSTRAINT fk_eval_bset
     FOREIGN KEY (benchmark_set_id) REFERENCES benchmark_set(benchmark_set_id);
@@ -760,10 +981,11 @@ ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_st
      'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',
      'CANCEL_REQUESTED','CANCELLING','CANCELLED'));
 
--- Migration: add M11/M12/M13 to metric_result CHECK (for existing deployments)
+-- Migration: add M11/M12/M13 + M15-M21/M26 to metric_result CHECK (for existing deployments)
 ALTER TABLE metric_result DROP CHECK metric_result_chk_1;
 ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk CHECK (metric_id IN
-    ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13'));
+    ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13',
+     'M15','M16','M17','M18','M19','M20','M21','M26'));
 
 -- Migration: add SINK_* to outcome_fact resolver_status CHECK (for existing deployments)
 ALTER TABLE outcome_fact DROP CHECK outcome_fact_chk_8;
