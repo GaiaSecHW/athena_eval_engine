@@ -220,7 +220,7 @@ function renderEvList(){
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
-        '<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>'+
+        (e.eval_mode==='runtime'?'':'<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>')+
       '</div>'+
       '</div>';
   }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
@@ -615,7 +615,7 @@ function renderV2Report(d){
     <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${d.status||"-"}</span></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
       <div><span style="color:var(--gray)">项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
-      <div><span style="color:var(--gray)">基线来源：</span><b>${bsrc==='vuln_center'?('漏洞中心 · '+vcProj+' / '+vcTask):'测评数据集'}</b></div>
+      ${evalMode==='runtime'?'':'<div><span style="color:var(--gray)">基线来源：</span><b>'+(bsrc==='vuln_center'?('漏洞中心 · '+vcProj+' / '+vcTask):'测评数据集')+'</b></div>'}
       <div><span style="color:var(--gray)">评测模式：</span><b style="color:var(--acc)">${evalMode==='dev'?'开发态':'运行态'}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
     </div>
