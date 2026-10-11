@@ -875,8 +875,10 @@ class Orchestrator:
     # ── RESOLVING ───────────────────────────────────
 
     def _persist_findings(self, evaluation_id: str, data_packs: list):
-        """持久化 findings + session_graph + 4 种 fact 到 DB。
+        """持久化 task_run + findings + session_graph + 4 种 fact 到 DB。
 
+        task_run 记录必须先写入，因为 knowledge_interaction_fact 等
+        fact 表有 FK 约束引用 task_run(evaluation_id, task_run_id)。
         CaseFilter 依赖 extracted_finding 表判断 finding 是否匹配基线。
         _calculate_metrics 和 _get_packs_with_knowledge 依赖
         knowledge_interaction_fact 和 tool_action_fact。
@@ -885,10 +887,32 @@ class Orchestrator:
             insert_extracted_findings, insert_session_graph,
             insert_knowledge_fact, insert_tool_action_fact,
             insert_outcome_fact, insert_resource_fact,
+            insert_task_run,
         )
+        from ..core.task_run import TaskRun
+        from ..core.enums import Condition, ConditionSource
 
         def _do(cur):
             for dp in data_packs:
+                # 先写 task_run（FK 约束：fact 表引用 task_run）
+                tr = TaskRun(
+                    task_run_id=dp.task_run_id,
+                    evaluation_id=evaluation_id,
+                    task_id=dp.task_id,
+                    trace_id=dp.session_meta.get("trace_id", "")
+                              if isinstance(dp.session_meta, dict) else "",
+                    condition=Condition.KG if dp.condition == "KG"
+                    else Condition.UNKNOWN,
+                    condition_source=ConditionSource.MANIFEST,
+                    trace_valid=True,
+                    runtime_valid=True,
+                    parser_version="2.0",
+                )
+                # agent_name 不在 TaskRun dataclass 中，但 insert_task_run
+                # 用 hasattr 检查，动态设置
+                tr.agent_name = dp.agent_type
+                insert_task_run(cur, tr)
+
                 insert_extracted_findings(
                     cur, dp.task_run_id, evaluation_id, dp.findings or [],
                 )
