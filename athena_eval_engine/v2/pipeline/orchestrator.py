@@ -384,6 +384,16 @@ class Orchestrator:
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
 
+            # lifecycle 分析完成后补算 M15-M26（CALCULATING 阶段在 lifecycle 之前，
+            # 当时还没有 access_details，所以 lifecycle_metrics 为空）
+            if access_details:
+                from ..metrics.m15_m26 import calc_all_lifecycle_metrics
+                metrics["lifecycle_metrics"] = (
+                    calc_all_lifecycle_metrics(access_details)
+                )
+                log("ORCH", f"lifecycle metrics computed: "
+                      f"{len(metrics.get('lifecycle_metrics', []))} metrics")
+
             # ── CAUSAL_CHAIN ──
             _check_cancel(evaluation_id, stages.CAUSAL_CHAIN)
             assert_transition(
@@ -402,8 +412,10 @@ class Orchestrator:
             self._set_status_safe(evaluation_id, stages.REPORTING)
 
             # 重试路径：lifecycle report 已存在 → 跳过报告组装
-            if _has_lifecycle_report(evaluation_id, reports_dir):
-                log("ORCH", "REPORTING skipped: lifecycle report 已存在"
+            # 但如果 base report 不存在，仍需重新组装
+            if _has_lifecycle_report(evaluation_id, reports_dir) and \
+                    os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
+                log("ORCH", "REPORTING skipped: lifecycle + base report 已存在"
                       "（重试路径）")
                 _set_progress(evaluation_id, "报告组装（已有，跳过）")
                 suggestions: list[dict] = []
@@ -685,7 +697,9 @@ class Orchestrator:
         # 预取所有 trace 到本地（串行，避免并发写同一文件）
         local_paths: dict[str, str] = {}
         for e in entries:
-            key = e["source_uri"]
+            key = e.get("source_uri", "")
+            if not key:
+                continue
             if key not in local_paths:
                 local_paths[key] = _resolve_path(
                     key, e.get("project_id", ""), e.get("task_id", ""),
@@ -694,7 +708,7 @@ class Orchestrator:
         # 构建解析任务
         tasks: list[dict] = []
         for e in entries:
-            src_uri = e["source_uri"]
+            src_uri = e.get("source_uri", "")
             local_path = local_paths[src_uri]
             cond = e.get("condition", "UNKNOWN")
             task_id = e.get("task_id", "")

@@ -525,7 +525,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                     log("LLM", f"Phase 1 总超时（{first_token_timeout}s）: {e}")
                     raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s）") from e
                 # 未超总时间，可能是 per-recv 超时，重试连接
-                log("LLM", f"连接超时（{_conn_timeout}s），总已用 {_phase1_elapsed:.1f}s/{first_token_timeout}s，重试连接")
+                log("LLM", f"连接超时（{first_token_timeout}s），总已用 {_phase1_elapsed:.1f}s/{first_token_timeout}s，重试连接")
                 continue
             status = resp.status
             if status == 429:

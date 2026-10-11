@@ -46,6 +46,60 @@ from ..infra.parallel import iter_completed
 from ...infrastructure.log_util import log, with_eval_ctx, get_eval_ctx
 
 
+def _parse_locator(locator: str) -> tuple[str, str, str]:
+    """解析 locator 字符串，返回 (source_file, source_function, source_line)。
+
+    locator 格式可能为：
+    - path/to/file.c                        (仅文件路径)
+    - path/to/file.c:func_name              (文件+函数)
+    - path/to/file.c:func_name:414          (文件+函数+行号)
+    - path/to/file.c:func_name:414-420      (文件+函数+行号区间)
+    - path/to/file.c:414                    (文件+行号)
+    - path/to/file.c:414-420                (文件+行号区间)
+    """
+    if not locator:
+        return "", "", ""
+
+    def _is_line(s: str) -> bool:
+        if s.isdigit():
+            return True
+        if "-" in s:
+            nums = s.split("-")
+            return len(nums) == 2 and all(n.isdigit() for n in nums)
+        return False
+
+    def _extract_line(s: str) -> str:
+        return s.split("-")[0] if "-" in s and s.split("-")[0].isdigit() else (s if s.isdigit() else "")
+
+    parts = locator.rsplit(":", 2)
+    if len(parts) == 1:
+        return parts[0], "", ""
+    if len(parts) == 2:
+        if _is_line(parts[1]):
+            return parts[0], "", _extract_line(parts[1])
+        return parts[0], parts[1], ""
+    # 3 段：path:func:line
+    source_file, source_function, source_line = parts
+    if _is_line(source_line):
+        return source_file, source_function, _extract_line(source_line)
+    return source_file, source_function, ""
+
+
+def _normalize_ac_description(c: dict) -> str:
+    """从告警中心 case 提取描述文本。"""
+    parts = []
+    summary = c.get("summary") or ""
+    if summary:
+        parts.append(summary)
+    raw_report = c.get("raw_report_summary") or ""
+    if raw_report:
+        parts.append(raw_report)
+    display = c.get("display_summary") or ""
+    if display:
+        parts.append(display)
+    return "\n".join(parts) if parts else ""
+
+
 class CaseFilter:
     """从漏洞中心基线出发，筛选 FP/FN case 对应的 DataPack。"""
 
@@ -262,13 +316,39 @@ class CaseFilter:
                 eval_id=evaluation_id)
             return list(vuln_baseline_cases)
 
+        # 归一化告警中心 case 为与 baseline 同构的字典
+        # 告警中心原始结构: {id, title, subject:{locator,...}, validation_result, ...}
+        # _match_by_code / _match_by_llm 的 all_findings 参数期望:
+        #   {finding_id/display_id/id, title/vuln_type, description, source, sink, ...}
+        ac_normalized = []
+        for c in ac_cases:
+            subject = c.get("subject") or {}
+            locator = subject.get("locator") or ""
+            source_file, source_function, source_line = (
+                _parse_locator(locator)
+            )
+            ac_normalized.append({
+                "finding_id": c.get("id") or "",
+                "display_id": c.get("id") or "",
+                "id": c.get("id") or "",
+                "title": c.get("title") or subject.get("type") or "",
+                "vuln_type": c.get("title") or subject.get("type") or "",
+                "description": _normalize_ac_description(c),
+                "source": source_file,
+                "sink": source_file,
+                "source_file": source_file,
+                "source_function": source_function,
+                "source_line": source_line,
+                "validation_result": c.get("validation_result") or "",
+            })
+
         # 基线漏洞与告警中心匹配
         if benchmark_source == "vuln_center":
             matched_map = self._match_by_code(
-                evaluation_id, vuln_baseline_cases, ac_cases)
+                evaluation_id, vuln_baseline_cases, ac_normalized)
         else:
             matched_map = self._match_by_llm(
-                evaluation_id, vuln_baseline_cases, ac_cases)
+                evaluation_id, vuln_baseline_cases, ac_normalized)
 
         # 没匹配上的基线漏洞 = 漏报
         fn_cases = [bc for bc in vuln_baseline_cases
