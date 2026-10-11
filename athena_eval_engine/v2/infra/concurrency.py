@@ -32,7 +32,7 @@ _defaults = {
     "ac_llm_workers": 8,             # [已废弃] AC→finding LLM 识别走 LLM 共享池
 
     # ── FPR 阶段 ──
-    "fpr_cond_workers": 2,           # FPR KG/NOGK 编排并行（非 LLM）
+    "fpr_cond_workers": 2,           # FPR 编排并行（非 LLM）
     "fpr_baseline_workers": 20,      # [已废弃] FPR 基线匹配走 LLM 共享池
     "fpr_baseline_batch": 10,        # [已废弃] FPR batch 走 LLM 共享池
 

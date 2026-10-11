@@ -1,20 +1,15 @@
-"""v2 Pipeline 编排器（§6 Pipeline 编排）。
+"""v2 Pipeline 编排器。
 
-替代老代码 ``application/evaluation_service.py`` 的 ``run()`` 方法。
-
-v2 阶段流程：
-    INGESTING → PARSING → RESOLVING → PAIRING → CALCULATING
+阶段流程：
+    INGESTING → PARSING → RESOLVING → CALCULATING
         → INVENTORY → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
 
-与老代码的区别：
-- AI_MATCHING 合并到 PARSING（sink-point 匹配在 parser 的 build_data_pack 中完成）
-- 新增 INVENTORY / LIFECYCLE_ANALYSIS / CAUSAL_CHAIN 三个阶段
-- 使用 DataPack 中间层，下游模块只消费 DataPack
-- 短连接 MySQL：慢操作（trace 解析、LLM 调用）不持有 DB 连接
+方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
+M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
 
 协作取消：
 - 每个阶段入口检查 ``_check_cancel(evaluation_id)``
-- ``cancel_cb`` 穿透到 LLM 密集内循环（lifecycle analyzer + suggestion_generator）
+- ``cancel_cb`` 穿透到 LLM 密集内循环
 
 重试路径：
 - knowledge_access_detail 表已有记录 → 跳过 LIFECYCLE_ANALYSIS
@@ -291,8 +286,8 @@ class Orchestrator:
         阶段流程：
         1. INGESTING — 取基线 case 详情 + 告警中心数据
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
-        3. RESOLVING — Facts 已在 build_data_pack 中完成，此处跳过
-        4. PAIRING + CALCULATING — KG/No-KG 配对 + 指标计算
+        3. RESOLVING — 持久化 findings + session_graph 到 DB
+        4. CALCULATING — 指标计算（M5-M13）
         5. INVENTORY — 知识盘点
         6. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
         7. CAUSAL_CHAIN — 因果链分析
@@ -337,26 +332,19 @@ class Orchestrator:
             log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
 
             # ── RESOLVING ──
-            # v2 中 Facts 在 build_data_pack() 中已完成，RESOLVING 阶段
-            # 只做状态转换，不执行额外写入（fact 写入由 parser 内部完成）
+            # 持久化 findings + session_graph 到 DB（CaseFilter 依赖 extracted_finding 表）
             _check_cancel(evaluation_id, stages.RESOLVING)
             assert_transition(stages.PARSING, stages.RESOLVING)
             self._set_status_safe(evaluation_id, stages.RESOLVING)
-            _set_progress(evaluation_id, "事实写入完成（在解析阶段已完成）")
+            _set_progress(evaluation_id, "持久化解析结果...")
+            self._persist_findings(evaluation_id, data_packs)
 
-            # ── PAIRING + CALCULATING ──
-            _check_cancel(evaluation_id, stages.PAIRING)
-            assert_transition(stages.RESOLVING, stages.PAIRING)
-            self._set_status_safe(evaluation_id, stages.PAIRING)
-            _set_progress(evaluation_id, "KG/No-KG 配对...")
-            pairs = self._pair(data_packs)
-            log("ORCH", f"PAIRING done: {len(pairs)} pairs")
-
+            # ── CALCULATING ──
             _check_cancel(evaluation_id, stages.CALCULATING)
-            assert_transition(stages.PAIRING, stages.CALCULATING)
+            assert_transition(stages.RESOLVING, stages.CALCULATING)
             self._set_status_safe(evaluation_id, stages.CALCULATING)
             _set_progress(evaluation_id, "指标计算...")
-            metrics = self._calculate_metrics(pairs, data_packs, alert_center_data)
+            metrics = self._calculate_metrics(data_packs, alert_center_data)
             log("ORCH", f"CALCULATING done: {len(metrics.get('metric_results', []))} "
                   f"metric_results")
 
@@ -730,7 +718,7 @@ class Orchestrator:
                 evaluation_id=evaluation_id,
                 task_id=task_id,
                 trace_id=src_uri,
-                condition=Condition(cond) if cond in ("KG", "NOGK")
+                condition=Condition.KG if cond == "KG"
                 else Condition.UNKNOWN,
                 condition_source=ConditionSource.MANIFEST,
                 benchmark_item_id=bench[0].benchmark_item_id if bench else None,
@@ -818,142 +806,36 @@ class Orchestrator:
 
         return dp
 
-    # ── PAIRING ──────────────────────────────────────
+    # ── RESOLVING ───────────────────────────────────
 
-    def _pair(self, data_packs: list) -> list:
-        """KG/No-KG 配对。
+    def _persist_findings(self, evaluation_id: str, data_packs: list):
+        """持久化 findings + session_graph 到 DB。
 
-        按 (evaluation_id, task_id) 匹配 KG / No-KG 运行，
-        构建 PairView 列表供指标计算。
-
-        返回 list[PairView]。
+        CaseFilter 依赖 extracted_finding 表判断 finding 是否匹配基线。
         """
-        from ..metrics.m5_m13 import PairView
+        from ...persistence.repositories.fact_repo import (
+            insert_extracted_findings, insert_session_graph,
+        )
 
-        # 按 task_id 分组
-        by_task: dict[str, list] = {}
-        for dp in data_packs:
-            by_task.setdefault(dp.task_id, []).append(dp)
+        def _do(cur):
+            for dp in data_packs:
+                insert_extracted_findings(
+                    cur, dp.task_run_id, evaluation_id, dp.findings or [],
+                )
+                insert_session_graph(
+                    cur, dp.task_run_id, evaluation_id, dp.session_graph or {},
+                )
 
-        pairs: list[PairView] = []
-        for task_id, packs in by_task.items():
-            kg_pack = None
-            nogk_pack = None
-            for dp in packs:
-                if dp.condition == "KG":
-                    kg_pack = dp
-                elif dp.condition == "NOGK":
-                    nogk_pack = dp
-
-            if not kg_pack or not nogk_pack:
-                log("PAIR", f"task={task_id} 无法配对: "
-                      f"kg={'yes' if kg_pack else 'no'} "
-                      f"nogk={'yes' if nogk_pack else 'no'}")
-                continue
-
-            # 从 outcome_fact 提取判定结果
-            kg_outcome = kg_pack.outcome_fact
-            nogk_outcome = nogk_pack.outcome_fact
-
-            kg_success = (
-                kg_outcome is not None
-                and kg_outcome.outcome.value == "VULNERABLE"
-            ) if kg_outcome else False
-            nogk_success = (
-                nogk_outcome is not None
-                and nogk_outcome.outcome.value == "VULNERABLE"
-            ) if nogk_outcome else False
-
-            # 从 benchmark_item 提取 expected_label
-            gt = "VULNERABLE"
-            bench = kg_pack.benchmark_item or nogk_pack.benchmark_item
-            if bench is not None:
-                exp = getattr(bench, "expected_label", None)
-                if exp is not None:
-                    gt = str(exp.value) if hasattr(exp, "value") else str(exp)
-
-            # 从 resource_fact 提取 delta 数据
-            kg_rf = kg_pack.resource_fact
-            nogk_rf = nogk_pack.resource_fact
-
-            kg_tokens = (kg_rf.output_tokens or 0) if kg_rf else 0
-            nogk_tokens = (nogk_rf.output_tokens or 0) if nogk_rf else 0
-            delta_token = kg_tokens - nogk_tokens if kg_rf and nogk_rf else None
-
-            kg_steps = (kg_rf.steps or 0) if kg_rf else 0
-            nogk_steps = (nogk_rf.steps or 0) if nogk_rf else 0
-            delta_steps = kg_steps - nogk_steps if kg_rf and nogk_rf else None
-
-            kg_time = (kg_rf.duration_ms or 0) if kg_rf else 0
-            nogk_time = (nogk_rf.duration_ms or 0) if nogk_rf else 0
-            delta_time = kg_time - nogk_time if kg_rf and nogk_rf else None
-
-            # JSD — 从 knowledge_fact 或 tool_action_fact 计算
-            # 简化：如果 tool_action_fact 有 action_distribution，用 JSD
-            jsd = None
-            kg_taf = kg_pack.tool_action_fact
-            nogk_taf = nogk_pack.tool_action_fact
-            if kg_taf and nogk_taf:
-                kg_dist = kg_taf.action_distribution or {}
-                nogk_dist = nogk_taf.action_distribution or {}
-                jsd = self._compute_jsd(kg_dist, nogk_dist)
-
-            kg_outcome_str = (
-                kg_outcome.outcome.value if kg_outcome else "UNKNOWN"
-            )
-            nogk_outcome_str = (
-                nogk_outcome.outcome.value if nogk_outcome else "UNKNOWN"
-            )
-
-            pv = PairView(
-                kg_success=kg_success,
-                nogk_success=nogk_success,
-                gt=gt,
-                kg_outcome=kg_outcome_str,
-                nogk_outcome=nogk_outcome_str,
-                jsd=jsd,
-                delta_token=delta_token,
-                delta_steps=delta_steps,
-                delta_time=delta_time,
-                kg_confusion=kg_outcome.confusion if kg_outcome else "",
-                nogk_confusion=nogk_outcome.confusion if nogk_outcome else "",
-            )
-            pairs.append(pv)
-
-        log("PAIR", f"配对完成: {len(pairs)} pairs from "
-              f"{len(data_packs)} data_packs")
-        return pairs
-
-    def _compute_jsd(self, dist_a: dict, dist_b: dict) -> float | None:
-        """计算两个 action_distribution 的 Jensen-Shannon Divergence。"""
-        if not dist_a or not dist_b:
-            return None
-        # 合并 key 集合
-        keys = set(dist_a.keys()) | set(dist_b.keys())
-        if not keys:
-            return None
-
-        # 归一化为概率分布
-        total_a = sum(dist_a.values()) or 1
-        total_b = sum(dist_b.values()) or 1
-
-        import math
-        jsd = 0.0
-        for k in keys:
-            p = dist_a.get(k, 0) / total_a
-            q = dist_b.get(k, 0) / total_b
-            m = (p + q) / 2
-            if p > 0 and m > 0:
-                jsd += 0.5 * p * math.log2(p / m)
-            if q > 0 and m > 0:
-                jsd += 0.5 * q * math.log2(q / m)
-
-        return round(jsd, 6)
+        try:
+            _db_query(_do)
+            log("RESOLVE", f"持久化 {len(data_packs)} data_packs 的 findings + session_graph")
+        except Exception as e:
+            log("RESOLVE", f"持久化 findings 失败: {e}")
 
     # ── CALCULATING ─────────────────────────────────
 
     def _calculate_metrics(
-        self, pairs: list, data_packs: list,
+        self, data_packs: list,
         alert_center_data: dict,
     ) -> dict:
         """指标计算（M5-M13 + M15-M26）。
@@ -1007,15 +889,9 @@ class Orchestrator:
                 dist = taf.action_distribution or {}
                 kg_tool_calls += dist.get("KG", 0)
 
-        # confusion_pairs 从 pairs 提取（用于 M1-M4 混淆矩阵）
-        confusion_pairs = []
-        for pv in pairs:
-            if pv.kg_confusion or pv.nogk_confusion:
-                confusion_pairs.append(pv)
-
         return run_all_metrics(
-            pairs,
-            confusion_pairs=confusion_pairs,
+            pairs=[],
+            confusion_pairs=None,
             kg_access=kg_access,
             kg_valid=kg_valid,
             kg_delivery=kg_delivery,

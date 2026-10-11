@@ -29,7 +29,7 @@ def run_all_metrics(
     """跑全部指标 M5–M13 + M15–M21 / M26。
 
     参数:
-        pairs: KG/No-KG 配对视图列表（M1–M13 用）。
+        pairs: 配对视图列表（保留兼容，当前方案不使用配对）。
         knowledge_access_details: ``knowledge_access_detail`` 记录列表（M15–M26 用）。
             为 None 或空列表时不计算 M15–M26，返回结果中不含 lifecycle_metrics。
         其余参数同 ``m5_m13.run_all_metrics``。

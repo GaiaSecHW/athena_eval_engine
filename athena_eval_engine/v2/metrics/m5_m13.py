@@ -15,30 +15,24 @@ import math
 from dataclasses import dataclass, field
 from typing import Callable
 import numpy as np
-from .engine import (
-    gt_stratified_paired_bootstrap, paired_bootstrap, wilson, mcnemar, wilcoxon,
-)
+from .engine import wilson
 
 CALCULATED = "CALCULATED"; NA = "NA"; BLOCKED = "BLOCKED"
 
 
 @dataclass
 class PairView:
-    """配对视图，供 estimator 用。gt=benchmark expected_label。"""
+    """配对视图（保留兼容，当前方案不使用配对）。"""
     kg_success: bool
-    nogk_success: bool
     gt: str  # VULNERABLE / NON_VULNERABLE
-    kg_outcome: str; nogk_outcome: str
-    jsd: float | None
-    delta_token: float | None
-    delta_steps: float | None
-    delta_time: float | None
-    kg_confusion: str = ""   # TP/FP/FN/TN/NA from sink_matcher
-    nogk_confusion: str = ""
-    kg_mined: bool = False   # agent 是否挖掘了此 sink
-    nogk_mined: bool = False
-    kg_sink_hit: bool = False  # sink 是否被命中（chains 存在）
-    nogk_sink_hit: bool = False
+    kg_outcome: str
+    jsd: float | None = None
+    delta_token: float | None = None
+    delta_steps: float | None = None
+    delta_time: float | None = None
+    kg_confusion: str = ""
+    kg_mined: bool = False
+    kg_sink_hit: bool = False
 
 
 @dataclass
@@ -151,100 +145,49 @@ def calc_m6(successful_read_count: int, access_event_count: int, confidence=0.95
                                testing_tier="SECONDARY", scope_type="METRIC", status=st, reason_code=rc)])
 
 
-# ===== M7 JSD median + IQR + bootstrap =====
-def _median_iqr(vals):
-    arr = np.array([v for v in vals if v is not None])
-    if len(arr) == 0:
-        return None, None, None, None
-    q1, med, q3 = np.percentile(arr, [25, 50, 75])
-    return float(med), float(q1), float(q3), float(q3 - q1)
-
-
-def calc_m7(pairs: list[PairView], *, seed=42) -> tuple[MetricResult, list[StatisticalResult]]:
-    jsds = [p.jsd for p in pairs if p.jsd is not None]
-    n = len(jsds)
-    med, q1, q3, iqr = _median_iqr(jsds)
-    if n == 0:
-        return (MetricResult("M7", None, "ratio", 0, "jsd_valid", calculation_status=NA,
-                             reason_code="TOOL_EVENT_MISSING", method={}),
-                [StatisticalResult("M7", "paired_bootstrap", testing_tier="SECONDARY",
-                                    status=NA, reason_code="TOOL_EVENT_MISSING")])
-    br = paired_bootstrap(pairs, lambda ps: _median_iqr([p.jsd for p in ps if p.jsd is not None])[0],
-                          B=2000, seed=seed)
-    status = CALCULATED if br.status == "CALCULATED" else NA
-    return (MetricResult("M7", med, "ratio", n, "jsd_valid", median=med, q1=q1, q3=q3, iqr=iqr,
-                         calculation_status=status, reason_code=br.reason_code,
-                         method={"aggregation": "median_iqr", "uncertainty": "paired_bootstrap", "valid": br.valid}),
-            [StatisticalResult("M7", "paired_bootstrap", ci_lower=br.ci_lower, ci_upper=br.ci_upper,
-                               testing_tier="SECONDARY", scope_type="METRIC", status=status,
-                               reason_code=br.reason_code, details={"valid": br.valid})])
-
-
-# ===== M8-M10 ΔToken/Steps/Time =====
-def _calc_delta_metric(mid, field, pairs, *, seed=42, unit="tokens"):
-    deltas = [getattr(p, field) for p in pairs if getattr(p, field) is not None]
-    n = len(deltas)
-    med, q1, q3, iqr = _median_iqr(deltas)
-    if n == 0:
-        # field="delta_token"/"delta_steps"/"delta_time" → TOKEN/STEP/TIME_INVALID
-        _suffix = field.split('_')[1].upper().replace("STEPS", "STEP")
-        return (MetricResult(mid, None, unit, 0, "delta_valid", calculation_status=NA,
-                             reason_code=f"{_suffix}_INVALID", method={}),
-                [StatisticalResult(mid, "wilcoxon_signed_rank", testing_tier="SECONDARY",
-                                   status=NA, reason_code="INSUFFICIENT_PAIRS")])
-    br = paired_bootstrap(pairs, lambda ps: _median_iqr([getattr(p, field) for p in ps if getattr(p, field) is not None])[0],
-                          B=2000, seed=seed)
-    wc = wilcoxon(deltas)
-    bstatus = CALCULATED if br.status == "CALCULATED" else NA
-    return (MetricResult(mid, med, unit, n, "delta_valid", median=med, q1=q1, q3=q3, iqr=iqr,
-                         calculation_status=bstatus, reason_code=br.reason_code,
-                         method={"aggregation": "median_iqr", "ci": "paired_bootstrap",
-                                 "test": "wilcoxon", "valid": br.valid}),
-            [StatisticalResult(mid, "wilcoxon_signed_rank", statistic=wc["statistic"], p_value=wc["p_value"],
-                               ci_lower=br.ci_lower, ci_upper=br.ci_upper,
-                               testing_tier="SECONDARY", scope_type="METRIC",
-                               status=bstatus if wc["status"] == "CALCULATED" else NA,
-                               reason_code=br.reason_code if br.status != "CALCULATED" else wc["reason_code"],
-                               details={"ci_method": "paired_bootstrap", "test_method": "wilcoxon",
-                                        "valid": br.valid})])
-
-
-def calc_m8(pairs, *, seed=42): return _calc_delta_metric("M8", "delta_token", pairs, seed=seed, unit="tokens")
-def calc_m9(pairs, *, seed=42): return _calc_delta_metric("M9", "delta_steps", pairs, seed=seed, unit="steps")
-def calc_m10(pairs, *, seed=42): return _calc_delta_metric("M10", "delta_time", pairs, seed=seed, unit="ms")
 
 
 def run_all_metrics(pairs: list[PairView], *, confusion_pairs=None, kg_access=0, kg_valid=0, kg_delivery=0, access=0,
                      kg_access_events=0, kg_successful_reads=0,
                      mem_read_count=0, mem_successful_reads=0,
                      kg_tool_calls=0, total_tool_calls=0, seed=42) -> dict:
-    """跑全部 13 指标 + 统计证据。返回 {metric_results, statistical_results}。
-    bootstrap 指标用线程池并行（numpy 释放 GIL）。
-    confusion_pairs: 按 benchmark_item 展开的 pair 列表，用于 M1-M4 混淆矩阵。
-    为 None 时回退到 pairs（任务级）。"""
+    """跑全部指标 + 统计证据。返回 {metric_results, statistical_results}。
+
+    方案不含 No-KG 对照组，M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要 KG vs No-KG
+    对比，这里不计算，返回 NA。
+    M5/M6/M11/M12 不依赖配对，直接从计数参数计算。
+    """
     from concurrent.futures import ThreadPoolExecutor
     from ..infra.concurrency import get as _conc_get
     mrs = []; srs = []
-    cp = confusion_pairs if confusion_pairs is not None else pairs  # M1-M4 用 item 级 pair
+    cp = confusion_pairs if confusion_pairs is not None else pairs
     # M5/M6 无 bootstrap，瞬时完成，直接算
-    # M5 KAR 用 kg_access_events（实际知识查询次数）而非 kg_tool_calls（CanonicalAction 分类）
     m5, s5 = calc_m5(kg_access_events, total_tool_calls)
     m6, s6 = calc_m6(kg_successful_reads, kg_access_events)
     # M11/M12 记忆指标（同 M5/M6 算法）
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)
-    # M13 占位（实际值由 REPORTING 阶段 _update_m13_fpr 填充）；M7-M10 用 pairs（任务级 delta）
+    # M13 占位（实际值由 REPORTING 阶段填充）
     with ThreadPoolExecutor(max_workers=_conc_get("bootstrap_workers")) as pool:
         fut_m13 = pool.submit(calc_m13, cp, seed=seed)
-        fut_m7 = pool.submit(calc_m7, pairs, seed=seed)
-        fut_m8 = pool.submit(calc_m8, pairs, seed=seed)
-        fut_m9 = pool.submit(calc_m9, pairs, seed=seed)
-        fut_m10 = pool.submit(calc_m10, pairs, seed=seed)
         m13, s13 = fut_m13.result()
-        m7, s7 = fut_m7.result()
-        m8, s8 = fut_m8.result()
-        m9, s9 = fut_m9.result()
-        m10, s10 = fut_m10.result()
+    # M7-M10 需要 KG vs No-KG 配对，方案无 No-KG，返回 NA
+    m7 = MetricResult("M7", None, "ratio", 0, "jsd_valid",
+                      calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
+    s7 = StatisticalResult("M7", "paired_bootstrap", testing_tier="SECONDARY",
+                           status=NA, reason_code="NO_NOGK_CONTROL")
+    m8 = MetricResult("M8", None, "tokens", 0, "delta_valid",
+                      calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
+    s8 = StatisticalResult("M8", "wilcoxon_signed_rank", testing_tier="SECONDARY",
+                           status=NA, reason_code="NO_NOGK_CONTROL")
+    m9 = MetricResult("M9", None, "steps", 0, "delta_valid",
+                      calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
+    s9 = StatisticalResult("M9", "wilcoxon_signed_rank", testing_tier="SECONDARY",
+                           status=NA, reason_code="NO_NOGK_CONTROL")
+    m10 = MetricResult("M10", None, "ms", 0, "delta_valid",
+                       calculation_status=NA, reason_code="NO_NOGK_CONTROL", method={})
+    s10 = StatisticalResult("M10", "wilcoxon_signed_rank", testing_tier="SECONDARY",
+                            status=NA, reason_code="NO_NOGK_CONTROL")
     # 按顺序排列
     mrs = [m13, m5, m6, m7, m8, m9, m10, m11, m12]
     srs = s13 + s5 + s6 + s7 + s8 + s9 + s10 + s11 + s12

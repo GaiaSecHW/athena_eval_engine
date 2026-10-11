@@ -4,7 +4,6 @@ from enum import Enum
 
 class Condition(str, Enum):
     KG = "KG"
-    NOGK = "NOGK"
     UNKNOWN = "UNKNOWN"
 
 
