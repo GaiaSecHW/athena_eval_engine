@@ -249,6 +249,10 @@ app.include_router(sys_router)
 from ...v2.api import create_v2_app
 create_v2_app(app)
 
+# v2 pipeline：替代 v1 es.run()，启用 v2 10 阶段编排器
+from ...v2.pipeline.orchestrator import Orchestrator as _V2Orchestrator
+from ...v2.pipeline.orchestrator import TaskCancelledError as _V2TaskCancelledError
+
 
 @app.on_event("startup")
 def _on_startup():
@@ -312,9 +316,10 @@ def resume_stuck_evaluations():
                 log("STARTUP", f"{eid} (was QUEUED) → 加入暂停队列")
                 _submit_paused_eval(eid)
             # RUNNING_STATES = 线程已死但 DB 还显示运行中，续跑
-            stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                            'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                            'DIAGNOSING', 'REPORTING', 'FINALIZING')
+            stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
+                            'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
+                            'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                            'REPORTING', 'FINALIZING')
             placeholders = ','.join(['%s'] * len(stuck_states))
             cur.execute(f"SELECT evaluation_id, evaluation_status FROM evaluation "
                         f"WHERE evaluation_status IN ({placeholders})", stuck_states)
@@ -337,9 +342,10 @@ def _run_bg_resume(evaluation_id: str):
     set_eval_ctx(evaluation_id)
     log("THREAD", f"_run_bg_resume: {evaluation_id} 开始执行")
     from ...infrastructure.database import connect
-    stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                    'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                    'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
+                    'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
+                    'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                    'REPORTING', 'FINALIZING')
     placeholders = ','.join(['%s'] * len(stuck_states))
     try:
         conn = connect(autocommit=True)
@@ -357,8 +363,8 @@ def _run_bg_resume(evaluation_id: str):
     except Exception:
         pass
     try:
-        es.run(evaluation_id)
-    except es.TaskCancelledError:
+        _V2Orchestrator().run(evaluation_id)
+    except _V2TaskCancelledError:
         log("EVAL", f"{evaluation_id} 续跑被取消（被 force retry 替换）")
         _mark_cancelled_if_running(evaluation_id)
     except Exception as e:
@@ -431,8 +437,8 @@ def create_evaluation(req: CreateRequest):
             finally:
                 conn.close()
             try:
-                es.run(req.evaluation_id)
-            except es.TaskCancelledError:
+                _V2Orchestrator().run(req.evaluation_id)
+            except _V2TaskCancelledError:
                 log("EVAL", f"{req.evaluation_id} 被取消（force retry 替换）")
                 _mark_cancelled_if_running(req.evaluation_id)
             except Exception as e:
@@ -512,9 +518,10 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         from ...infrastructure.database import connect
 
         # Step 0: 检查当前状态 — 运行中禁止重跑，避免并发写冲突
-        _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                           'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                           'DIAGNOSING', 'REPORTING', 'FINALIZING')
+        _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
+                           'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
+                           'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                           'REPORTING', 'FINALIZING')
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()
@@ -644,8 +651,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             finally:
                 conn.close()
             try:
-                es.run(evaluation_id)
-            except es.TaskCancelledError:
+                _V2Orchestrator().run(evaluation_id)
+            except _V2TaskCancelledError:
                 log("EVAL", f"{evaluation_id} retry 被取消（又被 force retry 替换）")
                 _mark_cancelled_if_running(evaluation_id)
             except Exception as e:
@@ -675,8 +682,9 @@ def _mark_cancelled_if_running(evaluation_id: str):
     或已终态（CANCELLED/COMPLETED/FAILED）。
     """
     from ...infrastructure.database import connect
-    _RUNNING_PHASES = ('VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING', 'RESOLVING',
-                       'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS', 'DIAGNOSING',
+    _RUNNING_PHASES = ('VALIDATING', 'INGESTING', 'PARSING', 'RESOLVING',
+                       'PAIRING', 'CALCULATING', 'INVENTORY',
+                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
                        'REPORTING', 'FINALIZING')
     try:
         conn = connect(autocommit=True)
@@ -831,9 +839,10 @@ def rerun_fpr(evaluation_id: str, force: bool = False):
     force=true: 跳过状态检查（用于重跑卡住的 FPR 重跑任务）。
     """
     from ...infrastructure.database import connect
-    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                       'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                       'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
+                       'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
+                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                       'REPORTING', 'FINALIZING')
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -870,9 +879,10 @@ def rerun_kg(evaluation_id: str, force: bool = False):
                            detail="FPR report not found. Please rerun FPR analysis first "
                                  "(POST /api/v1/evaluations/{id}/rerun-fpr).")
 
-    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING', 'AI_MATCHING',
-                       'RESOLVING', 'PAIRING', 'CALCULATING', 'STATISTICAL_ANALYSIS',
-                       'DIAGNOSING', 'REPORTING', 'FINALIZING')
+    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
+                       'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
+                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                       'REPORTING', 'FINALIZING')
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -1271,7 +1281,7 @@ body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;backgroun
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
 .b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
 .b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
-.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-RESOLVING,.b-CALCULATING,.b-INVENTORY,.b-LIFECYCLE_ANALYSIS,.b-CAUSAL_CHAIN{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}

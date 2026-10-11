@@ -47,7 +47,7 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
 .b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
 .b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
-.b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-AI_MATCHING,.b-RESOLVING,.b-CALCULATING{background:rgba(96,165,250,.18);color:var(--acc)}
+.b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-RESOLVING,.b-CALCULATING,.b-INVENTORY,.b-LIFECYCLE_ANALYSIS,.b-CAUSAL_CHAIN{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
@@ -239,7 +239,7 @@ function renderEvList(){
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
-    var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","AI_MATCHING":"漏洞匹配","RESOLVING":"提取 Fact","PAIRING":"任务配对","CALCULATING":"计算指标","STATISTICAL_ANALYSIS":"统计分析","DIAGNOSING":"诊断中","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
+    var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","RESOLVING":"事实写入","PAIRING":"任务配对","CALCULATING":"计算指标","INVENTORY":"知识盘点","LIFECYCLE_ANALYSIS":"生命周期分析","CAUSAL_CHAIN":"因果链分析","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
     // REPORTING 时通过 progress 文本区分"知识与记忆介入分析"和"生成报告"
@@ -293,14 +293,9 @@ async function selEv(id){
     }
     // 运行中: 显示进度（非终态即运行中）
     if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
-      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"AI_MATCHING",label:"漏洞匹配"},{key:"RESOLVING",label:"提取 Fact"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"KNOWLEDGE_ANALYSIS",label:"知识与记忆介入分析"},{key:"REPORTING",label:"生成报告"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"AI_MATCHING":3,"RESOLVING":4,"PAIRING":5,"CALCULATING":6,"STATISTICAL_ANALYSIS":6,"DIAGNOSING":7,"REPORTING":8,"FINALIZING":9};
+      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"INVENTORY",label:"知识盘点"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZING",label:"完成"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"INVENTORY":6,"LIFECYCLE_ANALYSIS":7,"CAUSAL_CHAIN":8,"REPORTING":9,"FINALIZING":10};
       var curStep=phaseMap[s.status]||0;
-      // 知识与记忆介入分析是 REPORTING 的子阶段，通过 progress 文本区分
-      if(s.status==="REPORTING"){
-        if(s.progress&&s.progress.indexOf("生成报告")>=0){curStep=8;}
-        else{curStep=7;}
-      }
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
       var stepsHtml='<div style="margin:12px 0">';
@@ -1417,25 +1412,37 @@ function loadPipeline(eid){
     const tr=d.task_runs||[],oc=d.outcomes||[],kn=d.knowledge||[],to=d.tools||[],rs=d.resources||[],pr=d.pairs||[],dv=d.derived||[],me=d.metrics||[];
     const calc=me.filter(m=>m.status==="CALCULATED").length;
     const na=me.filter(m=>m.status!=="CALCULATED").length;
-    let steps=`<div style="display:flex;flex-direction:column;gap:0">
-    <div class="ps"><span class="ps-n done">1</span><div class="ps-body"><b>Trace 解析</b><br>
-    ${tr.map(t=>`<span class="ps-det">${t.condition} TaskRun: ${t.task_id} · trace_valid=${t.trace_valid} · runtime_valid=${t.runtime_valid} · kg_state=${t.kg_runtime_state}</span>`).join("<br>")}</div></div>
-    <div class="ps"><span class="ps-n done">2</span><div class="ps-body"><b>Fact 提取</b><br>
-    ${oc.map(o=>`<span class="ps-det">${o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK")?"KG":"No-KG"}: outcome=${o.outcome} · prediction=${o.prediction} · resolver=${o.resolver_status} · validation=${o.validation_result||"NA"}</span>`).join("<br>")}
-    ${kn.map(k=>`<span class="ps-det">${k.task_run_id.includes("KG")&&!k.task_run_id.includes("NOGK")?"KG":"No-KG"}: access=${k.access} · delivery=${k.delivery} · mount=${k.mount_status}</span>`).join("<br>")}
-    ${to.map(t=>`<span class="ps-det">${t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK")?"KG":"No-KG"}: tools=${t.total} (KG=${t.kg} F=${t.finding} C=${t.code} S=${t.shell} O=${t.other})</span>`).join("<br>")}
-    ${rs.map(r=>`<span class="ps-det">${r.task_run_id.includes("KG")&&!r.task_run_id.includes("NOGK")?"KG":"No-KG"}: tokens=${r.tokens} · steps=${r.steps} · duration=${r.duration}ms · time_valid=${r.time_valid}</span>`).join("<br>")}</div></div>
-    <div class="ps"><span class="ps-n done">3</span><div class="ps-body"><b>配对</b><br>
-    ${pr.length?pr.map(p=>`<span class="ps-det">${p.match_status} · exp_valid=${p.exp_valid} · outcome_valid=${p.outcome_valid} · transition=${p.transition||"NA"}</span>`).join("<br>"):"无配对"}</div></div>
-    <div class="ps"><span class="ps-n done">4</span><div class="ps-body"><b>Pair Derived Facts</b><br>
-    ${dv.length?dv.map(d=>`<span class="ps-det">${d.type}: ${d.value_num!=null&&!isNaN(Number(d.value_num))?Number(d.value_num).toFixed(3):d.value_str||"-"} [${d.status}]${d.reason?" "+d.reason:""}</span>`).join("<br>"):"无"}</div></div>
-    <div class="ps"><span class="ps-n done">5</span><div class="ps-body"><b>指标计算</b><br>
-    <span class="ps-det">CALCULATED=${calc} · NA=${na} · 总计=${me.length}</span><br>
-    ${me.map(m=>`<span class="ps-det">${m.metric_id}: ${m.status}${m.reason?" ("+m.reason+")":""} N=${m.n}</span>`).join("<br>")}</div></div>
-    <div class="ps"><span class="ps-n done">6</span><div class="ps-body"><b>报告生成</b><br><span class="ps-det">status=READY</span></div></div>
-    </div>`;
-    el.innerHTML="<h3>分析过程日志</h3>"+steps;
-  }).catch(e=>{const el=$("pipeline-card");if(el)el.innerHTML="<h3>分析过程日志</h3><div style=color:var(--red)>加载失败："+e+"</div>";});
+    const stages=[
+      {n:"INGESTING",label:"基线数据获取",det:tr.length?tr.length+" benchmark_items":"无数据"},
+      {n:"PARSING",label:"Trace 解析",det:tr.map(t=>`${t.condition} ${t.task_id}: trace_valid=${t.trace_valid} · kg_state=${t.kg_runtime_state}`).join(" · ")||"无"},
+      {n:"RESOLVING",label:"事实写入",det:oc.length+kn.length+to.length+rs.length+" facts 写入完成"},
+      {n:"PAIRING",label:"KG/No-KG 配对",det:pr.length?pr.map(p=>`${p.match_status} · exp_valid=${p.exp_valid} · transition=${p.transition||"NA"}`).join(" · "):"无配对"},
+      {n:"CALCULATING",label:"指标计算",det:`CALCULATED=${calc} · NA=${na} · 总计=${me.length}`},
+      {n:"INVENTORY",label:"知识盘点",det:"覆盖度 + 漏洞类型 + 质量标注"},
+      {n:"LIFECYCLE_ANALYSIS",label:"L0-L7 生命周期分析",det:"全链路知识访问效果分析"},
+      {n:"CAUSAL_CHAIN",label:"因果链分析",det:"断点定位 + 成因归因"},
+      {n:"REPORTING",label:"报告生成",det:"报告组装 + 改进建议"},
+      {n:"FINALIZE",label:"完成",det:"status=READY"}
+    ];
+    let steps=`<div style="display:flex;flex-direction:column;gap:0">`;
+    stages.forEach((s,i)=>{
+      steps+=`<div class="ps"><span class="ps-n done">${i+1}</span><div class="ps-body"><b>${s.label}</b> <span style="font-size:12px;color:var(--gray)">(${s.n})</span><br><span class="ps-det">${s.det}</span></div></div>`;
+    });
+    steps+=`</div>`;
+    // 详细数据折叠区
+    steps+=`<details style="margin-top:14px"><summary style="cursor:pointer;font-size:15px;color:var(--sub)">展开详细数据</summary>
+    <div style="margin-top:10px">
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">TaskRuns</b><br>${tr.map(t=>`<span class="ps-det">${t.condition} ${t.task_id}: trace_valid=${t.trace_valid} · runtime_valid=${t.runtime_valid} · kg_state=${t.kg_runtime_state}</span>`).join("<br>")||"无"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Outcomes</b><br>${oc.map(o=>`<span class="ps-det">${o.task_run_id.includes("KG")&&!o.task_run_id.includes("NOGK")?"KG":"No-KG"}: outcome=${o.outcome} · prediction=${o.prediction} · resolver=${o.resolver_status} · validation=${o.validation_result||"NA"}</span>`).join("<br>")||"无"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Knowledge</b><br>${kn.map(k=>`<span class="ps-det">${k.task_run_id.includes("KG")&&!k.task_run_id.includes("NOGK")?"KG":"No-KG"}: access=${k.access} · delivery=${k.delivery} · mount=${k.mount_status}</span>`).join("<br>")||"无"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Tools</b><br>${to.map(t=>`<span class="ps-det">${t.task_run_id.includes("KG")&&!t.task_run_id.includes("NOGK")?"KG":"No-KG"}: tools=${t.total} (KG=${t.kg} F=${t.finding} C=${t.code} S=${t.shell} O=${t.other})</span>`).join("<br>")||"无"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Resources</b><br>${rs.map(r=>`<span class="ps-det">${r.task_run_id.includes("KG")&&!r.task_run_id.includes("NOGK")?"KG":"No-KG"}: tokens=${r.tokens} · steps=${r.steps} · duration=${r.duration}ms · time_valid=${r.time_valid}</span>`).join("<br>")||"无"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Pairs</b><br>${pr.length?pr.map(p=>`<span class="ps-det">${p.match_status} · exp_valid=${p.exp_valid} · outcome_valid=${p.outcome_valid} · transition=${p.transition||"NA"}</span>`).join("<br>"):"无配对"}</div>
+    <div style="margin-bottom:10px"><b style="font-size:14px;color:var(--sub)">Derived Facts</b><br>${dv.length?dv.map(d=>`<span class="ps-det">${d.type}: ${d.value_num!=null&&!isNaN(Number(d.value_num))?Number(d.value_num).toFixed(3):d.value_str||"-"} [${d.status}]${d.reason?" "+d.reason:""}</span>`).join("<br>"):"无"}</div>
+    <div><b style="font-size:14px;color:var(--sub)">Metrics</b><br>${me.map(m=>`<span class="ps-det">${m.metric_id}: ${m.status}${m.reason?" ("+m.reason+")":""} N=${m.n}</span>`).join("<br>")||"无"}</div>
+    </div></details>`;
+    el.innerHTML="<h3>v2 Pipeline 分析过程（10 阶段）</h3>"+steps;
+  }).catch(e=>{const el=$("pipeline-card");if(el)el.innerHTML="<h3>v2 Pipeline 分析过程</h3><div style=color:var(--red)>加载失败："+e+"</div>";});
 }
 
 // ===== ② 新建评测（KG / No-KG 分别选 项目→任务，trace 自动发现）=====
