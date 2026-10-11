@@ -315,15 +315,34 @@ class LifecycleAnalyzer:
         """
         accesses: list[dict] = []
 
+        # 预构建 (session_id, timestamp, tool_name) → idx 索引，O(1) 查找
+        # 避免 1385 次 × 174K events 的 O(N²) 线性扫描
+        ts_index: dict[tuple, int] = {}
+        session_tool_index: dict[tuple, int] = {}
+        for idx, e in enumerate(events):
+            key = (e.session_id, e.timestamp_ms, e.tool_name or "")
+            if key not in ts_index:
+                ts_index[key] = idx
+            key2 = (e.session_id, e.tool_name or "")
+            if key2 not in session_tool_index and e.is_tool_call():
+                session_tool_index[key2] = idx
+
+        def _find_idx(session_id, timestamp, tool_name):
+            if timestamp is not None:
+                key = (session_id, timestamp, tool_name or "")
+                if key in ts_index:
+                    return ts_index[key]
+            key2 = (session_id, tool_name or "")
+            return session_tool_index.get(key2, -1)
+
         # 从 interactions（KG）收集 CALL 事件
         for inter in (kf.interactions or []):
             if inter.get("type") != "CALL":
                 continue
             session_id = inter.get("session_id", "")
-            # 找到对应的 event_idx（通过 timestamp + session_id 匹配）
-            event_idx = self._find_event_idx(events, session_id,
-                                             inter.get("timestamp"),
-                                             inter.get("tool", ""))
+            event_idx = _find_idx(session_id,
+                                  inter.get("timestamp"),
+                                  inter.get("tool", ""))
             accesses.append({
                 "event_idx": event_idx,
                 "session_id": session_id,
@@ -338,9 +357,9 @@ class LifecycleAnalyzer:
             if inter.get("type") != "CALL":
                 continue
             session_id = inter.get("session_id", "")
-            event_idx = self._find_event_idx(events, session_id,
-                                             inter.get("timestamp"),
-                                             inter.get("tool", ""))
+            event_idx = _find_idx(session_id,
+                                  inter.get("timestamp"),
+                                  inter.get("tool", ""))
             accesses.append({
                 "event_idx": event_idx,
                 "session_id": session_id,
