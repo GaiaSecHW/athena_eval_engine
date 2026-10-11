@@ -800,7 +800,12 @@ class Orchestrator:
         if bench:
             tr.benchmark_item_id = bench[0].benchmark_item_id
 
-        dp = parser.build_data_pack(source_uri, tr)
+        # 构造 trace_source dict（所有 parser 的 parse()/load_session() 都期望 dict）
+        trace_source = {
+            "source_uri": source_uri,
+            "trace_id": tr.trace_id or source_uri,
+        }
+        dp = parser.build_data_pack(trace_source, tr)
 
         # 将 benchmark_item 附加到 DataPack
         if bench:

@@ -27,8 +27,11 @@ class BaseParser(ABC):
         """返回 agent 类型标识（turing/argo/secmate/cvuln_verify/webvuln_verify/dataflow）。"""
 
     @abstractmethod
-    def parse(self, trace_source: str) -> list[RawEvent]:
-        """解析 trace，返回规范事件序列。"""
+    def parse(self, trace_source: dict) -> list[RawEvent]:
+        """解析 trace，返回规范事件序列。
+
+        trace_source: dict，至少含 source_uri（文件路径），可选 trace_id、session_id 等。
+        """
 
     @abstractmethod
     def extract_findings(self, events: list[RawEvent]) -> list[dict]:
@@ -39,8 +42,11 @@ class BaseParser(ABC):
         """构建 session 关系图（parent_id 边）。"""
 
     @abstractmethod
-    def load_session(self, trace_source: str) -> dict:
-        """加载 session 元数据（token/step/time）。"""
+    def load_session(self, trace_source: dict) -> dict:
+        """加载 session 元数据（token/step/time）。
+
+        trace_source: dict，至少含 source_uri。
+        """
 
     @abstractmethod
     def label_session_phases(
@@ -55,8 +61,10 @@ class BaseParser(ABC):
         各 parser 实现自己的标识符提取 + 规则映射，详见 docs/v2-architecture-design.md §4.3。
         """
 
-    def build_data_pack(self, trace_source: str, task_run: TaskRun) -> DataPack:
+    def build_data_pack(self, trace_source: dict, task_run: TaskRun) -> DataPack:
         """完整解析，返回 DataPack。模板方法——子类不覆盖。
+
+        trace_source: dict，至少含 source_uri，可选 trace_id、session_id 等。
 
         按 docs/v2-architecture-design.md §4.1 实现：
         1. parse() -> events
