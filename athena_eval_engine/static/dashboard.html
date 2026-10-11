@@ -255,8 +255,8 @@ async function selEv(id){
     }
     // 运行中：显示进度
     if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
-      var phases=[{key:"INGESTING",label:"获取基线"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"PAIRING",label:"任务配对"},{key:"CALCULATING",label:"计算指标"},{key:"INVENTORY",label:"知识盘点"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZE",label:"完成"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"PAIRING":4,"CALCULATING":5,"INVENTORY":6,"LIFECYCLE_ANALYSIS":7,"CAUSAL_CHAIN":8,"REPORTING":9,"FINALIZE":10};
+      var phases=[{key:"INGESTING",label:"数据采集"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"CALCULATING",label:"计算指标"},{key:"INVENTORY",label:"知识盘点"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZE",label:"完成"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"CALCULATING":4,"INVENTORY":5,"LIFECYCLE_ANALYSIS":6,"CAUSAL_CHAIN":7,"REPORTING":8,"FINALIZE":9};
       var curStep=phaseMap[s.status]||0;
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
