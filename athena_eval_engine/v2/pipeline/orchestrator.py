@@ -317,8 +317,9 @@ class Orchestrator:
             _set_progress(evaluation_id, "获取基线数据...")
             benchmark_items, case_details, alert_center_data, entries, cfg = \
                 self._ingest(evaluation_id)
+            eval_mode = cfg.get("manifest", {}).get("eval_mode", "dev")
             log("ORCH", f"INGESTING done: {len(benchmark_items)} benchmark_items, "
-                  f"{len(case_details)} case_details")
+                  f"{len(case_details)} case_details, eval_mode={eval_mode}")
 
             # ── PARSING ──
             _check_cancel(evaluation_id, stages.PARSING)
@@ -373,7 +374,7 @@ class Orchestrator:
                 _set_progress(evaluation_id, "L0-L7 全链路分析...")
                 access_details = self._run_lifecycle(
                     data_packs, evaluation_id, reports_dir,
-                    cancel_cb=_cancel_cb,
+                    cancel_cb=_cancel_cb, eval_mode=eval_mode,
                 )
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
@@ -903,7 +904,7 @@ class Orchestrator:
 
     def _run_lifecycle(
         self, data_packs: list, evaluation_id: str,
-        reports_dir: str, cancel_cb=None,
+        reports_dir: str, cancel_cb=None, eval_mode: str = "dev",
     ) -> list[dict]:
         """L0-L7 全链路分析。
 
@@ -911,12 +912,14 @@ class Orchestrator:
         执行 L0-L7 逐级判定，写入 knowledge_access_detail 表。
 
         cancel_cb 穿透到 LLM 密集内循环。
+        eval_mode: "dev"（开发态，分析 FP+FN）| "runtime"（运行态，只分析 FP）
         """
         from ..lifecycle.analyzer import LifecycleAnalyzer
 
         analyzer = LifecycleAnalyzer()
         return analyzer.analyze(
-            evaluation_id, data_packs, reports_dir, cancel_cb=cancel_cb,
+            evaluation_id, data_packs, reports_dir,
+            cancel_cb=cancel_cb, eval_mode=eval_mode,
         )
 
     # ── CAUSAL_CHAIN ─────────────────────────────────

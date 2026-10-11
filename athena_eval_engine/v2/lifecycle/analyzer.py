@@ -186,11 +186,14 @@ class LifecycleAnalyzer:
         self.llm = llm_client
 
     def analyze(self, evaluation_id: str, data_packs: list,
-                reports_dir: str, cancel_cb=None) -> list[dict]:
+                reports_dir: str, cancel_cb=None,
+                eval_mode: str = "dev") -> list[dict]:
         """对有效 case 的每次知识访问执行 L0-L7 分析。
 
         流程：
-        1. 用 CaseFilter 筛选有效 case
+        1. 用 CaseFilter 按 eval_mode 筛选有效 case
+           - runtime（运行态）：只分析 FP case（人工标注误报）
+           - dev（开发态）：分析 FP + FN case（误报 + 漏报）
         2. 对每个有效 case，按 business_phase 分组知识访问
         3. 对跨阶段 session，用 LLM Prompt 1 细分到单一阶段
         4. 对每个阶段的知识访问，执行 L0-L6 漏斗判定
@@ -201,7 +204,9 @@ class LifecycleAnalyzer:
             list[dict]，每个 dict 是一条 knowledge_access_detail 记录
         """
         case_filter = CaseFilter()
-        valid_packs = case_filter.filter_valid_cases(evaluation_id, data_packs)
+        valid_packs = case_filter.filter_valid_cases(
+            evaluation_id, data_packs, eval_mode=eval_mode,
+        )
 
         all_records: list[dict] = []
 
