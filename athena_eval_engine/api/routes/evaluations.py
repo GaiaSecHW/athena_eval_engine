@@ -237,6 +237,7 @@ class CreateRequest(BaseModel):
     benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
     benchmark_set_id: str | None = None  # 默认=kg_project_id
     vc_source_task_id: str | None = None
+    eval_mode: str = "dev"  # "dev"（开发态） | "runtime"（运行态）
 
 
 app = FastAPI(title="Athena Eval Engine", version="0.1.0")
@@ -416,7 +417,8 @@ def create_evaluation(req: CreateRequest):
                                    nogk_task_id=req.nogk_task_id,
                                    benchmark_source=req.benchmark_source,
                                    benchmark_set_id=req.benchmark_set_id,
-                                   vc_source_task_id=req.vc_source_task_id))
+                                   vc_source_task_id=req.vc_source_task_id,
+                                   eval_mode=req.eval_mode))
         # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():

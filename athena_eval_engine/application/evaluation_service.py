@@ -402,7 +402,7 @@ class CreateRequest:
     """简化版创建请求 — 调用方只需传项目 ID + 任务 ID，trace 路径/kind/验证 trace 全部自动发现。
 
     必传：evaluation_id, kg_project_id, kg_task_id
-    可选：nogk_project_id/nogk_task_id（对照组），benchmark_source，benchmark_set_id，vc_source_task_id
+    可选：nogk_project_id/nogk_task_id（对照组），benchmark_source，benchmark_set_id，vc_source_task_id，eval_mode
     """
     evaluation_id: str
     evaluation_name: str | None = None
@@ -416,6 +416,8 @@ class CreateRequest:
     benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
     benchmark_set_id: str | None = None  # vuln_center: 漏洞中心项目ID; vbench_zip: V-Bench set ID; 默认=kg_project_id
     vc_source_task_id: str | None = None  # 漏洞中心 source_task_id（可选）
+    # 评测模式
+    eval_mode: str = "dev"  # "dev"（开发态） | "runtime"（运行态）
 
 
 def _set_status(cur, evaluation_id, status):
@@ -827,7 +829,8 @@ def create(req: CreateRequest):
                 "vc_source_task_id": req.vc_source_task_id,
                 "vbench_project_name": vbench_project_name,
                 "vc_source_project_name": vc_source_project_name,
-                "vc_source_task_name": vc_source_task_name}
+                "vc_source_task_name": vc_source_task_name,
+                "eval_mode": req.eval_mode}
 
     conn = connect(autocommit=True)
     try:
