@@ -108,6 +108,7 @@ class CaseFilter:
         eval_mode: str = "dev",
         benchmark_source: str = "vbench_zip",
         alert_center_data: dict | None = None,
+        case_details: dict | None = None,
     ) -> list:
         """筛选需要分析的 DataPack。
 
@@ -118,6 +119,10 @@ class CaseFilter:
             benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
                               "vbench_zip"（V-Bench 测评集，LLM 匹配）
             alert_center_data: 告警中心数据，用于 FN 判定
+            case_details: 基线 case 详情 dict（case_id → metadata），
+                          由 orchestrator._ingest() 返回的完整基线数据。
+                          如提供，直接从中收集全部基线 case；
+                          否则回退到从 data_packs 的 benchmark_item.metadata 收集。
 
         Returns:
             需要分析的 DataPack 列表
@@ -135,28 +140,42 @@ class CaseFilter:
         for dp in data_packs:
             groups[dp.task_id].append(dp)
 
-        # 从 DataPack 的 benchmark_item.metadata 收集所有基线 case
-        # metadata = case_details[bid]，含 expected_label, vulnerability_type, description, source_file 等
-        seen_case_ids: set[str] = set()
+        # 收集基线 case：优先从 case_details（完整 33 条），回退到 data_packs
         baseline_cases: list[dict] = []
-        for dp in data_packs:
-            bm = dp.benchmark_item
-            if bm is None or bm.metadata is None:
-                continue
-            cid = bm.benchmark_item_id or ""
-            if cid in seen_case_ids:
-                continue
-            seen_case_ids.add(cid)
-            md = bm.metadata
-            baseline_cases.append({
-                "case_id": cid,
-                "expected_label": md.get("expected_label", ""),
-                "title": md.get("vulnerability_type", ""),
-                "description": md.get("description", ""),
-                "source_file": md.get("source_file", ""),
-                "source_line": md.get("source_line", ""),
-                "source_function": md.get("source_function", ""),
-            })
+        if case_details:
+            # case_details 是 orchestrator._ingest() 返回的完整基线数据
+            # {case_id: {description, vulnerability_type, expected_label, source_file, ...}}
+            for cid, md in case_details.items():
+                baseline_cases.append({
+                    "case_id": cid,
+                    "expected_label": md.get("expected_label", ""),
+                    "title": md.get("vulnerability_type", ""),
+                    "description": md.get("description", ""),
+                    "source_file": md.get("source_file", ""),
+                    "source_line": md.get("source_line", ""),
+                    "source_function": md.get("source_function", ""),
+                })
+        else:
+            # 回退：从 data_packs 的 benchmark_item.metadata 收集
+            seen_case_ids: set[str] = set()
+            for dp in data_packs:
+                bm = dp.benchmark_item
+                if bm is None or bm.metadata is None:
+                    continue
+                cid = bm.benchmark_item_id or ""
+                if cid in seen_case_ids:
+                    continue
+                seen_case_ids.add(cid)
+                md = bm.metadata
+                baseline_cases.append({
+                    "case_id": cid,
+                    "expected_label": md.get("expected_label", ""),
+                    "title": md.get("vulnerability_type", ""),
+                    "description": md.get("description", ""),
+                    "source_file": md.get("source_file", ""),
+                    "source_line": md.get("source_line", ""),
+                    "source_function": md.get("source_function", ""),
+                })
 
         # ── FP 筛选：基线 NON_VULNERABLE → 在 trace findings 中匹配 ──
         fp_cases = [bc for bc in baseline_cases
@@ -188,6 +207,11 @@ class CaseFilter:
         valid_packs: list[DataPack] = []
         unmatched_cases: list[dict] = []
 
+        # FPR 统计：FP = 误报（baseline NON_VULN + finding CONFIRMED）
+        # TN = 正确未报（baseline NON_VULN + 无匹配 finding 或 finding 非 CONFIRMED）
+        fp_count = 0
+        tn_count = 0
+
         # 处理 FP
         for bc in fp_cases:
             cid = bc["case_id"]
@@ -196,6 +220,8 @@ class CaseFilter:
             matched_finding = fp_finding_map.get(cid)
 
             if matched_finding is None:
+                # baseline NON_VULNERABLE 但 trace 中无匹配 finding → TN
+                tn_count += 1
                 unmatched_cases.append({
                     "case_id": cid,
                     "expected_label": "NON_VULNERABLE",
@@ -213,6 +239,7 @@ class CaseFilter:
 
             if vr == "CONFIRMED":
                 # FP: agent 误报了漏洞
+                fp_count += 1
                 packs = self._get_packs_with_knowledge(groups, task_id)
                 if packs:
                     log("CASE_FILTER",
@@ -228,6 +255,8 @@ class CaseFilter:
                         "reason": "FP but no knowledge access in trace",
                     })
             else:
+                # finding 存在但非 CONFIRMED → TN（agent 未误报）
+                tn_count += 1
                 log("CASE_FILTER",
                     f"skip case {cid}: NON_VULNERABLE but vr={vr} "
                     f"(not CONFIRMED, not FP)",
@@ -279,8 +308,13 @@ class CaseFilter:
             f"unmatched={len(unmatched_cases)})",
             eval_id=evaluation_id)
 
-        # 将 unmatched_cases 存到类属性，供报告读取
+        # 将 unmatched_cases 和 fpr_stats 存到类属性，供报告读取
         self.unmatched_cases = unmatched_cases
+        self.fpr_stats = {
+            "total_non_vuln": len(fp_cases),
+            "fp_count": fp_count,
+            "tn_count": tn_count,
+        }
 
         return valid_packs
 

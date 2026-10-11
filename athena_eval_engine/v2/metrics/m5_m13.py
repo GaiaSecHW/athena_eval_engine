@@ -124,7 +124,7 @@ def run_all_metrics(*, kg_access_events=0, kg_successful_reads=0,
     方案不含 No-KG 对照组，M7-M10（JSD/ΔToken/ΔSteps/ΔTime）返回 NA。
     M5/M6/M11/M12 不依赖配对，直接从计数参数计算。
     """
-    m5, s5 = calc_m5(kg_access_events, total_tool_calls)
+    m5, s5 = calc_m5(kg_tool_calls, total_tool_calls)
     m6, s6 = calc_m6(kg_successful_reads, kg_access_events)
     m11, s11 = calc_m11(mem_read_count, total_tool_calls)
     m12, s12 = calc_m12(mem_successful_reads, mem_read_count)

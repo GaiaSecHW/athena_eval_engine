@@ -420,6 +420,7 @@ class Orchestrator:
                     cancel_cb=_cancel_cb, eval_mode=eval_mode,
                     benchmark_source=benchmark_source,
                     alert_center_data=alert_center_data,
+                    case_details=case_details,
                 )
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
@@ -433,6 +434,11 @@ class Orchestrator:
                 )
                 log("ORCH", f"lifecycle metrics computed: "
                       f"{len(metrics.get('lifecycle_metrics', []))} metrics")
+
+            # 用 CaseFilter 的 FPR 统计更新 M13
+            fpr_stats = getattr(self, "_lifecycle_fpr_stats", None)
+            if fpr_stats:
+                self._update_m13_fpr(metrics, fpr_stats)
 
             # ── CAUSAL_CHAIN ──
             _check_cancel(evaluation_id, stages.CAUSAL_CHAIN)
@@ -943,6 +949,56 @@ class Orchestrator:
             total_tool_calls=total_tool_calls,
         )
 
+    @staticmethod
+    def _update_m13_fpr(metrics: dict, fpr_stats: dict):
+        """用 CaseFilter 的 FPR 统计更新 M13 误报率。
+
+        M13 FPR = FP / (FP + TN)
+        - FP = baseline NON_VULNERABLE + trace finding CONFIRMED
+        - TN = baseline NON_VULNERABLE + 无匹配 finding 或 finding 非 CONFIRMED
+
+        CaseFilter 在 lifecycle 分析中已完成 FP/TN 判定，
+        这里直接用其统计结果更新 M13。
+        """
+        fp = fpr_stats.get("fp_count", 0)
+        tn = fpr_stats.get("tn_count", 0)
+        denom = fp + tn
+
+        from ..metrics.m5_m13 import MetricResult, StatisticalResult, CALCULATED, NA
+        from ..metrics.engine import wilson
+
+        for i, mr in enumerate(metrics.get("metric_results", [])):
+            if mr.metric_id == "M13":
+                if denom == 0:
+                    mr.estimate = None
+                    mr.calculation_status = NA
+                    mr.reason_code = "NO_NON_VULN_BASELINE"
+                    mr.n = 0
+                else:
+                    fpr = fp / denom
+                    lo, hi, st, rc = wilson(fp, denom, 0.95)
+                    mr.estimate = fpr
+                    mr.calculation_status = CALCULATED
+                    mr.reason_code = None
+                    mr.n = denom
+                    mr.n_population = "non_vuln_baseline"
+                    mr.method = {
+                        "uncertainty": "wilson",
+                        "fp_count": fp,
+                        "tn_count": tn,
+                        "total_non_vuln": denom,
+                    }
+                    # 更新对应的 StatisticalResult
+                    for sr in metrics.get("statistical_results", []):
+                        if sr.metric_id == "M13":
+                            sr.ci_lower = lo
+                            sr.ci_upper = hi
+                            sr.status = st
+                            sr.reason_code = rc
+                            sr.testing_tier = "PRIMARY"
+                            break
+                break
+
     # ── INVENTORY ───────────────────────────────────
 
     def _run_inventory(
@@ -966,6 +1022,7 @@ class Orchestrator:
         reports_dir: str, cancel_cb=None, eval_mode: str = "dev",
         benchmark_source: str = "vbench_zip",
         alert_center_data: dict | None = None,
+        case_details: dict | None = None,
     ) -> list[dict]:
         """L0-L7 全链路分析。
 
@@ -982,12 +1039,16 @@ class Orchestrator:
         from ..lifecycle.analyzer import LifecycleAnalyzer
 
         analyzer = LifecycleAnalyzer()
-        return analyzer.analyze(
+        records = analyzer.analyze(
             evaluation_id, data_packs, reports_dir,
             cancel_cb=cancel_cb, eval_mode=eval_mode,
             benchmark_source=benchmark_source,
             alert_center_data=alert_center_data,
+            case_details=case_details,
         )
+        # 将 FPR 统计存到实例，供 run() 计算 M13
+        self._lifecycle_fpr_stats = getattr(analyzer, "case_filter_stats", None)
+        return records
 
     # ── CAUSAL_CHAIN ─────────────────────────────────
 
@@ -1125,6 +1186,19 @@ class Orchestrator:
         }
 
         def _do(cur):
+            # 先创建 evaluation_calculation_run 记录（FK 约束要求）
+            # v2 不需要 calculation_run，但 evaluation_report 表有 FK 约束
+            cur.execute(
+                "INSERT IGNORE INTO evaluation_calculation_run "
+                "(calculation_run_id, evaluation_id, run_type, "
+                "config_snapshot_id) "
+                "VALUES (%s, %s, 'v2_pipeline', %s)",
+                (
+                    f"cr-{evaluation_id}",
+                    evaluation_id,
+                    f"snap-{evaluation_id}",
+                ),
+            )
             # 适配 evaluation_report 表 schema（与老代码一致）
             cur.execute(
                 "INSERT INTO evaluation_report "

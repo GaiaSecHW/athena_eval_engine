@@ -189,7 +189,8 @@ class LifecycleAnalyzer:
                 reports_dir: str, cancel_cb=None,
                 eval_mode: str = "dev",
                 benchmark_source: str = "vbench_zip",
-                alert_center_data: dict | None = None) -> list[dict]:
+                alert_center_data: dict | None = None,
+                case_details: dict | None = None) -> list[dict]:
         """对有效 case 的每次知识访问执行 L0-L7 分析。
 
         流程：
@@ -215,6 +216,7 @@ class LifecycleAnalyzer:
             evaluation_id, data_packs, eval_mode=eval_mode,
             benchmark_source=benchmark_source,
             alert_center_data=alert_center_data,
+            case_details=case_details,
         )
 
         all_records: list[dict] = []
@@ -232,6 +234,9 @@ class LifecycleAnalyzer:
                     eval_id=evaluation_id)
                 # 不跳过——向上抛出，遵循"禁止降级跳过"铁律
                 raise
+
+        # 将 case_filter 的 FPR 统计附加到实例，供 orchestrator 计算 M13
+        self.case_filter_stats = getattr(case_filter, "fpr_stats", None)
 
         log("LIFECYCLE",
             f"analyze done: {len(all_records)} records from {len(valid_packs)} valid cases",
