@@ -2,39 +2,37 @@
 
 按 eval_mode 筛选需要分析的 case：
 
+一个 case 对应一个 task，但一个 task 可能有多个 agent（挖掘 agent + 验证 agent），
+各自一条 trace、一个 DataPack。CaseFilter 按 task_id 分组，组级别判定 case 类型，
+组内保留有知识访问的 DataPack 用于 L0-L7 分析。
+
 - runtime（运行态）：只分析 FP case（人工标注误报）
-  FP = expected_label=NON_VULNERABLE + validation_result=CONFIRMED
+  FP = expected_label=NON_VULNERABLE + 组内任一 DataPack 的 validation_result=CONFIRMED
   （agent 报了漏洞，但基线标注为非漏洞）
 
 - dev（开发态）：分析 FP + FN case（误报 + 漏报）
-  FP = 同上
-  FN = expected_label=VULNERABLE + agent 未报或报 FALSE_POSITIVE
-  FN 的 case 需通过 sink-point 匹配确认 agent 接触过漏洞文件
+  FP 同上
+  FN = expected_label=VULNERABLE + 组内无 CONFIRMED
+  + sink-point 匹配确认 agent 接触过漏洞文件
 
-前置条件（所有 case 都需满足）：
-1. outcome_fact 不为 None
-2. knowledge_fact 不为 None 且有知识访问记录
-3. benchmark_item 不为 None
+前置条件（case 级别）：
+1. 组内至少一个 DataPack 有 outcome_fact
+2. 组内至少一个 DataPack 有 knowledge_fact 且有知识访问记录
+3. 组内至少一个 DataPack 有 benchmark_item
 """
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 
 from ..core.data_pack import DataPack
-from ..infra.database import connect
 from ...infrastructure.log_util import log
 
 
 class CaseFilter:
     """按 eval_mode 筛选需要分析的 case。
 
-    筛选逻辑：
-    1. 所有 case 需满足前置条件（outcome/knowledge/benchmark 非空）
-    2. 按 eval_mode 过滤 case 类型：
-       - runtime：只保留 FP
-       - dev：保留 FP + FN
-    3. FP 通过 validation_result=CONFIRMED 识别
-    4. FN 通过 sink-point 匹配确认 agent 接触过漏洞文件
+    按 task_id 分组，组级别判定 FP/FN，组内保留有知识访问的 DataPack。
     """
 
     def filter_valid_cases(
@@ -49,119 +47,144 @@ class CaseFilter:
             eval_mode: "dev"（开发态，FP+FN）| "runtime"（运行态，只 FP）
 
         Returns:
-            需要分析的 DataPack 列表
+            需要分析的 DataPack 列表（组内保留有知识访问的 DataPack）
         """
+        # 按 task_id 分组
+        groups: dict[str, list[DataPack]] = defaultdict(list)
+        for dp in data_packs:
+            groups[dp.task_id].append(dp)
+
         valid_packs: list[DataPack] = []
 
-        for dp in data_packs:
-            # ── 前置条件 ──
-            if dp.outcome_fact is None:
-                log("CASE_FILTER", f"skip {dp.task_run_id}: no outcome_fact",
+        for task_id, packs in groups.items():
+            # ── 前置条件（case 级别）──
+            # 组内至少一个 DataPack 有 outcome_fact
+            has_outcome = any(dp.outcome_fact is not None for dp in packs)
+            if not has_outcome:
+                log("CASE_FILTER", f"skip task={task_id}: no outcome_fact in group",
                     eval_id=evaluation_id)
                 continue
 
-            if dp.knowledge_fact is None:
-                log("CASE_FILTER", f"skip {dp.task_run_id}: no knowledge_fact",
-                    eval_id=evaluation_id)
-                continue
-
-            kf = dp.knowledge_fact
-            has_knowledge_access = (
-                getattr(kf, "access", False)
-                or getattr(kf, "memory_access", False)
-            )
-            if not has_knowledge_access:
+            # 组内至少一个 DataPack 有知识访问记录
+            packs_with_knowledge = [
+                dp for dp in packs
+                if dp.knowledge_fact is not None
+                and (getattr(dp.knowledge_fact, "access", False)
+                     or getattr(dp.knowledge_fact, "memory_access", False))
+            ]
+            if not packs_with_knowledge:
                 log("CASE_FILTER",
-                    f"skip {dp.task_run_id}: no knowledge access record",
+                    f"skip task={task_id}: no knowledge access in group",
                     eval_id=evaluation_id)
                 continue
 
-            if dp.benchmark_item is None:
-                log("CASE_FILTER", f"skip {dp.task_run_id}: no benchmark_item",
+            # 组内至少一个 DataPack 有 benchmark_item
+            has_benchmark = any(dp.benchmark_item is not None for dp in packs)
+            if not has_benchmark:
+                log("CASE_FILTER", f"skip task={task_id}: no benchmark_item in group",
                     eval_id=evaluation_id)
                 continue
 
-            # ── 按 eval_mode 筛选 case 类型 ──
-            of = dp.outcome_fact
-            gt = str(of.gt_label) if of.gt_label else ""
-            vr = of.validation_result or ""
-            is_fp = self._is_fp(gt, vr)
-            is_fn = self._is_fn(dp, gt, vr, evaluation_id)
+            # ── 组级别判定 case 类型 ──
+            # 聚合组内所有 outcome_fact 的 gt_label 和 validation_result
+            gt_labels = set()
+            validation_results = set()
+            for dp in packs:
+                if dp.outcome_fact is not None:
+                    gt = str(dp.outcome_fact.gt_label) if dp.outcome_fact.gt_label else ""
+                    vr = dp.outcome_fact.validation_result or ""
+                    if gt:
+                        gt_labels.add(gt)
+                    if vr:
+                        validation_results.add(vr)
+
+            # gt_label 应全组一致（同一 case 同一基线），取任一
+            gt = gt_labels.pop() if gt_labels else ""
+
+            is_fp = self._is_fp(gt, validation_results)
+            is_fn = (
+                eval_mode == "dev"
+                and self._is_fn(packs, gt, validation_results, evaluation_id)
+            )
 
             if is_fp:
                 log("CASE_FILTER",
-                    f"keep {dp.task_run_id}: FP case (gt={gt}, vr={vr})",
+                    f"keep task={task_id}: FP case (gt={gt}, "
+                    f"vrs={validation_results})",
                     eval_id=evaluation_id)
-                valid_packs.append(dp)
-            elif is_fn and eval_mode == "dev":
+                valid_packs.extend(packs_with_knowledge)
+            elif is_fn:
                 log("CASE_FILTER",
-                    f"keep {dp.task_run_id}: FN case (gt={gt}, vr={vr})",
+                    f"keep task={task_id}: FN case (gt={gt}, "
+                    f"vrs={validation_results})",
                     eval_id=evaluation_id)
-                valid_packs.append(dp)
+                valid_packs.extend(packs_with_knowledge)
             else:
                 log("CASE_FILTER",
-                    f"skip {dp.task_run_id}: not FP/FN "
-                    f"(gt={gt}, vr={vr}, mode={eval_mode})",
+                    f"skip task={task_id}: not FP/FN "
+                    f"(gt={gt}, vrs={validation_results}, "
+                    f"mode={eval_mode})",
                     eval_id=evaluation_id)
 
         log("CASE_FILTER",
-            f"filtered {len(valid_packs)}/{len(data_packs)} valid cases "
-            f"(mode={eval_mode})",
+            f"filtered {len(valid_packs)}/{len(data_packs)} packs "
+            f"from {len(groups)} tasks (mode={eval_mode})",
             eval_id=evaluation_id)
         return valid_packs
 
     @staticmethod
-    def _is_fp(gt: str, validation_result: str) -> bool:
-        """FP = 基线标注非漏洞 + agent 确认了漏洞。
+    def _is_fp(gt: str, validation_results: set[str]) -> bool:
+        """FP = 基线标注非漏洞 + 组内任一 agent 确认了漏洞。
 
-        expected_label=NON_VULNERABLE + validation_result=CONFIRMED
+        expected_label=NON_VULNERABLE + 组内任一 validation_result=CONFIRMED
         → agent 误报了漏洞
         """
-        return gt == "NON_VULNERABLE" and validation_result == "CONFIRMED"
+        return gt == "NON_VULNERABLE" and "CONFIRMED" in validation_results
 
     @staticmethod
-    def _is_fn(dp: DataPack, gt: str, validation_result: str,
-              evaluation_id: str) -> bool:
-        """FN = 基线标注有漏洞 + agent 没报或报了 FALSE_POSITIVE。
+    def _is_fn(packs: list[DataPack], gt: str,
+               validation_results: set[str], evaluation_id: str) -> bool:
+        """FN = 基线标注有漏洞 + 组内无 CONFIRMED。
 
         需通过 sink-point 匹配确认 agent 接触过漏洞文件，
         才能判断为漏报（而非完全不相关的 case）。
 
-        expected_label=VULNERABLE + (validation_result 为 FALSE_POSITIVE/None)
-        + sink-point 匹配到 agent 读取过漏洞文件
+        expected_label=VULNERABLE + 组内无 CONFIRMED
+        + sink-point 匹配到组内任一 agent 读取过漏洞文件
         """
         if gt != "VULNERABLE":
             return False
-        # agent 报了漏洞且确认 → TP，不是 FN
-        if validation_result == "CONFIRMED":
+        # 组内有 CONFIRMED → TP，不是 FN
+        if "CONFIRMED" in validation_results:
             return False
 
-        # agent 没报 (NO_FINDING/None) 或报了 FALSE_POSITIVE → 可能是 FN
+        # 组内无 CONFIRMED → 可能是 FN
         # 需通过 sink-point 匹配确认 agent 接触过漏洞文件
-        bm = dp.benchmark_item
-        if bm is None or bm.metadata is None:
-            return False
+        for dp in packs:
+            bm = dp.benchmark_item
+            if bm is None or bm.metadata is None:
+                continue
 
-        md = bm.metadata
-        source_file = md.get("source_file", "")
-        source_line = md.get("source_line", "")
-        source_function = md.get("source_function", "")
+            md = bm.metadata
+            source_file = md.get("source_file", "")
+            source_line = md.get("source_line", "")
+            source_function = md.get("source_function", "")
 
-        if not source_file:
-            # 无 sink 信息，无法确认关联性，不作为 FN
-            return False
+            if not source_file:
+                continue
 
-        # 检查 agent 是否读取过漏洞文件（sink-point 匹配）
-        file_reads = _build_file_read_index(dp.events or [])
-        sink_sessions = _find_sink_sessions(
-            file_reads, source_file, source_line, source_function,
-        )
-        if sink_sessions:
-            log("CASE_FILTER",
-                f"FN confirmed: {dp.task_run_id} touched sink "
-                f"file={_basename(source_file)} sessions={sink_sessions}",
-                eval_id=evaluation_id)
-            return True
+            file_reads = _build_file_read_index(dp.events or [])
+            sink_sessions = _find_sink_sessions(
+                file_reads, source_file, source_line, source_function,
+            )
+            if sink_sessions:
+                log("CASE_FILTER",
+                    f"FN confirmed: task={dp.task_id} "
+                    f"{dp.task_run_id} touched sink "
+                    f"file={_basename(source_file)} "
+                    f"sessions={sink_sessions}",
+                    eval_id=evaluation_id)
+                return True
 
         return False
 
