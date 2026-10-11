@@ -1,0 +1,43 @@
+"""Pipeline 阶段定义（v2）。
+
+设计参考 docs/v2-architecture-design.md §6.1。
+
+v2 将 AI_MATCHING 合并到 PARSING 阶段（sink-point 匹配在 parser 的
+build_data_pack 中完成），新增 3 个阶段：
+- INVENTORY — 知识盘点（覆盖度 + 质量判定）
+- LIFECYCLE_ANALYSIS — L0-L7 全链路分析
+- CAUSAL_CHAIN — 因果链分析
+
+完整流程：
+INGESTING → PARSING → RESOLVING → PAIRING → CALCULATING
+    → INVENTORY → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
+"""
+from __future__ import annotations
+
+# 现有阶段
+INGESTING = "INGESTING"
+PARSING = "PARSING"
+RESOLVING = "RESOLVING"
+PAIRING = "PAIRING"
+CALCULATING = "CALCULATING"
+REPORTING = "REPORTING"
+FINALIZE = "FINALIZE"
+
+# v2 新增阶段
+INVENTORY = "INVENTORY"
+LIFECYCLE_ANALYSIS = "LIFECYCLE_ANALYSIS"
+CAUSAL_CHAIN = "CAUSAL_CHAIN"
+
+# 完整 Pipeline 阶段顺序
+PIPELINE_STAGES = [
+    INGESTING,
+    PARSING,
+    RESOLVING,
+    PAIRING,
+    CALCULATING,
+    INVENTORY,
+    LIFECYCLE_ANALYSIS,
+    CAUSAL_CHAIN,
+    REPORTING,
+    FINALIZE,
+]
