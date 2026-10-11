@@ -17,8 +17,10 @@ M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
 """
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
+import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -36,6 +38,44 @@ from .state_machine import assert_transition
 from . import stages
 
 # ── 报告目录 ──────────────────────────────────────────
+
+
+def _json_default(obj):
+    """json.dump default — dataclass → dict，numpy → Python 原生类型。"""
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        return dataclasses.asdict(obj)
+    # numpy 标量
+    for mod_name, convs in (
+        ("numpy", (
+            ("float64", float), ("float32", float),
+            ("int64", int), ("int32", int),
+            ("float_", float), ("int_", int),
+        )),
+    ):
+        mod = sys.modules.get(mod_name)
+        if mod is not None and isinstance(obj, mod.ndarray):
+            return obj.tolist()
+        if mod is not None:
+            for attr, conv in convs:
+                t = getattr(mod, attr, None)
+                if t is not None and isinstance(obj, t):
+                    return conv(obj)
+    if isinstance(obj, (set, tuple)):
+        return list(obj)
+    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
+
+
+def _json_dump(obj, f, **kw):
+    """json.dump 包装：用 _json_default 替代 default=str。"""
+    kw.setdefault("ensure_ascii", False)
+    kw.setdefault("indent", 2)
+    json.dump(obj, f, default=_json_default, **kw)
+
+
+def _json_dumps(obj, **kw):
+    """json.dumps 包装：用 _json_default 替代 default=str。"""
+    kw.setdefault("ensure_ascii", False)
+    return json.dumps(obj, default=_json_default, **kw)
 
 
 def _get_reports_dir() -> str:
@@ -1044,8 +1084,7 @@ class Orchestrator:
         }
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")
         with open(base_path, "w", encoding="utf-8") as f:
-            json.dump(base_report, f, ensure_ascii=False, indent=2,
-                      default=str)
+            _json_dump(base_report, f)
         log("REPORT", f"基础报告写入 {base_path}")
 
     # ── FINALIZE ─────────────────────────────────────
@@ -1102,7 +1141,7 @@ class Orchestrator:
                     f"cr-{evaluation_id}",
                     f"snap-{evaluation_id}",
                     base_path,
-                    json.dumps(report_data, ensure_ascii=False),
+                    _json_dumps(report_data),
                 ),
             )
 

@@ -345,7 +345,9 @@ def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None
     """
     vuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="vulnerable")
     cases = [_case_to_benchmark(c, "VULNERABLE") for c in vuln_cases]
+    log("VULN_CENTER", f"vulnerable cases: {len(vuln_cases)}")
     if fetch_non_vuln:
         nonvuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="not_vulnerable")
         cases += [_case_to_benchmark(c, "NON_VULNERABLE") for c in nonvuln_cases]
+        log("VULN_CENTER", f"not_vulnerable cases: {len(nonvuln_cases)}")
     return {"benchmark_id": project_id, "name": None, "cases": cases}
