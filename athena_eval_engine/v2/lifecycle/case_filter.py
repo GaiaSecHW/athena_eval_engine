@@ -1,24 +1,24 @@
 """有效 case 筛选模块（§4.4）。
 
-按 eval_mode 筛选需要分析的 case：
+从漏洞中心人工确认数据出发，筛选需要分析的 case。
 
-一个 case 对应一个 task，但一个 task 可能有多个 agent（挖掘 agent + 验证 agent），
-各自一条 trace、一个 DataPack。CaseFilter 按 task_id 分组，组级别判定 case 类型，
-组内保留有知识访问的 DataPack 用于 L0-L7 分析。
+漏洞中心基线已有两类人工确认 case：
+- confirmation_status=vulnerable → expected_label=VULNERABLE（有漏洞）
+- confirmation_status=not_vulnerable → expected_label=NON_VULNERABLE（非漏洞）
 
-- runtime（运行态）：只分析 FP case（人工标注误报）
-  FP = expected_label=NON_VULNERABLE + 组内任一 DataPack 的 validation_result=CONFIRMED
-  （agent 报了漏洞，但基线标注为非漏洞）
+case 类型判定（纯代码，不需要 LLM）：
+- FP（误报）：expected_label=NON_VULNERABLE + trace 里有对应 finding 且 validation_result=CONFIRMED
+- FN（漏报）：expected_label=VULNERABLE + trace 里无对应 finding 或 validation_result=FALSE_POSITIVE
 
-- dev（开发态）：分析 FP + FN case（误报 + 漏报）
-  FP 同上
-  FN = expected_label=VULNERABLE + 组内无 CONFIRMED
-  + sink-point 匹配确认 agent 接触过漏洞文件
+"对应"的匹配方式：
+1. finding_id（case_id）直接匹配
+2. 标题（vulnerability_type）+ 内容（description）文本匹配
 
-前置条件（case 级别）：
-1. 组内至少一个 DataPack 有 outcome_fact
-2. 组内至少一个 DataPack 有 knowledge_fact 且有知识访问记录
-3. 组内至少一个 DataPack 有 benchmark_item
+按 eval_mode 筛选：
+- runtime（运行态）：只分析 FP
+- dev（开发态）：分析 FP + FN
+
+找不到对应 trace 的 case 在返回结果中标记，供报告告警。
 """
 from __future__ import annotations
 
@@ -30,16 +30,13 @@ from ...infrastructure.log_util import log
 
 
 class CaseFilter:
-    """按 eval_mode 筛选需要分析的 case。
-
-    按 task_id 分组，组级别判定 FP/FN，组内保留有知识访问的 DataPack。
-    """
+    """从漏洞中心基线出发，筛选 FP/FN case 对应的 DataPack。"""
 
     def filter_valid_cases(
         self, evaluation_id: str, data_packs: list,
         eval_mode: str = "dev",
     ) -> list:
-        """从 data_packs 中筛选需要分析的 case。
+        """筛选需要分析的 DataPack。
 
         Args:
             evaluation_id: 评测 ID
@@ -47,262 +44,196 @@ class CaseFilter:
             eval_mode: "dev"（开发态，FP+FN）| "runtime"（运行态，只 FP）
 
         Returns:
-            需要分析的 DataPack 列表（组内保留有知识访问的 DataPack）
+            需要分析的 DataPack 列表
         """
-        # 按 task_id 分组
+        # 收集所有 DataPack 的 findings，构建匹配索引
+        all_findings: list[dict] = []
+        for dp in data_packs:
+            for f in (dp.findings or []):
+                f["_task_run_id"] = dp.task_run_id
+                f["_task_id"] = dp.task_id
+                all_findings.append(f)
+
+        # 按 task_id 分组 DataPack（一个 task 可能有挖掘+验证多个 agent）
         groups: dict[str, list[DataPack]] = defaultdict(list)
         for dp in data_packs:
             groups[dp.task_id].append(dp)
 
+        # 从 DataPack 的 benchmark_item.metadata 收集所有基线 case
+        # metadata = case_details[bid]，含 expected_label, vulnerability_type, description, source_file 等
+        seen_case_ids: set[str] = set()
+        baseline_cases: list[dict] = []
+        for dp in data_packs:
+            bm = dp.benchmark_item
+            if bm is None or bm.metadata is None:
+                continue
+            cid = bm.benchmark_item_id or ""
+            if cid in seen_case_ids:
+                continue
+            seen_case_ids.add(cid)
+            md = bm.metadata
+            baseline_cases.append({
+                "case_id": cid,
+                "expected_label": md.get("expected_label", ""),
+                "title": md.get("vulnerability_type", ""),
+                "description": md.get("description", ""),
+                "source_file": md.get("source_file", ""),
+                "source_line": md.get("source_line", ""),
+                "source_function": md.get("source_function", ""),
+            })
+
         valid_packs: list[DataPack] = []
+        unmatched_cases: list[dict] = []  # 找不到对应 trace 的 case
 
-        for task_id, packs in groups.items():
-            # ── 前置条件（case 级别）──
-            # 组内至少一个 DataPack 有 outcome_fact
-            has_outcome = any(dp.outcome_fact is not None for dp in packs)
-            if not has_outcome:
-                log("CASE_FILTER", f"skip task={task_id}: no outcome_fact in group",
-                    eval_id=evaluation_id)
-                continue
+        for bc in baseline_cases:
+            cid = bc["case_id"]
+            gt = bc["expected_label"]
+            title = bc["title"]
+            desc = bc["description"]
 
-            # 组内至少一个 DataPack 有知识访问记录
-            packs_with_knowledge = [
-                dp for dp in packs
-                if dp.knowledge_fact is not None
-                and (getattr(dp.knowledge_fact, "access", False)
-                     or getattr(dp.knowledge_fact, "memory_access", False))
-            ]
-            if not packs_with_knowledge:
+            # 在 all_findings 中找对应的 finding
+            matched_finding = self._match_finding(cid, title, desc, all_findings)
+
+            if matched_finding is None:
+                # 找不到对应 trace → 记录告警
+                unmatched_cases.append({
+                    "case_id": cid,
+                    "expected_label": gt,
+                    "title": title,
+                    "reason": "no matching finding in trace",
+                })
                 log("CASE_FILTER",
-                    f"skip task={task_id}: no knowledge access in group",
+                    f"unmatched case {cid}: no finding in trace "
+                    f"(gt={gt}, title={title[:60]})",
                     eval_id=evaluation_id)
                 continue
 
-            # 组内至少一个 DataPack 有 benchmark_item
-            has_benchmark = any(dp.benchmark_item is not None for dp in packs)
-            if not has_benchmark:
-                log("CASE_FILTER", f"skip task={task_id}: no benchmark_item in group",
-                    eval_id=evaluation_id)
-                continue
+            vr = matched_finding.get("validation_result", "")
+            task_id = matched_finding.get("_task_id", "")
 
-            # ── 组级别判定 case 类型 ──
-            # 聚合组内所有 outcome_fact 的 gt_label 和 validation_result
-            gt_labels = set()
-            validation_results = set()
-            for dp in packs:
-                if dp.outcome_fact is not None:
-                    gt = str(dp.outcome_fact.gt_label) if dp.outcome_fact.gt_label else ""
-                    vr = dp.outcome_fact.validation_result or ""
-                    if gt:
-                        gt_labels.add(gt)
-                    if vr:
-                        validation_results.add(vr)
-
-            # gt_label 应全组一致（同一 case 同一基线），取任一
-            gt = gt_labels.pop() if gt_labels else ""
-
-            is_fp = self._is_fp(gt, validation_results)
-            is_fn = (
-                eval_mode == "dev"
-                and self._is_fn(packs, gt, validation_results, evaluation_id)
-            )
+            # 判定 case 类型
+            is_fp = self._is_fp(gt, vr)
+            is_fn = self._is_fn(gt, vr)
 
             if is_fp:
-                log("CASE_FILTER",
-                    f"keep task={task_id}: FP case (gt={gt}, "
-                    f"vrs={validation_results})",
-                    eval_id=evaluation_id)
-                valid_packs.extend(packs_with_knowledge)
-            elif is_fn:
-                log("CASE_FILTER",
-                    f"keep task={task_id}: FN case (gt={gt}, "
-                    f"vrs={validation_results})",
-                    eval_id=evaluation_id)
-                valid_packs.extend(packs_with_knowledge)
+                # FP：保留该 task 下有知识访问的 DataPack
+                packs = self._get_packs_with_knowledge(groups, task_id)
+                if packs:
+                    log("CASE_FILTER",
+                        f"keep case {cid}: FP (gt={gt}, vr={vr}, "
+                        f"task={task_id}, {len(packs)} packs)",
+                        eval_id=evaluation_id)
+                    valid_packs.extend(packs)
+                else:
+                    unmatched_cases.append({
+                        "case_id": cid,
+                        "expected_label": gt,
+                        "title": title,
+                        "reason": "FP but no knowledge access in trace",
+                    })
+            elif is_fn and eval_mode == "dev":
+                # FN：保留该 task 下有知识访问的 DataPack
+                packs = self._get_packs_with_knowledge(groups, task_id)
+                if packs:
+                    log("CASE_FILTER",
+                        f"keep case {cid}: FN (gt={gt}, vr={vr}, "
+                        f"task={task_id}, {len(packs)} packs)",
+                        eval_id=evaluation_id)
+                    valid_packs.extend(packs)
+                else:
+                    unmatched_cases.append({
+                        "case_id": cid,
+                        "expected_label": gt,
+                        "title": title,
+                        "reason": "FN but no knowledge access in trace",
+                    })
             else:
                 log("CASE_FILTER",
-                    f"skip task={task_id}: not FP/FN "
-                    f"(gt={gt}, vrs={validation_results}, "
-                    f"mode={eval_mode})",
+                    f"skip case {cid}: not FP/FN "
+                    f"(gt={gt}, vr={vr}, mode={eval_mode})",
                     eval_id=evaluation_id)
 
         log("CASE_FILTER",
             f"filtered {len(valid_packs)}/{len(data_packs)} packs "
-            f"from {len(groups)} tasks (mode={eval_mode})",
+            f"from {len(baseline_cases)} baseline cases "
+            f"(mode={eval_mode}, unmatched={len(unmatched_cases)})",
             eval_id=evaluation_id)
+
+        # 将 unmatched_cases 存到类属性，供报告读取
+        self.unmatched_cases = unmatched_cases
+
         return valid_packs
 
     @staticmethod
-    def _is_fp(gt: str, validation_results: set[str]) -> bool:
-        """FP = 基线标注非漏洞 + 组内任一 agent 确认了漏洞。
+    def _match_finding(case_id: str, title: str, description: str,
+                       all_findings: list[dict]) -> dict | None:
+        """在 findings 列表中找到与基线 case 对应的 finding。
 
-        expected_label=NON_VULNERABLE + 组内任一 validation_result=CONFIRMED
-        → agent 误报了漏洞
+        匹配优先级：
+        1. finding_id / case_id 直接匹配
+        2. 标题（vulnerability_type / title）匹配
+        3. 内容（description）文本匹配
         """
-        return gt == "NON_VULNERABLE" and "CONFIRMED" in validation_results
+        # 1. finding_id 直接匹配
+        for f in all_findings:
+            fid = str(f.get("finding_id") or f.get("display_id") or "")
+            if fid and fid == case_id:
+                return f
+
+        # 2. 标题匹配
+        if title:
+            title_lower = title.lower().strip()
+            for f in all_findings:
+                f_title = str(
+                    f.get("title") or f.get("vuln_type") or ""
+                ).lower().strip()
+                if f_title and f_title == title_lower:
+                    return f
+                # 部分匹配（标题包含关系）
+                if f_title and title_lower and (
+                    title_lower in f_title or f_title in title_lower
+                ):
+                    return f
+
+        # 3. 内容匹配（description 关键词）
+        if description:
+            # 取 description 前 200 字做关键词匹配
+            desc_sample = description[:200].lower()
+            for f in all_findings:
+                f_desc = str(f.get("description") or "").lower()
+                if f_desc and desc_sample and desc_sample in f_desc:
+                    return f
+
+        return None
 
     @staticmethod
-    def _is_fn(packs: list[DataPack], gt: str,
-               validation_results: set[str], evaluation_id: str) -> bool:
-        """FN = 基线标注有漏洞 + 组内无 CONFIRMED。
+    def _is_fp(gt: str, validation_result: str) -> bool:
+        """FP = 基线标注非漏洞 + agent 确认了漏洞。
 
-        需通过 sink-point 匹配确认 agent 接触过漏洞文件，
-        才能判断为漏报（而非完全不相关的 case）。
-
-        expected_label=VULNERABLE + 组内无 CONFIRMED
-        + sink-point 匹配到组内任一 agent 读取过漏洞文件
+        expected_label=NON_VULNERABLE + validation_result=CONFIRMED
+        → agent 误报了漏洞
         """
-        if gt != "VULNERABLE":
-            return False
-        # 组内有 CONFIRMED → TP，不是 FN
-        if "CONFIRMED" in validation_results:
-            return False
+        return gt == "NON_VULNERABLE" and validation_result == "CONFIRMED"
 
-        # 组内无 CONFIRMED → 可能是 FN
-        # 需通过 sink-point 匹配确认 agent 接触过漏洞文件
+    @staticmethod
+    def _is_fn(gt: str, validation_result: str) -> bool:
+        """FN = 基线标注有漏洞 + agent 没确认。
+
+        expected_label=VULNERABLE + validation_result != CONFIRMED
+        （FALSE_POSITIVE / None / UNCERTAIN）
+        """
+        return gt == "VULNERABLE" and validation_result != "CONFIRMED"
+
+    @staticmethod
+    def _get_packs_with_knowledge(groups: dict[str, list[DataPack]],
+                                  task_id: str) -> list[DataPack]:
+        """获取 task 下有知识访问记录的 DataPack。"""
+        packs = groups.get(task_id, [])
+        result = []
         for dp in packs:
-            bm = dp.benchmark_item
-            if bm is None or bm.metadata is None:
+            kf = dp.knowledge_fact
+            if kf is None:
                 continue
-
-            md = bm.metadata
-            source_file = md.get("source_file", "")
-            source_line = md.get("source_line", "")
-            source_function = md.get("source_function", "")
-
-            if not source_file:
-                continue
-
-            file_reads = _build_file_read_index(dp.events or [])
-            sink_sessions = _find_sink_sessions(
-                file_reads, source_file, source_line, source_function,
-            )
-            if sink_sessions:
-                log("CASE_FILTER",
-                    f"FN confirmed: task={dp.task_id} "
-                    f"{dp.task_run_id} touched sink "
-                    f"file={_basename(source_file)} "
-                    f"sessions={sink_sessions}",
-                    eval_id=evaluation_id)
-                return True
-
-        return False
-
-
-# ── sink-point 匹配（从 workers/sink_matcher.py 复用逻辑）──
-
-
-def _basename(path: str) -> str:
-    """跨平台 basename。"""
-    if not path:
-        return ""
-    parts = re.split(r'[/\\]', path)
-    return parts[-1] if parts else path
-
-
-def _build_file_read_index(events: list) -> list[dict]:
-    """从 trace 事件中提取所有文件读取操作。
-
-    覆盖 read 工具和 bash 工具（cat/grep/head/tail/sed）。
-    返回: [{file_path, basename, offset, limit, content, session_id, timestamp}, ...]
-    """
-    # 构建 call_id → TOOL_RESULT 映射
-    result_by_call_id: dict[str, str] = {}
-    for e in events:
-        if e.event_type == "TOOL_RESULT" and e.call_id:
-            output = e.output_json
-            if isinstance(output, str):
-                result_by_call_id[e.call_id] = output
-            elif output is not None:
-                result_by_call_id[e.call_id] = str(output)
-
-    reads: list[dict] = []
-    for e in events:
-        if e.event_type != "TOOL_CALL":
-            continue
-        tool = e.tool_name or ""
-        inp = e.input_json or {}
-        content = result_by_call_id.get(e.call_id, "") if e.call_id else ""
-
-        if tool == "read":
-            fp = str(inp.get("file_path") or inp.get("filePath") or inp.get("path") or "")
-            if not fp:
-                continue
-            offset = inp.get("offset")
-            limit = inp.get("limit")
-            reads.append({
-                "file_path": fp,
-                "basename": _basename(fp),
-                "offset": int(offset) if offset is not None and str(offset).isdigit() else None,
-                "limit": int(limit) if limit is not None and str(limit).isdigit() else None,
-                "content": content,
-                "session_id": e.session_id,
-                "timestamp": e.timestamp_ms or 0,
-            })
-        elif tool == "bash":
-            cmd = str(inp.get("command") or "")
-            if not cmd:
-                continue
-            for match in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
-                basename = _basename(match)
-                if not basename or len(basename) >= 80 or basename.startswith('.'):
-                    continue
-                reads.append({
-                    "file_path": match,
-                    "basename": basename,
-                    "offset": None,
-                    "limit": None,
-                    "content": content,
-                    "session_id": e.session_id,
-                    "timestamp": e.timestamp_ms or 0,
-                })
-
-    return reads
-
-
-def _find_sink_sessions(file_reads: list[dict], source_file: str,
-                        source_line: str, source_function: str) -> list[str]:
-    """检查文件读取是否覆盖了基线的 sink 点。
-
-    匹配条件：文件名一致 AND（行号在 read 范围内 OR 行号在返回内容里 OR 方法名在返回内容里）
-    返回命中的 session_id 列表（去重）。
-    """
-    if not source_file:
-        return []
-
-    target_basename = _basename(source_file)
-    has_line = bool(source_line)
-    has_func = bool(source_function)
-
-    # 无行号也无方法名 → 文件名匹配即可
-    if not has_line and not has_func:
-        matched = set()
-        for r in file_reads:
-            if r["basename"] == target_basename:
-                matched.add(r["session_id"])
-        return list(matched)
-
-    target_line = None
-    if has_line:
-        try:
-            target_line = int(source_line)
-        except ValueError:
-            target_line = None
-
-    matched = set()
-    for r in file_reads:
-        if r["basename"] != target_basename:
-            continue
-        if target_line is not None:
-            if r["offset"] is not None and r["limit"] is not None:
-                if r["offset"] <= target_line <= r["offset"] + r["limit"]:
-                    matched.add(r["session_id"])
-                    continue
-            if re.search(r'(?:^|\n)' + str(target_line) + r'\b', r["content"]):
-                matched.add(r["session_id"])
-                continue
-        if has_func and re.search(r'\b' + re.escape(source_function) + r'\b', r["content"]):
-            matched.add(r["session_id"])
-            continue
-
-    return list(matched)
+            if getattr(kf, "access", False) or getattr(kf, "memory_access", False):
+                result.append(dp)
+        return result
