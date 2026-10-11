@@ -168,7 +168,7 @@ MIGRATIONS = [
             "INSERT IGNORE INTO agent_datasource_config"
             "  (agent_type, display_name, db_type, host, port, username, password, database_name, relation_tables, phase_identifier, enabled) VALUES"
             "  ('argo', 'Argo MySQL', 'mysql',"
-            "   'chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local', 3306,"
+            "   'chirmera-platform-nazhua-mysql.secflow-ns.svc.cluster.local', 3306,"
             "   'root', 'Icsl_argo', 'argo_c',"
             "   JSON_OBJECT('table','intents','session_field','session_id','fact_field','to_fact_id',"
             "               'suggestion_field','suggestion_refs','task_type_field','task_type'),"
@@ -226,6 +226,14 @@ MIGRATIONS = [
             "   JSON_OBJECT('source','trace','parent_field','session.parent_id','vuln_id_field','metadata.vulnerability_id'),"
             "   JSON_OBJECT('source','trace','tool_field','tool_call.name'),"
             "   1)",
+        ],
+    },
+    {
+        "id": "009_fix_argo_hostname",
+        "description": "修正 Argo MySQL 主机名拼写：chirmra → chirmera",
+        "sql": [
+            "UPDATE agent_datasource_config SET host='chirmera-platform-nazhua-mysql.secflow-ns.svc.cluster.local' "
+            "WHERE agent_type='argo' AND host='chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local'",
         ],
     },
 ]

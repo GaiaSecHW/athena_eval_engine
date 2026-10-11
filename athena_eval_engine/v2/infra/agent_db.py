@@ -228,7 +228,21 @@ class AgentDBManager:
 
         成功时更新 ``agent_datasource_config`` 表的 ``last_connected_at`` 和清空 ``last_error``。
         失败时更新 ``last_error``。
+
+        对于 ``database_name`` 含 ``{project_id}`` 占位符的数据源（如 DataflowVulnScan），
+        必须提供 ``project_id`` 参数才能测试连接。
         """
+        config = self.get_config(agent_type)
+        if config is None:
+            err_msg = f"配置不存在: {agent_type}"
+            self._update_conn_status(agent_type, success=False, error=err_msg)
+            return False, err_msg
+        db_name = config.get("database_name") or ""
+        if "{project_id}" in db_name and not project_id:
+            err_msg = f"database_name 含 {{project_id}} 占位符，需提供 project_id 参数（模板: {db_name}）"
+            log("AGENT_DB", f"test_connection({agent_type}) 跳过: {err_msg}")
+            self._update_conn_status(agent_type, success=False, error=err_msg)
+            return False, err_msg
         try:
             conn = self.get_connection(agent_type, project_id)
         except Exception as e:

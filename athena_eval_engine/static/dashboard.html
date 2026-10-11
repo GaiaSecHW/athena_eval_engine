@@ -1830,6 +1830,7 @@ async function loadDatasources(){
       +'<div><label style="font-size:12px;color:var(--sub);margin:0">密码</label><input id="ds_'+i+'_password" type="password" placeholder="***" value="'+(ds.password||'***')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
       +'<div style="grid-column:1/-1"><label style="font-size:12px;color:var(--sub);margin:0">数据库名</label><input id="ds_'+i+'_database" value="'+(ds.database_name||'')+'" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'
       +'</div>'
+      +((ds.database_name||'').indexOf('{project_id}')>=0?'<div style="margin-top:10px"><label style="font-size:12px;color:var(--sub);margin:0">测试用 Project ID（数据库名含 {project_id} 占位符）</label><input id="ds_'+i+'_pid" placeholder="如 1ebaa4b2dc204454" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>':'')
       +'<div style="margin-top:10px;display:flex;gap:8px">'
       +'<button onclick="saveDatasource('+i+')" style="padding:5px 14px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:13px">保存</button>'
       +'<button onclick="testDatasource('+i+')" style="padding:5px 14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:13px">测试连接</button>'
@@ -1873,8 +1874,12 @@ async function saveDatasource(i){
 async function testDatasource(i){
   var ds=_dsData[i];if(!ds)return;
   var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">测试中...</span>';
+  var pidEl=$("ds_"+i+"_pid");
+  var pid=pidEl?pidEl.value.trim():'';
+  var url="/api/v2/datasources/"+ds.agent_type+"/test";
+  if(pid)url+="?project_id="+encodeURIComponent(pid);
   try{
-    var r=await jpost("/api/v2/datasources/"+ds.agent_type+"/test");
+    var r=await jpost(url);
     if(r.success){
       if(msg)msg.innerHTML='<span style="color:var(--green)">连接成功</span>';
     }else{

@@ -687,7 +687,7 @@ VALUES
 ),
 (
     'argo', 'Argo MySQL', 'mysql',
-    'chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local', 3306,
+    'chirmera-platform-nazhua-mysql.secflow-ns.svc.cluster.local', 3306,
     'root', 'Icsl_argo', 'argo_c',
     JSON_OBJECT(
         'table', 'intents',
