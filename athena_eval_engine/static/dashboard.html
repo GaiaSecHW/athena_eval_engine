@@ -720,7 +720,7 @@ function filterMainList(){
 }
 function pickMain(field,id,name){
   if(field==="proj"){sel.proj=id;sel.projName=name;sel.task="";sel.taskName="";sel.traceReady=false;sel.traceKind="";sel.traceInfo="";_sideData.tasks=null;}
-  else if(field==="task"){sel.taskName=name;sel.traceReady=false;sel.traceKind="";sel.traceInfo="";}
+  else if(field==="task"){sel.task=id;sel.taskName=name;sel.traceReady=false;sel.traceKind="";sel.traceInfo="";}
   renderMainSide();renderRunConf();
 }
 function _checkTraceMain(){
