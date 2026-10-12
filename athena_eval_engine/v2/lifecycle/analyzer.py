@@ -643,8 +643,12 @@ class LifecycleAnalyzer:
         # L0: 来源标记（程序判定）
         l0_origin = self._determine_l0_origin(access, interaction, dp)
 
-        # 提取推理上下文（该阶段附近的 REASONING/MESSAGE 文本）
+        # 提取推理上下文：知识访问前 agent 的行为上下文
+        # 优先从 events 列表取 REASONING/TEXT（agent 推理文本），
+        # 取不到时用 interaction 自身的 command 作为上下文
         reasoning_context = self._extract_reasoning_context(events, event_idx)
+        if not reasoning_context:
+            reasoning_context = str(interaction.get("command", "") or "")[:2000]
 
         # 提取查询内容
         query_content = str(interaction.get("command", "") or "")
@@ -652,8 +656,17 @@ class LifecycleAnalyzer:
         # 提取返回内容（从配对的 RESULT 事件获取）
         returned_content = self._get_output_preview(access, interaction)
 
-        # 提取推理引用文本（后续 REASONING 事件）
+        # 提取推理引用文本：知识访问后 agent 的行为上下文
+        # 优先从 events 列表取 REASONING/TEXT，
+        # 取不到时用 interaction 的 follow_up（后续工具调用摘要）作为上下文
         reasoning_ref = self._extract_reasoning_ref(events, event_idx)
+        if not reasoning_ref:
+            follow_up = interaction.get("follow_up")
+            if follow_up:
+                import json as _json
+                reasoning_ref = _json.dumps(follow_up, ensure_ascii=False)[:3000]
+            else:
+                reasoning_ref = str(interaction.get("output", "") or "")[:3000]
 
         # 提取判定结论
         judgment_conclusion = self._get_judgment_conclusion(dp)
