@@ -20,11 +20,13 @@ import json
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any
 
 from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
+from ..infra import concurrency as concurrency_mod
 from ..infra.parallel import iter_completed
 from .case_filter import CaseFilter
 from ..persistence.kad_repo import upsert_knowledge_access_details
@@ -221,19 +223,37 @@ class LifecycleAnalyzer:
 
         all_records: list[dict] = []
 
-        for dp in valid_packs:
-            if cancel_cb:
-                cancel_cb()
+        # 多 case 并行分析，受 llm_max_concurrency 全局门控
+        max_workers = min(len(valid_packs), concurrency_mod.get("llm_max_concurrency"))
+        log("LIFECYCLE",
+            f"analyzing {len(valid_packs)} cases in parallel (workers={max_workers})",
+            eval_id=evaluation_id)
 
-            try:
+        if max_workers <= 1:
+            # 单 case 或并发=1，串行执行
+            for dp in valid_packs:
+                if cancel_cb:
+                    cancel_cb()
                 records = self._analyze_one_case(evaluation_id, dp, reports_dir, cancel_cb)
                 all_records.extend(records)
-            except Exception as e:
-                log("LIFECYCLE",
-                    f"analyze case {dp.task_run_id} failed: {str(e)[:300]}",
-                    eval_id=evaluation_id)
-                # 不跳过——向上抛出，遵循"禁止降级跳过"铁律
-                raise
+        else:
+            # 多 case 并行
+            results: list[list[dict] | None] = [None] * len(valid_packs)
+
+            def _run_case(idx_dp):
+                idx, dp = idx_dp
+                return idx, self._analyze_one_case(evaluation_id, dp, reports_dir, cancel_cb)
+
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_run_case, (i, dp)): i
+                           for i, dp in enumerate(valid_packs)}
+                for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
+                    idx, records = fut.result()
+                    results[idx] = records
+
+            for r in results:
+                if r is not None:
+                    all_records.extend(r)
 
         # 将 case_filter 的 FPR 统计附加到实例，供 orchestrator 计算 M13
         self.case_filter_stats = getattr(case_filter, "fpr_stats", None)
@@ -259,7 +279,7 @@ class LifecycleAnalyzer:
         # 标注业务阶段
         accesses = self._label_phases(evaluation_id, dp, accesses, events, cancel_cb)
 
-        # 对每个访问执行 L0-L6
+        # 对每个访问执行 L0-L6（access 级串行，case 级已并行）
         records: list[dict] = []
         for acc in accesses:
             if cancel_cb:
