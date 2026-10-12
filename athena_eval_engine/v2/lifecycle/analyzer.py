@@ -481,16 +481,14 @@ class LifecycleAnalyzer:
                           events: list, cancel_cb=None):
         """用 LLM Prompt 1 批量细分跨阶段 session 的知识访问。
 
-        将同一 case 的全部需 LLM 细分的访问一次性提交标注。
+        将同一 case 的需 LLM 细分的访问分批提交，每批最多 BATCH_SIZE 个。
+        每个访问的上下文来自其自身的 interaction（command/output），
+        不依赖 events 列表中的 REASONING/MESSAGE 事件。
         """
         agent_type = dp.agent_type
         agent_category = "挖掘" if agent_type in _MINING_AGENTS else "验证"
 
-        # 构建事件序列文本（取知识访问前后的 REASONING/MESSAGE 事件）
-        access_indices = [acc.get("event_idx", -1) for _, acc in need_llm]
-        event_sequence = self._build_event_sequence(events, access_indices)
-
-        # 收集每个需 LLM 细分的访问的粗标注
+        # 收集粗标注
         coarse_phases_set = set()
         for _, acc in need_llm:
             session_id = acc.get("session_id", "")
@@ -499,52 +497,80 @@ class LifecycleAnalyzer:
                 coarse_phases_set.add(coarse)
         coarse_phases = " + ".join(sorted(coarse_phases_set))
 
-        user_content = (
-            f"Agent 类型: {agent_category}\n\n"
-            f"第二层粗标注结果: {coarse_phases}\n\n"
-            f"事件序列（按时间序）:\n{event_sequence}\n\n"
-            f"知识访问的 event_idx 列表: {access_indices}\n\n"
-            f"请对每个知识访问判断其所属业务阶段。"
-        )
+        # 分批处理，每批最多 20 个访问
+        BATCH_SIZE = 20
+        total = len(need_llm)
 
-        messages = [
-            {"role": "system", "content": _PROMPT1_SYSTEM},
-            {"role": "user", "content": user_content},
-        ]
+        for batch_start in range(0, total, BATCH_SIZE):
+            if cancel_cb:
+                cancel_cb()
 
-        try:
-            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
-        except Exception as e:
-            log("LIFECYCLE",
-                f"Prompt 1 LLM failed, falling back to first phase in coarse label: {str(e)[:200]}",
-                eval_id=evaluation_id)
-            # 降级：取粗标注的第一个阶段
-            for _, acc in need_llm:
-                session_id = acc.get("session_id", "")
-                coarse = (dp.session_phase_labels or {}).get(session_id, "")
-                first_phase = coarse.split("+")[0].strip() if coarse else None
-                acc["business_phase"] = first_phase
-            return
+            batch = need_llm[batch_start:batch_start + BATCH_SIZE]
+            batch_num = batch_start // BATCH_SIZE + 1
+            total_batches = (total + BATCH_SIZE - 1) // BATCH_SIZE
 
-        # 将 LLM 结果回填到 accesses
-        phase_map: dict[int, str] = {}
-        for item in (result.get("accesses") or []):
-            ev_idx = item.get("event_idx")
-            if ev_idx is not None:
-                phase_map[ev_idx] = item.get("business_phase")
+            # 用每个 access 自身的 interaction 构建上下文
+            access_lines = []
+            for i, (_, acc) in enumerate(batch):
+                ev_idx = acc.get("event_idx", -1)
+                inter = acc.get("interaction") or {}
+                tool = inter.get("tool", "")
+                cmd = str(inter.get("command", ""))[:200]
+                output = str(inter.get("output", ""))[:200]
+                access_lines.append(
+                    f"[{i}] event_idx={ev_idx} tool={tool}\n"
+                    f"    command: {cmd}\n"
+                    f"    output: {output}"
+                )
+            access_text = "\n\n".join(access_lines)
 
-        for _, acc in need_llm:
-            ev_idx = acc.get("event_idx", -1)
-            phase = phase_map.get(ev_idx)
-            if phase is None and result.get("accesses"):
-                # 顺序匹配降级
-                phase_map_list = result.get("accesses") or []
-                for item in phase_map_list:
-                    if item.get("event_idx") == ev_idx:
-                        phase = item.get("business_phase")
-                        break
-            acc["business_phase"] = phase
+            user_content = (
+                f"Agent 类型: {agent_category}\n\n"
+                f"第二层粗标注结果: {coarse_phases}\n\n"
+                f"知识访问列表（共 {len(batch)} 个，第 {batch_num}/{total_batches} 批）:\n\n"
+                f"{access_text}\n\n"
+                f"请对每个知识访问判断其所属业务阶段。"
+            )
+
+            messages = [
+                {"role": "system", "content": _PROMPT1_SYSTEM},
+                {"role": "user", "content": user_content},
+            ]
+
+            try:
+                result = self._call_llm_json(messages, cancel_cb=cancel_cb,
+                                             reasoning_effort="none")
+            except Exception as e:
+                log("LIFECYCLE",
+                    f"Prompt 1 LLM failed (batch {batch_num}/{total_batches}), "
+                    f"falling back to first phase: {str(e)[:200]}",
+                    eval_id=evaluation_id)
+                # 降级：取粗标注的第一个阶段
+                for _, acc in batch:
+                    session_id = acc.get("session_id", "")
+                    coarse = (dp.session_phase_labels or {}).get(session_id, "")
+                    first_phase = coarse.split("+")[0].strip() if coarse else None
+                    acc["business_phase"] = first_phase
+                continue
+
+            # 将 LLM 结果回填到当前批次的 accesses
+            phase_map: dict[int, str] = {}
+            for item in (result.get("accesses") or []):
+                ev_idx = item.get("event_idx")
+                if ev_idx is not None:
+                    phase_map[ev_idx] = item.get("business_phase")
+
+            for _, acc in batch:
+                ev_idx = acc.get("event_idx", -1)
+                phase = phase_map.get(ev_idx)
+                if phase is None and result.get("accesses"):
+                    # 顺序匹配降级
+                    phase_map_list = result.get("accesses") or []
+                    for item in phase_map_list:
+                        if item.get("event_idx") == ev_idx:
+                            phase = item.get("business_phase")
+                            break
+                acc["business_phase"] = phase
 
     def _build_event_sequence(self, events: list,
                              access_indices: list[int],
