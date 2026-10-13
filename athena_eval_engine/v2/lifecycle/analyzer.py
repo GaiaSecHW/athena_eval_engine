@@ -149,8 +149,10 @@ class LifecycleAnalyzer:
 
         all_records: list[dict] = []
 
-        # 多 case 并行分析，受 llm_max_concurrency 全局门控
-        max_workers = min(len(valid_packs), concurrency_mod.get("llm_max_concurrency"))
+        # 多 case 并行分析
+        # case 级并发不需要太大——每个 case 内的 access 级并行由 submit_llm_batch + gate 控制
+        # case 级只需足够让多个 case 同时推进即可
+        max_workers = min(len(valid_packs), 10)
         log("LIFECYCLE",
             f"analyzing {len(valid_packs)} cases in parallel (workers={max_workers})",
             eval_id=evaluation_id)
@@ -202,29 +204,51 @@ class LifecycleAnalyzer:
         if not accesses:
             return []
 
-        # 对每个访问执行 L0-L6（access 级串行，case 级已并行）
-        records: list[dict] = []
-        for acc in accesses:
+        # access 级并行：每个 access 的 L0-L6 作为一个独立任务提交到 LLM gate 控制的线程池
+        # 这样即使只有 1 个 case，多个 access 也能并行调用 LLM
+        records: list[dict | None] = [None] * len(accesses)
+
+        if len(accesses) == 1:
+            # 单个 access，直接同步执行
             if cancel_cb:
                 cancel_cb()
-
             try:
-                record = self._run_l0_l6(acc, events, dp)
-                records.append(record)
+                records[0] = self._run_l0_l6(accesses[0], events, dp)
             except Exception as e:
                 log("LIFECYCLE",
-                    f"L0-L6 failed for event_idx={acc.get('event_idx')}: {str(e)[:200]}",
+                    f"L0-L6 failed for event_idx={accesses[0].get('event_idx')}: {str(e)[:200]}",
                     eval_id=evaluation_id)
                 raise
+        else:
+            # 多个 access，用 submit_llm_batch 并行提交
+            def _do_run(acc):
+                return self._run_l0_l6(acc, events, dp)
 
-        # L7 判定委托给 EvidenceChain（延迟 import，#52 可能还在实现中）
+            futures = llm_mod.submit_llm_batch(
+                _do_run,
+                accesses,
+                cancel_cb=cancel_cb,
+            )
+
+            for i, fut in enumerate(futures):
+                try:
+                    records[i] = fut.result()
+                except Exception as e:
+                    log("LIFECYCLE",
+                        f"L0-L6 failed for event_idx={accesses[i].get('event_idx')}: {str(e)[:200]}",
+                        eval_id=evaluation_id)
+                    raise
+
+        # 过滤 None（失败的 access）
+        records = [r for r in records if r is not None]
+
+        # L7 判定委托给 EvidenceChain
         if records:
             try:
                 from .evidence_chain import EvidenceChain
                 ec = EvidenceChain(llm_client=self.llm)
                 records = ec.judge_l7(evaluation_id, records, dp, reports_dir, cancel_cb)
             except ImportError:
-                # evidence_chain.py 尚未实现，L7 留空
                 log("LIFECYCLE",
                     "evidence_chain not yet implemented, L7 left as None",
                     eval_id=evaluation_id)
