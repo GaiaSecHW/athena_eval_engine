@@ -1,12 +1,10 @@
-"""Metric calculator — 统一入口，跑全部指标 M5–M13 + M15–M21 / M26。
+"""Metric calculator — 统一入口，跑全部指标 M5–M13。
 
-本文件扩展 ``m5_m13.run_all_metrics``，新增 ``knowledge_access_details`` 参数。
-当传入 ``knowledge_access_details`` 时，在 M5–M13 计算后追加 M15–M21 / M26。
+本文件包装 ``m5_m13.run_all_metrics``，保持调用接口稳定。
 """
 from __future__ import annotations
 
 from .m5_m13 import run_all_metrics as _run_m5_m13
-from .m15_m26 import calc_all_lifecycle_metrics
 
 
 def run_all_metrics(
@@ -20,11 +18,11 @@ def run_all_metrics(
     seed=42,
     knowledge_access_details: list[dict] | None = None,
 ) -> dict:
-    """跑全部指标 M5–M13 + M15–M21 / M26。
+    """跑全部指标 M5–M13。
 
     参数:
-        knowledge_access_details: ``knowledge_access_detail`` 记录列表（M15–M26 用）。
-            为 None 或空列表时不计算 M15–M26，返回结果中不含 lifecycle_metrics。
+        knowledge_access_details: 保留接口兼容，当前不使用。
+            召回率/准确率在 REPORTING 阶段从漏洞中心终审数据计算。
         其余参数同 ``m5_m13.run_all_metrics``。
 
     返回::
@@ -32,11 +30,9 @@ def run_all_metrics(
         {
             "metric_results": [...],      # M5–M13 MetricResult 列表
             "statistical_results": [...], # M5–M13 StatisticalResult 列表
-            "lifecycle_metrics": [...],   # M15–M26 dict 列表（仅当传入 knowledge_access_details）
         }
     """
-    # 1. 计算现有 M5–M13
-    base = _run_m5_m13(
+    return _run_m5_m13(
         kg_access_events=kg_access_events,
         kg_successful_reads=kg_successful_reads,
         mem_read_count=mem_read_count,
@@ -45,11 +41,3 @@ def run_all_metrics(
         total_tool_calls=total_tool_calls,
         seed=seed,
     )
-
-    # 2. 追加 M15–M26（仅当传入 knowledge_access_details）
-    if knowledge_access_details:
-        base["lifecycle_metrics"] = calc_all_lifecycle_metrics(knowledge_access_details)
-    else:
-        base["lifecycle_metrics"] = []
-
-    return base

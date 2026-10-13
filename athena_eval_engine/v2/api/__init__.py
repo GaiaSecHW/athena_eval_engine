@@ -5,9 +5,11 @@ from fastapi import FastAPI
 
 from .datasources import router as datasources_router
 from .routes import router as evaluations_router
+from .dts import router as dts_router
 
 
 def create_v2_app(app: FastAPI):
     """将 v2 路由挂载到现有 FastAPI app 上。"""
     app.include_router(datasources_router)
     app.include_router(evaluations_router)
+    app.include_router(dts_router)

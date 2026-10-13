@@ -1,15 +1,14 @@
 """因果链断点分析模块（§4.2）。
 
-基于 knowledge_access_detail 的判定结果，按业务阶段聚合误报归因。
+基于 knowledge_access_detail 的判定结果，按 Agent 类型聚合误报归因。
 L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不产生断链。
 
 输入：knowledge_access_detail 表中该 evaluation 的全部记录
 输出：
-  - 交叉归因矩阵：业务阶段（行）× L2-L7 级别（列）
-  - 成因汇总（cause_code A-H 计数）
+  - 交叉归因矩阵：Agent 类型（行）× L2-L7 级别（列）
+  - 成因汇总（cause_code A-G 计数）
   - 效果标签分布（POSITIVE/NEGATIVE/NEUTRAL/NULL）
   - 每 case 的断点清单
-  - M26 阶段误报承担率 = 该阶段有断点的 FP case 数 / 总 FP case 数
 """
 from __future__ import annotations
 
@@ -29,33 +28,19 @@ CAUSE_TO_LEVEL = {
     "E": "L6",   # 查到没用——L6 断（召回了但推理没引用）
     "F": "L7",   # 用了没推动——L7 断（未影响结论）
     "G": "L7",   # 导致误判——L7 负向（知识推动了判定但方向错了）
-    "H": "L7",   # 内容有误——G 的根因（知识本身有问题：过时/不适用）
 }
 
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7"]
 
-# DB 枚举 → 中文显示标签
-_PHASE_DB_TO_DISPLAY = {
-    "ENTRY_IDENTIFICATION":       "入口识别",
-    "DATA_FLOW_TRACKING":         "数据流追踪",
-    "VULN_PATTERN_RECOGNITION":   "漏洞模式识别",
-    "SINK_POINT_LOCALIZATION":    "Sink点定位",
-    "VULN_VERDICT_REPORTING":     "漏洞判定与上报",
-    "VULN_UNDERSTANDING":         "漏洞理解",
-    "CODE_LOCALIZATION":          "代码定位",
-    "VERIFICATION_EXECUTION":      "验证执行",
-    "VERDICT_REPORTING":          "判定上报",
-}
-
-# 所有业务阶段（中文显示名，按挖掘→验证顺序）
-_ALL_PHASES_DISPLAY = [
-    "入口识别", "数据流追踪", "漏洞模式识别", "Sink点定位", "漏洞判定与上报",
-    "漏洞理解", "代码定位", "验证执行", "判定上报",
+# 所有 Agent 类型（行头）
+_ALL_AGENT_TYPES = [
+    "turing", "argo", "secmate", "dataflow",
+    "cvuln_verify", "webvuln_verify",
 ]
 
 # 所有 cause_code
-_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H"]
+_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
 
 # 所有 effect_label（含 NULL——DB 中 effect_label 为 NULL 时表示证据不足）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
@@ -64,17 +49,17 @@ _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 class CausalChainAnalyzer:
     """因果链断点分析器。
 
-    基于 knowledge_access_detail 已有的 business_phase + L1-L7 判定结果聚合。
+    基于 knowledge_access_detail 已有的 L1-L7 判定结果聚合。
     不执行 L0-L7 判定（那是 LifecycleAnalyzer 的职责），只做聚合统计。
     """
 
     def analyze(self, evaluation_id: str, access_details: list[dict]) -> dict:
-        """基于 knowledge_access_detail 的判定结果，按业务阶段聚合误报归因。
+        """基于 knowledge_access_detail 的判定结果，按 Agent 类型聚合误报归因。
 
         Args:
             evaluation_id: 评测 ID。
             access_details: knowledge_access_detail 记录列表（dict），每条含
-                            business_phase、cause_code、effect_label、task_run_id 等字段。
+                            cause_code、effect_label、task_run_id 等字段。
 
         Returns:
             因果链分析结果 dict，结构见模块 docstring。
@@ -96,7 +81,6 @@ class CausalChainAnalyzer:
         cause_summary = self._build_cause_summary(access_details)
         effect_label_distribution = self._build_effect_label_distribution(access_details)
         per_case_breakpoints = self._build_per_case_breakpoints(access_details)
-        m26_phase_fp_attribution = self._calc_m26(access_details, fp_task_run_ids)
 
         result = {
             "evaluation_id": evaluation_id,
@@ -104,7 +88,6 @@ class CausalChainAnalyzer:
             "cause_summary": cause_summary,
             "effect_label_distribution": effect_label_distribution,
             "per_case_breakpoints": per_case_breakpoints,
-            "m26_phase_fp_attribution": m26_phase_fp_attribution,
         }
 
         log("CAUSAL_CHAIN",
@@ -118,37 +101,32 @@ class CausalChainAnalyzer:
     # ── 交叉归因矩阵 ──
 
     def _build_cross_attribution_matrix(self, access_details: list[dict]) -> dict:
-        """构建业务阶段 × L2-L7 级别的交叉归因矩阵。
+        """构建 Agent 类型 × L2-L7 级别的交叉归因矩阵。
 
-        从 access_details 中按 business_phase 分组，统计每个阶段在各 L 级别的断点数。
+        从 access_details 中按 agent_type 分组，统计每个 Agent 在各 L 级别的断点数。
         断点级别由 cause_code 反推（CAUSE_TO_LEVEL 映射）。
 
         只有 cause_code 非空的记录才计入断点矩阵——cause_code 为 None 表示
         该访问无断点（L1=False 短路或 L6=True 待 L7 判定且 L7 正向）。
         """
-        # 初始化矩阵：{阶段: {L2: 0, L3: 0, ...}}
+        # 初始化矩阵：{agent_type: {L2: 0, L3: 0, ...}}
         matrix: dict[str, dict[str, int]] = {
-            phase: {level: 0 for level in _ALL_LEVELS}
-            for phase in _ALL_PHASES_DISPLAY
+            agent_type: {level: 0 for level in _ALL_LEVELS}
+            for agent_type in _ALL_AGENT_TYPES
         }
 
         for rec in access_details:
             cause_code = rec.get("cause_code")
             if not cause_code:
-                # 无断点（L1=False 短路、或全链通过正向）
                 continue
 
             level = CAUSE_TO_LEVEL.get(cause_code)
             if level is None:
-                # 未知 cause_code，跳过
                 continue
 
-            phase = self._normalize_phase(rec.get("business_phase"))
-            if phase is None:
-                # 未知阶段，跳过
-                continue
-
-            matrix[phase][level] += 1
+            agent_type = rec.get("agent_type", "")
+            if agent_type in matrix:
+                matrix[agent_type][level] += 1
 
         return matrix
 
@@ -216,7 +194,6 @@ class CausalChainAnalyzer:
             for rec in records:
                 cause_code = rec.get("cause_code", "")
                 level = CAUSE_TO_LEVEL.get(cause_code, "")
-                phase = self._normalize_phase(rec.get("business_phase"))
 
                 # 收集漏洞类型（从 evidence_json 或 judgment_conclusion 中提取）
                 if not vuln_type:
@@ -226,7 +203,7 @@ class CausalChainAnalyzer:
                 evidence = self._build_evidence(rec)
 
                 breakpoints.append({
-                    "business_phase": phase or "",
+                    "agent_type": rec.get("agent_type", ""),
                     "break_level": level,
                     "cause_code": cause_code,
                     "evidence": evidence,
@@ -240,84 +217,7 @@ class CausalChainAnalyzer:
 
         return result
 
-    # ── M26 阶段误报承担率 ──
-
-    def _calc_m26(self, access_details: list[dict],
-                  fp_task_run_ids: set[str]) -> dict:
-        """M26: 阶段误报承担率。
-
-        每个业务阶段的误报承担率 = 该阶段有断点的 FP case 数 / 总 FP case 数。
-        一个 FP case 在多个阶段有断点时，每个有断点的阶段各计一次。
-
-        Args:
-            access_details: knowledge_access_detail 记录列表。
-            fp_task_run_ids: FP case 的 task_run_id 集合（从 outcome_fact 表查询）。
-
-        Returns:
-            {"入口识别": {"fp_count": 5, "total_fp": 10, "attribution_rate": 0.5}, ...}
-        """
-        total_fp = len(fp_task_run_ids)
-
-        # 统计每个阶段有断点的 FP case 数
-        phase_fp_cases: dict[str, set[str]] = defaultdict(set)
-
-        for rec in access_details:
-            cause_code = rec.get("cause_code")
-            if not cause_code:
-                continue  # 无断点
-
-            task_run_id = rec.get("task_run_id", "")
-            if task_run_id not in fp_task_run_ids:
-                continue  # 非 FP case
-
-            phase = self._normalize_phase(rec.get("business_phase"))
-            if phase is None:
-                continue
-
-            phase_fp_cases[phase].add(task_run_id)
-
-        # 构建结果
-        result: dict[str, dict] = {}
-        for phase in _ALL_PHASES_DISPLAY:
-            fp_count = len(phase_fp_cases.get(phase, set()))
-            attribution_rate = (fp_count / total_fp) if total_fp > 0 else 0.0
-            result[phase] = {
-                "fp_count": fp_count,
-                "total_fp": total_fp,
-                "attribution_rate": round(attribution_rate, 4),
-            }
-
-        return result
-
     # ── 辅助方法 ──
-
-    def _normalize_phase(self, raw_phase) -> str | None:
-        """将 business_phase 归一化为中文显示名。
-
-        DB 中存的是大写英文枚举（ENTRY_IDENTIFICATION 等），
-        也可能存的是中文标签（如果 LifecycleAnalyzer 未转换）。
-        两种都支持。
-        """
-        if not raw_phase:
-            return None
-
-        phase_str = str(raw_phase).strip()
-
-        # 英文枚举 → 中文
-        if phase_str in _PHASE_DB_TO_DISPLAY:
-            return _PHASE_DB_TO_DISPLAY[phase_str]
-
-        # 已经是中文标签
-        if phase_str in _ALL_PHASES_DISPLAY:
-            return phase_str
-
-        # 尝试模糊匹配（DB 可能存了小写或混合大小写）
-        upper = phase_str.upper()
-        if upper in _PHASE_DB_TO_DISPLAY:
-            return _PHASE_DB_TO_DISPLAY[upper]
-
-        # 未知阶段
-        return None
 
     def _load_fp_task_run_ids(self, evaluation_id: str) -> set[str]:
         """从 outcome_fact 表加载 FP case 的 task_run_id 集合。
@@ -435,7 +335,6 @@ class CausalChainAnalyzer:
             "E": "查到没用（死知识，推理未引用）",
             "F": "用了没推动（未影响结论）",
             "G": "导致误判（知识推动但方向错）",
-            "H": "内容有误（知识本身有问题）",
         }
         return descriptions.get(cause_code, "")
 
@@ -444,14 +343,10 @@ class CausalChainAnalyzer:
         return {
             "evaluation_id": evaluation_id,
             "cross_attribution_matrix": {
-                phase: {level: 0 for level in _ALL_LEVELS}
-                for phase in _ALL_PHASES_DISPLAY
+                agent_type: {level: 0 for level in _ALL_LEVELS}
+                for agent_type in _ALL_AGENT_TYPES
             },
             "cause_summary": {code: 0 for code in _ALL_CAUSES},
             "effect_label_distribution": {label: 0 for label in _ALL_EFFECTS},
             "per_case_breakpoints": [],
-            "m26_phase_fp_attribution": {
-                phase: {"fp_count": 0, "total_fp": 0, "attribution_rate": 0.0}
-                for phase in _ALL_PHASES_DISPLAY
-            },
         }

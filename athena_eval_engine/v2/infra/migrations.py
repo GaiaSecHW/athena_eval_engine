@@ -70,7 +70,7 @@ MIGRATIONS = [
     },
     {
         "id": "007_knowledge_access_detail",
-        "desc": "新增知识访问明细表 + metric_result CHECK 扩展 M15-M21/M26",
+        "desc": "新增知识访问明细表",
         "sql": [
             # 1. 创建 knowledge_access_detail 表
             "CREATE TABLE IF NOT EXISTS knowledge_access_detail ("
@@ -82,11 +82,6 @@ MIGRATIONS = [
             "  source_system VARCHAR(32) NOT NULL"
             "    CHECK (source_system IN ('KNOWLEDGE_BASE','MEMORY_ENGINE')),"
             "  l0_origin VARCHAR(64),"
-            "  business_phase VARCHAR(32) NOT NULL"
-            "    CHECK (business_phase IN"
-            "    ('ENTRY_IDENTIFICATION','DATA_FLOW_TRACKING','VULN_PATTERN_RECOGNITION',"
-            "     'SINK_POINT_LOCALIZATION','VULN_VERDICT_REPORTING',"
-            "     'VULN_UNDERSTANDING','CODE_LOCALIZATION','VERIFICATION_EXECUTION','VERDICT_REPORTING')),"
             "  l1_need_knowledge BOOLEAN,"
             "  l2_initiated BOOLEAN,"
             "  l3_query_accurate BOOLEAN,"
@@ -98,7 +93,7 @@ MIGRATIONS = [
             "  effect_label VARCHAR(16)"
             "    CHECK (effect_label IS NULL OR effect_label IN ('POSITIVE','NEGATIVE','NEUTRAL')),"
             "  cause_code VARCHAR(8)"
-            "    CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H')),"
+            "    CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G')),"
             "  query_content TEXT,"
             "  returned_content TEXT,"
             "  reasoning_ref TEXT,"
@@ -108,19 +103,11 @@ MIGRATIONS = [
             "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
             "  UNIQUE (task_run_id, event_idx),"
             "  INDEX idx_kad_eval (evaluation_id),"
-            "  INDEX idx_kad_phase (evaluation_id, business_phase),"
             "  INDEX idx_kad_effect (evaluation_id, effect_label),"
             "  INDEX idx_kad_cause (evaluation_id, cause_code),"
             "  CONSTRAINT fk_kad_trun FOREIGN KEY (evaluation_id, task_run_id)"
             "    REFERENCES task_run(evaluation_id, task_run_id)"
             ") ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
-
-            # 2. metric_result CHECK 扩展（幂等：DROP IF EXISTS + ADD）
-            "ALTER TABLE metric_result DROP CHECK IF EXISTS metric_result_metric_id_chk",
-            "ALTER TABLE metric_result ADD CONSTRAINT metric_result_metric_id_chk"
-            "  CHECK (metric_id IN"
-            "  ('M1','M2','M3','M4','M5','M6','M7','M8','M9','M10','M11','M12','M13',"
-            "   'M15','M16','M17','M18','M19','M20','M21','M26'))",
         ],
     },
     {
@@ -234,6 +221,43 @@ MIGRATIONS = [
         "sql": [
             "UPDATE agent_datasource_config SET host='chirmera-platform-nazhua-mysql.secflow-ns.svc.cluster.local' "
             "WHERE agent_type='argo' AND host='chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local'",
+        ],
+    },
+    {
+        "id": "010_dts_issue",
+        "desc": "新增 DTS 问题单表",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS dts_issue ("
+            "  dts_id VARCHAR(64) PRIMARY KEY,"
+            "  evaluation_id VARCHAR(64) NOT NULL,"
+            "  task_run_id VARCHAR(64) NOT NULL,"
+            "  task_id VARCHAR(128) NOT NULL,"
+            "  agent_type VARCHAR(32) NOT NULL,"
+            "  case_type VARCHAR(8) NOT NULL"
+            "    CHECK (case_type IN ('FP','FN')),"
+            "  fp_type VARCHAR(64),"
+            "  cause_code VARCHAR(8) NOT NULL"
+            "    CHECK (cause_code IN ('A','B','C','D','E','F','G')),"
+            "  breakpoint_level VARCHAR(8) NOT NULL,"
+            "  access_id VARCHAR(128),"
+            "  breakpoint_desc TEXT,"
+            "  evidence_uri VARCHAR(512),"
+            "  root_cause TEXT,"
+            "  solution TEXT,"
+            "  replay_eval_id VARCHAR(64),"
+            "  replay_result VARCHAR(16),"
+            "  status VARCHAR(32) NOT NULL DEFAULT 'unlocated'"
+            "    CHECK (status IN ('unlocated','improving','confirmed','closing','passed','failed','not_issue')),"
+            "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3),"
+            "  closed_at DATETIME(3),"
+            "  INDEX idx_dts_eval (evaluation_id),"
+            "  INDEX idx_dts_agent (agent_type),"
+            "  INDEX idx_dts_status (status),"
+            "  INDEX idx_dts_task (task_id),"
+            "  CONSTRAINT fk_dts_trun FOREIGN KEY (evaluation_id, task_run_id)"
+            "    REFERENCES task_run(evaluation_id, task_run_id)"
+            ") ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
     },
 ]

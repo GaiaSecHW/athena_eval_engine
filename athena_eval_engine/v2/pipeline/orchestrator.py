@@ -2,7 +2,7 @@
 
 阶段流程：
     INGESTING → PARSING → RESOLVING → CALCULATING
-        → INVENTORY → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
+        → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
 
 方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
 M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
@@ -282,7 +282,7 @@ def _load_existing_access_details(evaluation_id: str) -> list[dict]:
     def _do(cur):
         cur.execute(
             "SELECT access_id, evaluation_id, task_run_id, task_id, event_idx, "
-            "source_system, l0_origin, business_phase, "
+            "source_system, l0_origin, "
             "l1_need_knowledge, l2_initiated, l3_query_accurate, l4_knowledge_exists, "
             "l5_retrieved, l6_used, l7_influenced, l7_method, "
             "effect_label, cause_code, "
@@ -328,11 +328,10 @@ class Orchestrator:
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
         3. RESOLVING — 持久化 findings + session_graph 到 DB
         4. CALCULATING — 指标计算（M5-M13）
-        5. INVENTORY — 知识盘点
-        6. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
-        7. CAUSAL_CHAIN — 因果链分析
-        8. REPORTING — 报告组装 + 改进建议生成
-        9. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
+        5. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
+        6. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
+        7. REPORTING — 报告组装（含召回率/准确率计算）
+        8. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
         Args:
             evaluation_id: 评测 ID。
@@ -399,21 +398,10 @@ class Orchestrator:
             log("ORCH", f"CALCULATING done: {len(metrics.get('metric_results', []))} "
                   f"metric_results")
 
-            # ── INVENTORY ──
-            _check_cancel(evaluation_id, stages.INVENTORY)
-            assert_transition(stages.CALCULATING, stages.INVENTORY)
-            self._set_status_safe(evaluation_id, stages.INVENTORY)
-            _set_progress(evaluation_id, "知识盘点...")
-            inventory = self._run_inventory(
-                evaluation_id, data_packs, reports_dir,
-            )
-            log("ORCH", f"INVENTORY done: coverage_rate="
-                  f"{inventory.get('coverage', {}).get('coverage_rate', 'N/A')}")
-
             # ── LIFECYCLE_ANALYSIS ──
             # 重试路径：knowledge_access_detail 表已有记录 → 跳过
             _check_cancel(evaluation_id, stages.LIFECYCLE_ANALYSIS)
-            assert_transition(stages.INVENTORY, stages.LIFECYCLE_ANALYSIS)
+            assert_transition(stages.CALCULATING, stages.LIFECYCLE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.LIFECYCLE_ANALYSIS)
             if _has_knowledge_access_details(evaluation_id):
                 log("ORCH", "LIFECYCLE_ANALYSIS skipped: "
@@ -432,16 +420,6 @@ class Orchestrator:
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
 
-            # lifecycle 分析完成后补算 M15-M26（CALCULATING 阶段在 lifecycle 之前，
-            # 当时还没有 access_details，所以 lifecycle_metrics 为空）
-            if access_details:
-                from ..metrics.m15_m26 import calc_all_lifecycle_metrics
-                metrics["lifecycle_metrics"] = (
-                    calc_all_lifecycle_metrics(access_details)
-                )
-                log("ORCH", f"lifecycle metrics computed: "
-                      f"{len(metrics.get('lifecycle_metrics', []))} metrics")
-
             # 用 CaseFilter 的 FPR 统计更新 M13
             fpr_stats = getattr(self, "_lifecycle_fpr_stats", None)
             if fpr_stats:
@@ -454,7 +432,9 @@ class Orchestrator:
             )
             self._set_status_safe(evaluation_id, stages.CAUSAL_CHAIN)
             _set_progress(evaluation_id, "因果链分析...")
-            causal_chain = self._run_causal_chain(access_details)
+            causal_chain = self._run_causal_chain(
+                access_details, evaluation_id, reports_dir,
+            )
             log("ORCH", f"CAUSAL_CHAIN done: "
                   f"{len(causal_chain.get('per_case_breakpoints', []))} "
                   f"cases with breakpoints")
@@ -465,34 +445,33 @@ class Orchestrator:
             self._set_status_safe(evaluation_id, stages.REPORTING)
 
             # 重试路径：lifecycle report 已存在 → 跳过报告组装
-            # 但如果 base report 不存在，仍需重新组装
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
                     os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
                 log("ORCH", "REPORTING skipped: lifecycle + base report 已存在"
                       "（重试路径）")
                 _set_progress(evaluation_id, "报告组装（已有，跳过）")
-                suggestions: list[dict] = []
             else:
-                _set_progress(evaluation_id, "生成改进建议...")
-                suggestions = self._generate_suggestions(
-                    evaluation_id, causal_chain, cancel_cb=_cancel_cb,
+                _set_progress(evaluation_id, "计算召回率/准确率...")
+                recall_precision = self._calc_recall_precision(
+                    evaluation_id, case_details, alert_center_data,
+                    benchmark_source,
                 )
                 _set_progress(evaluation_id, "报告组装...")
                 self._assemble_report(
-                    evaluation_id, metrics, inventory,
+                    evaluation_id, metrics,
                     access_details, causal_chain,
-                    metrics.get("lifecycle_metrics", []),
-                    suggestions, reports_dir,
+                    recall_precision, reports_dir,
                 )
-                log("ORCH", f"REPORTING done: {len(suggestions)} suggestions")
+                log("ORCH", f"REPORTING done: recall={recall_precision.get('recall_rate')}, "
+                      f"precision={recall_precision.get('precision_rate')}")
 
             # ── FINALIZE ──
             _check_cancel(evaluation_id, stages.FINALIZE)
             assert_transition(stages.REPORTING, "FINALIZING")
             self._set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
-            self._finalize(evaluation_id, reports_dir, metrics, inventory,
-                           causal_chain, suggestions)
+            self._finalize(evaluation_id, reports_dir, metrics,
+                           causal_chain)
             self._set_status_safe(evaluation_id, "COMPLETED")
             _set_progress(evaluation_id, "评测完成")
             log("ORCH", f"v2 pipeline 完成: {evaluation_id}")
@@ -719,7 +698,7 @@ class Orchestrator:
 
         对每个 entry 调用 parser.build_data_pack()，在内部完成
         parse → extract_findings → build_session_graph → load_session
-        → label_session_phases → resolve → DataPack。
+        → resolve → DataPack。
 
         使用 ThreadPoolExecutor 并行，受 parse_workers 并发控制。
         """
@@ -968,7 +947,7 @@ class Orchestrator:
         self, data_packs: list,
         alert_center_data: dict,
     ) -> dict:
-        """指标计算（M5-M13 + M15-M26）。
+        """指标计算（M5-M13）。
 
         调用 run_all_metrics()，从 data_packs 和 alert_center_data
         提取计数参数。
@@ -1063,22 +1042,6 @@ class Orchestrator:
                             break
                 break
 
-    # ── INVENTORY ───────────────────────────────────
-
-    def _run_inventory(
-        self, evaluation_id: str, data_packs: list,
-        reports_dir: str,
-    ) -> dict:
-        """知识盘点。
-
-        调用 KnowledgeInventory.run_inventory()，输出
-        {evaluation_id}_inventory.json。
-        """
-        from ..knowledge_inventory.inventory import KnowledgeInventory
-
-        inv = KnowledgeInventory()
-        return inv.run_inventory(evaluation_id, data_packs, reports_dir)
-
     # ── LIFECYCLE_ANALYSIS ──────────────────────────
 
     def _run_lifecycle(
@@ -1116,49 +1079,113 @@ class Orchestrator:
 
     # ── CAUSAL_CHAIN ─────────────────────────────────
 
-    def _run_causal_chain(self, access_details: list[dict]) -> dict:
-        """因果链分析。
+    def _run_causal_chain(
+        self, access_details: list[dict],
+        evaluation_id: str = "", reports_dir: str = "",
+    ) -> dict:
+        """因果链分析 + DTS 问题单生成。
 
         调用 CausalChainAnalyzer.analyze()，基于 knowledge_access_detail
-        的判定结果按业务阶段聚合误报归因。
+        的判定结果按 Agent 类型聚合误报归因。
+        分析完成后，从 per_case_breakpoints 自动生成 DTS 问题单并持久化。
         """
         from ..causal_chain.analyzer import CausalChainAnalyzer
 
         analyzer = CausalChainAnalyzer()
         # access_details 需要包含 evaluation_id（从第一条记录取）
-        evaluation_id = ""
-        if access_details:
+        if not evaluation_id and access_details:
             evaluation_id = access_details[0].get("evaluation_id", "")
-        return analyzer.analyze(evaluation_id, access_details)
+        result = analyzer.analyze(evaluation_id, access_details)
 
-    # ── SUGGESTION GENERATION ────────────────────────
+        # 从断点生成 DTS 问题单
+        from ..dts.issue import generate_dts_issues
+        from ..persistence.dts_repo import upsert_dts_issues
 
-    def _generate_suggestions(
-        self, evaluation_id: str, causal_chain: dict,
-        cancel_cb=None,
-    ) -> list[dict]:
-        """生成改进建议。
+        case_filter_stats = getattr(self, "_lifecycle_fpr_stats", None) or {}
+        dts_issues = generate_dts_issues(
+            evaluation_id, result, access_details, case_filter_stats,
+        )
+        if dts_issues:
+            upsert_dts_issues(dts_issues, evaluation_id, reports_dir)
+            log("CAUSAL_CHAIN", f"Generated {len(dts_issues)} DTS issues")
 
-        调用 SuggestionGenerator.generate()，从断点生成结构化改进建议。
-        cancel_cb 穿透到 LLM 内循环。
+        return result
+
+    def _calc_recall_precision(
+        self, evaluation_id: str, case_details: dict,
+        alert_center_data: dict, benchmark_source: str,
+    ) -> dict:
+        """计算召回率和准确率。
+
+        从基线 case_details 和告警中心数据计算：
+        - 召回率 = TP / (TP + FN)
+        - 准确率 = TP / (TP + FP)
+
+        TP = 基线 VULNERABLE + 告警中心有匹配（agent 上报了）
+        FN = 基线 VULNERABLE + 告警中心无匹配（agent 漏报）
+        FP = 基线 NON_VULNERABLE + trace 有 finding 且 CONFIRMED（agent 误报）
+        TN = 基线 NON_VULNERABLE + 无匹配 finding 或 finding 非 CONFIRMED
+
+        FP/TN 从 CaseFilter 的 FPR 统计获取（lifecycle 阶段已计算），
+        TP/FN 从告警中心数据与基线对比获取。
         """
-        from ..report.suggestion_generator import SuggestionGenerator
+        # TP/FN: 从告警中心数据计算
+        tp_count = 0
+        fn_count = 0
 
-        gen = SuggestionGenerator()
-        return gen.generate(evaluation_id, causal_chain, cancel_cb=cancel_cb)
+        # 告警中心有匹配的基线 VULNERABLE case → TP
+        ac_cases = alert_center_data.get("cases", [])
+        ac_case_ids = set()
+        for ac in ac_cases:
+            ac_id = ac.get("case_id") or ac.get("id") or ""
+            if ac_id:
+                ac_case_ids.add(ac_id)
+
+        for cid, cd in case_details.items():
+            expected = cd.get("expected_label", "VULNERABLE").upper()
+            if expected == "VULNERABLE":
+                if cid in ac_case_ids:
+                    tp_count += 1
+                else:
+                    fn_count += 1
+
+        # FP: 从 lifecycle FPR 统计获取
+        fpr_stats = getattr(self, "_lifecycle_fpr_stats", None) or {}
+        fp_count = fpr_stats.get("fp_count", 0)
+        tn_count = fpr_stats.get("tn_count", 0)
+
+        # 召回率 = TP / (TP + FN)
+        recall_denom = tp_count + fn_count
+        recall_rate = (tp_count / recall_denom) if recall_denom > 0 else None
+
+        # 准确率 = TP / (TP + FP)
+        precision_denom = tp_count + fp_count
+        precision_rate = (tp_count / precision_denom) if precision_denom > 0 else None
+
+        result = {
+            "recall_rate": round(recall_rate, 4) if recall_rate is not None else None,
+            "precision_rate": round(precision_rate, 4) if precision_rate is not None else None,
+            "tp_count": tp_count,
+            "fn_count": fn_count,
+            "fp_count": fp_count,
+            "tn_count": tn_count,
+        }
+        log("REPORT", f"召回率={result['recall_rate']}, "
+              f"准确率={result['precision_rate']}, "
+              f"TP={tp_count}, FN={fn_count}, FP={fp_count}, TN={tn_count}")
+        return result
 
     # ── REPORTING ────────────────────────────────────
 
     def _assemble_report(
         self, evaluation_id: str, metrics: dict,
-        inventory: dict, access_details: list,
-        causal_chain: dict, lifecycle_metrics: list,
-        suggestions: list, reports_dir: str,
+        access_details: list, causal_chain: dict,
+        recall_precision: dict, reports_dir: str,
     ):
         """报告组装。
 
-        调用 ReportAssembler 组装生命周期分析段 + 知识盘点段报告，
-        写入 {evaluation_id}_lifecycle.json + {evaluation_id}_inventory.json。
+        调用 ReportAssembler 组装生命周期分析段报告，
+        写入 {evaluation_id}_lifecycle.json。
         """
         from ..report.assembler import ReportAssembler
 
@@ -1169,16 +1196,7 @@ class Orchestrator:
             evaluation_id,
             access_details,
             causal_chain,
-            lifecycle_metrics,
-            suggestions,
-            reports_dir,
-        )
-
-        # 组装知识盘点段报告（inventory 已由 run_inventory 生成，
-        # 这里补充报告元数据）
-        assembler.assemble_inventory_report(
-            evaluation_id,
-            inventory,
+            recall_precision,
             reports_dir,
         )
 
@@ -1189,16 +1207,12 @@ class Orchestrator:
                 "metric_results": metrics.get("metric_results", []),
                 "statistical_results": metrics.get("statistical_results", []),
             },
-            "inventory_summary": {
-                "coverage_rate": inventory.get("coverage", {}).get(
-                    "coverage_rate", 0,
-                ),
-                "total_vuln_types": inventory.get("coverage", {}).get(
-                    "total_vuln_types", 0,
-                ),
-                "covered_vuln_types": inventory.get("coverage", {}).get(
-                    "covered_vuln_types", 0,
-                ),
+            "recall_precision": {
+                "recall_rate": recall_precision.get("recall_rate"),
+                "precision_rate": recall_precision.get("precision_rate"),
+                "tp_count": recall_precision.get("tp_count", 0),
+                "fn_count": recall_precision.get("fn_count", 0),
+                "fp_count": recall_precision.get("fp_count", 0),
             },
             "causal_chain_summary": {
                 "cause_summary": causal_chain.get("cause_summary", {}),
@@ -1216,8 +1230,7 @@ class Orchestrator:
 
     def _finalize(
         self, evaluation_id: str, reports_dir: str,
-        metrics: dict, inventory: dict,
-        causal_chain: dict, suggestions: list,
+        metrics: dict, causal_chain: dict,
     ):
         """写入 evaluation_report 表，状态设为 COMPLETED。
 
@@ -1228,24 +1241,13 @@ class Orchestrator:
         lifecycle_path = os.path.join(
             reports_dir, f"{evaluation_id}_lifecycle.json",
         )
-        inventory_path = os.path.join(
-            reports_dir, f"{evaluation_id}_inventory.json",
-        )
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")
 
         report_data = {
             "evaluation_id": evaluation_id,
             "base_report_path": base_path,
             "lifecycle_report_path": lifecycle_path,
-            "inventory_report_path": inventory_path,
             "metrics_count": len(metrics.get("metric_results", [])),
-            "lifecycle_metrics_count": len(
-                metrics.get("lifecycle_metrics", []),
-            ),
-            "suggestions_count": len(suggestions),
-            "coverage_rate": inventory.get("coverage", {}).get(
-                "coverage_rate", 0,
-            ),
             "cause_summary": causal_chain.get("cause_summary", {}),
         }
 
@@ -1323,7 +1325,7 @@ class Orchestrator:
                     "CHECK (evaluation_status IN "
                     "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING',"
                     "'PARSING','RESOLVING','PAIRING','CALCULATING',"
-                    "'INVENTORY','LIFECYCLE_ANALYSIS','CAUSAL_CHAIN',"
+                    "'LIFECYCLE_ANALYSIS','CAUSAL_CHAIN',"
                     "'REPORTING','FINALIZING',"
                     "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"
                     "'CANCEL_REQUESTED','CANCELLING','CANCELLED'))"

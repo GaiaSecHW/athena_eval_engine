@@ -1,9 +1,8 @@
-"""报告组装扩展模块 — 生命周期分析段 + 知识盘点段。
+"""报告组装扩展模块 — 生命周期分析段。
 
-新增两段报告（§4.6）：
+新增报告段（§4.6）：
 - {eid}_lifecycle.json — 生命周期分析段（L0 原始来源分布 + L2-L7 断点分布 +
-  成因汇总 + 效果标签分布 + M15-M21/M26 指标 + per_case_details + 改进建议汇总）
-- {eid}_inventory.json — 知识盘点段（覆盖度清单 + 质量标注）
+  成因汇总 + 效果标签分布 + 召回率/准确率 + per_case_details）
 
 大字段处理：per_case_details 中 evidence 字段可能很大，遵循"大 payload 存文件
 DB 存路径"模式——超过 64KB 的 evidence 写入 {reports_dir}/{eid}_lifecycle_data/
@@ -45,8 +44,8 @@ def _json_default(obj):
 
 _LARGE_FIELD_THRESHOLD = 64 * 1024  # 64KB
 
-# 所有 cause_code（A-H）
-_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H"]
+# 所有 cause_code（A-G）
+_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
 
 # 所有 effect_label（含 NULL）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
@@ -54,15 +53,15 @@ _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7"]
 
-# 所有业务阶段（中文显示名，按挖掘→验证顺序）
-_ALL_PHASES_DISPLAY = [
-    "入口识别", "数据流追踪", "漏洞模式识别", "Sink点定位", "漏洞判定与上报",
-    "漏洞理解", "代码定位", "验证执行", "判定上报",
+# 所有 Agent 类型（行头）
+_ALL_AGENT_TYPES = [
+    "turing", "argo", "secmate", "dataflow",
+    "cvuln_verify", "webvuln_verify",
 ]
 
 
 class ReportAssembler:
-    """报告组装器 — 组装生命周期分析段和知识盘点段报告。
+    """报告组装器 — 组装生命周期分析段报告。
 
     不执行 L0-L7 判定或因果链分析（那是 LifecycleAnalyzer / CausalChainAnalyzer
     的职责），只负责将已有结果组装为报告 JSON 并写入文件。
@@ -78,8 +77,7 @@ class ReportAssembler:
         evaluation_id: str,
         access_details: list[dict],
         causal_chain_result: dict,
-        lifecycle_metrics: list[dict],
-        suggestions: list[dict],
+        recall_precision: dict,
         reports_dir: str,
     ) -> str:
         """组装生命周期分析段报告，写入 {reports_dir}/{evaluation_id}_lifecycle.json。
@@ -87,14 +85,13 @@ class ReportAssembler:
         Args:
             evaluation_id: 评测 ID。
             access_details: knowledge_access_detail 记录列表（dict），每条含
-                            l0_origin、business_phase、cause_code、effect_label、
+                            l0_origin、agent_type、cause_code、effect_label、
                             task_run_id、evidence_json 等字段。
             causal_chain_result: CausalChainAnalyzer.analyze() 的输出 dict，
                                  含 cross_attribution_matrix、cause_summary、
                                  effect_label_distribution、per_case_breakpoints。
-            lifecycle_metrics: calc_all_lifecycle_metrics() 的输出 list[dict]，
-                               M15-M21 + M26。
-            suggestions: SuggestionGenerator.generate() 的输出 list[dict]。
+            recall_precision: 召回率/准确率计算结果 dict，含 recall_rate、
+                              precision_rate、tp_count、fn_count、fp_count。
             reports_dir: 报告输出目录。
 
         Returns:
@@ -103,8 +100,7 @@ class ReportAssembler:
         log(
             "REPORT_ASSEMBLER",
             f"assemble_lifecycle_report: eval={evaluation_id}, "
-            f"{len(access_details)} access details, "
-            f"{len(suggestions)} suggestions",
+            f"{len(access_details)} access details",
             eval_id=evaluation_id,
         )
 
@@ -122,12 +118,11 @@ class ReportAssembler:
                 "effect_label_distribution",
                 {label: 0 for label in _ALL_EFFECTS},
             ),
-            "lifecycle_metrics": lifecycle_metrics,
+            "recall_precision": recall_precision,
             "per_case_details": self._build_per_case_details(
                 evaluation_id, access_details, causal_chain_result,
-                suggestions, reports_dir,
+                reports_dir,
             ),
-            "suggestions_summary": self._build_suggestions_summary(suggestions),
         }
 
         # 写入文件
@@ -139,55 +134,6 @@ class ReportAssembler:
         log(
             "REPORT_ASSEMBLER",
             f"lifecycle report written to {out_path}",
-            eval_id=evaluation_id,
-        )
-
-        return out_path
-
-    def assemble_inventory_report(
-        self,
-        evaluation_id: str,
-        inventory_result: dict,
-        reports_dir: str,
-    ) -> str:
-        """组装知识盘点段报告，写入 {reports_dir}/{evaluation_id}_inventory.json。
-
-        inventory_result 已由 KnowledgeInventory.run_inventory() 生成，
-        此方法负责补充报告元数据并写入文件。
-
-        Args:
-            evaluation_id: 评测 ID。
-            inventory_result: KnowledgeInventory.run_inventory() 的输出 dict，
-                              含 coverage、quality、memory_coverage、kb_stats。
-            reports_dir: 报告输出目录。
-
-        Returns:
-            报告文件路径。
-        """
-        log(
-            "REPORT_ASSEMBLER",
-            f"assemble_inventory_report: eval={evaluation_id}",
-            eval_id=evaluation_id,
-        )
-
-        # 补充报告元数据
-        report: dict[str, Any] = {
-            "evaluation_id": evaluation_id,
-            "coverage": inventory_result.get("coverage", {}),
-            "quality": inventory_result.get("quality", []),
-            "memory_coverage": inventory_result.get("memory_coverage", {}),
-            "kb_stats": inventory_result.get("kb_stats", {}),
-        }
-
-        # 写入文件
-        os.makedirs(reports_dir, exist_ok=True)
-        out_path = os.path.join(reports_dir, f"{evaluation_id}_inventory.json")
-        with open(out_path, "w", encoding="utf-8") as f:
-            json.dump(report, f, ensure_ascii=False, indent=2, default=_json_default)
-
-        log(
-            "REPORT_ASSEMBLER",
-            f"inventory report written to {out_path}",
             eval_id=evaluation_id,
         )
 
@@ -217,52 +163,32 @@ class ReportAssembler:
         """从因果链结果提取断点分布（直接用 cross_attribution_matrix）。
 
         cross_attribution_matrix 结构：
-        {"入口识别": {"L2": 3, "L3": 1, ...}, "漏洞判定与上报": {...}, ...}
+        {"turing": {"L2": 3, "L3": 1, ...}, "argo": {...}, ...}
 
         如果 causal_chain_result 中没有 cross_attribution_matrix，返回全零矩阵。
 
         Returns:
-            {"入口识别": {"L2": 3, "L3": 1, "L4": 2, "L5": 0, "L6": 1, "L7": 0}, ...}
+            {"turing": {"L2": 3, "L3": 1, "L4": 2, "L5": 0, "L6": 1, "L7": 0}, ...}
         """
         matrix = causal_chain_result.get("cross_attribution_matrix")
         if matrix and isinstance(matrix, dict):
-            # 确保每个阶段都有完整的 L2-L7 键
+            # 确保每个 agent_type 都有完整的 L2-L7 键
             result: dict[str, dict[str, int]] = {}
-            for phase in _ALL_PHASES_DISPLAY:
-                phase_data = matrix.get(phase, {})
-                if isinstance(phase_data, dict):
-                    result[phase] = {
-                        level: int(phase_data.get(level, 0))
+            for agent_type in _ALL_AGENT_TYPES:
+                agent_data = matrix.get(agent_type, {})
+                if isinstance(agent_data, dict):
+                    result[agent_type] = {
+                        level: int(agent_data.get(level, 0))
                         for level in _ALL_LEVELS
                     }
                 else:
-                    result[phase] = {level: 0 for level in _ALL_LEVELS}
+                    result[agent_type] = {level: 0 for level in _ALL_LEVELS}
             return result
 
         # 无矩阵数据，返回全零
         return {
-            phase: {level: 0 for level in _ALL_LEVELS}
-            for phase in _ALL_PHASES_DISPLAY
-        }
-
-    def _build_suggestions_summary(self, suggestions: list[dict]) -> dict:
-        """统计改进建议汇总（总数 + 按优先级分组）。
-
-        Args:
-            suggestions: SuggestionGenerator.generate() 的输出列表。
-
-        Returns:
-            {"total": N, "high": M, "medium": M, "low": M}
-        """
-        total = len(suggestions)
-        high = sum(1 for s in suggestions if s.get("priority") == "high")
-        medium = sum(1 for s in suggestions if s.get("priority") == "medium")
-        low = sum(1 for s in suggestions if s.get("priority") == "low")
-        return {
-            "total": total,
-            "high": high,
-            "medium": medium,
-            "low": low,
+            agent_type: {level: 0 for level in _ALL_LEVELS}
+            for agent_type in _ALL_AGENT_TYPES
         }
 
     def _build_per_case_details(
@@ -270,7 +196,6 @@ class ReportAssembler:
         evaluation_id: str,
         access_details: list[dict],
         causal_chain_result: dict,
-        suggestions: list[dict],
         reports_dir: str,
     ) -> list[dict]:
         """组装 per_case_details 列表。
@@ -278,22 +203,12 @@ class ReportAssembler:
         从 causal_chain_result.per_case_breakpoints 构建，为每个 case 附加：
         - vuln_type
         - breakpoints（含 evidence，大字段写文件）
-        - suggestions（该 case 关联的改进建议）
 
         大字段处理：evidence 超过 64KB 时写入
         {reports_dir}/{eid}_lifecycle_data/{case_id}_evidence_{idx}.json，
         报告 JSON 中存文件路径。
         """
         per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
-
-        # 按 case_id 索引建议（一个 case 可能有多个建议）
-        case_suggestions: dict[str, list[dict]] = {}
-        for s in suggestions:
-            # 建议没有直接的 case_id 字段，但按 business_phase + cause_code 可关联
-            # SuggestionGenerator 输出的建议不含 case_id
-            # 这里不按 case 拆分建议，整体放入 per_case 的 suggestions 不合适
-            # 需要从 per_case_breakpoints 的 breakpoints 匹配
-            pass
 
         result: list[dict] = []
         for case_data in per_case_breakpoints:
@@ -305,7 +220,7 @@ class ReportAssembler:
             processed_breakpoints: list[dict] = []
             for idx, bp in enumerate(breakpoints_raw):
                 bp_processed = {
-                    "business_phase": bp.get("business_phase", ""),
+                    "agent_type": bp.get("agent_type", ""),
                     "break_level": bp.get("break_level", ""),
                     "cause_code": bp.get("cause_code", ""),
                     "evidence": self._handle_large_evidence(
@@ -324,25 +239,10 @@ class ReportAssembler:
                         if vuln_type:
                             break
 
-            # 匹配该 case 的建议（通过 business_phase + cause_code）
-            case_matched_suggestions: list[dict] = []
-            for bp in breakpoints_raw:
-                bp_phase = bp.get("business_phase", "")
-                bp_cause = bp.get("cause_code", "")
-                for s in suggestions:
-                    if (
-                        s.get("business_phase") == bp_phase
-                        and s.get("cause_code") == bp_cause
-                    ):
-                        # 避免重复添加同一建议
-                        if s not in case_matched_suggestions:
-                            case_matched_suggestions.append(s)
-
             result.append({
                 "case_id": case_id,
                 "vuln_type": vuln_type,
                 "breakpoints": processed_breakpoints,
-                "suggestions": case_matched_suggestions,
             })
 
         return result

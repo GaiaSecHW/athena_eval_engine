@@ -265,7 +265,7 @@ class EvidenceChain:
         - confidence < threshold → effect_label=None, cause_code=None（置信度不足，不判定）
         - influenced=False → effect_label=NEUTRAL, cause_code=F（用了没推动）
         - influenced=True, correct=True, consistent=True → POSITIVE, cause_code=None（无断点）
-        - influenced=True, correct=False, consistent=True → NEGATIVE, cause_code=G+H（负向知识，内容有误导致误判）
+        - influenced=True, correct=False, consistent=True → NEGATIVE, cause_code=G（负向知识，内容有误导致误判）
         - influenced=True, consistent=False → NEUTRAL, cause_code=F（方向不一致但非负向）
 
         Args:
@@ -277,7 +277,7 @@ class EvidenceChain:
         Returns:
             (effect_label, cause_code)
             effect_label: "POSITIVE" / "NEGATIVE" / "NEUTRAL" / None
-            cause_code: "F" / "G" / "H" / None
+            cause_code: "F" / "G" / None
         """
         # 置信度不足
         if confidence < self._confidence_threshold:
@@ -294,7 +294,7 @@ class EvidenceChain:
                 return "POSITIVE", None
             else:
                 # 负向：知识错误但方向一致（知识推动了错误方向判定）
-                # G（导致误判）+ H（内容有误，G 的根因）
+                # G（导致误判）
                 return "NEGATIVE", "G"
         else:
             # 方向不一致但影响了结论 → 中性
