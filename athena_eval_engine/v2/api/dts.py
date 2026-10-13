@@ -67,7 +67,8 @@ def list_issues(
         limit=limit,
         offset=offset,
     )
-    return {"issues": issues, "count": len(issues)}
+    stats = get_dts_stats(evaluation_id)
+    return {"issues": issues, "count": len(issues), "stats": stats}
 
 
 @router.get("/stats")
