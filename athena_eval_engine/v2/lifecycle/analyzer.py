@@ -863,6 +863,51 @@ class LifecycleAnalyzer:
                   or meta.get("vuln_type", "")
                   or meta.get("type", ""))
 
+    def _get_baseline_vuln_info(self, dp: DataPack) -> dict:
+        """从 DataPack.benchmark_item 提取基线漏洞信息。
+
+        参考 docs/l7-baseline-data-source.md：
+        - vuln_type: metadata["vulnerability_type"]
+        - description: metadata["description"]
+        - file: metadata.get("source_file")  # 实际存的是 sink 点文件
+        - sink: metadata.get("source_function") or metadata.get("locator")
+        - source: None（缺失，标注为"不可用"）
+        """
+        if dp.benchmark_item is None:
+            return {
+                "vuln_type": "",
+                "description": "",
+                "file": "",
+                "sink": "",
+                "source": None,
+            }
+
+        meta = getattr(dp.benchmark_item, "metadata", None) or {}
+
+        vuln_type = str(meta.get("vulnerability_type", "")
+                        or meta.get("vuln_type", "")
+                        or meta.get("type", ""))
+
+        description = str(meta.get("description", "") or "")
+
+        file = str(meta.get("source_file", "") or "")
+
+        sink = str(meta.get("source_function", "")
+                   or meta.get("locator", "")
+                   or "")
+
+        source = meta.get("source_entry") or meta.get("source")
+        if not source:
+            source = None
+
+        return {
+            "vuln_type": vuln_type,
+            "description": description,
+            "file": file,
+            "sink": sink,
+            "source": source,
+        }
+
     def _llm_available(self) -> bool:
         """检查 LLM 是否可用。"""
         if self.llm is not None:
