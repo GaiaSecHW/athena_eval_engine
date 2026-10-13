@@ -27,72 +27,114 @@ from ..infra import llm as llm_mod
 from ..infra import concurrency as concurrency_mod
 from ..infra.parallel import iter_completed
 from .case_filter import CaseFilter
+from .evidence_chain import L7_CONFIDENCE_THRESHOLD
 from ..persistence.kad_repo import upsert_knowledge_access_details
 from ...infrastructure.log_util import log, with_eval_ctx, get_eval_ctx
 
-# ── Prompt 2-4 的 system prompt ──
+# ── 安全上下文阈值（占 max_context 的比例）──
+_CONTEXT_SAFETY_RATIO = 0.6  # 只用 60% 上下文窗口给 user_content，留余量给 system prompt + 输出
+_DEFAULT_MAX_CONTEXT_TOKENS = 128_000  # 未从 400 错误中收集到时使用此默认值
+_COMPRESS_THRESHOLD_CHARS = 4000  # 单个文本字段超过此字符数时触发压缩
 
-_PROMPT2_SYSTEM = """你是漏洞挖掘知识依赖分析员。判断某个场景是否需要外部知识支撑才能完成。
+# ── 统一 LLM 调用的 system prompt ──
 
-# 知识的定义
-知识包括：
-- 漏洞模式知识：某类漏洞的特征、source/sink 模式、绕过手法
-- 项目代码结构知识：组件依赖、模块关系、框架特性
-- 历史挖掘经验：过往漏洞案例、常见误报模式
+_PROMPT_UNIFIED_SYSTEM = """你是知识访问全链路判定员。对一次知识访问执行 L1-L7 全部判定。
 
-# 判断规则
-- 如果该场景的推理任务可以仅凭当前代码上下文完成（如直接读代码就能定位 sink 点），则不需要知识
-- 如果该场景的推理任务本质上需要了解某类漏洞的模式、项目的组件结构、或历史经验才能正确完成，则需要知识
-- 以上为典型情况，请结合实际推理上下文判断。如果推理文本显示 Agent 已经具备相关知识（如内联了模式描述），可能不需要外部知识
+# 你收到的信息
+1. vuln_type：基线漏洞类型
+2. reasoning_context：知识访问前 Agent 的推理上下文
+3. query_content：Agent 发给知识库的查询内容
+4. returned_content：知识库返回的内容
+5. reasoning_ref：知识访问后 Agent 的推理文本
+6. judgment_conclusion：Agent 的判定结论（如"确认漏洞"/"排除误报"）
+7. baseline_vuln_info：基线漏洞信息（漏洞类型、source、sink、文件、描述）
+
+# 判定级别（逐级，不通过的级别即为断点，后续级别填 null）
+
+## L1：该场景是否需要外部知识支撑？
+知识包括：漏洞模式知识（source/sink 模式、绕过手法）、项目代码结构知识、历史挖掘经验。
+- need_knowledge=true：推理任务本质上需要了解某类漏洞模式、项目结构或历史经验才能正确完成
+- need_knowledge=false：仅凭当前代码上下文即可完成（如直接读代码定位 sink 点）
+- 如果推理文本显示 Agent 已具备相关知识（如内联了模式描述），可能不需要外部知识
+
+## L2：Agent 是否发起了知识访问？
+- initiated=true：Agent 实际调用了知识库/记忆工具
+- initiated=false：需要知识但没有发起访问
+
+## L3：查询内容是否聚焦于当前任务？
+- query_accurate=true：查询明确指向当前问题，包含具体技术上下文（漏洞类型、框架名、函数名等），范围适中
+- query_accurate=false：查询与任务无关、过于宽泛（如只查"SQL注入"无上下文）、或存在明显错误
+
+## L4：知识库是否有对应知识？
+- knowledge_exists=true：返回内容非空且与查询相关
+- knowledge_exists=false：返回空或"未找到"类内容
+
+## L5：知识是否被成功取回？
+- retrieved=true：返回内容有效，无 error/timeout 标记
+- retrieved=false：返回内容含 error/timeout/exception/connection failed 等标记
+
+## L6：Agent 推理文本是否引用了知识返回内容？
+- used=true：推理文本中出现知识返回内容的关键词/函数名/模式描述，或基于知识改变了分析方向
+- used=false：推理文本完全未提及知识返回内容，或结论在查询前已得出
+
+## L7：知识是否影响了判定结论？
+### 维度一：知识正确性（knowledge_correct）
+对比知识内容与基线漏洞信息：
+- correct=true：知识描述的漏洞模式、sink 函数、攻击路径等与基线一致
+- correct=false：知识模式与基线漏洞类型不符、sink 不匹配、内容过时或不适用
+
+### 维度二：方向一致性（direction_consistent）
+- direction_consistent=true：知识方向（指向漏洞存在/不存在）与判定结论方向一致
+- direction_consistent=false：知识方向与判定结论方向相反
+
+### 维度三：置信度（confidence）
+0.0-1.0，<0.6 表示证据不足无法判定
+
+# 判定规则
+- L1=false → L2-L7 全部 null，无断点
+- L1=true, L2=false → 断点 A（该查没查），L3-L7 null
+- L2=true, L3=false → 断点 B（查询太泛），L4-L7 null
+- L3=true, L4=false → 断点 C（查了没得），L5-L7 null
+- L4=true, L5=false → 断点 D（链路问题），L6-L7 null
+- L5=true, L6=false → 断点 E（查到没用），L7 null
+- L6=true → L7 判定：
+  - knowledge_correct=true, direction_consistent=true, confidence>=0.6 → effect=POSITIVE（正向，知识推动了正确判定）
+  - knowledge_correct=false, direction_consistent=true, confidence>=0.6 → effect=NEGATIVE, cause=G（知识错误导致误判）
+  - direction_consistent=false, confidence>=0.6 → effect=NEUTRAL, cause=F（知识未推动结论）
+  - confidence<0.6 → effect=null, cause=null（证据不足）
+
+# reason 写作要求（500字以内）
+第一句给出核心结论：断点在哪一级（或全链通过）。
+然后分维度说明判断依据，必须引用具体内容作为证据。
 
 只返回 JSON：
-{"need_knowledge": true/false, "reason": "简要说明该场景是否需要知识支撑及原因"}
+{
+  "l1_need_knowledge": true/false,
+  "l2_initiated": true/false/null,
+  "l3_query_accurate": true/false/null,
+  "l4_knowledge_exists": true/false/null,
+  "l5_retrieved": true/false/null,
+  "l6_used": true/false/null,
+  "l7_knowledge_correct": true/false/null,
+  "l7_direction_consistent": true/false/null,
+  "l7_confidence": 0.0/null,
+  "effect_label": "POSITIVE"/"NEGATIVE"/"NEUTRAL"/null,
+  "cause_code": "A"/"B"/"C"/"D"/"E"/"F"/"G"/null,
+  "reason": "500字以内中文，结论先行，分维度说明判断依据"
+}
 """
 
-_PROMPT3_SYSTEM = """你是知识查询质量评估员。判断 Agent 的知识查询内容是否聚焦于当前任务。
+# ── 文本压缩 system prompt（用于超长文本预处理）──
 
-# 判断规则
-- 查询内容应与当前任务直接相关
-- 查询应包含足够的上下文信息（如漏洞类型、技术栈、具体代码位置等），而非泛泛的通用查询
-- 查询准确（query_accurate=true）的条件：
-  - 查询内容明确指向当前需要解决的问题
-  - 查询包含具体的技术上下文（如漏洞类型、框架名、函数名等）
-  - 查询范围适中，不过宽也不过窄
-- 查询不准确（query_accurate=false）的条件：
-  - 查询内容与当前任务无关或偏离主题
-  - 查询过于宽泛（如只查 "SQL注入" 而无具体上下文）
-  - 查询范围过宽，可能返回大量不相关结果
-  - 查询内容存在明显错误或误导性描述
+_PROMPT_COMPRESS_SYSTEM = """你是文本压缩器。将输入文本压缩成结构化摘要，保留完整语义，不丢失关键信息。
 
-只返回 JSON：
-{"query_accurate": true/false, "reason": "简要说明查询是否聚焦于当前任务及原因"}
-"""
+要求：
+1. 保留所有技术细节：函数名、文件名、漏洞类型、工具名、错误信息
+2. 保留逻辑结构：先做了什么、然后做了什么、结论是什么
+3. 删除冗余内容：重复描述、格式化空白、无关上下文
+4. 输出长度不超过原文的 1/3
 
-_PROMPT4_SYSTEM = """你是知识使用检测员。判断 Agent 的推理文本是否引用了知识返回的内容。
-
-# 引用的识别规则
-以下情况视为"使用了知识"（used=true）：
-1. 直接引用：推理文本中出现了知识返回内容中的关键词、函数名、模式描述
-2. 转述引用：推理文本用不同表述复述了知识返回的核心结论
-3. 基于知识的推理：推理文本中的判断逻辑明显基于知识返回的信息（如知识返回了 sink 函数列表，推理中据此筛选了候选 sink）
-4. 知识引导的决策：推理文本因知识返回内容改变了分析方向或决策
-
-以下情况视为"未使用知识"（used=false）：
-1. 推理文本完全没有提及知识返回的内容
-2. 推理文本虽然提到了相关概念，但可以从当前代码上下文直接推导，与知识返回无关
-3. 推理文本在知识查询前就已得出相同结论，知识返回未产生影响
-
-# 判断方法
-- 仔细比对 interaction.output_preview（知识返回内容摘要）与推理文本
-- 在推理文本中搜索知识返回内容的关键信息点（函数名、模式名、具体描述等）
-- 如果找到明确引用或基于知识的推理，判定为 used=true
-- 如果推理文本与知识返回内容无明确关联，判定为 used=false
-
-只返回 JSON：
-{"used": true/false, "reason": "简要说明推理文本是否引用了知识返回内容，引用了哪些具体内容"}
-"""
-
-# ── 挖掘 vs 验证 Agent 类型 ──
+只返回压缩后的文本，不要 JSON，不要额外说明。"""
 
 # 知识返回内容中的 error/timeout 标记
 _ERROR_MARKERS = ("error", "timeout", "timed out", "exception", "failed",
@@ -193,7 +235,10 @@ class LifecycleAnalyzer:
 
     def _analyze_one_case(self, evaluation_id: str, dp: DataPack,
                           reports_dir: str, cancel_cb=None) -> list[dict]:
-        """分析单个 case 的全部知识访问。"""
+        """分析单个 case 的全部知识访问。
+
+        对每个 access 执行一次统一的 LLM 调用，一次性判定 L1-L7。
+        """
         events = dp.events or []
         kf = dp.knowledge_fact
         if kf is None:
@@ -204,25 +249,26 @@ class LifecycleAnalyzer:
         if not accesses:
             return []
 
-        # access 级并行：每个 access 的 L0-L6 作为一个独立任务提交到 LLM gate 控制的线程池
-        # 这样即使只有 1 个 case，多个 access 也能并行调用 LLM
+        # 提取基线漏洞信息（整个 case 共享一份）
+        baseline_vuln_info = self._get_baseline_vuln_info(dp)
+
+        # access 级并行：每个 access 的 L1-L7 统一判定作为一个独立任务提交到 LLM gate
         records: list[dict | None] = [None] * len(accesses)
 
         if len(accesses) == 1:
-            # 单个 access，直接同步执行
             if cancel_cb:
                 cancel_cb()
             try:
-                records[0] = self._run_l0_l6(accesses[0], events, dp)
+                records[0] = self._run_l1_l7(accesses[0], events, dp,
+                                             baseline_vuln_info, cancel_cb)
             except Exception as e:
                 log("LIFECYCLE",
-                    f"L0-L6 failed for event_idx={accesses[0].get('event_idx')}: {str(e)[:200]}",
+                    f"L1-L7 failed for event_idx={accesses[0].get('event_idx')}: {str(e)[:200]}",
                     eval_id=evaluation_id)
                 raise
         else:
-            # 多个 access，用 submit_llm_batch 并行提交
             def _do_run(acc):
-                return self._run_l0_l6(acc, events, dp)
+                return self._run_l1_l7(acc, events, dp, baseline_vuln_info, cancel_cb)
 
             futures = llm_mod.submit_llm_batch(
                 _do_run,
@@ -235,28 +281,22 @@ class LifecycleAnalyzer:
                     records[i] = fut.result()
                 except Exception as e:
                     log("LIFECYCLE",
-                        f"L0-L6 failed for event_idx={accesses[i].get('event_idx')}: {str(e)[:200]}",
+                        f"L1-L7 failed for event_idx={accesses[i].get('event_idx')}: {str(e)[:200]}",
                         eval_id=evaluation_id)
                     raise
 
         # 过滤 None（失败的 access）
         records = [r for r in records if r is not None]
 
-        # L7 判定委托给 EvidenceChain
+        # 统计结果
         if records:
-            try:
-                from .evidence_chain import EvidenceChain
-                ec = EvidenceChain(llm_client=self.llm)
-                records = ec.judge_l7(evaluation_id, records, dp, reports_dir, cancel_cb)
-            except ImportError:
-                log("LIFECYCLE",
-                    "evidence_chain not yet implemented, L7 left as None",
-                    eval_id=evaluation_id)
-            except Exception as e:
-                log("LIFECYCLE",
-                    f"L7 judgment failed: {str(e)[:300]}",
-                    eval_id=evaluation_id)
-                raise
+            stats = {}
+            for r in records:
+                label = r.get("effect_label") or "NULL"
+                stats[label] = stats.get(label, 0) + 1
+            log("LIFECYCLE",
+                f"case done: {len(records)} records, results={stats}",
+                eval_id=evaluation_id)
 
         # 批量写入 knowledge_access_detail
         if records:
@@ -333,27 +373,6 @@ class LifecycleAnalyzer:
 
         return accesses
 
-    def _find_event_idx(self, events: list, session_id: str,
-                        timestamp: int | None, tool_name: str) -> int:
-        """通过 session_id + timestamp + tool_name 在 events 中找到 event_idx。
-
-        KnowledgeInteractionFact 的 interactions 不直接存 event_idx，
-        需要通过 session_id 和 timestamp 回查原始事件序号。
-        """
-        if timestamp is not None:
-            for idx, e in enumerate(events):
-                if (e.session_id == session_id
-                        and e.timestamp_ms == timestamp
-                        and (e.tool_name or "") == (tool_name or "")):
-                    return idx
-        # 降级：session_id + tool_name + 最近的 TOOL_CALL
-        for idx, e in enumerate(events):
-            if (e.session_id == session_id
-                    and (e.tool_name or "") == (tool_name or "")
-                    and e.is_tool_call()):
-                return idx
-        return -1
-
     def _extract_event_text(self, e: RawEvent) -> str:
         """从 RawEvent 提取文本内容（REASONING/MESSAGE/TEXT）。"""
         if e.input_json is not None:
@@ -377,11 +396,15 @@ class LifecycleAnalyzer:
                 return json.dumps(e.output_json, ensure_ascii=False)
         return ""
 
-    def _run_l0_l6(self, access: dict,
-                   events: list, dp: DataPack) -> dict:
-        """对单次知识访问执行 L0-L6 判定。
+    def _run_l1_l7(self, access: dict, events: list, dp: DataPack,
+                   baseline_vuln_info: dict, cancel_cb=None) -> dict:
+        """对单次知识访问执行 L1-L7 统一判定（一次 LLM 调用）。
 
-        返回 dict 含 l0_origin~l6_used + cause_code。
+        L0（来源标记）仍由程序判定。
+        L1-L7 全部交给 LLM，一次调用输出全部结果。
+
+        当文本数据超过 LLM 上下文窗口时，先用 LLM 逐字段压缩，
+        再拼接压缩后的摘要发给统一判定 LLM。不截断。
         """
         task_run_id = dp.task_run_id
         event_idx = access.get("event_idx", 0)
@@ -393,155 +416,326 @@ class LifecycleAnalyzer:
         l0_origin = self._determine_l0_origin(access, interaction, dp)
 
         # 提取推理上下文：知识访问前 agent 的行为上下文
-        # 优先从 events 列表取 REASONING/TEXT（agent 推理文本），
-        # 取不到时用 interaction 自身的 command 作为上下文
         reasoning_context = self._extract_reasoning_context(events, event_idx)
         if not reasoning_context:
-            reasoning_context = str(interaction.get("command", "") or "")[:2000]
+            reasoning_context = str(interaction.get("command", "") or "")
 
         # 提取查询内容
         query_content = str(interaction.get("command", "") or "")
 
-        # 提取返回内容（从配对的 RESULT 事件获取）
+        # 提取返回内容
         returned_content = self._get_output_preview(access, interaction)
 
         # 提取推理引用文本：知识访问后 agent 的行为上下文
-        # 优先从 events 列表取 REASONING/TEXT，
-        # 取不到时用 interaction 的 follow_up（后续工具调用摘要）作为上下文
         reasoning_ref = self._extract_reasoning_ref(events, event_idx)
         if not reasoning_ref:
             follow_up = interaction.get("follow_up")
             if follow_up:
                 import json as _json
-                reasoning_ref = _json.dumps(follow_up, ensure_ascii=False)[:3000]
+                reasoning_ref = _json.dumps(follow_up, ensure_ascii=False)
             else:
-                reasoning_ref = str(interaction.get("output", "") or "")[:3000]
+                reasoning_ref = str(interaction.get("output", "") or "")
 
         # 提取判定结论
         judgment_conclusion = self._get_judgment_conclusion(dp)
 
-        # 获取漏洞类型（从 benchmark_item）
+        # 获取漏洞类型
         vuln_type = self._get_vuln_type(dp)
 
-        # ── L1: 需要知识？(LLM Prompt 2) ──
-        l1_need = self._judge_l1(vuln_type, reasoning_context,
-                                 dp, cancel_cb=None)
+        # 提取调用链经过的 session 列表
+        session_chain = self._extract_session_chain(events, event_idx, dp)
 
-        if not l1_need:
-            # L1=False → 全链短路，无断点
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=False, l2_initiated=None, l3_query_accurate=None,
-                l4_knowledge_exists=None, l5_retrieved=None, l6_used=None,
-                l7_influenced=None, l7_method=None,
-                effect_label=None, cause_code=None,
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"l1_reason": l1_need},
-            )
+        # LLM 不可用时降级为规则判定
+        if not self._llm_available():
+            return self._run_l1_l7_degraded(access, events, dp, baseline_vuln_info,
+                                             access_id, event_idx, source_system,
+                                             l0_origin, reasoning_context,
+                                             query_content, returned_content,
+                                             reasoning_ref, judgment_conclusion,
+                                             vuln_type, session_chain)
 
-        # ── L2: 发起访问？(程序判定) ──
-        l2_initiated = access.get("is_kg", False) or access.get("is_mem", False)
+        # ── 文本压缩：当总文本量可能超出上下文窗口时，逐字段 LLM 压缩 ──
+        reasoning_context, query_content, returned_content, reasoning_ref = \
+            self._compress_if_needed(
+                reasoning_context, query_content, returned_content, reasoning_ref,
+                dp.evaluation_id, cancel_cb)
 
-        if not l2_initiated:
+        # 构建统一 LLM 调用
+        baseline_source = baseline_vuln_info.get("source")
+        if baseline_source is None:
+            baseline_source_str = "（基线无结构化 source 信息，请从描述中推断）"
+        else:
+            baseline_source_str = str(baseline_source)
+
+        user_content = (
+            f"漏洞类型: {vuln_type}\n\n"
+            f"推理上下文（知识访问前）:\n{reasoning_context}\n\n"
+            f"查询内容:\n{query_content}\n\n"
+            f"返回内容:\n{returned_content}\n\n"
+            f"推理引用（知识访问后）:\n{reasoning_ref}\n\n"
+            f"判定结论: {judgment_conclusion}\n\n"
+            f"基线漏洞信息:\n"
+            f"  漏洞类型: {baseline_vuln_info.get('vuln_type', '')}\n"
+            f"  Source: {baseline_source_str}\n"
+            f"  Sink: {baseline_vuln_info.get('sink', '')}\n"
+            f"  文件: {baseline_vuln_info.get('file', '')}\n"
+            f"  描述: {baseline_vuln_info.get('description', '')}\n\n"
+            f"调用链经过的 session:\n{session_chain}\n\n"
+            f"请对这次知识访问执行 L1-L7 全部判定。"
+        )
+
+        messages = [
+            {"role": "system", "content": _PROMPT_UNIFIED_SYSTEM},
+            {"role": "user", "content": user_content},
+        ]
+
+        try:
+            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
+                                         reasoning_effort="low")
+        except Exception as e:
+            log("LIFECYCLE",
+                f"L1-L7 LLM failed, falling back to rule: {str(e)[:200]}",
+                eval_id=dp.evaluation_id)
+            return self._run_l1_l7_degraded(access, events, dp, baseline_vuln_info,
+                                             access_id, event_idx, source_system,
+                                             l0_origin, reasoning_context,
+                                             query_content, returned_content,
+                                             reasoning_ref, judgment_conclusion,
+                                             vuln_type, session_chain)
+
+        # 从 LLM 结果构建 record
+        l1 = result.get("l1_need_knowledge")
+        l2 = result.get("l2_initiated")
+        l3 = result.get("l3_query_accurate")
+        l4 = result.get("l4_knowledge_exists")
+        l5 = result.get("l5_retrieved")
+        l6 = result.get("l6_used")
+        l7_correct = result.get("l7_knowledge_correct")
+        l7_consistent = result.get("l7_direction_consistent")
+        l7_conf = result.get("l7_confidence")
+        effect_label = result.get("effect_label")
+        cause_code = result.get("cause_code")
+        reason = result.get("reason", "")
+
+        # 推断 l7_influenced
+        l7_influenced = None
+        if l7_conf is not None and l7_conf >= L7_CONFIDENCE_THRESHOLD:
+            l7_influenced = l7_consistent
+
+        evidence = {
+            "l1_reason": reason,
+            "l7_knowledge_correct": l7_correct,
+            "l7_direction_consistent": l7_consistent,
+            "l7_confidence": l7_conf,
+            "session_chain": session_chain,
+        }
+
+        return self._make_record(
+            access_id, dp, event_idx, source_system, l0_origin,
+            l1_need_knowledge=l1, l2_initiated=l2, l3_query_accurate=l3,
+            l4_knowledge_exists=l4, l5_retrieved=l5, l6_used=l6,
+            l7_influenced=l7_influenced, l7_method="UNIFIED_LLM",
+            effect_label=effect_label, cause_code=cause_code,
+            query_content=query_content, returned_content=returned_content,
+            reasoning_ref=reasoning_ref,
+            judgment_conclusion=judgment_conclusion,
+            evidence_json=evidence,
+        )
+
+    def _compress_if_needed(self, reasoning_context: str, query_content: str,
+                            returned_content: str, reasoning_ref: str,
+                            evaluation_id: str, cancel_cb=None
+                            ) -> tuple[str, str, str, str]:
+        """当文本总量可能超出上下文窗口时，逐字段 LLM 压缩。
+
+        策略（不截断）：
+        1. 估算总 token 数（chars / chars_per_token）
+        2. 如超过安全阈值，对超长字段逐个用 LLM 压缩成结构化摘要
+        3. 压缩 LLM 本身失败时，用采样（取首/尾/中间有标记的段落）替代
+        4. 短字段不压缩
+        """
+        max_tokens = llm_mod.get_max_context_tokens() or _DEFAULT_MAX_CONTEXT_TOKENS
+        chars_per_token = llm_mod.get_chars_per_token()
+        safe_limit_chars = int(max_tokens * _CONTEXT_SAFETY_RATIO * chars_per_token)
+
+        fields = [
+            ("推理上下文", reasoning_context),
+            ("查询内容", query_content),
+            ("返回内容", returned_content),
+            ("推理引用", reasoning_ref),
+        ]
+
+        total_chars = sum(len(v) for _, v in fields)
+        if total_chars <= safe_limit_chars:
+            # 总量在安全范围内，无需压缩
+            return reasoning_context, query_content, returned_content, reasoning_ref
+
+        log("LIFECYCLE",
+            f"文本总量 {total_chars} chars 超过安全阈值 {safe_limit_chars} chars "
+            f"(max_tokens={max_tokens}, c/t={chars_per_token:.2f})，开始压缩",
+            eval_id=evaluation_id)
+
+        compressed: list[str] = []
+        for label, text in fields:
+            if len(text) <= _COMPRESS_THRESHOLD_CHARS:
+                compressed.append(text)
+                continue
+            try:
+                summary = self._compress_text(text, cancel_cb=cancel_cb)
+                log("LIFECYCLE",
+                    f"压缩 {label}: {len(text)} → {len(summary)} chars",
+                    eval_id=evaluation_id)
+                compressed.append(summary)
+            except Exception as e:
+                log("LIFECYCLE",
+                    f"压缩 {label} 失败 ({str(e)[:100]})，改用采样",
+                    eval_id=evaluation_id)
+                compressed.append(self._sample_text(text))
+
+        return compressed[0], compressed[1], compressed[2], compressed[3]
+
+    def _compress_text(self, text: str, cancel_cb=None) -> str:
+        """用 LLM 将长文本压缩成结构化摘要。"""
+        messages = [
+            {"role": "system", "content": _PROMPT_COMPRESS_SYSTEM},
+            {"role": "user", "content": text},
+        ]
+        return self._call_llm_chat(messages, cancel_cb=cancel_cb,
+                                   reasoning_effort="none")
+
+    def _sample_text(self, text: str) -> str:
+        """LLM 压缩失败时的采样降级：取首/中/尾段，保留完整句子。
+
+        不截断——用省略号标记采样边界，保留每段完整语义。
+        """
+        if len(text) <= 4000:
+            return text
+        third = len(text) // 3
+        # 找到最近的句子边界
+        def _find_sentence_boundary(s: str, start: int, direction: int = 1) -> int:
+            for i in range(start, min(start + 200, len(s)), direction):
+                if s[i] in '.。\n！!？?；;':
+                    return i + 1
+            return start
+
+        part1_end = _find_sentence_boundary(text, third)
+        part2_start = _find_sentence_boundary(text, third * 2)
+        part2_end = _find_sentence_boundary(text, third * 2 + 1500)
+
+        parts = [
+            text[:part1_end],
+            f"\n[...省略中间部分...]\n",
+            text[part2_start:part2_end],
+            f"\n[...省略后续部分...]\n",
+            text[-1500:],
+        ]
+        return "".join(parts)
+
+    def _extract_session_chain(self, events: list, event_idx: int,
+                               dp: DataPack) -> str:
+        """提取调用链经过的 session 列表。
+
+        从 session_graph 构建 session 调用链，
+        格式化为 "session_id -> session_id -> ..." 字符串。
+        """
+        session_graph = dp.session_graph or {}
+        session_meta = dp.session_meta or {}
+
+        # 收集所有涉及的 session
+        session_ids = set()
+        for e in events:
+            if e.session_id:
+                session_ids.add(e.session_id)
+
+        if not session_ids:
+            return "（无 session 信息）"
+
+        # 构建 session 链（按 parent_id 关系排序）
+        # session_graph 格式: {session_id: {"parent_id": "xxx", ...}}
+        chain = []
+        visited = set()
+        # 找根 session（没有 parent 的）
+        roots = []
+        for sid in session_ids:
+            info = session_graph.get(sid, {})
+            parent = info.get("parent_id") if isinstance(info, dict) else None
+            if not parent or parent not in session_ids:
+                roots.append(sid)
+
+        # BFS 从根开始构建链
+        from collections import deque
+        queue = deque(roots)
+        while queue:
+            sid = queue.popleft()
+            if sid in visited:
+                continue
+            visited.add(sid)
+            meta = session_meta.get(sid, {}) if isinstance(session_meta, dict) else {}
+            agent_name = ""
+            if isinstance(meta, dict):
+                agent_name = meta.get("agent_name", "") or meta.get("task_type", "")
+            chain.append(f"{sid} ({agent_name})" if agent_name else sid)
+
+            # 找子 session
+            for other_sid in session_ids:
+                if other_sid in visited:
+                    continue
+                info = session_graph.get(other_sid, {})
+                if isinstance(info, dict) and info.get("parent_id") == sid:
+                    queue.append(other_sid)
+
+        return " → ".join(chain) if chain else "（无法构建调用链）"
+
+    def _run_l1_l7_degraded(self, access, events, dp, baseline_vuln_info,
+                            access_id, event_idx, source_system,
+                            l0_origin, reasoning_context,
+                            query_content, returned_content,
+                            reasoning_ref, judgment_conclusion,
+                            vuln_type, session_chain) -> dict:
+        """LLM 不可用时的降级规则判定。"""
+        # L1: 默认需要知识
+        l1 = True
+        # L2: 程序判定
+        l2 = access.get("is_kg", False) or access.get("is_mem", False)
+        if not l2:
             return self._make_record(
                 access_id, dp, event_idx, source_system, l0_origin,
                 l1_need_knowledge=True, l2_initiated=False,
                 l3_query_accurate=None, l4_knowledge_exists=None,
                 l5_retrieved=None, l6_used=None,
-                l7_influenced=None, l7_method=None,
+                l7_influenced=None, l7_method="RULE",
                 effect_label=None, cause_code="A",
                 query_content=query_content, returned_content=returned_content,
                 reasoning_ref=reasoning_ref,
                 judgment_conclusion=judgment_conclusion,
-                evidence_json={"breakpoint": "L2", "cause": "该查没查"},
+                evidence_json={"degraded": True, "session_chain": session_chain},
             )
+        # L3: 查询非空即准确
+        l3 = bool(query_content and query_content.strip())
+        # L4: 返回非空
+        l4 = bool(returned_content and returned_content.strip()
+                  and returned_content.strip() not in ("", "[]", "{}", "null"))
+        # L5: 无 error
+        l5 = not self._has_error(returned_content) if l4 else False
+        # L6: 推理引用非空
+        l6 = bool(reasoning_ref and reasoning_ref.strip()) if l5 else False
 
-        # ── L3: 查询准确？(LLM Prompt 3) ──
-        l3_accurate = self._judge_l3(query_content,
-                                     reasoning_context, dp, cancel_cb=None)
+        cause = None
+        if not l3: cause = "B"
+        elif not l4: cause = "C"
+        elif not l5: cause = "D"
+        elif not l6: cause = "E"
 
-        if not l3_accurate:
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=True, l2_initiated=True,
-                l3_query_accurate=False, l4_knowledge_exists=None,
-                l5_retrieved=None, l6_used=None,
-                l7_influenced=None, l7_method=None,
-                effect_label=None, cause_code="B",
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"breakpoint": "L3", "cause": "查询太泛"},
-            )
-
-        # ── L4: 知识存在？(程序判定，output_preview 非空) ──
-        l4_exists = bool(returned_content and returned_content.strip()
-                         and returned_content.strip() not in ("", "[]", "{}", "null"))
-
-        if not l4_exists:
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=True, l2_initiated=True,
-                l3_query_accurate=True, l4_knowledge_exists=False,
-                l5_retrieved=None, l6_used=None,
-                l7_influenced=None, l7_method=None,
-                effect_label=None, cause_code="C",
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"breakpoint": "L4", "cause": "查了没得"},
-            )
-
-        # ── L5: 成功取回？(程序判定，无 error/timeout) ──
-        l5_retrieved = not self._has_error(returned_content)
-
-        if not l5_retrieved:
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=True, l2_initiated=True,
-                l3_query_accurate=True, l4_knowledge_exists=True,
-                l5_retrieved=False, l6_used=None,
-                l7_influenced=None, l7_method=None,
-                effect_label=None, cause_code="D",
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"breakpoint": "L5", "cause": "链路问题"},
-            )
-
-        # ── L6: 推理引用？(LLM Prompt 4) ──
-        l6_used = self._judge_l6(returned_content,
-                                  reasoning_ref, dp, cancel_cb=None)
-
-        if not l6_used:
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=True, l2_initiated=True,
-                l3_query_accurate=True, l4_knowledge_exists=True,
-                l5_retrieved=True, l6_used=False,
-                l7_influenced=None, l7_method=None,
-                effect_label=None, cause_code="E",
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"breakpoint": "L6", "cause": "查到没用"},
-            )
-
-        # L6=True → L7 在 evidence_chain.py 中判定
-        # 此处先写入 L0-L6 结果，L7 字段留空
         return self._make_record(
             access_id, dp, event_idx, source_system, l0_origin,
-            l1_need_knowledge=True, l2_initiated=True,
-            l3_query_accurate=True, l4_knowledge_exists=True,
-            l5_retrieved=True, l6_used=True,
-            l7_influenced=None, l7_method=None,
-            effect_label=None, cause_code=None,
+            l1_need_knowledge=l1, l2_initiated=l2, l3_query_accurate=l3,
+            l4_knowledge_exists=l4, l5_retrieved=l5, l6_used=l6,
+            l7_influenced=None, l7_method="RULE",
+            effect_label=None, cause_code=cause,
             query_content=query_content, returned_content=returned_content,
             reasoning_ref=reasoning_ref,
             judgment_conclusion=judgment_conclusion,
-            evidence_json={"status": "pending_l7"},
+            evidence_json={"degraded": True, "session_chain": session_chain},
         )
 
     def _determine_l0_origin(self, access: dict, interaction: dict,
@@ -585,131 +779,6 @@ class LifecycleAnalyzer:
             if m:
                 return m.group(1).strip()
         return None
-
-    def _judge_l1(self, vuln_type: str,
-                   reasoning_context: str, dp: DataPack,
-                   cancel_cb=None) -> bool:
-        """L1: 判断该场景是否需要知识支撑。
-
-        优先用 LLM Prompt 2 判定。LLM 不可用时降级为规则。
-        """
-        if not self._llm_available():
-            return self._judge_l1_rule()
-
-        user_content = (
-            f"漏洞类型: {vuln_type}\n\n"
-            f"推理上下文:\n{reasoning_context[:2000]}\n\n"
-            f"判断该场景是否需要外部知识支撑。"
-        )
-        messages = [
-            {"role": "system", "content": _PROMPT2_SYSTEM},
-            {"role": "user", "content": user_content},
-        ]
-        try:
-            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
-            return bool(result.get("need_knowledge", False))
-        except Exception as e:
-            log("LIFECYCLE",
-                f"L1 LLM failed, falling back to rule: {str(e)[:200]}",
-                eval_id=dp.evaluation_id)
-            return self._judge_l1_rule()
-
-    def _judge_l1_rule(self) -> bool:
-        """L1 降级规则：默认需要知识。
-
-        不再依赖业务阶段判定——Agent 级别判定即可。
-        """
-        return True
-
-    def _judge_l3(self, query_content: str,
-                  reasoning_context: str, dp: DataPack,
-                  cancel_cb=None) -> bool:
-        """L3: 判断查询是否聚焦于当前任务。
-
-        优先用 LLM Prompt 3。LLM 不可用时降级为查询非空即准确。
-        """
-        if not self._llm_available():
-            return self._judge_l3_rule(query_content)
-
-        user_content = (
-            f"查询内容: {query_content[:1000]}\n\n"
-            f"推理上下文:\n{reasoning_context[:2000]}\n\n"
-            f"判断查询内容是否聚焦于当前任务。"
-        )
-        messages = [
-            {"role": "system", "content": _PROMPT3_SYSTEM},
-            {"role": "user", "content": user_content},
-        ]
-        try:
-            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
-            return bool(result.get("query_accurate", False))
-        except Exception as e:
-            log("LIFECYCLE",
-                f"L3 LLM failed, falling back to rule: {str(e)[:200]}",
-                eval_id=dp.evaluation_id)
-            return self._judge_l3_rule(query_content)
-
-    def _judge_l3_rule(self, query_content: str) -> bool:
-        """L3 降级规则：查询非空即准确。"""
-        return bool(query_content and query_content.strip())
-
-    def _judge_l6(self, returned_content: str,
-                  reasoning_ref: str, dp: DataPack,
-                  cancel_cb=None) -> bool:
-        """L6: 判断推理文本是否引用了知识返回内容。
-
-        优先用 LLM Prompt 4。LLM 不可用时降级为推理文本含知识关键词即引用。
-        """
-        if not self._llm_available():
-            return self._judge_l6_rule(returned_content, reasoning_ref)
-
-        user_content = (
-            f"知识返回内容摘要:\n{returned_content[:2000]}\n\n"
-            f"推理文本:\n{reasoning_ref[:3000]}\n\n"
-            f"判断推理文本是否引用了知识返回的内容。"
-        )
-        messages = [
-            {"role": "system", "content": _PROMPT4_SYSTEM},
-            {"role": "user", "content": user_content},
-        ]
-        try:
-            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="none")
-            return bool(result.get("used", False))
-        except Exception as e:
-            log("LIFECYCLE",
-                f"L6 LLM failed, falling back to rule: {str(e)[:200]}",
-                eval_id=dp.evaluation_id)
-            return self._judge_l6_rule(returned_content, reasoning_ref)
-
-    def _judge_l6_rule(self, returned_content: str, reasoning_ref: str) -> bool:
-        """L6 降级规则：推理文本含知识关键词即引用。
-
-        从知识返回内容中提取关键词（函数名、模式名等），
-        检查推理文本中是否包含这些关键词。
-        """
-        if not returned_content or not reasoning_ref:
-            return False
-        # 提取知识返回内容中的词（长度>3 的连续字母/数字串）
-        keywords = re.findall(r'[a-zA-Z_][a-zA-Z0-9_]{3,}', returned_content)
-        # 去重，取前 20 个
-        seen = set()
-        unique_keywords = []
-        for kw in keywords:
-            kl = kw.lower()
-            if kl not in seen:
-                seen.add(kl)
-                unique_keywords.append(kw)
-            if len(unique_keywords) >= 20:
-                break
-        # 在推理文本中搜索关键词
-        reasoning_lower = reasoning_ref.lower()
-        for kw in unique_keywords:
-            if kw.lower() in reasoning_lower:
-                return True
-        return False
 
     def _has_error(self, content: str) -> bool:
         """L5: 检查返回内容是否含 error/timeout 标记。"""
@@ -828,31 +897,22 @@ class LifecycleAnalyzer:
                                 max_tokens=max_tokens,
                                 cancel_cb=cancel_cb)
 
-    def _determine_cause_code(self, l1, l2, l3, l4, l5, l6) -> str | None:
-        """根据 L1-L6 判定结果确定 cause_code。
+    def _call_llm_chat(self, messages: list, **kwargs) -> str:
+        """调用 LLM chat（纯文本返回），用于文本压缩等非 JSON 场景。"""
+        cancel_cb = kwargs.pop("cancel_cb", None)
+        reasoning_effort = kwargs.pop("reasoning_effort", "none")
+        max_tokens = kwargs.pop("max_tokens", None)
 
-        漏斗逻辑：从 L1 逐级向下，第一个 False 即为断点。
-        L1=False → 全链短路，无断点，返回 None
-        L2=False → A（该查没查）
-        L3=False → B（查询太泛）
-        L4=False → C（查了没得）
-        L5=False → D（链路问题）
-        L6=False → E（查到没用）
-        全 True → None（L7 在 evidence_chain 中判定）
-        """
-        if not l1:
-            return None  # L1=False: 不需要知识，无断点
-        if not l2:
-            return "A"  # 该查没查
-        if not l3:
-            return "B"  # 查询太泛
-        if not l4:
-            return "C"  # 查了没得
-        if not l5:
-            return "D"  # 链路问题
-        if not l6:
-            return "E"  # 查到没用
-        return None  # L6=True, L7 在 evidence_chain 中判定
+        if self.llm is not None:
+            if hasattr(self.llm, "chat"):
+                return self.llm.chat(messages, temperature=0,
+                                     reasoning_effort=reasoning_effort,
+                                     max_tokens=max_tokens,
+                                     cancel_cb=cancel_cb)
+        return llm_mod.chat(messages, temperature=0,
+                           reasoning_effort=reasoning_effort,
+                           max_tokens=max_tokens,
+                           cancel_cb=cancel_cb)
 
     def _make_record(self, access_id: str, dp: DataPack, event_idx: int,
                      source_system: str, l0_origin: str,
