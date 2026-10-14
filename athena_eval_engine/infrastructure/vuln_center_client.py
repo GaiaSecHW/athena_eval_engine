@@ -6,7 +6,7 @@
 分别标记为 VULNERABLE 和 NON_VULNERABLE。
 
 本 client 在评测基线「漏洞中心数据」模式下替代 ``vbench_client.get_benchmark``，
-归一成同构的 ``{cases: [{case_id, vulnerability_type, description, target_finding_id, expected_label}]}``。
+归一成同构的 ``{cases: [{case_id, vulnerability_type, description, expected_label}]}``。
 
 description 渲染完全移植 V-Bench builder 的
 ``vbench_next/app/upstream/import_service.py:normalize_case_description``（6 段），
@@ -90,7 +90,7 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
 
 
 def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
-                            page_size: int = 1000, max_pages: int = 100) -> list[dict]:
+                            page_size: int = 100, max_pages: int = 1000) -> list[dict]:
     """分页拉取告警中心 case。
 
     ``scope=alert_center`` + ``project_id`` + 可选 ``source_task_ids`` 做项目/任务级过滤。
@@ -100,10 +100,12 @@ def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
     - ``current_status``: pending / completed
     - ``latest_engine_decision``: 引擎最新决策
     - ``confirm_terminal_status``: 引擎处理终态
+
+    拉取策略：先查总条数，再并行分页拉取。
     """
-    accumulated: list[dict] = []
-    total: int | None = None
-    for page in range(1, max_pages + 1):
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _build_params(page: int, ps: int) -> dict[str, str | int]:
         params: dict[str, str | int] = {
             "scope": "alert_center",
             "project_id": project_id,
@@ -111,21 +113,57 @@ def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
             "sort_direction": "desc",
             "include_decision_reason": "true",
             "page": page,
-            "page_size": page_size,
+            "page_size": ps,
         }
         if source_task_id:
             params["source_task_ids"] = source_task_id
-        data = _get(VULN_CENTER_API_URL, params)
-        items = data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
-        accumulated.extend(items)
-        if total is None:
-            total = data.get("total") if isinstance(data, dict) else None
-        if not items:
-            break
-        if total is not None and len(accumulated) >= total:
-            break
-        if total is None and len(items) < page_size:
-            break
+        return params
+
+    # 先查总条数（page_size=1，只取 1 条拿 total）
+    first_data = _get(VULN_CENTER_API_URL, _build_params(1, 1))
+    total = first_data.get("total") if isinstance(first_data, dict) else None
+    if not total:
+        # 没有数据或 API 不返回 total，回退到串行翻页
+        items = first_data.get("items", []) if isinstance(first_data, dict) else []
+        accumulated = list(items)
+        page = 2
+        while page <= max_pages:
+            data = _get(VULN_CENTER_API_URL, _build_params(page, page_size))
+            items = data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+            if not items:
+                break
+            accumulated.extend(items)
+            if len(items) < page_size:
+                break
+            page += 1
+        return accumulated
+
+    # 算总页数
+    import math
+    num_pages = min(math.ceil(total / page_size), max_pages)
+    log("VULN_CENTER", f"告警中心: total={total}, page_size={page_size}, "
+          f"pages={num_pages}")
+
+    # 并行拉取所有页
+    def _fetch_page(page: int) -> list[dict]:
+        data = _get(VULN_CENTER_API_URL, _build_params(page, page_size))
+        return data.get("items", []) if isinstance(data, dict) else (data if isinstance(data, list) else [])
+
+    accumulated: list[dict] = []
+    max_workers = min(num_pages, 10)
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_page, p): p for p in range(1, num_pages + 1)}
+        for fut in futures:
+            page = futures[fut]
+            try:
+                items = fut.result()
+                accumulated.extend(items)
+            except Exception as e:
+                log("VULN_CENTER", f"拉取第 {page}/{num_pages} 页失败: {e}")
+
+    # 按创建时间降序排序（并行拉取后顺序乱了）
+    accumulated.sort(key=lambda c: c.get("created_at", ""), reverse=True)
+    log("VULN_CENTER", f"告警中心拉取完成: {len(accumulated)}/{total} 条")
     return accumulated
 
 
@@ -326,7 +364,6 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
         "case_id": c.get("id") or "",
         "vulnerability_type": c.get("title") or subject.get("type") or "",
         "description": _normalize_case_description(c),
-        "target_finding_id": (c.get("source_task") or {}).get("finding_id"),
         "expected_label": expected_label,
         "source_file": source_file,
         "source_function": source_function,

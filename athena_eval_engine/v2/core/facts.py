@@ -33,7 +33,6 @@ class OutcomeFact(BaseModel):
     gt_label: ExpectedLabel | None = None
     prediction: Prediction | None = None
     outcome: Outcome
-    target_finding_id: str | None = None
     validation_result: str | None = None  # CONFIRMED / FALSE_POSITIVE / NA
     resolver_status: str  # RESOLVED / NO_FINDING / NO_UPDATE / NO_GT / BENCHMARK_UNMATCHED / PARSE_ERROR / AI_MATCHED / AI_MATCH_ERROR / AI_AMBIGUOUS / AI_UNMATCHED / NO_VALIDATION
     resolver_version: str = "1.0"

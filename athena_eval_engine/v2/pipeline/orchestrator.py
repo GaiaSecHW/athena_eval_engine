@@ -493,9 +493,10 @@ class Orchestrator:
     def _ingest(self, evaluation_id: str) -> tuple:
         """取基线 case 详情 + 告警中心数据。
 
-        从 evaluation_snapshot 表读 manifest（entries + benchmark_source），
-        按数据源（vuln_center 或 vbench_zip）取基线 case 详情，
-        并从告警中心获取 AC case 数据。
+        - runtime（vuln_center）：从告警中心取一次数据，validation_result 即标准答案，
+          不再从漏洞中心取基线（同一份数据取两次是冗余的）。
+        - dev（vbench_zip）：从 V-Bench 测评数据集取基线。
+        - 告警中心数据同时供 CALCULATING 和 LIFECYCLE_ANALYSIS 使用。
 
         返回:
             (benchmark_items, case_details, alert_center_data, entries, cfg)
@@ -526,89 +527,11 @@ class Orchestrator:
         manifest = cfg.get("manifest", {})
         entries = manifest.get("entries", [])
         bm_source = manifest.get("benchmark_source", "vbench_zip")
-        vc_task_id = manifest.get("vc_source_task_id")
 
         case_details: dict[str, dict] = {}
         alert_center_data: dict = {}
 
-        # 取基线 case 详情
-        if bm_source == "vuln_center":
-            # 从 entries 提取 source_task_id（如果未指定）
-            if not vc_task_id:
-                for e in entries:
-                    src = e.get("source_uri", "") or ""
-                    import re
-                    m = re.search(r"/tasks/([^/]+)", src)
-                    if m:
-                        vc_task_id = m.group(1)
-                        break
-
-            from ...infrastructure.vuln_center_client import (
-                get_vuln_center_benchmark,
-            )
-            log("INGEST", f"漏洞中心取基线: project={benchmark_set_id} "
-                  f"task={vc_task_id}")
-            bm = get_vuln_center_benchmark(benchmark_set_id, vc_task_id)
-            n_cases = len(bm.get("cases") or [])
-            log("INGEST", f"漏洞中心返回 {n_cases} 条 case")
-
-            if n_cases == 0 and vc_task_id:
-                log("INGEST", "不带 task 过滤重试")
-                bm = get_vuln_center_benchmark(benchmark_set_id, None)
-                n_cases = len(bm.get("cases") or [])
-                log("INGEST", f"不带 task 过滤返回 {n_cases} 条 case")
-
-            for c in (bm.get("cases") or []):
-                cid = c.get("case_id") or c.get("id") or ""
-                if cid:
-                    case_details[cid] = {
-                        "description": c.get("description") or "",
-                        "vulnerability_type": c.get("vulnerability_type") or "",
-                        "target_finding_id": c.get("target_finding_id") or "",
-                        "expected_label": c.get("expected_label") or "VULNERABLE",
-                        "source_file": c.get("source_file") or "",
-                        "source_function": c.get("source_function") or "",
-                        "source_line": c.get("source_line") or "",
-                        "locator": c.get("locator") or "",
-                        "false_positive_group": c.get("false_positive_group") or "",
-                        "false_positive_reason": c.get("false_positive_reason") or "",
-                        "human_confirmation_summary": c.get("human_confirmation_summary") or "",
-                    }
-
-        elif bm_source == "vbench_zip":
-            from ...infrastructure.vbench_client import get_benchmark
-            log("INGEST", f"V-Bench 取基线: set_id={benchmark_set_id}")
-            bm = get_benchmark(benchmark_set_id)
-            all_cases = bm.get("cases") or []
-            for c in all_cases:
-                cid = c.get("case_id") or c.get("id") or ""
-                if cid:
-                    findings = c.get("findings") or []
-                    desc = (" ".join(
-                        f.get("explanation", "")
-                        for f in findings if f.get("explanation")
-                    ) or c.get("description", "")
-                     or c.get("vulnerability_type", "") or "")
-                    case_details[cid] = {
-                        "description": desc,
-                        "vulnerability_type": c.get("vulnerability_type")
-                        or c.get("category") or "",
-                        "target_finding_id": c.get("target_finding_id") or "",
-                        "expected_label": c.get("expected_label")
-                        or "VULNERABLE",
-                        "source_file": c.get("source_file") or "",
-                        "source_function": c.get("source_function") or "",
-                        "source_line": c.get("source_line") or "",
-                    }
-
-        if not case_details:
-            raise ValueError(
-                "无法获取基线数据（case_details 为空），"
-                "没有基线的评测无意义。"
-                "请检查 benchmark_source 配置、V-Bench/漏洞中心服务连通性后重试。"
-            )
-
-        # 获取告警中心数据
+        # ── 获取告警中心数据（runtime 和 dev 都需要）──
         _ac_pairs: list[tuple[str, str]] = []
         _seen: set[tuple[str, str]] = set()
         for e in entries:
@@ -674,6 +597,71 @@ class Orchestrator:
                 raise ValueError(
                     f"取告警中心数据失败: {e}"
                 ) from e
+
+        # ── 取基线 case 详情 ──
+        if bm_source == "vuln_center":
+            # 运行态：直接从告警中心数据填充 case_details
+            # validation_result 即标准答案，不需要从漏洞中心再取一遍
+            from ...infrastructure.vuln_center_client import (
+                _case_to_benchmark, _parse_locator,
+            )
+            log("INGEST", f"运行态: 从告警中心数据构建基线 "
+                  f"({len(alert_center_data.get('cases', []))} 条)")
+            for c in alert_center_data.get("cases", []):
+                vr = c.get("validation_result")
+                # 只取人工已判定的 case（vulnerable / not_vulnerable）
+                # pending / inconclusive 不参与评测
+                if vr not in ("vulnerable", "not_vulnerable"):
+                    continue
+                expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
+                bm = _case_to_benchmark(c, expected_label)
+                cid = bm.get("case_id") or ""
+                if cid:
+                    case_details[cid] = {
+                        "description": bm.get("description") or "",
+                        "vulnerability_type": bm.get("vulnerability_type") or "",
+                        "expected_label": expected_label,
+                        "source_file": bm.get("source_file") or "",
+                        "source_function": bm.get("source_function") or "",
+                        "source_line": bm.get("source_line") or "",
+                        "locator": bm.get("locator") or "",
+                        "false_positive_group": bm.get("false_positive_group") or "",
+                        "false_positive_reason": bm.get("false_positive_reason") or "",
+                        "human_confirmation_summary": bm.get("human_confirmation_summary") or "",
+                    }
+
+        elif bm_source == "vbench_zip":
+            # 开发态：从 V-Bench 测评数据集取基线
+            from ...infrastructure.vbench_client import get_benchmark
+            log("INGEST", f"开发态: V-Bench 取基线: set_id={benchmark_set_id}")
+            bm = get_benchmark(benchmark_set_id)
+            all_cases = bm.get("cases") or []
+            for c in all_cases:
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    findings = c.get("findings") or []
+                    desc = (" ".join(
+                        f.get("explanation", "")
+                        for f in findings if f.get("explanation")
+                    ) or c.get("description", "")
+                     or c.get("vulnerability_type", "") or "")
+                    case_details[cid] = {
+                        "description": desc,
+                        "vulnerability_type": c.get("vulnerability_type")
+                        or c.get("category") or "",
+                        "expected_label": c.get("expected_label")
+                        or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                    }
+
+        if not case_details:
+            raise ValueError(
+                "无法获取基线数据（case_details 为空），"
+                "没有基线的评测无意义。"
+                "请检查 benchmark_source 配置、V-Bench/告警中心服务连通性后重试。"
+            )
 
         # 构建 benchmark_items（从 case_details）
         benchmark_items = list(case_details.keys())
@@ -771,7 +759,6 @@ class Orchestrator:
                     task_id=task_id,
                     expected_label=ExpectedLabel(exp_label)
                     if exp_label else None,
-                    target_finding_id=cd.get("target_finding_id"),
                     metadata=cd,
                 ))
 

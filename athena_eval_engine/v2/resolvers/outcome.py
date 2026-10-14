@@ -53,7 +53,7 @@ class OutcomeResolver:
             task_run: TaskRun 实体
             events: RawEvent 列表
             findings: parser.extract_findings() 输出的 finding dict 列表
-            benchmark: 基线 BenchmarkItem（含 expected_label / target_finding_id）
+            benchmark: 基线 BenchmarkItem（含 expected_label）
         """
         # 无 GT（benchmark 未标注）→ UNDETERMINED
         if benchmark is None or benchmark.expected_label is None:
@@ -64,7 +64,7 @@ class OutcomeResolver:
             )
 
         # 1. 从 findings 列表 + is_finding_submission events 提取 validation_result
-        validation, submission_evs = self._extract_validation(events, findings, benchmark.target_finding_id)
+        validation, submission_evs = self._extract_validation(events, findings)
 
         if validation is None:
             # 有 finding 提交但无 validation_result → NO_UPDATE
@@ -91,14 +91,12 @@ class OutcomeResolver:
             benchmark_item_id=benchmark.benchmark_item_id,
             gt_label=benchmark.expected_label, prediction=Prediction(pred),
             outcome=outcome,
-            target_finding_id=benchmark.target_finding_id,
             validation_result=validation, resolver_status="RESOLVED",
             evidence=evs,
         )
 
     def _extract_validation(
         self, events: list[RawEvent], findings: list[dict],
-        target_finding_id: str | None,
     ) -> tuple[str | None, list[RawEvent]]:
         """从 findings + is_finding_submission events 提取最新的 validation_result。
 

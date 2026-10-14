@@ -111,7 +111,7 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
         f.condition_source.value, f.condition_conflict, f.benchmark_item_id,
         f.gt_label.value if f.gt_label else None, f.prediction.value if f.prediction else None,
         f.outcome.value,
-        f.target_finding_id, f.validation_result, f.resolver_status, f.resolver_version,
+        getattr(f, 'target_finding_id', None), f.validation_result, f.resolver_status, f.resolver_version,
         _json.dumps(ev_data, ensure_ascii=False),
     ), "IDEMPOTENT_REPLAY")
 
