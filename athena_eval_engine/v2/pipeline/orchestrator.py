@@ -342,6 +342,9 @@ class Orchestrator:
         reports_dir = _get_reports_dir()
         os.makedirs(reports_dir, exist_ok=True)
 
+        # 清除旧的 debug 数据文件（重试时避免残留历史数据）
+        self._clear_debug_files(reports_dir, evaluation_id)
+
         # 统一 cancel_cb：外部传入的优先，否则用内部创建的
         _cancel_cb = cancel_cb or _make_cancel_cb(evaluation_id, "ORCHESTRATOR")
 
@@ -1416,6 +1419,16 @@ class Orchestrator:
                 self._fix_check_constraint(evaluation_id, status)
             else:
                 raise
+
+    def _clear_debug_files(self, reports_dir: str, evaluation_id: str):
+        """清除该评测的所有 debug 数据文件（重试时清理历史数据）。"""
+        import glob
+        pattern = os.path.join(reports_dir, f"{evaluation_id}_debug_*.json")
+        for f in glob.glob(pattern):
+            try:
+                os.remove(f)
+            except Exception:
+                pass
 
     def _dump_debug(self, reports_dir: str, evaluation_id: str,
                     step: str, data: dict):
