@@ -363,6 +363,63 @@ class Orchestrator:
                   f"{len(case_details)} case_details, eval_mode={eval_mode}, "
                   f"benchmark_source={benchmark_source}")
 
+            # debug dump：INGESTING 中间数据明细
+            self._dump_debug(reports_dir, evaluation_id, "ingesting", {
+                "benchmark_source": benchmark_source,
+                "eval_mode": eval_mode,
+                "benchmark_set_id": cfg.get("manifest", {}).get("benchmark_set_id"),
+                "vc_source_task_id": cfg.get("manifest", {}).get("vc_source_task_id"),
+                "entries": [
+                    {
+                        "condition": e.get("condition"),
+                        "project_id": e.get("project_id"),
+                        "task_id": e.get("task_id_actual"),
+                        "project_name": e.get("project_name"),
+                        "task_name": e.get("task_name"),
+                        "category": e.get("category"),
+                        "source_uri": e.get("source_uri"),
+                    }
+                    for e in entries
+                ],
+                "raw_data": {
+                    "source_task_ids": alert_center_data.get("source_task_ids", []),
+                    "project_ids": alert_center_data.get("project_ids", []),
+                    "total": alert_center_data.get("total", 0),
+                    "counts": alert_center_data.get("counts", {}),
+                    "cases": [
+                        {
+                            "case_id": c.get("id"),
+                            "title": c.get("title"),
+                            "validation_result": c.get("validation_result"),
+                            "current_stage": c.get("current_stage"),
+                            "false_positive_reason": c.get("false_positive_reason"),
+                            "false_positive_group": c.get("false_positive_group"),
+                            "project_id": c.get("project_id"),
+                        }
+                        for c in alert_center_data.get("cases", [])
+                    ],
+                },
+                "baseline": {
+                    "total": len(case_details),
+                    "cases": [
+                        {
+                            "case_id": cid,
+                            **detail,
+                        }
+                        for cid, detail in case_details.items()
+                    ],
+                },
+            })
+
+            # debug 断点：manifest.debug_stop_after 指定停在哪个步骤之后
+            debug_stop = cfg.get("manifest", {}).get("debug_stop_after")
+            if debug_stop == "ingesting":
+                log("ORCH", f"DEBUG 断点：停在 INGESTING 之后（debug_stop_after=ingesting）")
+                self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_progress(evaluation_id, "调试断点：INGESTING 完成")
+                _set_failed(evaluation_id, "调试断点：debug_stop_after=ingesting")
+                return
+
             # ── PARSING ──
             _check_cancel(evaluation_id, stages.PARSING)
             assert_transition(stages.INGESTING, stages.PARSING)
@@ -491,12 +548,14 @@ class Orchestrator:
     # ── INGESTING ────────────────────────────────────
 
     def _ingest(self, evaluation_id: str) -> tuple:
-        """取基线 case 详情 + 告警中心数据。
+        """取原始数据 + 基线数据。
 
-        - runtime（vuln_center）：从告警中心取一次数据，validation_result 即标准答案，
-          不再从漏洞中心取基线（同一份数据取两次是冗余的）。
-        - dev（vbench_zip）：从 V-Bench 测评数据集取基线。
-        - 告警中心数据同时供 CALCULATING 和 LIFECYCLE_ANALYSIS 使用。
+        原始数据：从 entries 的 project_id + task_id 取告警中心引擎上报数据。
+        基线数据：标准答案，来源二选一：
+          - vuln_center：从告警中心取人工标注数据（benchmark_set_id + vc_source_task_id 指定基线项目）
+          - vbench_zip：从 V-Bench 测评数据集取
+
+        运行态时原始数据和基线是同一个项目；开发态时可能是不同项目。
 
         返回:
             (benchmark_items, case_details, alert_center_data, entries, cfg)
@@ -527,11 +586,12 @@ class Orchestrator:
         manifest = cfg.get("manifest", {})
         entries = manifest.get("entries", [])
         bm_source = manifest.get("benchmark_source", "vbench_zip")
+        vc_source_task_id = manifest.get("vc_source_task_id")
 
         case_details: dict[str, dict] = {}
         alert_center_data: dict = {}
 
-        # ── 获取告警中心数据（runtime 和 dev 都需要）──
+        # ── 获取原始数据：从告警中心取引擎上报数据 ──
         _ac_pairs: list[tuple[str, str]] = []
         _seen: set[tuple[str, str]] = set()
         for e in entries:
@@ -589,7 +649,7 @@ class Orchestrator:
                     "counts": merged_counts,
                     "cases": all_cases,
                 }
-                log("INGEST", f"告警中心: {len(all_cases)} 条 case "
+                log("INGEST", f"原始数据(告警中心): {len(all_cases)} 条 case "
                       f"(是漏洞={merged_counts['vulnerable']} "
                       f"不是漏洞={merged_counts['not_vulnerable']})")
             except Exception as e:
@@ -600,14 +660,20 @@ class Orchestrator:
 
         # ── 取基线 case 详情 ──
         if bm_source == "vuln_center":
-            # 运行态：直接从告警中心数据填充 case_details
-            # validation_result 即标准答案，不需要从漏洞中心再取一遍
+            # 从告警中心取基线数据（benchmark_set_id + vc_source_task_id 指定基线项目）
+            # 与原始数据可能不同项目（开发态），也可能是同一项目（运行态）
             from ...infrastructure.vuln_center_client import (
-                _case_to_benchmark, _parse_locator,
+                _case_to_benchmark, get_alert_center_summary,
             )
-            log("INGEST", f"运行态: 从告警中心数据构建基线 "
-                  f"({len(alert_center_data.get('cases', []))} 条)")
-            for c in alert_center_data.get("cases", []):
+            log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
+                  f"task={vc_source_task_id}")
+            baseline_summary = get_alert_center_summary(
+                benchmark_set_id, vc_source_task_id,
+            )
+            baseline_cases = baseline_summary.get("cases", [])
+            log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
+
+            for c in baseline_cases:
                 vr = c.get("validation_result")
                 # 只取人工已判定的 case（vulnerable / not_vulnerable）
                 # pending / inconclusive 不参与评测
@@ -633,7 +699,7 @@ class Orchestrator:
         elif bm_source == "vbench_zip":
             # 开发态：从 V-Bench 测评数据集取基线
             from ...infrastructure.vbench_client import get_benchmark
-            log("INGEST", f"开发态: V-Bench 取基线: set_id={benchmark_set_id}")
+            log("INGEST", f"基线数据(V-Bench): set_id={benchmark_set_id}")
             bm = get_benchmark(benchmark_set_id)
             all_cases = bm.get("cases") or []
             for c in all_cases:
@@ -1295,6 +1361,17 @@ class Orchestrator:
                 self._fix_check_constraint(evaluation_id, status)
             else:
                 raise
+
+    def _dump_debug(self, reports_dir: str, evaluation_id: str,
+                    step: str, data: dict):
+        """将步骤中间数据 dump 到 {eid}_debug_{step}.json，供调试界面查看。"""
+        path = os.path.join(reports_dir, f"{evaluation_id}_debug_{step}.json")
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                _json_dump(data, f)
+            log("DEBUG", f"dump {step}: {path}")
+        except Exception as e:
+            log("DEBUG", f"dump {step} 失败: {e}")
 
     def _fix_check_constraint(self, evaluation_id: str, status: str):
         """修复 evaluation 表的 CHECK 约束以包含 v2 新状态。"""
