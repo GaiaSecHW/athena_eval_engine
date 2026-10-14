@@ -194,10 +194,7 @@ RENDERERS.parsing = function(el, data) {
   for (const p of packs) {
     const agentLabel = p.agent_type || "";
     const condLabel = p.condition || "";
-    const sc = p.session_count || 0;
-    const ec = p.edge_count || 0;
-    html += `<details style="margin:16px 0 8px;" open>`
-      + `<summary style="cursor:pointer;color:#8be9fd;font-size:15px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} sessions, ${ec} edges</summary>`;
+    html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${p.session_count} sessions, ${p.edge_count} edges</h3>`;
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
@@ -222,7 +219,6 @@ RENDERERS.parsing = function(el, data) {
         html += `</tbody></table>`;
       }
     }
-    html += `</details>`;
   }
 
   if (!packs.length) {
@@ -256,19 +252,14 @@ function renderSessionTree(sessions) {
     + `调用树: ${treeRoots.length} 棵, 孤立节点: ${isolated.length}`
     + `</div>`;
 
-  // 渲染有子节点的树（可收起）
-  if (treeRoots.length > 0) {
-    html += `<details style="margin-bottom:12px" open>`;
-    html += `<summary style="cursor:pointer;color:#8be9fd;font-size:13px;">调用树（${treeRoots.length} 棵）</summary>`;
-    html += `<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;margin-top:8px;">`;
-    for (const r of treeRoots) {
-      html += renderTreeNode(r.session_id, smap, childrenMap, 0, new Set());
-    }
-    html += `</div>`;
-    html += `</details>`;
+  // 渲染有子节点的树
+  html += `<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;margin-bottom:16px;">`;
+  for (const r of treeRoots) {
+    html += renderTreeNode(r.session_id, smap, childrenMap, 0, new Set());
   }
+  html += `</div>`;
 
-  // 孤立节点按 agent 分组（可收起）
+  // 孤立节点按 agent 分组
   if (isolated.length > 0) {
     const byAgent = {};
     for (const s of isolated) {
