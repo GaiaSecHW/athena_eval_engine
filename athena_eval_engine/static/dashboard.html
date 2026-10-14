@@ -296,7 +296,7 @@ function renderEvList(){
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
     var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
       '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
-      '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--acc)" onclick="window.open(\'/api/v2/evaluations/'+e.evaluation_id+'/debug\')">调试</button>'+
+      '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--acc)" onclick="window.open(U(\'/api/v2/evaluations/'+e.evaluation_id+'/debug\'))">调试</button>'+
       (!isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--amber)" onclick="cancelEval(\''+e.evaluation_id+'\')">取消</button>':'')+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
       '</span>':'';
