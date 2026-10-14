@@ -254,7 +254,7 @@ def attach_event_indices(findings: dict[str, dict], events: list) -> None:
     """为每个 finding 关联提交事件索引（用于后续提取挖掘过程上下文）。
 
     在 events 中搜索包含该 finding_id 的事件，记录其索引。
-    各 parser 的 extract_findings 末尾调用此函数。
+    （已废弃，finding 提取已移除）
     """
     for fid, f in findings.items():
         if "_event_idx" not in f:

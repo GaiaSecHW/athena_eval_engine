@@ -47,7 +47,6 @@ from datetime import datetime
 
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
-from .utils import attach_event_indices
 
 import logging
 _log = logging.getLogger(__name__)
@@ -283,7 +282,6 @@ class WebVulnVerifyParser(BaseParser):
                                 inp = {**inp, "vulnerability_id": m.group(1)}
                     is_kg = self._is_kg_interaction(tool_name, inp)
                     is_mem, is_mem_w = detect_memory_flags(tool_name, inp)
-                    is_finding = self._is_finding_tool(tool_name)
                     if tool_call_info and call_id:
                         tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg, "is_mem": is_mem, "is_mem_w": is_mem_w}
                     evs.append(RawEvent(
@@ -298,7 +296,6 @@ class WebVulnVerifyParser(BaseParser):
                         is_kg_interaction=is_kg,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
-                        is_finding_submission=is_finding,
                         call_id=call_id,
                     ))
 
@@ -348,11 +345,6 @@ class WebVulnVerifyParser(BaseParser):
             if str(input_json.get("name", "")).lower() == "athena-skill":
                 return True
         return False
-
-    @staticmethod
-    def _is_finding_tool(tool_name: str) -> bool:
-        """WebVulnVerify 平台 finding 提交工具——仅 vulnerability_verify 是结论写入工具。"""
-        return tool_name == "vulnerability_verify"
 
     def _parse_ts(self, d: dict) -> int | None:
         """从 JSONL 行提取 timestamp（ms epoch）。
@@ -570,183 +562,6 @@ class WebVulnVerifyParser(BaseParser):
         # 不建共享 vulnerability_id/文件 边——共享不是调用关系，会导致 BFS 误连
         # parent_id 父子边已在 SESSION_START 处理中建立
         return graph
-
-    # ------------------------------------------------------------------
-    # extract_findings()
-    # ------------------------------------------------------------------
-
-    # vulnerability_verify status → validation_result 映射
-    # 源代码论证（tool_schema + SKILL.md step 10）：
-    #   vulnerability_verify 是验证结论的唯一写入工具，status enum 4 个值
-    #   EXTERNAL_REQUEST_EXPLOITABLE / INTERNAL_REQUEST_EXPLOITABLE / UNIT_TEST_EXPLOITABLE
-    #   → 漏洞确认（CONFIRMED）
-    #   NOT_EXPLOITABLE → 非漏洞（FALSE_POSITIVE）
-    _VV_STATUS_MAP = {
-        "EXTERNAL_REQUEST_EXPLOITABLE": "CONFIRMED",
-        "INTERNAL_REQUEST_EXPLOITABLE": "CONFIRMED",
-        "UNIT_TEST_EXPLOITABLE": "CONFIRMED",
-        "NOT_EXPLOITABLE": "FALSE_POSITIVE",
-    }
-
-    @staticmethod
-    def _extract_webvv_task_data(events: list) -> dict[str, dict]:
-        """从 WebVulnVerify trace 的 User message (task_data) 中提取 source/sink 等信息。
-
-        T002 的 User message 包含 T001 上报的 finding 数据，格式为：
-        <task_data>
-        VULNERABILITY INFORMATION:
-        - Vulnerability ID: 50318
-        - File URI: DPOrderFulfillmentService/.../FileBucketService.java
-        - URL: /rest/dp/order/fulfillment/v1/order/supplement
-        - Source: supplement() 方法接收...
-        - Sink: FileBucketService.getInputStream()...
-        </task_data>
-
-        返回 {vulnerability_id: {source, sink, file_uri, url}} 映射。
-        """
-        result_map: dict[str, dict] = {}
-        for e in events:
-            text = ""
-            if isinstance(e.input_json, str):
-                text = e.input_json
-            elif isinstance(e.output_json, str):
-                text = e.output_json
-            elif e.output_json is not None:
-                text = str(e.output_json)
-            elif e.input_json is not None:
-                text = str(e.input_json)
-
-            if not text or "task_data" not in text:
-                continue
-
-            vid_m = re.search(r'[Vv]ulnerability[_ ]?[Ii][Dd][:：]\s*(\S+)', text)
-            if not vid_m:
-                continue
-            vid = vid_m.group(1).strip()
-
-            def _extract_field(label: str) -> str:
-                m = re.search(rf'-\s*{label}[:：]\s*(.+?)(?=\n\s*-|\Z)', text, re.DOTALL)
-                return m.group(1).strip() if m else ""
-
-            result_map[vid] = {
-                "source": _extract_field("Source"),
-                "sink": _extract_field("Sink"),
-                "file_uri": _extract_field("File URI"),
-                "url": _extract_field("URL"),
-            }
-
-        return result_map
-
-    @staticmethod
-    def _extract_webvv_title(result_text: str) -> str:
-        """从 WebVulnVerify 的验证报告 (result 字段) 中提取具体标题。
-
-        优先提取"一句话结论"，其次提取元数据表中的"漏洞类型"。
-        如果都提取不到，返回空字符串（调用方回退到 category）。
-        """
-        if not result_text:
-            return ""
-
-        # 1. "一句话结论：xxx" → 取结论文本
-        m = re.search(r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)', result_text, re.DOTALL)
-        if m:
-            return m.group(1).strip()
-
-        # 2. 元数据表 "| 漏洞类型 | xxx |" → 取值
-        m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
-        if m:
-            return m.group(1).strip()
-
-        return ""
-
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 WebVulnVerify 平台的 finding。
-
-        vulnerability_verify 是唯一识别入口（对应 Turing 的 update_finding）：
-        - status EXTERNAL_REQUEST_EXPLOITABLE/INTERNAL_REQUEST_EXPLOITABLE/UNIT_TEST_EXPLOITABLE → CONFIRMED
-        - status NOT_EXPLOITABLE → FALSE_POSITIVE
-
-        vulnerability_analyze 提供补充详情（标题/类型），vulnerability_cvss 提供 CVSS 评分。
-        vulnerability_id 从 input 字段或 result 文本中提取（_obj_to_events 已归一化）。
-
-        Trace 数据论证（82 sessions, 4897 tool_calls）：
-        - vulnerability_analyze 和 vulnerability_verify **100% 在不同 session**
-          （每个 session 有独立 metadata.vulnerability_id，analyze session ≠ verify session）
-        - session_id = analyze session（类似 Argo 的 investigate session）
-        - _verify_session_id = verify session（vulnerability_verify 所在 session）
-        - 无 analyze session 时回退：session_id = verify session
-        """
-        # Phase 1: 收集补充数据
-        analyze_details: dict[str, dict] = {}  # vid → {title, vuln_type, session_id}
-        cvss_data: dict[str, dict] = {}       # vid → cvss
-        task_data = self._extract_webvv_task_data(events)
-
-        for e in events:
-            if not e.is_tool_call():
-                continue
-            tool = e.tool_name or ""
-            inp = e.input_json or {}
-
-            if tool == "vulnerability_analyze":
-                vid = str(inp.get("vulnerability_id", ""))
-                if not vid:
-                    continue
-                result_text = str(inp.get("result", ""))
-                analyze_details[vid] = {
-                    "title": self._extract_webvv_title(result_text),
-                    "vuln_type": inp.get("category", ""),
-                    "session_id": e.session_id,
-                }
-
-            elif tool == "vulnerability_cvss":
-                vid = str(inp.get("vulnerability_id", ""))
-                if not vid:
-                    continue
-                cvss_data[vid] = inp.get("cvss", {})
-
-        # Phase 2: vulnerability_verify → 创建 finding 条目（唯一识别入口）
-        findings: dict[str, dict] = {}
-
-        for _ei, e in enumerate(events):
-            if not e.is_tool_call():
-                continue
-            if (e.tool_name or "") != "vulnerability_verify":
-                continue
-            inp = e.input_json or {}
-            vid = str(inp.get("vulnerability_id", ""))
-            if not vid:
-                continue
-            status = str(inp.get("status", "")).upper()
-            vr = self._VV_STATUS_MAP.get(status)
-            if vr is None:
-                continue
-            result_text = str(inp.get("result", ""))
-            td = task_data.get(vid, {})
-            ad = analyze_details.get(vid, {})
-            title = self._extract_webvv_title(result_text) or ad.get("title", "") or inp.get("category", "")
-            # analyze session 作为 session_id（类似 Argo investigate session），
-            # verify session 作为 _verify_session_id（与 fact_repo 对齐）
-            analyze_sid = ad.get("session_id", "")
-            verify_sid = e.session_id
-            findings[vid] = {
-                "finding_id": vid,
-                "display_id": vid,
-                "title": title,
-                "description": result_text,
-                "vuln_type": inp.get("category", "") or ad.get("vuln_type", ""),
-                "severity": "",
-                "source": td.get("source", ""),
-                "sink": td.get("sink", ""),
-                "validation_result": vr,
-                "platform": "webvulnverify",
-                "confidence": inp.get("confidence"),
-                "cvss": cvss_data.get(vid),
-                "session_id": analyze_sid or verify_sid,
-                "_verify_session_id": verify_sid,
-            }
-
-        attach_event_indices(findings, events)
-        return list(findings.values())
 
     # ------------------------------------------------------------------
     # label_session_phases() — 新实现

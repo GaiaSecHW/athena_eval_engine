@@ -19,7 +19,7 @@ from typing import Iterator
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags
 from ...infra.agent_db import AgentDBManager
-from .utils import attach_event_indices, parse_json_lenient
+from .utils import parse_json_lenient
 
 _log = logging.getLogger(__name__)
 
@@ -201,11 +201,6 @@ class TuringParser(BaseParser):
         tables = {r["name"] for r in cur.fetchall()}
         if "part" not in tables or "session" not in tables:
             raise RuntimeError(f"Schema Gate BLOCK: required tables [session, part] missing, got {tables}")
-
-    @staticmethod
-    def _is_finding_tool(tool_name: str) -> bool:
-        """Turing 平台 finding 提交工具——仅 update_finding 是结论写入工具。"""
-        return tool_name == "vuln_hunt_update_finding"
 
     # ==================================================================
     # parse — SQLite -> RawEvent 流
@@ -667,9 +662,6 @@ class TuringParser(BaseParser):
         if tool_name == "vuln_hunt_submit_artifact" and isinstance(inp, dict):
             tool_name, inp = self._normalize_submit_artifact(inp)
 
-        # ===== finding 提交标记 =====
-        is_finding = self._is_finding_tool(tool_name) if event_type == "TOOL_CALL" else False
-
         return RawEvent(
             event_id=f"evt-{trace_id}-{part_id}",
             trace_id=trace_id,
@@ -691,7 +683,6 @@ class TuringParser(BaseParser):
             is_kg_interaction=is_kg,
             is_memory_interaction=is_mem,
             is_memory_write=is_mem_w,
-            is_finding_submission=is_finding,
         )
 
     # ==================================================================
@@ -975,158 +966,3 @@ class TuringParser(BaseParser):
         if raw_type == "session-end":
             return "SESSION_END"
         return "UNKNOWN"
-
-    # ==================================================================
-    # extract_findings — 漏洞/非漏洞数据提取
-    # ==================================================================
-
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 Turing 平台的 finding。
-
-        识别方法唯一：insert_finding + update_finding 双门禁——
-        必须先通过 insert_finding 正式提交到平台（平台分配数字 vulnerability_id
-        并创建 T002 验证任务），再通过 update_finding 写入 validation_result。
-        HTTP 绕过 update_finding（无 insert_finding）平台无记录，不计入。
-
-        从 agent 源代码确认：
-        - insert_finding 创建 pending_validation 状态的待验证记录（不含漏洞/非漏洞判定）
-        - update_finding 写入 validation_result（CONFIRMED/UNCERTAIN/FALSE_POSITIVE）
-          ——验证技能明确："第 3 步 vuln_hunt_update_finding 是唯一写入路径，不调用 = 全部结果丢失"
-        - 验证四维度（0-3 门禁 + 4 评分）决定 validation_result：
-          CONFIRMED=漏洞，FALSE_POSITIVE=非漏洞，UNCERTAIN=存疑
-        - "仅对 CONFIRMED 和 UNCERTAIN 进行 CVSS 打分"
-
-        insert_finding 是 finding 的提交门禁（平台只认 insert 创建的记录），
-        同时作为 finding 详情（title/vuln_type/call_chain 等）的补充来源。
-        mark_finding_invalid 标记已识别的 finding 为 FALSE_POSITIVE（重复）。
-        """
-        # ===== Phase 1: 收集 insert_finding 详情（按 finding_id 索引，供 Phase 2 补充）=====
-        insert_details: dict[str, dict] = {}
-        for e in events:
-            if not e.is_tool_call():
-                continue
-            if (e.tool_name or "") != "vuln_hunt_insert_finding":
-                continue
-
-            inp = e.input_json or {}
-            out_str = ""
-            if e.output_json is not None:
-                out_str = e.output_json if isinstance(e.output_json, str) else json.dumps(
-                    e.output_json, ensure_ascii=False
-                )
-
-            # finding_id：HTTP 绕过已注入 input，MCP 工具从 output 提取
-            fid = str(inp.get("finding_id", "")).strip()
-            if not fid:
-                m = re.search(r"id=([a-f0-9-]+)", out_str)
-                fid = m.group(1) if m else ""
-            if not fid:
-                continue
-
-            display = ""
-            m = re.search(r"Finding\s+(\S+)", out_str)
-            if m:
-                display = m.group(1)
-
-            # call_chain 归一化
-            call_chain = inp.get("call_chain", [])
-            if isinstance(call_chain, str):
-                try:
-                    call_chain = json.loads(call_chain)
-                except (json.JSONDecodeError, TypeError):
-                    call_chain = []
-
-            # source/sink 归一化（可能是 dict 或 str）
-            source = inp.get("source", "")
-            sink = inp.get("sink", "")
-            if isinstance(source, dict):
-                source = json.dumps(source, ensure_ascii=False)
-            if isinstance(sink, dict):
-                sink = json.dumps(sink, ensure_ascii=False)
-
-            insert_details[fid] = {
-                "display_id": display,
-                "title": inp.get("title", ""),
-                "description": inp.get("description", ""),
-                "vuln_type": inp.get("vuln_type", ""),
-                "severity": inp.get("severity", ""),
-                "source": str(source),
-                "sink": str(sink),
-                "url": inp.get("url", ""),
-                "call_chain": call_chain,
-                "detection_id": inp.get("detection_id", ""),
-                "_insert_session": e.session_id,
-                "_insert_ts": e.timestamp_ms,
-            }
-
-        # ===== Phase 2: update_finding -> 创建 finding 条目（唯一识别入口）=====
-        findings: dict[str, dict] = {}
-        for _ei, e in enumerate(events):
-            if not e.is_tool_call():
-                continue
-            if (e.tool_name or "") != "vuln_hunt_update_finding":
-                continue
-
-            inp = e.input_json or {}
-            fid = str(inp.get("finding_id", "")).strip()
-            vr = str(inp.get("validation_result", "")).upper()
-
-            if not fid or vr not in _VR_ENUM:
-                continue
-
-            # insert_finding 门禁：HTTP 绕过 update_finding（无 insert）平台无记录，不计入
-            if fid not in insert_details:
-                continue
-
-            vr_norm = "CONFIRMED" if vr in ("CONFIRMED", "LIKELY", "POSSIBLE") else vr
-
-            # 从 insert_finding 详情中补充 finding 信息
-            details = insert_details.get(fid, {})
-
-            findings[fid] = {
-                "finding_id": fid,
-                "display_id": details.get("display_id", ""),
-                "title": details.get("title", ""),
-                "description": details.get("description", ""),
-                "vuln_type": details.get("vuln_type", ""),
-                "severity": details.get("severity", ""),
-                "source": details.get("source", ""),
-                "sink": details.get("sink", ""),
-                "url": details.get("url", ""),
-                "call_chain": details.get("call_chain", []),
-                "detection_id": details.get("detection_id", ""),
-                "validation_result": vr_norm,
-                "platform": "turing",
-                "session_id": e.session_id,
-                "_event_idx": _ei,
-                "_insert_ts": details.get("_insert_ts"),
-                "_validate_ts": e.timestamp_ms,
-                "_verify_session_id": e.session_id,
-            }
-
-            if inp.get("analysis"):
-                findings[fid]["analysis"] = inp["analysis"]
-            if inp.get("cvss_score") is not None:
-                findings[fid]["cvss_score"] = inp["cvss_score"]
-            if inp.get("cvss_vector"):
-                findings[fid]["cvss_vector"] = inp["cvss_vector"]
-
-        # ===== Phase 3: mark_finding_invalid -> 标记 FALSE_POSITIVE（只更新已识别的）=====
-        for e in events:
-            if not e.is_tool_call():
-                continue
-            if (e.tool_name or "") != "vuln_hunt_mark_finding_invalid":
-                continue
-
-            inp = e.input_json or {}
-            fid = str(inp.get("finding_id", "")).strip()
-            if not fid or fid not in findings:
-                continue
-
-            findings[fid]["validation_result"] = "FALSE_POSITIVE"
-            findings[fid]["_invalid_reason"] = inp.get("reason", "duplicated")
-            if inp.get("duplicate_of_id"):
-                findings[fid]["_duplicate_of"] = inp["duplicate_of_id"]
-
-        attach_event_indices(findings, events)
-        return list(findings.values())

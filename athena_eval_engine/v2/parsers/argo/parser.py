@@ -34,7 +34,6 @@ from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
 from ...infra import llm as _llm_mod
 from .utils import (
-    attach_event_indices,
     _extract_json_objects_from_text,
     parse_json_lenient,
     extract_json_payloads,
@@ -70,11 +69,6 @@ class ArgoParser(BaseParser):
     # ------------------------------------------------------------------
     # JSONL 文件解析
     # ------------------------------------------------------------------
-
-    @staticmethod
-    def _is_finding_tool(tool_name: str) -> bool:
-        """Argo 平台 finding 提交工具。"""
-        return tool_name in ("vuln-hunt_insert_finding", "vuln_hunt_insert_finding")
 
     @staticmethod
     def _resolve_jsonl_files(uri: str) -> list[str]:
@@ -198,7 +192,6 @@ class ArgoParser(BaseParser):
                     is_kg = tool_use_kg.get(tid, False) if tool_use_kg else False
                     # 记忆交互标记
                     is_mem, is_mem_w = detect_memory_flags(tool_lower, inp)
-                    is_finding = self._is_finding_tool(tool_lower)
                     evs.append(RawEvent(
                         event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                         event_type="TOOL_CALL", timestamp_ms=ts,
@@ -209,7 +202,6 @@ class ArgoParser(BaseParser):
                         source_table="jsonl", source_row_id=f"{eid}-{ci}",
                         parser_version=self.parser_version,
                         is_kg_interaction=is_kg,
-                        is_finding_submission=is_finding,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
                         call_id=tid,
@@ -695,7 +687,7 @@ class ArgoParser(BaseParser):
         return fact_to_creator
 
     # ------------------------------------------------------------------
-    # extract_findings()
+    # session graph helper methods
     # ------------------------------------------------------------------
 
     @staticmethod
@@ -718,38 +710,6 @@ class ArgoParser(BaseParser):
         else:
             lr = str(lr)
         return f"({cwe},{file_val},{lr})"
-
-    @staticmethod
-    def _extract_file(value) -> str:
-        """从 source/sink 值提取文件路径（可能是 dict 或 str）。"""
-        if isinstance(value, dict):
-            return str(value.get("file", ""))
-        return str(value) if value else ""
-
-    @staticmethod
-    def _normalize_line_range(lr) -> tuple[int, int]:
-        """将 line_range 归一化为 (start, end) 元组。
-
-        接受: "351-431", [351, 431], [[351, 431]], None → (0, 0)
-        """
-        if not lr:
-            return (0, 0)
-        if isinstance(lr, str):
-            parts = lr.replace(" ", "").split("-")
-            try:
-                return (int(parts[0]), int(parts[-1]))
-            except (ValueError, IndexError):
-                return (0, 0)
-        if isinstance(lr, list):
-            if lr and isinstance(lr[0], list):
-                flat = [x for sub in lr for x in (sub if isinstance(sub, list) else [sub])]
-            else:
-                flat = lr
-            try:
-                return (int(flat[0]), int(flat[-1]))
-            except (ValueError, IndexError):
-                return (0, 0)
-        return (0, 0)
 
     @staticmethod
     def _lr_distance(a: tuple[int, int], b: tuple[int, int]) -> int:
@@ -848,168 +808,6 @@ class ArgoParser(BaseParser):
                 _log.debug("_extract_accepted_payloads LLM fallback failed: %s", str(e)[:200])
 
         return results
-
-    @staticmethod
-    def _extract_finding_meta_from_sysprompt(content: str) -> dict | None:
-        """从 verify session 的 system prompt 中提取 finding metadata。
-
-        system prompt 格式：
-        # Verify: Finding Confirmation
-        ...
-        **Metadata:**
-        ```json
-        { "cwe": "...", "file": "...", "line_range": [...], ... }
-        ```
-        """
-        meta_idx = content.find("**Metadata:**")
-        if meta_idx < 0:
-            meta_idx = content.find("## Finding to Verify")
-        if meta_idx < 0:
-            return None
-        sub = content[meta_idx:]
-        for obj in _extract_json_objects_from_text(sub):
-            if "cwe" in obj or "file" in obj:
-                return obj
-        return None
-
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 Argo 平台的 finding。
-
-        数据源：
-        1. investigate session TEXT 事件 {"accepted": true, "data": {"findings": [...]}}
-           → finding 的诞生 session，包含完整漏洞信息（cwe, file, source, sink, severity, ...）
-        2. verify session SYSTEM_EVENT system prompt 包含 finding metadata（cwe, file, line_range）
-        3. verify session TEXT 事件 {"accepted": true, "data": {"verdict": "..."}}
-           → 验证结论
-
-        关联方式：
-        - finding 从 investigate session 提取，session_id = investigate session
-        - verify session 的 system prompt 包含 finding metadata (cwe, file, line_range)
-        - Pass 1: 精确匹配 (cwe, file, line_range)
-        - Pass 2: 精确匹配失败时，回退到 (cwe, file) 模糊匹配（line_range 最近），
-          因为 nazhua 用 original_finding_id 关联，不依赖 line_range，
-          verify session 的 line_range 可能与 investigate session 不同
-        - 同一 finding 被多次验证时，取最后一个 verdict（last-wins）
-
-        过滤规则：
-        - 只保留 verdict ∈ {CONFIRMED, MANUAL_REVIEW, FALSE_POSITIVE} 的 finding
-        - DUPLICATE、NEEDS_REVIEW、未验证的 finding 不提取
-        """
-        # key -> finding dict
-        findings: dict[str, dict] = {}
-        # session_id -> [(verdict, event_idx)]
-        session_verdicts: dict[str, list[tuple[str, int]]] = {}
-        # session_id -> finding key（从 verify system prompt 提取）
-        session_finding_key: dict[str, str] = {}
-        # session_id -> (cwe, file, line_range_tuple) from verify system prompt
-        session_meta: dict[str, tuple[str, str, tuple[int, int]]] = {}
-
-        for i, e in enumerate(events):
-            if len(events) > 10000 and i > 0 and i % 50000 == 0:
-                _log.debug("Argo extract_findings %d/%d events findings=%d",
-                           i, len(events), len(findings))
-            # SYSTEM_EVENT: verify session system prompt，含 finding metadata
-            if e.event_type == "SYSTEM_EVENT" and e.output_json:
-                content = str(e.output_json)
-                if "## Finding to Verify" in content or "# Verify:" in content:
-                    meta = self._extract_finding_meta_from_sysprompt(content)
-                    if meta:
-                        key = self._finding_key(meta)
-                        if key and key != "(,,)":
-                            session_finding_key[e.session_id] = key
-                        session_meta[e.session_id] = (
-                            str(meta.get("cwe", "")),
-                            str(meta.get("file", "")),
-                            self._normalize_line_range(meta.get("line_range")),
-                        )
-
-            # TEXT 事件: investigate findings 和 verify verdicts
-            if e.event_type == "TEXT" and e.output_json:
-                txt = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-                for payload in self._extract_accepted_payloads(txt, use_llm=False):
-                    data = payload.get("data", payload)
-                    if not isinstance(data, dict):
-                        continue
-                    # investigate session: data.findings[]
-                    if "findings" in data:
-                        for f in data.get("findings", []):
-                            if not isinstance(f, dict):
-                                continue
-                            key = self._finding_key(f)
-                            if not key or key == "(,,)":
-                                continue
-                            findings[key] = {
-                                "finding_id": key,
-                                "display_id": key,
-                                "title": str(f.get("description", ""))[:200],
-                                "description": str(f.get("description", "")),
-                                "vuln_type": str(f.get("cwe", "")),
-                                "file": str(f.get("file", "")),
-                                "severity": str(f.get("severity", "")),
-                                "source": self._extract_file(f.get("source")),
-                                "sink": self._extract_file(f.get("sink")),
-                                "validation_result": None,
-                                "platform": "argo",
-                                "session_id": e.session_id,
-                                "_event_idx": i,
-                                "_line_range": self._normalize_line_range(f.get("line_range")),
-                            }
-                    # verify session: data.verdict
-                    if "verdict" in data:
-                        verdict = str(data.get("verdict", "")).upper()
-                        session_verdicts.setdefault(e.session_id, []).append((verdict, i))
-
-        # Phase 2: 关联 verdict 到 finding（跨 session 全局 last-wins）
-        # Pass 1: 精确匹配 (cwe, file, line_range)
-        verdicts_by_key: dict[str, list[tuple[str, int, str]]] = {}  # key -> [(verdict, event_idx, session_id)]
-        unmatched: list[tuple[str, int, str]] = []  # (verdict, event_idx, session_id)
-        for sid, vlist in session_verdicts.items():
-            key = session_finding_key.get(sid)
-            if key and key in findings:
-                verdicts_by_key.setdefault(key, []).extend([(v, i, sid) for v, i in vlist])
-            else:
-                for v, i in vlist:
-                    unmatched.append((v, i, sid))
-
-        # Pass 2: 模糊匹配 (cwe, file) — verify session 的 line_range 可能与 investigate 不同
-        # nazhua 用 original_finding_id 关联，不依赖 line_range
-        # 同一 (cwe, file) 可能对应多个 finding，将 verdict 关联到所有候选，
-        # 由 last-wins（按 event_idx 排序取最后一个）决定最终 verdict
-        cwe_file_index: dict[str, list[str]] = {}
-        for fkey, f in findings.items():
-            cf = f"({f['vuln_type']},{f['file']})"
-            cwe_file_index.setdefault(cf, []).append(fkey)
-
-        for verdict, event_idx, sid in unmatched:
-            meta = session_meta.get(sid)
-            if not meta:
-                continue
-            cwe, file_val, lr = meta
-            cf_key = f"({cwe},{file_val})"
-            candidates = cwe_file_index.get(cf_key, [])
-            if not candidates:
-                continue
-            if len(candidates) == 1:
-                matched_key = candidates[0]
-                verdicts_by_key.setdefault(matched_key, []).append((verdict, event_idx, sid))
-            else:
-                # 多个候选：关联到所有候选，由 last-wins 决定
-                for matched_key in candidates:
-                    verdicts_by_key.setdefault(matched_key, []).append((verdict, event_idx, sid))
-
-        for key, vlist in verdicts_by_key.items():
-            vlist.sort(key=lambda v: v[1])  # 全局按 event_idx 排序
-            last_verdict, last_idx, last_sid = vlist[-1]
-            if key in findings:
-                findings[key]["validation_result"] = last_verdict
-                findings[key]["_verify_session_id"] = last_sid
-
-        # Phase 3: 过滤 — 只保留 CONFIRMED / MANUAL_REVIEW / FALSE_POSITIVE
-        result = [f for f in findings.values()
-                  if f.get("validation_result") in ("CONFIRMED", "MANUAL_REVIEW", "FALSE_POSITIVE")]
-
-        attach_event_indices({f["finding_id"]: f for f in result}, events)
-        return result
 
     # ------------------------------------------------------------------
     # label_session_phases() — 新实现

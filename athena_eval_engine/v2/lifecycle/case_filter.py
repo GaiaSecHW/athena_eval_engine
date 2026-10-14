@@ -8,7 +8,7 @@
 
 FP（误报）判定：
 - 基线 expected_label=NON_VULNERABLE
-- 在 trace findings 中找到对应 finding 且 validation_result=CONFIRMED
+- 在告警中心找到匹配 case 且 validation_result=CONFIRMED
 - → agent 误报了漏洞
 
 FN（漏报）判定：
@@ -16,18 +16,14 @@ FN（漏报）判定：
 - 将基线漏洞与告警中心数据对比
 - 告警中心有匹配 → agent 上报了该漏洞，不是漏报
 - 告警中心无匹配 → agent 漏报了该漏洞
-- 对漏报的 case，提取 sink 点，用 LLM 匹配在 trace 中找对应 session
 
 "对应"的匹配方式取决于基线来源（benchmark_source）：
 1. vuln_center（漏洞中心）：纯代码匹配
-   - finding_id（case_id）直接匹配
+   - case_id 直接匹配
    - 标题（vulnerability_type）+ 内容（description）文本匹配
 2. vbench_zip（V-Bench 测评集）：LLM 匹配
-   - 复用 v1 fpr_analysis.py 的两阶段 LLM 匹配（标题预筛 → 1vs1 详细对比）
-   - 因为测评集 case 结构与 trace finding 结构不同，无法用标题/内容直接匹配
-
-FN 的 trace 匹配始终用 LLM 匹配（因为漏报意味着 trace 里没有 finding，
-只能用 sink 点信息去 trace 里定位对应的 session）。
+   - 两阶段 LLM 匹配（标题预筛 → 1vs1 详细对比）
+   - 因为测评集 case 结构与告警中心 case 结构不同，无法用标题/内容直接匹配
 
 按 eval_mode 筛选：
 - runtime（运行态）：只分析 FP
@@ -118,23 +114,13 @@ class CaseFilter:
             eval_mode: "dev"（开发态，FP+FN）| "runtime"（运行态，只 FP）
             benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
                               "vbench_zip"（V-Bench 测评集，LLM 匹配）
-            alert_center_data: 告警中心数据，用于 FN 判定
+            alert_center_data: 告警中心数据，用于 FP/FN 判定
             case_details: 基线 case 详情 dict（case_id → metadata），
                           由 orchestrator._ingest() 返回的完整基线数据。
-                          如提供，直接从中收集全部基线 case；
-                          否则回退到从 data_packs 的 benchmark_item.metadata 收集。
 
         Returns:
             需要分析的 DataPack 列表
         """
-        # 收集所有 DataPack 的 findings，构建匹配索引
-        all_findings: list[dict] = []
-        for dp in data_packs:
-            for f in (dp.findings or []):
-                f["_task_run_id"] = dp.task_run_id
-                f["_task_id"] = dp.task_id
-                all_findings.append(f)
-
         # 按 task_id 分组 DataPack（一个 task 可能有挖掘+验证多个 agent）
         groups: dict[str, list[DataPack]] = defaultdict(list)
         for dp in data_packs:
@@ -143,8 +129,6 @@ class CaseFilter:
         # 收集基线 case：优先从 case_details（完整 33 条），回退到 data_packs
         baseline_cases: list[dict] = []
         if case_details:
-            # case_details 是 orchestrator._ingest() 返回的完整基线数据
-            # {case_id: {description, vulnerability_type, expected_label, source_file, ...}}
             for cid, md in case_details.items():
                 baseline_cases.append({
                     "case_id": cid,
@@ -177,16 +161,38 @@ class CaseFilter:
                     "source_function": md.get("source_function", ""),
                 })
 
-        # ── FP 筛选：基线 NON_VULNERABLE → 在 trace findings 中匹配 ──
+        # 归一化告警中心 case 为与基线同构的字典
+        ac_cases: list[dict] = []
+        if alert_center_data:
+            for c in alert_center_data.get("cases", []):
+                subject = c.get("subject") or {}
+                locator = subject.get("locator") or ""
+                source_file, source_function, source_line = (
+                    _parse_locator(locator)
+                )
+                ac_cases.append({
+                    "case_id": c.get("id") or "",
+                    "title": c.get("title") or subject.get("type") or "",
+                    "description": _normalize_ac_description(c),
+                    "source_file": source_file,
+                    "source_function": source_function,
+                    "source_line": source_line,
+                    "validation_result": c.get("validation_result") or "",
+                })
+
+        # ── FP 筛选：基线 NON_VULNERABLE → 在告警中心找匹配 ──
         fp_cases = [bc for bc in baseline_cases
                     if bc["expected_label"] == "NON_VULNERABLE"]
-        # 构建基线 case → finding 的匹配映射
+
+        # 基线 NON_VULNERABLE case 与告警中心匹配
+        # 告警中心有匹配且 validation_result=CONFIRMED → FP（agent 误报了）
+        # 告警中心无匹配 → TN（agent 正确没报）
         if benchmark_source == "vuln_center":
-            fp_finding_map = self._match_by_code(
-                evaluation_id, fp_cases, all_findings)
+            fp_match_map = self._match_by_code(
+                evaluation_id, fp_cases, ac_cases)
         else:
-            fp_finding_map = self._match_by_llm(
-                evaluation_id, fp_cases, all_findings)
+            fp_match_map = self._match_by_llm(
+                evaluation_id, fp_cases, ac_cases)
 
         # ── FN 筛选（仅 dev 模式）：基线 VULNERABLE → 与告警中心对比 ──
         fn_cases = []
@@ -194,21 +200,22 @@ class CaseFilter:
             fn_cases = [bc for bc in baseline_cases
                         if bc["expected_label"] == "VULNERABLE"]
 
-        # 基线漏洞与告警中心对比，找出漏报 case
-        fn_baseline_cases = self._find_fn_cases(
-            evaluation_id, fn_cases, alert_center_data, benchmark_source)
-
-        # 对漏报 case，提取 sink，用 LLM 匹配在 trace 中找对应 session
-        # 漏报意味着 trace 里没有 finding，只能用 sink 点信息定位 session
-        fn_finding_map = self._match_fn_to_trace(
-            evaluation_id, fn_baseline_cases, all_findings)
+        # 基线漏洞与告警中心匹配
+        # 告警中心有匹配 → agent 上报了该漏洞，不是漏报
+        # 告警中心无匹配 → agent 漏报了该漏洞
+        if benchmark_source == "vuln_center":
+            fn_match_map = self._match_by_code(
+                evaluation_id, fn_cases, ac_cases)
+        else:
+            fn_match_map = self._match_by_llm(
+                evaluation_id, fn_cases, ac_cases)
 
         # ── 组装有效 DataPack ──
         valid_packs: list[DataPack] = []
         unmatched_cases: list[dict] = []
 
-        # FPR 统计：FP = 误报（baseline NON_VULN + finding CONFIRMED）
-        # TN = 正确未报（baseline NON_VULN + 无匹配 finding 或 finding 非 CONFIRMED）
+        # FPR 统计：FP = 误报（baseline NON_VULN + AC CONFIRMED）
+        # TN = 正确未报（baseline NON_VULN + AC 无匹配或非 CONFIRMED）
         fp_count = 0
         tn_count = 0
 
@@ -217,36 +224,38 @@ class CaseFilter:
             cid = bc["case_id"]
             title = bc["title"]
 
-            matched_finding = fp_finding_map.get(cid)
+            matched_ac = fp_match_map.get(cid)
 
-            if matched_finding is None:
-                # baseline NON_VULNERABLE 但 trace 中无匹配 finding → TN
+            if matched_ac is None:
+                # baseline NON_VULNERABLE 且告警中心无匹配 → TN
                 tn_count += 1
                 unmatched_cases.append({
                     "case_id": cid,
                     "expected_label": "NON_VULNERABLE",
                     "title": title,
-                    "reason": "FP: no matching finding in trace",
+                    "reason": "TN: no matching case in alert center",
                 })
                 log("CASE_FILTER",
-                    f"unmatched FP case {cid}: no finding in trace "
+                    f"TN case {cid}: no alert center match "
                     f"(title={title[:60]})",
                     eval_id=evaluation_id)
                 continue
 
-            vr = matched_finding.get("validation_result", "")
-            task_id = matched_finding.get("_task_id", "")
+            vr = matched_ac.get("validation_result", "")
 
-            if vr == "CONFIRMED":
+            if vr == "CONFIRMED" or vr == "VULNERABLE":
                 # FP: agent 误报了漏洞
                 fp_count += 1
-                packs = self._get_packs_with_knowledge(groups, task_id)
-                if packs:
-                    log("CASE_FILTER",
-                        f"keep case {cid}: FP (vr={vr}, "
-                        f"task={task_id}, {len(packs)} packs)",
-                        eval_id=evaluation_id)
-                    valid_packs.extend(packs)
+                # FP case 需要分析所有 task 的知识访问
+                for task_id, packs in groups.items():
+                    kp = self._get_packs_with_knowledge(groups, task_id)
+                    if kp:
+                        log("CASE_FILTER",
+                            f"keep case {cid}: FP (vr={vr}, "
+                            f"task={task_id}, {len(kp)} packs)",
+                            eval_id=evaluation_id)
+                        valid_packs.extend(kp)
+                        break
                 else:
                     unmatched_cases.append({
                         "case_id": cid,
@@ -255,7 +264,7 @@ class CaseFilter:
                         "reason": "FP but no knowledge access in trace",
                     })
             else:
-                # finding 存在但非 CONFIRMED → TN（agent 未误报）
+                # 告警中心有匹配但非 CONFIRMED → TN
                 tn_count += 1
                 log("CASE_FILTER",
                     f"skip case {cid}: NON_VULNERABLE but vr={vr} "
@@ -263,42 +272,33 @@ class CaseFilter:
                     eval_id=evaluation_id)
 
         # 处理 FN
+        fn_baseline_cases = [bc for bc in fn_cases
+                             if bc["case_id"] not in fn_match_map]
+
         for bc in fn_baseline_cases:
             cid = bc["case_id"]
             title = bc["title"]
 
-            matched_finding = fn_finding_map.get(cid)
-
-            if matched_finding is None:
-                unmatched_cases.append({
-                    "case_id": cid,
-                    "expected_label": "VULNERABLE",
-                    "title": title,
-                    "reason": "FN: no matching trace session by sink",
-                })
-                log("CASE_FILTER",
-                    f"unmatched FN case {cid}: no trace session "
-                    f"by sink (title={title[:60]})",
-                    eval_id=evaluation_id)
-                continue
-
-            task_id = matched_finding.get("_task_id", "")
-
-            # FN: agent 漏报了漏洞，保留该 task 下有知识访问的 DataPack
-            packs = self._get_packs_with_knowledge(groups, task_id)
-            if packs:
-                log("CASE_FILTER",
-                    f"keep case {cid}: FN (task={task_id}, "
-                    f"{len(packs)} packs)",
-                    eval_id=evaluation_id)
-                valid_packs.extend(packs)
-            else:
-                unmatched_cases.append({
-                    "case_id": cid,
-                    "expected_label": "VULNERABLE",
-                    "title": title,
-                    "reason": "FN but no knowledge access in trace",
-                })
+            unmatched_cases.append({
+                "case_id": cid,
+                "expected_label": "VULNERABLE",
+                "title": title,
+                "reason": "FN: no matching case in alert center",
+            })
+            log("CASE_FILTER",
+                f"FN case {cid}: no alert center match "
+                f"(title={title[:60]})",
+                eval_id=evaluation_id)
+            # FN case 需要分析所有 task 的知识访问
+            for task_id, packs in groups.items():
+                kp = self._get_packs_with_knowledge(groups, task_id)
+                if kp:
+                    log("CASE_FILTER",
+                        f"keep case {cid}: FN (task={task_id}, "
+                        f"{len(kp)} packs)",
+                        eval_id=evaluation_id)
+                    valid_packs.extend(kp)
+                    break
 
         log("CASE_FILTER",
             f"filtered {len(valid_packs)}/{len(data_packs)} packs "
@@ -318,244 +318,96 @@ class CaseFilter:
 
         return valid_packs
 
-    # ── FN 判定：基线漏洞 vs 告警中心 ──
-
-    def _find_fn_cases(
-        self,
-        evaluation_id: str,
-        vuln_baseline_cases: list[dict],
-        alert_center_data: dict | None,
-        benchmark_source: str,
-    ) -> list[dict]:
-        """从基线漏洞 case 中找出漏报 case。
-
-        将基线漏洞与告警中心数据对比：
-        - 告警中心有匹配 → agent 上报了该漏洞，不是漏报
-        - 告警中心无匹配 → agent 漏报了该漏洞
-
-        匹配方式与 FP 相同：vuln_center 用纯代码，vbench_zip 用 LLM。
-        """
-        if not vuln_baseline_cases:
-            return []
-
-        ac_cases = []
-        if alert_center_data:
-            ac_cases = alert_center_data.get("cases", [])
-
-        if not ac_cases:
-            # 告警中心无数据 → 所有基线漏洞都是漏报
-            log("CASE_FILTER",
-                f"no alert center data: all {len(vuln_baseline_cases)} "
-                f"baseline vuln cases are FN",
-                eval_id=evaluation_id)
-            return list(vuln_baseline_cases)
-
-        # 归一化告警中心 case 为与 baseline 同构的字典
-        # 告警中心原始结构: {id, title, subject:{locator,...}, validation_result, ...}
-        # _match_by_code / _match_by_llm 的 all_findings 参数期望:
-        #   {finding_id/display_id/id, title/vuln_type, description, source, sink, ...}
-        ac_normalized = []
-        for c in ac_cases:
-            subject = c.get("subject") or {}
-            locator = subject.get("locator") or ""
-            source_file, source_function, source_line = (
-                _parse_locator(locator)
-            )
-            ac_normalized.append({
-                "finding_id": c.get("id") or "",
-                "display_id": c.get("id") or "",
-                "id": c.get("id") or "",
-                "title": c.get("title") or subject.get("type") or "",
-                "vuln_type": c.get("title") or subject.get("type") or "",
-                "description": _normalize_ac_description(c),
-                "source": source_file,
-                "sink": source_file,
-                "source_file": source_file,
-                "source_function": source_function,
-                "source_line": source_line,
-                "validation_result": c.get("validation_result") or "",
-            })
-
-        # 基线漏洞与告警中心匹配
-        if benchmark_source == "vuln_center":
-            matched_map = self._match_by_code(
-                evaluation_id, vuln_baseline_cases, ac_normalized)
-        else:
-            matched_map = self._match_by_llm(
-                evaluation_id, vuln_baseline_cases, ac_normalized)
-
-        # 没匹配上的基线漏洞 = 漏报
-        fn_cases = [bc for bc in vuln_baseline_cases
-                    if bc["case_id"] not in matched_map]
-
-        log("CASE_FILTER",
-            f"FN detection: {len(vuln_baseline_cases)} baseline vulns vs "
-            f"{len(ac_cases)} AC cases → {len(fn_cases)} FN "
-            f"(matched={len(vuln_baseline_cases) - len(fn_cases)})",
-            eval_id=evaluation_id)
-
-        return fn_cases
-
-    def _match_fn_to_trace(
-        self,
-        evaluation_id: str,
-        fn_cases: list[dict],
-        all_findings: list[dict],
-    ) -> dict[str, dict]:
-        """对漏报 case，用 LLM 匹配在 trace 中找对应 session。
-
-        漏报意味着 agent 没上报 finding，trace 里没有对应的 finding。
-        用基线的 sink 点信息（source_file / source_function），
-        通过 LLM 匹配在 trace findings 中找最接近的 session。
-
-        始终用 LLM 匹配，因为 sink 点信息与 trace session 的对应关系
-        无法用纯代码判定。
-
-        Returns:
-            {case_id: matched_finding_dict}
-        """
-        if not fn_cases:
-            return {}
-
-        if not all_findings:
-            log("CASE_FILTER",
-                f"FN trace match: no findings in trace, "
-                f"{len(fn_cases)} FN cases unmatched",
-                eval_id=evaluation_id)
-            return {}
-
-        # 漏报 case 在 trace 里没有 finding，但可能在 trace 的其他事件中
-        # 有知识访问。用 LLM 匹配找最接近的 finding（按 sink 点），
-        # 然后通过该 finding 的 task_id 定位到有知识访问的 DataPack。
-        fn_finding_map = self._match_by_llm(
-            evaluation_id, fn_cases, all_findings)
-
-        # 对没匹配上的 FN case，尝试用 sink 路径直接匹配
-        unmatched_fn = [bc for bc in fn_cases
-                        if bc["case_id"] not in fn_finding_map]
-        if unmatched_fn:
-            for bc in unmatched_fn:
-                sink = bc.get("source_file", "")
-                func = bc.get("source_function", "")
-                if sink:
-                    # 用 sink 路径在 findings 中找 source/sink 路径匹配的
-                    for f in all_findings:
-                        f_sink = str(f.get("sink") or f.get("source") or "")
-                        if f_sink and _verify_sink(sink, f_sink) is True:
-                            fn_finding_map[bc["case_id"]] = f
-                            log("CASE_FILTER",
-                                f"FN sink match: case {bc['case_id']} ← "
-                                f"finding by sink path",
-                                eval_id=evaluation_id)
-                            break
-
-        log("CASE_FILTER",
-            f"FN trace match: {len(fn_cases)} FN cases, "
-            f"{len(fn_finding_map)} matched to trace",
-            eval_id=evaluation_id)
-
-        return fn_finding_map
-
     # ── 纯代码匹配（漏洞中心）──
 
     @staticmethod
     def _match_by_code(
         evaluation_id: str,
         baseline_cases: list[dict],
-        all_findings: list[dict],
+        ac_cases: list[dict],
     ) -> dict[str, dict]:
-        """纯代码匹配：finding_id / 标题 / 内容。
+        """纯代码匹配：case_id / 标题 / 内容。
 
-        适用于漏洞中心基线（case_id 与 trace finding 有直接对应关系）。
+        适用于漏洞中心基线（case_id 与告警中心 case 有直接对应关系）。
 
         Returns:
-            {case_id: matched_finding_dict}
+            {case_id: matched_ac_case_dict}
         """
         result: dict[str, dict] = {}
         for bc in baseline_cases:
             cid = bc["case_id"]
             title = bc["title"]
             desc = bc["description"]
-            matched = CaseFilter._match_finding(cid, title, desc, all_findings)
+            matched = CaseFilter._match_case(cid, title, desc, ac_cases)
             if matched is not None:
                 result[cid] = matched
         return result
 
     @staticmethod
-    def _match_finding(case_id: str, title: str, description: str,
-                       all_findings: list[dict]) -> dict | None:
-        """在 findings 列表中找到与基线 case 对应的 finding。
+    def _match_case(case_id: str, title: str, description: str,
+                    ac_cases: list[dict]) -> dict | None:
+        """在告警中心 case 列表中找到与基线 case 对应的记录。
 
         匹配优先级：
-        1. finding_id / case_id 直接匹配
-        2. 标题（vulnerability_type / title）匹配
-        3. 内容（description）文本匹配
+        1. case_id 直接匹配
+        2. 标题匹配
+        3. 内容匹配
         """
-        # 1. finding_id 直接匹配
-        for f in all_findings:
-            fid = str(f.get("finding_id") or f.get("display_id")
-                      or f.get("id") or "")
-            if fid and fid == case_id:
-                return f
+        # 1. case_id 直接匹配
+        for c in ac_cases:
+            ac_id = str(c.get("case_id") or "")
+            if ac_id and ac_id == case_id:
+                return c
 
         # 2. 标题匹配
         if title:
             title_lower = title.lower().strip()
-            for f in all_findings:
-                f_title = str(
-                    f.get("title") or f.get("vuln_type") or ""
-                ).lower().strip()
-                if f_title and f_title == title_lower:
-                    return f
+            for c in ac_cases:
+                c_title = str(c.get("title") or "").lower().strip()
+                if c_title and c_title == title_lower:
+                    return c
                 # 部分匹配（标题包含关系）
-                if f_title and title_lower and (
-                    title_lower in f_title or f_title in title_lower
+                if c_title and title_lower and (
+                    title_lower in c_title or c_title in title_lower
                 ):
-                    return f
+                    return c
 
         # 3. 内容匹配（description 关键词）
         if description:
-            # 取 description 前 200 字做关键词匹配
             desc_sample = description[:200].lower()
-            for f in all_findings:
-                f_desc = str(f.get("description") or "").lower()
-                if f_desc and desc_sample and desc_sample in f_desc:
-                    return f
+            for c in ac_cases:
+                c_desc = str(c.get("description") or "").lower()
+                if c_desc and desc_sample and desc_sample in c_desc:
+                    return c
 
         return None
 
-    # ── LLM 匹配（V-Bench 测评集 / FN trace 定位）──
+    # ── LLM 匹配（V-Bench 测评集）──
 
     def _match_by_llm(
         self,
         evaluation_id: str,
         baseline_cases: list[dict],
-        all_findings: list[dict],
+        ac_cases: list[dict],
     ) -> dict[str, dict]:
         """LLM 匹配：两阶段（标题预筛 → 1vs1 详细对比）。
 
-        适用于 V-Bench 测评集基线（case 与 trace finding 结构不同，
-        无法用标题/内容直接匹配），以及 FN trace 定位（漏报 case
-        需要用 sink 点信息在 trace 中找对应 session）。
-
-        复用 v1 fpr_analysis.py / ai_matcher.py 的匹配方法：
-        - Phase 1: 每个基线 case 用 LLM 从全部 findings 中预筛候选
-        - Phase 2: 对候选 1vs1 LLM 详细对比，程序校验 sink 路径
-        - 冲突解决：一个 finding 只能匹配一个基线 case（1:1 分配）
+        适用于 V-Bench 测评集基线（case 与告警中心 case 结构不同，
+        无法用标题/内容直接匹配）。
 
         Returns:
-            {case_id: matched_finding_dict}
+            {case_id: matched_ac_case_dict}
         """
-        if not baseline_cases or not all_findings:
+        if not baseline_cases or not ac_cases:
             log("CASE_FILTER",
                 f"LLM match skipped: {len(baseline_cases)} baseline_cases, "
-                f"{len(all_findings)} findings",
+                f"{len(ac_cases)} ac_cases",
                 eval_id=evaluation_id)
             return {}
 
         log("CASE_FILTER",
             f"LLM match: {len(baseline_cases)} baseline_cases × "
-            f"{len(all_findings)} findings",
+            f"{len(ac_cases)} ac_cases",
             eval_id=evaluation_id)
 
         # 构建精简描述
@@ -567,34 +419,33 @@ class CaseFilter:
                 "description": bc["description"],
                 "source_file": bc["source_file"],
             })
-        finding_list = []
-        for f in all_findings:
-            finding_list.append({
-                "title": f.get("title") or f.get("vuln_type") or "",
-                "vuln_type": f.get("vuln_type", ""),
-                "description": f.get("description") or "",
-                "source": f.get("source") or "",
-                "sink": f.get("sink") or "",
+        ac_list = []
+        for c in ac_cases:
+            ac_list.append({
+                "case_id": c.get("case_id", ""),
+                "title": c.get("title", ""),
+                "description": c.get("description") or "",
+                "source_file": c.get("source_file", ""),
             })
 
         # Phase 1: 标题预筛（每基线 1 次 LLM）
         prefilter_candidates = self._llm_prefilter(
-            evaluation_id, baseline_list, finding_list)
+            evaluation_id, baseline_list, ac_list)
 
         # Phase 2: 1vs1 详细对比
         pair_results = self._llm_detail_match(
-            evaluation_id, baseline_list, finding_list,
+            evaluation_id, baseline_list, ac_list,
             prefilter_candidates)
 
         # 冲突解决：按基线顺序分配，先到先得（1:1）
-        available_finding_indices = set(range(len(all_findings)))
+        available_ac_indices = set(range(len(ac_cases)))
         result: dict[str, dict] = {}
 
         for bi, bc in enumerate(baseline_cases):
             candidates = prefilter_candidates.get(
-                bi, list(range(len(all_findings))))
+                bi, list(range(len(ac_cases))))
             candidates = [fi for fi in candidates
-                          if fi in available_finding_indices]
+                          if fi in available_ac_indices]
 
             best_fi = None
             best_score = 0.0
@@ -605,12 +456,12 @@ class CaseFilter:
                     best_fi = fi
 
             if best_fi is not None and best_score >= 0.5:
-                available_finding_indices.discard(best_fi)
-                matched_finding = all_findings[best_fi]
-                result[bc["case_id"]] = matched_finding
+                available_ac_indices.discard(best_fi)
+                matched_ac = ac_cases[best_fi]
+                result[bc["case_id"]] = matched_ac
                 log("CASE_FILTER",
                     f"LLM MATCHED case {bc['case_id']} ← "
-                    f"finding[{best_fi}] (score={best_score:.2f})",
+                    f"ac[{best_fi}] (score={best_score:.2f})",
                     eval_id=evaluation_id)
 
         return result
@@ -619,11 +470,11 @@ class CaseFilter:
         self,
         evaluation_id: str,
         baseline_list: list[dict],
-        finding_list: list[dict],
+        ac_list: list[dict],
     ) -> dict[int, list[int]]:
-        """Phase 1: 每个基线 case 用 LLM 预筛候选 finding。
+        """Phase 1: 每个基线 case 用 LLM 预筛候选告警中心 case。
 
-        返回 {baseline_idx: [finding_idx, ...]}
+        返回 {baseline_idx: [ac_idx, ...]}
         """
         _PREFILTER_LIMIT = 50
         prefilter_sys = (
@@ -645,12 +496,12 @@ class CaseFilter:
                 "",
                 "以下是要比较的漏洞报告：",
             ]
-            for i, f in enumerate(finding_list[:_PREFILTER_LIMIT]):
+            for i, c in enumerate(ac_list[:_PREFILTER_LIMIT]):
                 fid = str(i)
                 id_to_idx[fid] = i
-                f_title = f.get("title", "")
-                f_desc = (f.get("description", "") or "")[:500]
-                lines.append(f"[{fid}] {f_title}\n描述：{f_desc}")
+                c_title = c.get("title", "")
+                c_desc = (c.get("description", "") or "")[:500]
+                lines.append(f"[{fid}] {c_title}\n描述：{c_desc}")
             user_msg = "\n".join(lines)
             prompt = [
                 {"role": "system", "content": prefilter_sys},
@@ -675,20 +526,20 @@ class CaseFilter:
                 try:
                     _, indices = fut.result()
                     if not indices:
-                        indices = list(range(len(finding_list)))
+                        indices = list(range(len(ac_list)))
                         log("CASE_FILTER",
                             f"prefilter 0 candidates (bl{bi}): fallback all",
                             eval_id=evaluation_id)
                     prefilter_candidates[bi] = indices
                 except Exception as e:
-                    prefilter_candidates[bi] = list(range(len(finding_list)))
+                    prefilter_candidates[bi] = list(range(len(ac_list)))
                     log("CASE_FILTER",
                         f"prefilter FAILED (bl{bi}): {e}, fallback all",
                         eval_id=evaluation_id)
         except Exception:
             for bi in items:
                 prefilter_candidates.setdefault(
-                    bi, list(range(len(finding_list))))
+                    bi, list(range(len(ac_list))))
 
         total_cand = sum(len(v) for v in prefilter_candidates.values())
         log("CASE_FILTER",
@@ -703,12 +554,12 @@ class CaseFilter:
         self,
         evaluation_id: str,
         baseline_list: list[dict],
-        finding_list: list[dict],
+        ac_list: list[dict],
         prefilter_candidates: dict[int, list[int]],
     ) -> dict[tuple[int, int], float]:
         """Phase 2: 1vs1 LLM 详细对比 + 程序校验 sink。
 
-        返回 {(baseline_idx, finding_idx): score}
+        返回 {(baseline_idx, ac_idx): score}
         """
         _sys_prompt = (
             "你是漏洞匹配判定器。给你一个参考漏洞和一个待判定的漏洞，"
@@ -729,9 +580,8 @@ class CaseFilter:
             "表示两边描述讲的是同一个问题的程度。\n\n"
             '只返回JSON：\n'
             '{\n'
-            '  "baseline": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
-            '  "candidate": {"sink": "...", "source": "...", "vuln_type": "..."},\n'
-            '  "same_sink": true/false,\n'
+            '  "baseline": {"source_file": "...", "vuln_type": "..."},\n'
+            '  "candidate": {"source_file": "...", "vuln_type": "..."},\n'
             '  "same_source": true/false,\n'
             '  "same_vuln_type": true/false,\n'
             '  "desc_similarity": 0.0-1.0,\n'
@@ -739,11 +589,11 @@ class CaseFilter:
             '}'
         )
 
-        # 收集所有 (baseline_idx, finding_idx) 对
+        # 收集所有 (baseline_idx, ac_idx) 对
         all_pairs: list[tuple[int, int]] = []
         for bi in range(len(baseline_list)):
             candidates = prefilter_candidates.get(
-                bi, list(range(len(finding_list))))
+                bi, list(range(len(ac_list))))
             for fi in candidates:
                 all_pairs.append((bi, fi))
 
@@ -754,30 +604,29 @@ class CaseFilter:
         def _check_pair(pair: tuple[int, int]) -> tuple[int, int, float]:
             bi, fi = pair
             bl = baseline_list[bi]
-            f = finding_list[fi]
+            c = ac_list[fi]
 
             bl_desc = f"标题: {bl.get('title', '')}\n描述: {bl.get('description', '')}"
-            bl_sink = bl.get("source_file", "")
-            if bl_sink:
-                bl_desc += f"\n代码文件: {bl_sink}"
+            bl_src = bl.get("source_file", "")
+            if bl_src:
+                bl_desc += f"\n代码文件: {bl_src}"
 
-            f_desc = f"标题: {f.get('title', '')}\n描述: {f.get('description', '')}"
-            f_sink = f.get("sink", "") or f.get("source", "")
-            if f_sink:
-                f_desc += f"\n代码文件: {f_sink}"
+            c_desc = f"标题: {c.get('title', '')}\n描述: {c.get('description', '')}"
+            c_src = c.get("source_file", "")
+            if c_src:
+                c_desc += f"\n代码文件: {c_src}"
 
             prompt = [
                 {"role": "system", "content": _sys_prompt},
                 {"role": "user", "content": (
                     f"参考漏洞:\n{bl_desc}\n\n"
-                    f"待判定漏洞:\n{f_desc}\n\n"
+                    f"待判定漏洞:\n{c_desc}\n\n"
                     f"提取三个方面信息并判断是否同一个漏洞。"
                 )},
             ]
             try:
                 result = llm_mod.chat_json(prompt, temperature=0,
                                             reasoning_effort="none")
-                same_sink = _parse_bool(result.get("same_sink", False))
                 same_source = _parse_bool(result.get("same_source", False))
                 same_vuln_type = _parse_bool(result.get("same_vuln_type", False))
                 desc_sim = result.get("desc_similarity")
@@ -786,24 +635,24 @@ class CaseFilter:
                 except (ValueError, TypeError):
                     desc_sim = 0.0
 
-                # 程序校验 sink 路径
-                sink_check = _verify_sink(bl_sink, f_sink)
-                if sink_check is False and same_sink:
-                    same_sink = False
-                elif sink_check is True and not same_sink:
-                    same_sink = True
+                # 程序校验 source 路径
+                src_check = _verify_path(bl_src, c_src)
+                if src_check is False and same_source:
+                    same_source = False
+                elif src_check is True and not same_source:
+                    same_source = True
 
                 # 匹配条件：vuln_type 必须为 true，且满足以下之一：
-                # 1. sink 与 source 至少一个为 true，且描述相似度 >= 0.5
-                # 2. sink 与 source 都为 false，但描述相似度 >= 0.6
+                # 1. source 为 true，且描述相似度 >= 0.5
+                # 2. source 为 false，但描述相似度 >= 0.6
                 is_same = same_vuln_type and (
-                    ((same_sink or same_source) and desc_sim >= 0.5) or
-                    ((not same_sink and not same_source) and desc_sim >= 0.6)
+                    (same_source and desc_sim >= 0.5) or
+                    ((not same_source) and desc_sim >= 0.6)
                 )
                 return bi, fi, desc_sim if is_same else 0.0
             except Exception as e:
                 log("CASE_FILTER",
-                    f"LLM detail FAILED (bl{bi},f{fi}): {e}",
+                    f"LLM detail FAILED (bl{bi},ac{fi}): {e}",
                     eval_id=evaluation_id)
                 return bi, fi, 0.0
 
@@ -844,7 +693,7 @@ class CaseFilter:
         return result
 
 
-# ── 模块级工具函数（与 v1 fpr_analysis.py / ai_matcher.py 保持一致）──
+# ── 模块级工具函数 ──
 
 
 def _norm_path(path: str) -> str:
@@ -863,10 +712,10 @@ def _norm_path(path: str) -> str:
     return path.lower().strip("/")
 
 
-def _verify_sink(baseline_sink: str, finding_sink: str) -> bool | None:
-    """代码校验 sink 路径是否一致。返回 True/False，None=无法确定。"""
-    bl = _norm_path(baseline_sink)
-    fl = _norm_path(finding_sink)
+def _verify_path(baseline_path: str, ac_path: str) -> bool | None:
+    """代码校验文件路径是否一致。返回 True/False，None=无法确定。"""
+    bl = _norm_path(baseline_path)
+    fl = _norm_path(ac_path)
     if not bl or not fl:
         return None
     if bl == fl:

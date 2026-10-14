@@ -34,7 +34,7 @@ class OutcomeFact(BaseModel):
     prediction: Prediction | None = None
     outcome: Outcome
     validation_result: str | None = None  # CONFIRMED / FALSE_POSITIVE / NA
-    resolver_status: str  # RESOLVED / NO_FINDING / NO_UPDATE / NO_GT / BENCHMARK_UNMATCHED / PARSE_ERROR / AI_MATCHED / AI_MATCH_ERROR / AI_AMBIGUOUS / AI_UNMATCHED / NO_VALIDATION
+    resolver_status: str  # RESOLVED / NO_UPDATE / NO_GT / BENCHMARK_UNMATCHED / PARSE_ERROR / AI_MATCHED / AI_MATCH_ERROR / AI_AMBIGUOUS / AI_UNMATCHED / NO_VALIDATION
     resolver_version: str = "1.0"
     evidence: list[Evidence] = Field(default_factory=list)
     case_results: list = Field(default_factory=list)  # per-case TP/FP/FN/TN
@@ -81,7 +81,6 @@ class ToolActionFact(BaseModel):
     evaluation_id: str
     action_schema_version: str = "1.0"
     kg_count: int = 0
-    finding_count: int = 0
     code_count: int = 0
     shell_count: int = 0
     other_count: int = 0

@@ -1,15 +1,10 @@
-"""OutcomeResolver — 从 events + findings 提取判定结果（§8.6）。
+"""OutcomeResolver — 从 events 提取判定结果（§8.6）。
 
 去平台化：不检查平台特定工具名（如 vuln-hunt_update_finding / vulnerability_verify）。
-只消费标准化的 is_finding_submission=True events + findings 列表。
-
-parser 负责：
-- 在 parse() 中设置 is_finding_submission flag
-- 在 extract_findings() 中完成平台特定的 finding 提取（含 validation_result）
+只消费标准化的 events。
 
 Resolver 只消费标准化数据：
-- 从 is_finding_submission=True 的事件中提取 validation_result
-- 从 findings 列表中读取 verdict/status
+- 从 events 中提取 validation_result
 """
 from __future__ import annotations
 
@@ -31,13 +26,10 @@ def _ev(e: RawEvent, field_path: str | None = None) -> Evidence:
 
 
 class OutcomeResolver:
-    """从 events + findings 提取判定结果。不依赖平台特定工具名。
+    """从 events 提取判定结果。不依赖平台特定工具名。
 
     数据来源：
-    1. findings 列表（parser.extract_findings() 输出）—— 每个 finding dict 含
-       validation_result 字段（CONFIRMED / FALSE_POSITIVE），由 parser 完成平台特定提取。
-    2. is_finding_submission=True 的事件 —— parser 在 parse() 中标记，Resolver 从
-       input_json / output_json 中提取 validation_result 作为补充。
+    - events 中的 validation_result 字段
     """
 
     def __init__(self, config: dict | None = None):
@@ -45,14 +37,12 @@ class OutcomeResolver:
         self.ambiguity_margin = 0.10
 
     def resolve(self, task_run: TaskRun, events: list[RawEvent],
-                findings: list[dict],
                 benchmark: BenchmarkItem | None = None) -> OutcomeFact:
-        """从 events + findings 提取判定结果。
+        """从 events 提取判定结果。
 
         Args:
             task_run: TaskRun 实体
             events: RawEvent 列表
-            findings: parser.extract_findings() 输出的 finding dict 列表
             benchmark: 基线 BenchmarkItem（含 expected_label）
         """
         # 无 GT（benchmark 未标注）→ UNDETERMINED
@@ -63,14 +53,13 @@ class OutcomeResolver:
                 benchmark_item_id=benchmark.benchmark_item_id if benchmark else None,
             )
 
-        # 1. 从 findings 列表 + is_finding_submission events 提取 validation_result
-        validation, submission_evs = self._extract_validation(events, findings)
+        # 1. 从 events 提取 validation_result
+        validation, submission_evs = self._extract_validation(events)
 
         if validation is None:
-            # 有 finding 提交但无 validation_result → NO_UPDATE
-            # 无任何 finding 提交 → NO_FINDING
-            has_submission = bool(submission_evs) or bool(findings)
-            reason = "NO_UPDATE" if has_submission else "NO_FINDING"
+            # 有提交但无 validation_result → NO_UPDATE
+            # 无任何提交 → NO_UPDATE
+            reason = "NO_UPDATE"
             return OutcomeFact.undetermined(
                 task_run.task_run_id, task_run.evaluation_id, task_run.condition,
                 task_run.condition_source, reason=reason,
@@ -96,38 +85,25 @@ class OutcomeResolver:
         )
 
     def _extract_validation(
-        self, events: list[RawEvent], findings: list[dict],
+        self, events: list[RawEvent],
     ) -> tuple[str | None, list[RawEvent]]:
-        """从 findings + is_finding_submission events 提取最新的 validation_result。
+        """从 events 提取最新的 validation_result。
 
         数据来源：
-        - findings 列表：parser.extract_findings() 输出，每个 finding dict 含
-          validation_result / verdict / status 字段（由 parser 归一化）。
-        - is_finding_submission=True 事件：parser 在 parse() 中标记的 finding 提交事件，
-          从 input_json / output_json 中提取 validation_result 作为补充。
+        - events 中含 validation_result 的事件，从 input_json / output_json 中提取。
 
         Returns:
             (validation_result, submission_events)
             validation_result: "CONFIRMED" / "FALSE_POSITIVE" / None
-            submission_events: is_finding_submission=True 的事件列表
+            submission_events: 含 validation_result 的事件列表
         """
         candidates: list[tuple[int, str]] = []
         submission_evs: list[RawEvent] = []
 
-        # 1. 从 findings 列表提取（parser 已完成平台特定提取）
-        for f in findings:
-            vr = self._read_validation_from_finding(f)
-            if vr:
-                ts = f.get("timestamp_ms") or f.get("timestamp") or 0
-                candidates.append((int(ts), vr))
-
-        # 2. 从 is_finding_submission=True 的事件提取（补充来源）
         for e in events:
-            if not e.is_finding_submission:
-                continue
-            submission_evs.append(e)
             vr = self._read_validation_from_event(e)
             if vr:
+                submission_evs.append(e)
                 candidates.append((e.timestamp_ms or 0, vr))
 
         if not candidates:
@@ -138,49 +114,10 @@ class OutcomeResolver:
         return candidates[-1][1], submission_evs
 
     @staticmethod
-    def _read_validation_from_finding(f: dict) -> str | None:
-        """从 finding dict 读取 validation_result。
-
-        parser 已将各平台的 verdict/status/outcome 归一化到以下字段之一：
-        - validation_result: "CONFIRMED" / "FALSE_POSITIVE"
-        - verdict: "confirmed" / "ruled_out" / "CONFIRMED" / "FALSE_POSITIVE" / "MANUAL_REVIEW"
-        - status: "VULNERABLE" / "NOT_VULNERABLE" 等
-        - outcome: "confirmed" / "refuted" / "conditional"
-        """
-        # validation_result（已归一化）
-        vr = f.get("validation_result")
-        if vr in ("CONFIRMED", "FALSE_POSITIVE"):
-            return vr
-
-        # verdict
-        verdict = str(f.get("verdict") or "").upper()
-        if verdict in ("CONFIRMED", "LIKELY", "POSSIBLE", "MANUAL_REVIEW", "CONDITIONAL"):
-            return "CONFIRMED"
-        if verdict in ("FALSE_POSITIVE", "RULED_OUT", "REFUTED"):
-            return "FALSE_POSITIVE"
-
-        # status
-        status = str(f.get("status") or "").upper()
-        if status in ("VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE", "UNIT_TEST_EXPLOITABLE"):
-            return "CONFIRMED"
-        if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE"):
-            return "FALSE_POSITIVE"
-
-        # outcome
-        outcome = str(f.get("outcome") or "").lower()
-        if outcome in ("confirmed", "conditional"):
-            return "CONFIRMED"
-        if outcome in ("refuted", "ruled_out"):
-            return "FALSE_POSITIVE"
-
-        return None
-
-    @staticmethod
     def _read_validation_from_event(e: RawEvent) -> str | None:
-        """从 is_finding_submission=True 的事件中提取 validation_result。
+        """从事件中提取 validation_result。
 
-        parser 已标记 is_finding_submission=True，Resolver 只需从 input_json / output_json
-        中读取已归一化的 validation_result 字段。不检查平台特定工具名。
+        从 input_json / output_json 中读取 validation_result 字段。
         """
         # input_json 中的 validation_result（Turing: vuln-hunt_update_finding.input.validation_result）
         d = e.input_json or {}

@@ -36,7 +36,6 @@ class RawEvent:
     is_kg_interaction: bool = False  # parser 标记：是否为知识图谱交互（Athena 检索/知识查询）
     is_memory_interaction: bool = False  # parser 标记：是否为记忆交互（memengine/argo.memory 读取/检索）
     is_memory_write: bool = False  # parser 标记：是否为记忆写入（mem save 等；不纳入访问统计）
-    is_finding_submission: bool = False  # parser 标记：是否为漏洞发现提交（各 parser 在 parse 时设置）
     call_id: str = ""           # 工具调用 ID（trace 原始 ID，用于 CALL-RESULT 精确配对）
 
     def is_tool_call(self) -> bool:

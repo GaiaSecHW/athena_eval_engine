@@ -40,4 +40,4 @@ class CalculationStatus(str, Enum):
 
 
 class CanonicalAction(str, Enum):
-    KG = "KG"; FINDING = "FINDING"; CODE = "CODE"; SHELL = "SHELL"; OTHER = "OTHER"
+    KG = "KG"; CODE = "CODE"; SHELL = "SHELL"; OTHER = "OTHER"

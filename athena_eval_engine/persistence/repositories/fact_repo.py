@@ -46,13 +46,13 @@ def insert_evaluation(cur, evaluation_id: str, benchmark_set_id: str, agent_name
     )
 
 
-def insert_benchmark_item(cur, bi_id: str, set_id: str, task_id: str, label: str, target_finding_id=None, metadata_json=None):
+def insert_benchmark_item(cur, bi_id: str, set_id: str, task_id: str, label: str, metadata_json=None):
     import json as _json
     sql = ("INSERT INTO benchmark_item (benchmark_item_id, benchmark_set_id, task_id, expected_label, "
-           "target_finding_id, metadata_json) VALUES (%s,%s,%s,%s,%s,%s) "
+           "metadata_json) VALUES (%s,%s,%s,%s,%s) "
            "ON DUPLICATE KEY UPDATE expected_label=VALUES(expected_label), "
-           "target_finding_id=VALUES(target_finding_id), metadata_json=VALUES(metadata_json)")
-    cur.execute(sql, (bi_id, set_id, task_id, label, target_finding_id,
+           "metadata_json=VALUES(metadata_json)")
+    cur.execute(sql, (bi_id, set_id, task_id, label,
                      _json.dumps(metadata_json, ensure_ascii=False) if metadata_json else None))
 
 
@@ -103,15 +103,15 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     ev_data = {"case_results_uri": _cr_path}
     sql = """INSERT INTO outcome_fact
         (outcome_fact_id, task_run_id, evaluation_id, `condition`, condition_source, condition_conflict,
-         benchmark_item_id, gt_label, prediction, outcome, target_finding_id,
+         benchmark_item_id, gt_label, prediction, outcome,
          validation_result, resolver_status, resolver_version, evidence_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
     return _upsert(cur, sql, (
         f.outcome_fact_id, f.task_run_id, f.evaluation_id, f.condition.value,
         f.condition_source.value, f.condition_conflict, f.benchmark_item_id,
         f.gt_label.value if f.gt_label else None, f.prediction.value if f.prediction else None,
         f.outcome.value,
-        getattr(f, 'target_finding_id', None), f.validation_result, f.resolver_status, f.resolver_version,
+        f.validation_result, f.resolver_status, f.resolver_version,
         _json.dumps(ev_data, ensure_ascii=False),
     ), "IDEMPOTENT_REPLAY")
 
@@ -139,12 +139,12 @@ def insert_knowledge_fact(cur, f: KnowledgeInteractionFact) -> str:
 def insert_tool_action_fact(cur, f: ToolActionFact) -> str:
     sql = """INSERT INTO tool_action_fact
         (tool_action_fact_id, task_run_id, evaluation_id, action_schema_version,
-         kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls,
+         kg_count, code_count, shell_count, other_count, total_tool_calls,
          action_distribution, evidence_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
+        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
     return _upsert(cur, sql, (
         f.tool_action_fact_id, f.task_run_id, f.evaluation_id, f.action_schema_version,
-        f.kg_count, f.finding_count, f.code_count, f.shell_count, f.other_count, f.total_tool_calls,
+        f.kg_count, f.code_count, f.shell_count, f.other_count, f.total_tool_calls,
         json.dumps(f.action_distribution, ensure_ascii=False), None,  # evidence 不回读，不存入
     ), "IDEMPOTENT_REPLAY")
 
@@ -161,38 +161,6 @@ def insert_resource_fact(cur, f: ResourceFact) -> str:
         f.token_schema_version, f.steps, f.step_source, f.step_integrity_warning, f.duration_ms,
         f.time_valid, f.validity_status, None,  # evidence 不回读，不存入
     ), "IDEMPOTENT_REPLAY")
-
-
-def insert_extracted_findings(cur, task_run_id: str, evaluation_id: str, findings: list[dict]) -> None:
-    """持久化 parser.extract_findings 返回的 finding 列表。
-
-    每条 finding 一行，主键 (task_run_id, finding_id)。
-    断点续跑时可直接从 DB 读取，无需重新解析 trace。
-    """
-    for f in findings:
-        sql = """INSERT INTO extracted_finding
-            (finding_id, task_run_id, evaluation_id, platform, session_id, verify_session_id,
-             vuln_type, file, severity, validation_result, title, description, source, sink,
-             event_idx, finding_json)
-            VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-        _upsert(cur, sql, (
-            str(f.get("finding_id", "")),
-            task_run_id,
-            evaluation_id,
-            str(f.get("platform", "")),
-            str(f.get("session_id", "")) or None,
-            str(f.get("_verify_session_id", "")) or None,
-            str(f.get("vuln_type", "")) or None,
-            str(f.get("file", f.get("source", ""))) or None,  # file 从 finding dict 取
-            str(f.get("severity", "")) or None,
-            str(f.get("validation_result") or "") or None,
-            str(f.get("title", ""))[:200000] or None,
-            str(f.get("description", ""))[:200000] or None,
-            str(f.get("source", "")) or None,
-            str(f.get("sink", "")) or None,
-            f.get("_event_idx"),
-            json.dumps(f, ensure_ascii=False, default=str),
-        ), "IDEMPOTENT_REPLAY")
 
 
 def insert_session_graph(cur, task_run_id: str, evaluation_id: str, graph: dict) -> str:

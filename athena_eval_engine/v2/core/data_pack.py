@@ -25,7 +25,6 @@ class DataPack:
 
     # 原始数据
     events: list                       # list[RawEvent]
-    findings: list                     # list[dict] — parser 提取的漏洞 finding
     session_graph: dict                # session 关系图（parent_id 边）
     session_meta: dict                 # session 元数据（token/step/time）
 

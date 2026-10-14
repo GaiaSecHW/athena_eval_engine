@@ -1985,7 +1985,6 @@ def run(evaluation_id: str) -> dict:
                 fact_repo.insert_knowledge_fact(cur, f["knowledge"])
                 fact_repo.insert_tool_action_fact(cur, f["tool"])
                 fact_repo.insert_resource_fact(cur, f["resource"])
-                fact_repo.insert_extracted_findings(cur, tr.task_run_id, evaluation_id, _findings)
                 fact_repo.insert_session_graph(cur, tr.task_run_id, evaluation_id, _session_graph)
             _db_query(_insert_one)
             if (_idx + 1) % 5 == 0 or (_idx + 1) == _total_tr:

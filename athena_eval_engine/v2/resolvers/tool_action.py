@@ -1,7 +1,7 @@
 """ToolActionResolver — 从 events 提取工具调用分布（§8.9）。
 
-按 CanonicalAction 分类（KG > FINDING > CODE > SHELL > OTHER）。
-平台无关：只依赖 RawEvent 的 is_kg_interaction / is_finding_submission flag。
+按 CanonicalAction 分类（KG > CODE > SHELL > OTHER）。
+平台无关：只依赖 RawEvent 的 is_kg_interaction flag。
 
 从老代码拷贝，去掉对 parse_utils 的依赖。
 """
@@ -24,11 +24,10 @@ def _path_of(e: RawEvent) -> str:
 class ToolActionResolver:
     """从 events 提取工具调用分布。
 
-    Canonical Action v1.0 优先级：KG > FINDING > CODE > SHELL > OTHER
+    Canonical Action v1.0 优先级：KG > CODE > SHELL > OTHER
 
     分类规则：
     - KG: parser 标记的 is_kg_interaction，或 config 配置的 skill/path/command 模式
-    - FINDING: parser 标记的 is_finding_submission
     - CODE: read/grep/glob（非 wiki）
     - SHELL: bash（非 wiki）
     - OTHER: 其他
@@ -59,14 +58,14 @@ class ToolActionResolver:
             tool_action_fact_id=f"taf-{task_run.task_run_id}",
             task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
             action_schema_version=self.ACTION_SCHEMA,
-            kg_count=counts["KG"], finding_count=counts["FINDING"],
+            kg_count=counts["KG"],
             code_count=counts["CODE"], shell_count=counts["SHELL"],
             other_count=counts["OTHER"],
             total_tool_calls=total, action_distribution=counts,
         )
 
     def _classify(self, e: RawEvent) -> str:
-        """按优先级分类：KG > FINDING > CODE > SHELL > OTHER。"""
+        """按优先级分类：KG > CODE > SHELL > OTHER。"""
         tool = e.tool_name or ""
         path = _path_of(e)
         skill_name = str((e.input_json or {}).get("name") or "")
@@ -84,10 +83,6 @@ class ToolActionResolver:
         for c in self.access_rules.get("command_patterns", []):
             if re.search(c, path):
                 return "KG"
-
-        # FINDING：parser 已标记的漏洞发现提交工具
-        if e.is_finding_submission:
-            return "FINDING"
 
         if tool in ("read", "grep", "glob") and "wiki" not in path:
             return "CODE"

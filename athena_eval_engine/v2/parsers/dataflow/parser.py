@@ -38,7 +38,6 @@ from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
 from .utils import (
-    attach_event_indices,
     extract_json_payloads,
 )
 
@@ -706,97 +705,6 @@ class DataflowVulnScanParser(BaseParser):
 
         graph['finding_to_session'] = finding_to_session
         return graph
-
-    # ------------------------------------------------------------------
-    # extract_findings()
-    # ------------------------------------------------------------------
-
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 DataflowVulnScan 平台的 finding。
-
-        两个数据源：
-        1. intake events（dvs-intake-result session）— 服务端自动提交到漏洞中心的记录
-        2. candidates JSON（vuln-judge 阶段）— 仅在无 intake events 时补充
-        """
-        findings: dict[str, dict] = {}
-        _dvs_counter = 0
-        _dvs_fn_lines_with_findings: set[str] = set()
-        _has_intake_events = any(
-            e.event_type == "TEXT" and e.session_id == "dvs-intake-result"
-            for e in events
-        )
-
-        for e in events:
-            if e.event_type != "TEXT" or not e.output_json:
-                continue
-            if _has_intake_events and e.session_id != "dvs-intake-result":
-                continue
-            text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-            if '"findings"' not in text:
-                continue
-            for data in extract_json_payloads(text, keywords=['"findings"']):
-                for f in (data.get("findings") or []):
-                    if not isinstance(f, dict):
-                        continue
-                    _dvs_counter += 1
-                    title = str(f.get("title", ""))
-                    fn = str(f.get("function_name", ""))
-                    ln = str(f.get("line", ""))
-                    vt = str(f.get("vuln_type", ""))
-                    _dvs_fn_lines_with_findings.add(f"{fn}:{ln}")
-                    case_id = str(f.get("case_id", ""))
-                    fid = case_id if case_id else f"dvs-{_dvs_counter}"
-                    findings[fid] = {
-                        "finding_id": str(f.get("finding_id", fid)),
-                        "display_id": fid,
-                        "title": title,
-                        "description": str(f.get("summary", "")),
-                        "vuln_type": vt,
-                        "severity": str(f.get("severity", "")),
-                        "source": str(f.get("source_file", "")),
-                        "sink": fn,
-                        "validation_result": "CONFIRMED",
-                        "platform": "dataflow-vuln-scan",
-                        "session_id": e.session_id,
-                    }
-
-        # 补充: 从 vuln-judge 阶段的 candidates JSON 提取 confirmed 候选
-        if not _has_intake_events:
-            for e in events:
-                if e.event_type != "TEXT" or not e.output_json:
-                    continue
-                text = e.output_json if isinstance(e.output_json, str) else str(e.output_json)
-                if '"candidates"' not in text:
-                    continue
-                for data in extract_json_payloads(text, keywords=['"candidates"']):
-                    for f in (data.get("candidates") or []):
-                        if not isinstance(f, dict):
-                            continue
-                        if f.get("judgment") != "confirmed":
-                            continue
-                        fn = str(f.get("function_name", ""))
-                        ln = str(f.get("line", ""))
-                        if f"{fn}:{ln}" in _dvs_fn_lines_with_findings:
-                            continue
-                        _dvs_counter += 1
-                        vt = str(f.get("vuln_type", ""))
-                        fid = f"dvs-{_dvs_counter}"
-                        findings[fid] = {
-                            "finding_id": fid,
-                            "display_id": fid,
-                            "title": vt,
-                            "description": str(f.get("reason", "")),
-                            "vuln_type": vt,
-                            "severity": str(f.get("severity", "")),
-                            "source": str(f.get("source_evidence", "")),
-                            "sink": fn,
-                            "validation_result": "CONFIRMED",
-                            "platform": "dataflow-vuln-scan",
-                            "session_id": e.session_id,
-                        }
-
-        attach_event_indices(findings, events)
-        return list(findings.values())
 
     # ------------------------------------------------------------------
     # label_session_phases() — 新实现

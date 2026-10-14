@@ -326,7 +326,7 @@ class Orchestrator:
         阶段流程：
         1. INGESTING — 取基线 case 详情 + 告警中心数据
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
-        3. RESOLVING — 持久化 findings + session_graph 到 DB
+        3. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB
         4. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
         5. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
         6. REPORTING — 报告组装（含召回率/准确率计算）
@@ -490,6 +490,71 @@ class Orchestrator:
                 ],
             })
 
+            # ── CASE_MATCHING（基线 case ↔ trace session）──
+            _set_progress(evaluation_id, "case-session 匹配...")
+            from ..lifecycle.case_session_matcher import CaseSessionMatcher
+            matcher = CaseSessionMatcher()
+            case_session_matches = matcher.match(
+                evaluation_id, data_packs, case_details,
+                case_matches=case_matches,
+                eval_mode=eval_mode,
+            )
+
+            # debug dump：CASE_MATCHING 中间数据
+            self._dump_debug(reports_dir, evaluation_id, "case_matching", {
+                "eval_mode": eval_mode,
+                "total_cases": len(case_session_matches),
+                "matched": sum(1 for r in case_session_matches
+                               if r["match_method"] != "unmatched"),
+                "unmatched": sum(1 for r in case_session_matches
+                                 if r["match_method"] == "unmatched"),
+                "outcomes": {
+                    "TP": sum(1 for r in case_session_matches if r["outcome"] == "TP"),
+                    "FP": sum(1 for r in case_session_matches if r["outcome"] == "FP"),
+                    "FN": sum(1 for r in case_session_matches if r["outcome"] == "FN"),
+                    "TN": sum(1 for r in case_session_matches if r["outcome"] == "TN"),
+                },
+                "matches": case_session_matches,
+            })
+
+            # debug 断点
+            if cfg.get("manifest", {}).get("debug_stop_after") == "case_matching":
+                log("ORCH", "DEBUG 断点：停在 CASE_MATCHING 之后")
+                self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_progress(evaluation_id, "调试断点：CASE_MATCHING 完成")
+                _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
+                return
+
+            # ── ROOT_CAUSE_ANALYSIS（FP case 滚动压缩根因分析）──
+            fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
+            if fp_cases:
+                _set_progress(evaluation_id,
+                              f"根因分析中... {len(fp_cases)} 个 FP case")
+                from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
+                rca = RootCauseAnalyzer()
+                root_cause_results = rca.analyze(
+                    evaluation_id, fp_cases, data_packs,
+                    cancel_cb=_cancel_cb,
+                )
+
+                # debug dump：ROOT_CAUSE 中间数据
+                self._dump_debug(reports_dir, evaluation_id, "root_cause", {
+                    "total_fp": len(fp_cases),
+                    "analyzed": len(root_cause_results),
+                    "results": root_cause_results,
+                })
+
+                # debug 断点
+                if cfg.get("manifest", {}).get("debug_stop_after") == "root_cause":
+                    log("ORCH", "DEBUG 断点：停在 ROOT_CAUSE 之后")
+                    self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                    _set_progress(evaluation_id, "调试断点：ROOT_CAUSE 完成")
+                    _set_failed(evaluation_id, "调试断点：debug_stop_after=root_cause")
+                    return
+            else:
+                root_cause_results = []
+                log("ORCH", "无 FP case，跳过根因分析")
+
             # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
             try:
                 from ...application.evaluation_service import _cleanup_trace_cache
@@ -498,12 +563,12 @@ class Orchestrator:
                 pass
 
             # ── RESOLVING ──
-            # 持久化 findings + session_graph 到 DB（CaseFilter 依赖 extracted_finding 表）
+            # 持久化 session_graph + 4 种 fact 到 DB
             _check_cancel(evaluation_id, stages.RESOLVING)
             assert_transition(stages.PARSING, stages.RESOLVING)
             self._set_status_safe(evaluation_id, stages.RESOLVING)
             _set_progress(evaluation_id, "持久化解析结果...")
-            self._persist_findings(evaluation_id, data_packs)
+            self._persist_data(evaluation_id, data_packs)
 
             # ── LIFECYCLE_ANALYSIS ──
             # 重试路径：knowledge_access_detail 表已有记录 → 跳过
@@ -1033,7 +1098,7 @@ class Orchestrator:
         """并行 trace 解析，返回 DataPack 列表。
 
         对每个 entry 调用 parser.build_data_pack()，在内部完成
-        parse → extract_findings → build_session_graph → load_session
+        parse → build_session_graph → load_session
         → resolve → DataPack。
 
         使用 ThreadPoolExecutor 并行，受 parse_workers 并发控制。
@@ -1203,17 +1268,16 @@ class Orchestrator:
 
     # ── RESOLVING ───────────────────────────────────
 
-    def _persist_findings(self, evaluation_id: str, data_packs: list):
-        """持久化 task_run + findings + session_graph + 4 种 fact 到 DB。
+    def _persist_data(self, evaluation_id: str, data_packs: list):
+        """持久化 task_run + session_graph + 4 种 fact 到 DB。
 
         task_run 记录必须先写入，因为 knowledge_interaction_fact 等
         fact 表有 FK 约束引用 task_run(evaluation_id, task_run_id)。
-        CaseFilter 依赖 extracted_finding 表判断 finding 是否匹配基线。
         _calculate_metrics 和 _get_packs_with_knowledge 依赖
         knowledge_interaction_fact 和 tool_action_fact。
         """
         from ...persistence.repositories.fact_repo import (
-            insert_extracted_findings, insert_session_graph,
+            insert_session_graph,
             insert_knowledge_fact, insert_tool_action_fact,
             insert_outcome_fact, insert_resource_fact,
             insert_task_run, insert_trace_source,
@@ -1253,9 +1317,6 @@ class Orchestrator:
                 tr.agent_name = dp.agent_type
                 insert_task_run(cur, tr)
 
-                insert_extracted_findings(
-                    cur, dp.task_run_id, evaluation_id, dp.findings or [],
-                )
                 insert_session_graph(
                     cur, dp.task_run_id, evaluation_id, dp.session_graph or {},
                 )
@@ -1272,9 +1333,9 @@ class Orchestrator:
         try:
             _db_query(_do)
             log("RESOLVE", f"持久化 {len(data_packs)} data_packs 的 "
-                  f"findings + session_graph + 4 种 fact")
+                  f"session_graph + 4 种 fact")
         except Exception as e:
-            log("RESOLVE", f"持久化 findings 失败: {e}")
+            log("RESOLVE", f"持久化失败: {e}")
             raise
 
     # ── LIFECYCLE_ANALYSIS ──────────────────────────
@@ -1604,12 +1665,10 @@ class Orchestrator:
             "condition": dp.condition,
             "session_count": len(sessions),
             "edge_count": len(edge_list),
-            "finding_count": len(dp.findings or []),
             "event_count": len(dp.events or []),
             "db_columns": db_columns,
             "sessions": session_list,
             "edges": edge_list,
-            "findings": dp.findings or [],
         }
 
     def _fix_check_constraint(self, evaluation_id: str, status: str):

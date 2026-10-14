@@ -8,9 +8,6 @@ SecMate uses the Claude SDK transcript envelope, but stores its actual agent
 transcripts beneath ``run/.worker-config/projects`` instead of Argo's
 ``session/argo`` directory.  ``hook-watch/sessions`` is intentionally not
 parsed: it records harness activity rather than the agent's execution trace.
-
-findings.db（SQLite）位于 ``run/`` 目录下，extract_findings() 直接读取
-findings.db 获取 final_verdict 级别的 finding，不从 JSONL event 流提取。
 """
 from __future__ import annotations
 
@@ -25,63 +22,12 @@ from typing import Iterator
 
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
-from .utils import attach_event_indices, parse_json_lenient
 
 
 _TOOL_MAP = {
     "Bash": "bash", "Read": "read", "Grep": "grep", "Glob": "glob",
     "Write": "write", "Edit": "edit", "Task": "task", "Skill": "skill",
     "TodoWrite": "todowrite",
-}
-
-# ===== Persona -> 业务阶段映射 =====
-# 来自 docs/agent-session-phase-classification.md §3.3 和 docs/knowledge-effect-eval-requirements.md §4.1
-# 兼容新旧变体命名差异（docs/data-verification.md）：
-#   flow-tracer -> flow, mdf-composer -> mdf, vuln-analyst -> vuln
-_PERSONA_TO_PHASE: dict[str, str] = {
-    # 入口识别 + 数据流追踪（需 LLM 细分）
-    "architect": "入口识别+数据流追踪",
-    # 数据流追踪 + Sink 点定位（需 LLM 细分）
-    "flow-tracer": "数据流追踪+Sink点定位",
-    "flow": "数据流追踪+Sink点定位",
-    # 漏洞模式识别
-    "specialist": "漏洞模式识别",
-    "variant-hunter": "漏洞模式识别",
-    # 数据流追踪
-    "mdf-composer": "数据流追踪",
-    "mdf": "数据流追踪",
-    # 漏洞判定与上报
-    "vuln-analyst": "漏洞判定与上报",
-    "vuln": "漏洞判定与上报",
-    "reviewer": "漏洞判定与上报",
-    "fp-analyzer": "漏洞判定与上报",
-    "deep-researcher": "漏洞判定与上报",
-    # 入口识别
-    "logic-architect": "入口识别",
-    # 数据流追踪
-    "logic-tracer": "数据流追踪",
-    # 漏洞模式识别
-    "logic-oracle-analyzer": "漏洞模式识别",
-    # 不属于 5 阶段（跳过）
-    "explorer": "不属于5阶段",
-    "distiller": "不属于5阶段",
-    "noise-distiller": "不属于5阶段",
-    "report": "不属于5阶段",
-}
-
-# finding level -> 业务阶段映射（辅助细分）
-# 来自 docs/agent-session-phase-classification.md §3.3
-_FINDING_LEVEL_TO_PHASE: dict[str, str] = {
-    "module": "预处理",
-    "hint": "入口识别",
-    "source": "入口识别+数据流追踪",
-    "sink": "Sink点定位",
-    "dataflow": "数据流追踪",
-    "logic_anchor": "数据流追踪",
-    "logic_trace": "数据流追踪",
-    "review_claim": "漏洞判定与上报",
-    "review_verdict": "漏洞判定与上报",
-    "final_verdict": "漏洞判定与上报",
 }
 
 
@@ -161,43 +107,6 @@ def is_secmate_trace(path: str) -> bool:
     return False
 
 
-# Persona 名提取正则：从 agent prompt 标题行提取 persona 名
-# Prompt 标题格式示例：
-#   "# Persona: architect"  或  "## architect"  或  "You are architect, ..."
-# 也兼容 workflow routing 中的 persona 声明
-_PERSONA_TITLE_RE = re.compile(
-    r'(?:^|\n)\s*\#*\s*(?:Persona\s*:\s*)?([a-zA-Z][\w\-]*?)\s*(?:\n|$)',
-    re.MULTILINE,
-)
-# 更宽泛的匹配：prompt 文本中 "You are the {persona}" 或 "{persona} agent"
-_PERSONA_BODY_RE = re.compile(
-    r'(?:You\s+are\s+(?:the\s+)?|persona\s*[:=]\s*["\']?)'
-    r'([a-zA-Z][\w\-]*?)'
-    r'(?:\s|["\']|,|\.|$)',
-    re.IGNORECASE,
-)
-
-# 所有已知 persona 名（用于精确匹配）
-_ALL_PERSONAS = frozenset(_PERSONA_TO_PHASE.keys()) | frozenset([
-    # legacy 和其他变体中的 persona
-    "intent-producer", "partition-init", "architect-deep",
-    "targeted-tracer", "deep-tracer", "attack-surface", "pattern-matcher",
-    "final-report", "module-seed-producer", "queen-agent",
-    "fast-path-hint-scout", "fast-path-logic-scout", "fast-path-sink-scout",
-    "fast-path-source-scout", "ql-db-builder", "ql-dict-flow-tracer",
-    "replay-barrier", "replay-check", "replay-intake",
-    "import-intake", "vuln-reproducer", "primitive-analyzer",
-    "primitive-explorer", "primitive-explorer-gate", "poc-reporter",
-    "dyn-intake", "dyn-campaign-control-init", "dyn-seed-producer",
-    "build-worker", "test-worker", "observe-worker", "troubleshoot-worker",
-    "improve-worker", "dyn-final-reporter",
-    "mem-init", "case-hunter", "pattern-hunter", "idea-producer",
-    "idea-hunter", "scout",
-    "attack-surface-analyst", "auto-designer", "end-to-end-auditor",
-    "ipc-exploit-auditor", "oob-auditor", "poc-builder",
-])
-
-
 class SecMateParser(BaseParser):
     """Parse SecMate Claude SDK transcripts, including nested subagents.
 
@@ -238,26 +147,6 @@ class SecMateParser(BaseParser):
                     or "scaffold run" in command)
         return tool == "skill" and isinstance(tool_input, dict) and str(
             tool_input.get("name", "")).lower() == "athena-skill"
-
-    @staticmethod
-    def _is_finding_tool(tool_name: str) -> bool:
-        """SecMate 平台 finding 提交工具。
-
-        从源码论证（findings_store/server.py + workflows/secmate-all-lite/tools_mcp.py）：
-        - mcp__findings-store__store_finding -- 核心 finding 存储
-        - mcp__findings-store__store_finding_finalize_batch -- 批量 finding 存储
-        - mcp__workflow-tools__store_finding -- workflow 别名
-        - mcp__workflow-tools__store_tiered_finding[_ext] -- 中间 finding
-        - mcp__workflow-tools__store_final_verdict -- 最终裁决（secmate-all-lite，当前工作流）
-        - mcp__workflow-tools__store_tracer_verdict -- 最终判定（secmate-flash，旧工作流兼容）
-        """
-        t = tool_name or ""
-        return (t in ("mcp__findings-store__store_finding",
-                      "mcp__findings-store__store_finding_finalize_batch",
-                      "mcp__workflow-tools__store_finding",
-                      "mcp__workflow-tools__store_tracer_verdict",
-                      "mcp__workflow-tools__store_final_verdict")
-                or t.startswith("mcp__workflow-tools__store_tiered_fing"))
 
     @staticmethod
     def _is_assistant_record(record: dict) -> bool:
@@ -465,7 +354,6 @@ class SecMateParser(BaseParser):
                                     is_kg_interaction=info.get("is_kg", False),
                                     is_memory_interaction=_is_mem,
                                     is_memory_write=_is_mem_w,
-                                    is_finding_submission=self._is_finding_tool(_mapped),
                                     call_id=call_id))
                             elif part_type == "text":
                                 events.append(self._event(event_id, trace_id, session_id, "TEXT", timestamp, record, part.get("text"), "text"))
@@ -693,25 +581,6 @@ class SecMateParser(BaseParser):
 
         return graph
 
-    @staticmethod
-    def _secmate_tag_to_vr(tag: str) -> str | None:
-        """Map SecMate review_verdict tag to validation_result.
-
-        tag 值含义（从实际 trace 数据验证）：
-        - review_positive[,confirmed[,challenge_required]] -> CONFIRMED
-        - review_negative[,reviewer_fp|conditional|hardening] -> FALSE_POSITIVE
-        - reviewer_fp -> FALSE_POSITIVE
-        - review_conditional / conditional / needs_review -> None（不确定，不算确认）
-        """
-        if not tag:
-            return None
-        tag_l = tag.lower()
-        if "review_positive" in tag_l:
-            return "CONFIRMED"
-        if "review_negative" in tag_l or "reviewer_fp" in tag_l:
-            return "FALSE_POSITIVE"
-        return None
-
     def _find_findings_db(self) -> str | None:
         """从 source_uri 定位 findings.db 路径。
 
@@ -771,222 +640,19 @@ class SecMateParser(BaseParser):
                     return candidate
         return None
 
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 SecMate 平台的 finding。
-
-        直接读 findings.db（SQLite），与 SecMate 的 findings_sync.py 一致。
-        findings.db 位于 .../run/findings.db，包含所有 finding 的最终状态。
-
-        字段映射（findings.db -> finding dict）：
-        - id -> finding_id
-        - tag -> 判断 CONFIRMED/FALSE_POSITIVE
-        - level -> level
-        - vuln_type, file_path, line, function_name, description, score
-        - payload (JSON) -> title, severity, judgment, final_strength
-        - source_session_id -> session_id（关联原始 JSONL 文件）
-        - source_persona -> persona（新增，老代码丢弃了此字段）
-        """
-        db_path = self._find_findings_db()
-        if not db_path:
-            return []
-
-        findings: list[dict] = []
-        try:
-            uri = f"file:{db_path}?mode=ro"
-            with sqlite3.connect(uri, uri=True, timeout=5) as conn:
-                conn.row_factory = sqlite3.Row
-                rows = conn.execute(
-                    "SELECT id, tag, level, level_num, file_path, line, function_name, "
-                    "vuln_type, description, payload, evidence, status, score, "
-                    "source_task_id, source_persona, source_session_id "
-                    "FROM findings WHERE level = ? ORDER BY id ASC",
-                    ("final_verdict",),
-                ).fetchall()
-        except (sqlite3.OperationalError, sqlite3.DatabaseError):
-            return []
-
-        for row in rows:
-            row_dict = dict(row)
-            tag = str(row_dict.get("tag") or "")
-            tag_l = tag.lower()
-            # tag 格式：final_positive,final_confirmed 或 final_negative,...
-            if "final_positive" in tag_l:
-                vr = "CONFIRMED"
-            elif "final_negative" in tag_l:
-                vr = "FALSE_POSITIVE"
-            else:
-                vr = None
-
-            # payload 是 JSON 字符串，含 title/severity/judgment/final_strength 等
-            payload = parse_json_lenient(row_dict.get("payload") or "{}") or {}
-
-            finding_id = str(row_dict["id"])
-            findings.append({
-                "finding_id": finding_id,
-                "display_id": finding_id,
-                "title": str(payload.get("title") or row_dict.get("vuln_type") or ""),
-                "description": str(row_dict.get("description") or ""),
-                "vuln_type": str(row_dict.get("vuln_type") or ""),
-                "severity": str(payload.get("severity") or ""),
-                "source": str(row_dict.get("file_path") or payload.get("primary_location") or ""),
-                "sink": str(row_dict.get("function_name") or ""),
-                "validation_result": vr,
-                "level": "final_verdict",
-                "platform": "secmate",
-                "session_id": str(row_dict.get("source_session_id") or ""),
-                "persona": str(row_dict.get("source_persona") or ""),
-            })
-
-        # 关联提交事件索引
-        findings_by_id = {f["finding_id"]: f for f in findings if f["finding_id"]}
-        attach_event_indices(findings_by_id, events)
-
-        return findings
-
     def label_session_phases(
         self, events: list[RawEvent], session_meta: dict
     ) -> tuple[dict[str, str], dict[str, str]]:
-        """标注 session 的业务阶段。
+        """标注 session 的业务阶段（finding 逻辑已移除）。
 
-        实现方案（来自 docs/agent-session-phase-classification.md §3.3）：
-        1. 从 JSONL trace 提取 agent prompt 标题中的 persona 名
-        2. 从 store_finding 工具调用的 level 参数提取 finding level
-        3. 按 persona -> 业务阶段映射表将 persona -> 业务阶段
-        4. 用 finding level 辅助细分
-        5. 返回 (session_phase_labels, session_phase_source)
-
-        persona 来源：
-        - TEXT 事件中的 prompt 文本（agent prompt 标题行含 persona 名）
-        - findings.db 的 source_persona 字段（在 extract_findings 中已提取）
-        - store_finding 工具调用的 input 参数中的 persona 相关字段
-
-        persona 命名兼容新旧变体（docs/data-verification.md）：
-        - flow-tracer -> flow
-        - mdf-composer -> mdf
-        - vuln-analyst -> vuln
+        返回 (session_phase_labels, session_phase_source)。
+        所有 session 标注为 "未知"，后续由 LLM 细分模块处理。
         """
         session_phase_labels: dict[str, str] = {}
         session_phase_source: dict[str, str] = {}
-
-        # Step 1: 从 TEXT 事件提取 persona 名
-        # SecMate agent prompt 标题行格式：
-        #   "# Persona: architect"  或  prompt 文本含 "You are architect"
-        # TEXT 事件中的 output_json 是 prompt 文本内容
-        session_personas: dict[str, str] = {}
-        for ev in events:
-            if ev.event_type != "TEXT" or not ev.output_json:
-                continue
-            txt = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
-            sid = ev.session_id
-            if not sid:
-                continue
-            if sid in session_personas:
-                continue  # 已找到 persona，跳过
-            # 尝试从 prompt 文本提取 persona 名
-            persona = self._extract_persona_from_text(txt)
-            if persona:
-                session_personas[sid] = persona
-
-        # Step 2: 从 store_finding 工具调用提取 finding level
-        session_finding_levels: dict[str, list[str]] = {}
-        for ev in events:
-            if not ev.is_tool_call():
-                continue
-            tool = ev.tool_name or ""
-            if not self._is_finding_tool(tool):
-                continue
-            inp = ev.input_json or {}
-            sid = ev.session_id
-            if not sid:
-                continue
-            level = str(inp.get("level") or "")
-            if level:
-                if sid not in session_finding_levels:
-                    session_finding_levels[sid] = []
-                session_finding_levels[sid].append(level)
-
-        # Step 3: persona -> 业务阶段映射 + finding level 辅助细分
-        for sid, persona in session_personas.items():
-            phase = _PERSONA_TO_PHASE.get(persona)
-            if phase is None:
-                # 未知 persona，尝试用 finding level 辅助
-                levels = session_finding_levels.get(sid, [])
-                if levels:
-                    # 取最后一个 finding level（最细粒度）
-                    phase = _FINDING_LEVEL_TO_PHASE.get(levels[-1], "未知")
-                    session_phase_source[sid] = f"finding_level:{levels[-1]}"
-                else:
-                    phase = "未知"
-                    session_phase_source[sid] = f"persona:{persona}(unmapped)"
-            else:
-                source_parts = [f"persona:{persona}"]
-                # 如果 persona 映射到跨阶段（含"+"），用 finding level 辅助细分
-                if "+" in phase:
-                    levels = session_finding_levels.get(sid, [])
-                    if levels:
-                        level_phase = _FINDING_LEVEL_TO_PHASE.get(levels[-1])
-                        if level_phase and level_phase != "预处理":
-                            # finding level 能映射到单一阶段，用它替代
-                            phase = level_phase
-                            source_parts.append(f"finding_level:{levels[-1]}")
-                session_phase_source[sid] = "+".join(source_parts)
-            session_phase_labels[sid] = phase
-
-        # Step 4: 对没有 persona 的 session，尝试只用 finding level
-        for sid, levels in session_finding_levels.items():
-            if sid in session_phase_labels:
-                continue
-            if levels:
-                phase = _FINDING_LEVEL_TO_PHASE.get(levels[-1], "未知")
-                session_phase_labels[sid] = phase
-                session_phase_source[sid] = f"finding_level:{levels[-1]}"
-
-        # Step 5: 对仍无标注的 session，标注为 "未知"
         for ev in events:
             sid = ev.session_id
             if sid and sid not in session_phase_labels:
                 session_phase_labels[sid] = "未知"
                 session_phase_source[sid] = "no_persona_found"
-
         return session_phase_labels, session_phase_source
-
-    @staticmethod
-    def _extract_persona_from_text(text: str) -> str | None:
-        """从 prompt 文本中提取 persona 名。
-
-        策略：
-        1. 精确匹配已知 persona 名（优先）
-        2. 匹配 "# Persona: xxx" 或 "## xxx" 标题格式
-        3. 匹配 "You are xxx" 格式
-        """
-        if not text:
-            return None
-        text_l = text.lower()
-
-        # 策略 1: 精确匹配已知 persona 名（最可靠）
-        for persona in _ALL_PERSONAS:
-            # 在文本中精确匹配 persona 名（作为独立单词）
-            pattern = r'\b' + re.escape(persona) + r'\b'
-            if re.search(pattern, text_l):
-                return persona
-
-        # 策略 2: "# Persona: xxx" 标题格式
-        m = re.search(r'\#+\s*Persona\s*:\s*([a-zA-Z][\w\-]*)', text, re.IGNORECASE)
-        if m:
-            candidate = m.group(1).lower()
-            if candidate in _PERSONA_TO_PHASE:
-                return candidate
-            # 即使不在映射表中，也返回（可能是新 persona）
-            return candidate
-
-        # 策略 3: "You are xxx" 格式
-        m = _PERSONA_BODY_RE.search(text)
-        if m:
-            candidate = m.group(1).lower()
-            if candidate in _PERSONA_TO_PHASE:
-                return candidate
-            # 过滤掉常见非 persona 词
-            if candidate not in ("a", "an", "the", "now", "here", "task", "going", "agent", "assistant"):
-                return candidate
-
-        return None

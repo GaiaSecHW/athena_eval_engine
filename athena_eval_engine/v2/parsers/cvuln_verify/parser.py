@@ -28,7 +28,7 @@ from typing import Iterator
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
-from .utils import parse_json_lenient, attach_event_indices
+from .utils import parse_json_lenient
 
 import logging
 _log = logging.getLogger(__name__)
@@ -199,18 +199,6 @@ class CVulnVerifyParser(BaseParser):
         is_view = cmd.strip().startswith(("head", "cat ", "grep ", "ls "))
         return has_script and not is_view
 
-    @staticmethod
-    def _is_finding_tool(tool_name: str, args) -> bool:
-        """CVulnVerify 平台 finding 提交：write/bash 写 vuln_verify_final_verdict。"""
-        t = tool_name or ""
-        if t == "write" and isinstance(args, dict):
-            fp = str(args.get("file_path") or args.get("path") or "")
-            return "vuln_verify_final_verdict" in fp
-        if t in ("bash", "bash_tool", "shell") and isinstance(args, dict):
-            cmd = str(args.get("command", ""))
-            return "vuln_verify_final_verdict" in cmd
-        return False
-
     def _obj_to_events(self, d: dict, trace_id: str, session_id: str, line_no: int) -> list[RawEvent]:
         t = d.get("type", "")
         ts = self._parse_ts(d.get("timestamp", ""))
@@ -288,7 +276,6 @@ class CVulnVerifyParser(BaseParser):
                     self._last_tool_name = tool_name
                     is_kg = self._tool_kg.get(tid, False) if tid else self._is_kg_call(tool_name, args)
                     is_mem, is_mem_w = detect_memory_flags(tool_name, args)
-                    is_finding = self._is_finding_tool(tool_name, args)
                     evs.append(RawEvent(
                         event_id=f"{eid}-t{ci}", trace_id=trace_id, session_id=session_id,
                         event_type="TOOL_CALL", timestamp_ms=ts,
@@ -301,7 +288,6 @@ class CVulnVerifyParser(BaseParser):
                         is_kg_interaction=is_kg,
                         is_memory_interaction=is_mem,
                         is_memory_write=is_mem_w,
-                        is_finding_submission=is_finding,
                         call_id=tid,
                     ))
                 elif ct == "text":
@@ -534,53 +520,6 @@ class CVulnVerifyParser(BaseParser):
         # 复用 _parse_verdict_json 的三级回退逻辑
         return CVulnVerifyParser._parse_verdict_json(cmd[brace_idx:])
 
-    # ------------------------------------------------------------------
-    # extract_findings()
-    # ------------------------------------------------------------------
-
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """提取 CVulnVerify 平台的 finding（verdict）。
-
-        两种提交方式：
-        1. write 工具写 vuln_verify_final_verdict.json
-        2. bash cat > heredoc 写 vuln_verify_final_verdict.json
-
-        agent 写的 verdict JSON 可能有语法错误（未终止字符串、缺少分隔符等），
-        json.loads 失败时依次回退 raw_decode → regex 提取 case_id/verdict。
-        """
-        findings: dict[str, dict] = {}
-
-        for _ei, e in enumerate(events):
-            if not e.is_tool_call():
-                continue
-            tool = e.tool_name or ""
-            inp = e.input_json or {}
-
-            # write 工具写 verdict JSON
-            if tool == "write":
-                fp = str(inp.get("file_path") or inp.get("path") or "")
-                if "vuln_verify_final_verdict" in fp:
-                    content = inp.get("content", "")
-                    if isinstance(content, str):
-                        vdata = self._parse_verdict_json(content)
-                        if vdata:
-                            f = self._build_finding(vdata, e)
-                            if f:
-                                findings[f["finding_id"]] = f
-
-            # bash cat > heredoc 写 verdict JSON
-            elif tool in ("bash", "bash_tool", "shell"):
-                cmd = str(inp.get("command", ""))
-                if "vuln_verify_final_verdict" in cmd:
-                    vdata = self._extract_verdict_from_bash_cmd(cmd)
-                    if vdata:
-                        f = self._build_finding(vdata, e)
-                        if f:
-                            findings[f["finding_id"]] = f
-
-        attach_event_indices(findings, events)
-        return list(findings.values())
-
     @staticmethod
     def _parse_verdict_json(content: str) -> dict | None:
         """解析 verdict JSON，两级回退：parse_json_lenient → regex。"""
@@ -619,75 +558,6 @@ class CVulnVerifyParser(BaseParser):
                 vdata["evidence_locations"] = locs
             return vdata
         return None
-
-    @staticmethod
-    def _build_finding(vdata: dict, e) -> dict | None:
-        """从解析后的 verdict dict 构建 finding dict。
-
-        CVulnVerify verdict JSON 结构：
-          {case_id, verdict, dimensions, evidence: [{type, location, claim, ...}], ...}
-        文件路径在 evidence[].location 中（格式 "path/to/file.c:line"），
-        不在 top-level source_file/source 字段中。
-        """
-        case_id = str(vdata.get("case_id", "")) or f"cvv-{e.event_id}"
-        verdict = vdata.get("verdict", "")
-        vr = "CONFIRMED" if verdict == "confirmed" else ("FALSE_POSITIVE" if verdict == "ruled_out" else "UNCERTAIN")
-        case_title = str(vdata.get("case_title", "") or vdata.get("title", "") or "")
-        vt = str(vdata.get("vuln_type", "") or vdata.get("vulnerability_type", "") or "")
-        desc = str(vdata.get("summary", "") or vdata.get("description", "") or "")
-        if not desc:
-            desc = str(vdata.get("ruled_out_by", ""))
-
-        # 从 evidence 数组提取文件路径
-        # evidence[].location 格式: "path/to/file.c:line" 或 "path/to/file.c"
-        src = str(vdata.get("source_file", "") or vdata.get("source", "") or "")
-        fn = str(vdata.get("function_name", "") or vdata.get("sink", "") or "")
-        evidence_files: list[str] = []
-        evidence = vdata.get("evidence")
-        if isinstance(evidence, list):
-            for ev_item in evidence:
-                if not isinstance(ev_item, dict):
-                    continue
-                loc = str(ev_item.get("location", "") or "")
-                if not loc:
-                    continue
-                # location 格式 "path/to/file.c:line-range" → 取文件路径部分
-                loc_file = loc.split(":")[0] if ":" in loc else loc
-                if loc_file and loc_file not in evidence_files:
-                    evidence_files.append(loc_file)
-                if not src:
-                    src = loc_file
-                etype = str(ev_item.get("type", "") or "")
-                if etype == "source" and not fn:
-                    claim = str(ev_item.get("claim", "") or "")
-                    if claim:
-                        fn = claim[:200]
-        # regex 回退路径：evidence_locations 是扁平字符串列表
-        if not evidence_files:
-            for loc in vdata.get("evidence_locations", []):
-                loc = str(loc or "")
-                if not loc:
-                    continue
-                loc_file = loc.split(":")[0] if ":" in loc else loc
-                if loc_file and loc_file not in evidence_files:
-                    evidence_files.append(loc_file)
-                if not src:
-                    src = loc_file
-
-        return {
-            "finding_id": case_id,
-            "display_id": case_id,
-            "title": case_title if case_title else f"CVulnVerify {case_id}",
-            "description": desc,
-            "vuln_type": vt,
-            "severity": str(vdata.get("severity", "")),
-            "source": src,
-            "sink": fn,
-            "evidence_files": evidence_files,
-            "validation_result": vr,
-            "platform": "cvuln-verify",
-            "session_id": e.session_id,
-        }
 
     # ------------------------------------------------------------------
     # label_session_phases()

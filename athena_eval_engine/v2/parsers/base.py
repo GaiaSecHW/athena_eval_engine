@@ -2,7 +2,7 @@
 
 设计参考 docs/v2-architecture-design.md §4.1。
 
-子类必须实现 5 个抽象方法（parse / extract_findings / build_session_graph /
+子类必须实现 5 个抽象方法（parse / build_session_graph /
 load_session / label_session_phases），build_data_pack 是模板方法，子类不覆盖。
 """
 from __future__ import annotations
@@ -32,10 +32,6 @@ class BaseParser(ABC):
 
         trace_source: dict，至少含 source_uri（文件路径），可选 trace_id、session_id 等。
         """
-
-    @abstractmethod
-    def extract_findings(self, events: list[RawEvent]) -> list[dict]:
-        """从事件中提取漏洞 finding。"""
 
     @abstractmethod
     def build_session_graph(self, events: list[RawEvent]) -> dict:
@@ -68,16 +64,14 @@ class BaseParser(ABC):
 
         按 docs/v2-architecture-design.md §4.1 实现：
         1. parse() -> events
-        2. extract_findings(events) -> findings
-        3. build_session_graph(events) -> session_graph
-        4. load_session(trace_source) -> session_meta
-        5. label_session_phases(events, session_meta) -> (phase_labels, phase_source)
-        6. 4 个 resolver 从 events 提取 facts（延迟 import，resolver 在 #49 中实现）
-        7. 组装 DataPack
+        2. build_session_graph(events) -> session_graph
+        3. load_session(trace_source) -> session_meta
+        4. label_session_phases(events, session_meta) -> (phase_labels, phase_source)
+        5. 4 个 resolver 从 events 提取 facts（延迟 import，resolver 在 #49 中实现）
+        6. 组装 DataPack
         """
-        # 1-5: parser 自身的抽象方法
+        # 1-4: parser 自身的抽象方法
         events = self.parse(trace_source)
-        findings = self.extract_findings(events)
         session_graph = self.build_session_graph(events)
         session_meta = self.load_session(trace_source)
         phase_labels, phase_source = self.label_session_phases(events, session_meta)
@@ -94,7 +88,7 @@ class BaseParser(ABC):
             from ..resolvers.tool_action import ToolActionResolver
             from ..resolvers.resource import ResourceResolver
 
-            outcome = OutcomeResolver().resolve(task_run, events, findings)
+            outcome = OutcomeResolver().resolve(task_run, events)
             knowledge = KnowledgeResolver().resolve(task_run, events)
             tool_action = ToolActionResolver().resolve(task_run, events)
             resource = ResourceResolver().resolve(task_run, session_meta)
@@ -113,7 +107,6 @@ class BaseParser(ABC):
             agent_type=self.agent_type,
             condition=task_run.condition.value if hasattr(task_run.condition, "value") else str(task_run.condition),
             events=events,
-            findings=findings,
             session_graph=session_graph,
             session_meta=session_meta,
             session_phase_labels=phase_labels,
