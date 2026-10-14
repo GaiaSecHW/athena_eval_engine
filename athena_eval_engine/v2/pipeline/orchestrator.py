@@ -1564,7 +1564,7 @@ class Orchestrator:
         edges = sg.get("edges", {})
         parent_map = sg.get("parent_map", {})
 
-        # session 列表（含 agent、phase、parent + DB 全部字段）
+        # session 列表（含 agent、phase、parent + task 信息）
         session_list = []
         db_columns = []
         for sid, info in sessions.items():
@@ -1577,6 +1577,9 @@ class Orchestrator:
                 "agent": info_d.get("agent", ""),
                 "session_type": info_d.get("session_type", ""),
                 "task_type": info_d.get("task_type", ""),
+                "task_id": info_d.get("task_id", ""),
+                "status": info_d.get("status", ""),
+                "is_failed_task": info_d.get("is_failed_task", False),
                 "parent_id": parent_map.get(sid, ""),
                 "phase": (dp.session_phase_labels or {}).get(sid, ""),
                 "files": sorted(info_d.get("files", set()) if isinstance(info_d.get("files"), set) else info_d.get("files", [])),

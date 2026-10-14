@@ -610,10 +610,16 @@ class LifecycleAnalyzer:
                                dp: DataPack) -> str:
         """提取调用链经过的 session 列表。
 
-        从 session_graph 构建 session 调用链，
-        格式化为 "session_id -> session_id -> ..." 字符串。
+        从 session_graph 的 parent_map 构建 task/session 调用链，
+        格式化为 "session_id (agent_name) → session_id (agent_name) → ..." 字符串。
+
+        session_graph 结构: {sessions: {sid: {...}}, edges: {sid: set()},
+                              parent_map: {sid: parent_sid}}
+        parent_map 同时包含 task_id 维度和 session_id 维度的父子关系。
         """
         session_graph = dp.session_graph or {}
+        sessions = session_graph.get("sessions", {}) if isinstance(session_graph, dict) else {}
+        parent_map = session_graph.get("parent_map", {}) if isinstance(session_graph, dict) else {}
         session_meta = dp.session_meta or {}
 
         # 收集所有涉及的 session
@@ -625,15 +631,13 @@ class LifecycleAnalyzer:
         if not session_ids:
             return "（无 session 信息）"
 
-        # 构建 session 链（按 parent_id 关系排序）
-        # session_graph 格式: {session_id: {"parent_id": "xxx", ...}}
+        # 构建 session 链（按 parent_map 关系排序）
         chain = []
         visited = set()
-        # 找根 session（没有 parent 的）
+        # 找根 session（没有 parent 或 parent 不在涉及的 session 中）
         roots = []
         for sid in session_ids:
-            info = session_graph.get(sid, {})
-            parent = info.get("parent_id") if isinstance(info, dict) else None
+            parent = parent_map.get(sid)
             if not parent or parent not in session_ids:
                 roots.append(sid)
 
@@ -645,18 +649,22 @@ class LifecycleAnalyzer:
             if sid in visited:
                 continue
             visited.add(sid)
-            meta = session_meta.get(sid, {}) if isinstance(session_meta, dict) else {}
+            # 优先从 sessions dict 取 agent_name，其次从 session_meta
+            sess_info = sessions.get(sid, {})
             agent_name = ""
-            if isinstance(meta, dict):
-                agent_name = meta.get("agent_name", "") or meta.get("task_type", "")
+            if isinstance(sess_info, dict):
+                agent_name = sess_info.get("agent", "") or sess_info.get("task_type", "")
+            if not agent_name:
+                meta = session_meta.get(sid, {}) if isinstance(session_meta, dict) else {}
+                if isinstance(meta, dict):
+                    agent_name = meta.get("agent_name", "") or meta.get("task_type", "")
             chain.append(f"{sid} ({agent_name})" if agent_name else sid)
 
-            # 找子 session
+            # 找子 session（parent_map 中 parent == 当前 sid 的）
             for other_sid in session_ids:
                 if other_sid in visited:
                     continue
-                info = session_graph.get(other_sid, {})
-                if isinstance(info, dict) and info.get("parent_id") == sid:
+                if parent_map.get(other_sid) == sid:
                     queue.append(other_sid)
 
         return " → ".join(chain) if chain else "（无法构建调用链）"
