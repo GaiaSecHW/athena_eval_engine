@@ -4,10 +4,13 @@
 
 tokenizer 文件以分卷压缩形式存储在 deepseek_v4_tokenizer/ 目录下
 （tokenizer_files.zip.part00 ~ part19），首次使用时自动拼接解压到内存。
+
+使用 HuggingFace `tokenizers` 库（轻量 Rust 库，不依赖 transformers/torch）。
 """
 from __future__ import annotations
 
 import io
+import json
 import os
 import zipfile
 from functools import lru_cache
@@ -48,21 +51,20 @@ def _reconstruct_tokenizer_files() -> dict[str, bytes]:
 
 @lru_cache(maxsize=1)
 def _get_tokenizer():
-    """延迟加载 tokenizer（首次调用时加载，后续复用）。"""
+    """延迟加载 tokenizer（首次调用时加载，后续复用）。
+
+    使用 tokenizers.Tokenizer.from_file() 加载标准 tokenizer.json，
+    不依赖 transformers/torch。
+    """
     global _tokenizer
     if _tokenizer is None:
-        import tempfile
-        import transformers
+        from tokenizers import Tokenizer
 
         files = _reconstruct_tokenizer_files()
-        # AutoTokenizer.from_pretrained 需要文件在磁盘上，写到临时目录
-        with tempfile.TemporaryDirectory() as tmpdir:
-            for name, content in files.items():
-                with open(os.path.join(tmpdir, name), "wb") as f:
-                    f.write(content)
-            _tokenizer = transformers.AutoTokenizer.from_pretrained(
-                tmpdir, trust_remote_code=True,
-            )
+        tok_json = files.get("tokenizer.json")
+        if not tok_json:
+            raise FileNotFoundError("tokenizer.json not found in split volumes")
+        _tokenizer = Tokenizer.from_buffer(tok_json)
     return _tokenizer
 
 
@@ -71,7 +73,7 @@ def count_tokens(text: str) -> int:
     if not text:
         return 0
     tok = _get_tokenizer()
-    return len(tok.encode(text))
+    return len(tok.encode(text).ids)
 
 
 def count_messages_tokens(messages: list[dict]) -> int:
@@ -79,10 +81,14 @@ def count_messages_tokens(messages: list[dict]) -> int:
 
     messages: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
     """
-    tok = _get_tokenizer()
-    # 用 tokenizer 的 chat_template 计算完整 prompt 的 token 数
-    prompt = tok.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-    return len(tok.encode(prompt))
+    # 拼接所有 message 内容，用分隔符区分
+    parts = []
+    for msg in messages:
+        role = msg.get("role", "")
+        content = msg.get("content", "")
+        parts.append(f"<|{role}|>{content}")
+    full_text = "".join(parts) + "<|assistant|>"
+    return count_tokens(full_text)
 
 
 def fit_batch_by_token(items: list[str], max_tokens: int,
