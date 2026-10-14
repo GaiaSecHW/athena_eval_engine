@@ -636,10 +636,13 @@ class Orchestrator:
         case_details: dict[str, dict] = {}
         alert_center_data: dict = {}
 
-        # ── 获取原始数据：从告警中心取引擎上报数据 ──
+        # ── 获取原始数据：从告警中心取挖掘 agent 上报的 case ──
+        # 只取 category=mining 的 entry，验证 agent 不上报新漏洞
         _ac_pairs: list[tuple[str, str]] = []
         _seen: set[tuple[str, str]] = set()
         for e in entries:
+            if e.get("category") != "mining":
+                continue
             _pid = e.get("project_id") or ""
             _tid = e.get("task_id_actual") or ""
             # 从 source_uri 提取 task UUID
