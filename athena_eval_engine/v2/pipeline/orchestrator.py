@@ -363,6 +363,50 @@ class Orchestrator:
                   f"{len(case_details)} case_details, eval_mode={eval_mode}, "
                   f"benchmark_source={benchmark_source}")
 
+            # ── 开发态 LLM 语义匹配：原始数据 case ↔ 基线 case ──
+            # 开发态下原始数据和基线可能来自不同项目，case_id 不重叠，
+            # 需要 LLM 判断哪些 case 描述同一个漏洞
+            case_matches: list[dict] = []
+            if eval_mode == "dev" and alert_center_data.get("cases"):
+                raw_project_ids = set(alert_center_data.get("project_ids", []))
+                baseline_project = cfg.get("manifest", {}).get(
+                    "benchmark_set_id", "")
+                # 原始数据与基线不同项目时才需要匹配
+                needs_match = baseline_project and \
+                    baseline_project not in raw_project_ids
+                if needs_match:
+                    log("ORCH", f"开发态：原始数据 project={raw_project_ids} "
+                          f"≠ 基线 project={baseline_project}，启动 LLM 匹配")
+                    _set_progress(evaluation_id, "LLM 语义匹配原始数据与基线...")
+                    from ..lifecycle.case_matcher import match_cases
+                    # 构造原始数据 case 列表（告警中心格式）
+                    raw_cases_for_match = alert_center_data.get("cases", [])
+                    # 构造基线 case 列表（case_details 格式 → 匹配器需要的格式）
+                    baseline_cases_for_match = [
+                        {
+                            "case_id": cid,
+                            "title": detail.get("vulnerability_type") or "",
+                            "description": detail.get("description") or "",
+                            "vulnerability_type": detail.get(
+                                "vulnerability_type") or "",
+                        }
+                        for cid, detail in case_details.items()
+                    ]
+                    case_matches = match_cases(
+                        raw_cases_for_match,
+                        baseline_cases_for_match,
+                        evaluation_id,
+                        cancel_cb=_cancel_cb,
+                    )
+                    matched = sum(
+                        1 for m in case_matches
+                        if m.get("matched_baseline_case_id")
+                    )
+                    log("ORCH", f"LLM 匹配完成: {matched}/{len(case_matches)} "
+                          f"条原始数据找到基线匹配")
+                else:
+                    log("ORCH", "开发态：原始数据与基线同项目，跳过 LLM 匹配")
+
             # debug dump：INGESTING 中间数据明细
             self._dump_debug(reports_dir, evaluation_id, "ingesting", {
                 "benchmark_source": benchmark_source,
@@ -409,6 +453,7 @@ class Orchestrator:
                         for cid, detail in case_details.items()
                     ],
                 },
+                "case_matches": case_matches,
             })
 
             # debug 断点：manifest.debug_stop_after 指定停在哪个步骤之后
