@@ -67,7 +67,7 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
             "project_id": project_id,
             "sort_field": "created_at",
             "sort_direction": "desc",
-            "include_decision_reason": "false",
+            "include_decision_reason": "true",
             "page": page,
             "page_size": page_size,
         }
@@ -109,7 +109,7 @@ def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
             "project_id": project_id,
             "sort_field": "created_at",
             "sort_direction": "desc",
-            "include_decision_reason": "false",
+            "include_decision_reason": "true",
             "page": page,
             "page_size": page_size,
         }
@@ -330,6 +330,8 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
         "source_function": source_function,
         "source_line": source_line,
         "locator": locator,
+        "false_positive_group": c.get("false_positive_group") or "",
+        "false_positive_reason": c.get("false_positive_reason") or "",
     }
 
 

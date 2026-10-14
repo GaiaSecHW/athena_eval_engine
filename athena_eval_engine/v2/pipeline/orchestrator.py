@@ -570,6 +570,8 @@ class Orchestrator:
                         "source_function": c.get("source_function") or "",
                         "source_line": c.get("source_line") or "",
                         "locator": c.get("locator") or "",
+                        "false_positive_group": c.get("false_positive_group") or "",
+                        "false_positive_reason": c.get("false_positive_reason") or "",
                     }
 
         elif bm_source == "vbench_zip":
