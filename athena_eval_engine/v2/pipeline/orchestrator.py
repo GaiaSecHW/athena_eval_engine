@@ -485,6 +485,14 @@ class Orchestrator:
             )
             log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
 
+            # debug dump：PARSING 中间数据 — 所有 session 关系图
+            self._dump_debug(reports_dir, evaluation_id, "parsing", {
+                "data_packs": [
+                    self._summarize_data_pack(dp)
+                    for dp in data_packs
+                ],
+            })
+
             # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
             try:
                 from ...application.evaluation_service import _cleanup_trace_cache
@@ -1321,6 +1329,52 @@ class Orchestrator:
             log("DEBUG", f"dump {step}: {path}")
         except Exception as e:
             log("DEBUG", f"dump {step} 失败: {e}")
+
+    def _summarize_data_pack(self, dp) -> dict:
+        """将 DataPack 序列化为 debug 可展示的摘要（含 session 关系图）。"""
+        sg = dp.session_graph or {}
+        sessions = sg.get("sessions", {})
+        edges = sg.get("edges", {})
+        parent_map = sg.get("parent_map", {})
+
+        # session 列表（含 agent、phase、parent）
+        session_list = []
+        for sid, info in sessions.items():
+            info_d = info if isinstance(info, dict) else {}
+            session_list.append({
+                "session_id": sid,
+                "agent": info_d.get("agent", ""),
+                "session_type": info_d.get("session_type", ""),
+                "task_type": info_d.get("task_type", ""),
+                "parent_id": parent_map.get(sid, ""),
+                "phase": (dp.session_phase_labels or {}).get(sid, ""),
+                "files": sorted(info_d.get("files", set()) if isinstance(info_d.get("files"), set) else info_d.get("files", [])),
+                "facts": sorted(info_d.get("facts", set()) if isinstance(info_d.get("facts"), set) else info_d.get("facts", [])),
+            })
+
+        # 边列表
+        edge_list = []
+        for src, targets in edges.items():
+            if isinstance(targets, set):
+                targets = sorted(targets)
+            elif not isinstance(targets, list):
+                targets = list(targets)
+            for tgt in targets:
+                edge_list.append({"from": src, "to": tgt})
+
+        return {
+            "task_run_id": dp.task_run_id,
+            "task_id": dp.task_id,
+            "agent_type": dp.agent_type,
+            "condition": dp.condition,
+            "session_count": len(sessions),
+            "edge_count": len(edge_list),
+            "finding_count": len(dp.findings or []),
+            "event_count": len(dp.events or []),
+            "sessions": session_list,
+            "edges": edge_list,
+            "findings": dp.findings or [],
+        }
 
     def _fix_check_constraint(self, evaluation_id: str, status: str):
         """修复 evaluation 表的 CHECK 约束以包含 v2 新状态。"""

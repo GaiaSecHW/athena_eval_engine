@@ -36,7 +36,7 @@ tr:hover { background: #1a1a3e; }
 <div class="step-bar" id="stepBar"></div>
 <div class="content" id="content"></div>
 <script>
-const STEPS = ["ingesting", "parsing", "resolving", "calculating", "lifecycle", "causal_chain", "reporting"];
+const STEPS = ["ingesting", "parsing", "resolving", "lifecycle", "causal_chain", "reporting"];
 
 function getEid() {
   const m = location.pathname.match(/\/evaluations\/([^/]+)\/debug/);
@@ -170,6 +170,168 @@ RENDERERS.ingesting = function(el, data) {
 // RENDERERS.parsing = function(el, data) { ... };
 // RENDERERS.resolving = function(el, data) { ... };
 // ...
+
+RENDERERS.parsing = function(el, data) {
+  let html = "";
+
+  // 统计概览
+  const packs = data.data_packs || [];
+  html += `<div class="stats">`;
+  html += `<div class="stat"><div class="num">${packs.length}</div><div class="label">data_packs</div></div>`;
+  let totalSessions = 0, totalEdges = 0, totalFindings = 0, totalEvents = 0;
+  for (const p of packs) {
+    totalSessions += p.session_count || 0;
+    totalEdges += p.edge_count || 0;
+    totalFindings += p.finding_count || 0;
+    totalEvents += p.event_count || 0;
+  }
+  html += `<div class="stat"><div class="num">${totalSessions}</div><div class="label">sessions</div></div>`;
+  html += `<div class="stat"><div class="num">${totalEdges}</div><div class="label">edges</div></div>`;
+  html += `<div class="stat"><div class="num">${totalFindings}</div><div class="label">findings</div></div>`;
+  html += `<div class="stat"><div class="num">${totalEvents}</div><div class="label">events</div></div>`;
+  html += `</div>`;
+
+  // 每个 data_pack 独立展示（挖掘与验证是两个图，不合并）
+  for (const p of packs) {
+    const agentLabel = p.agent_type || "";
+    const condLabel = p.condition || "";
+    html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${p.session_count} sessions, ${p.edge_count} edges</h3>`;
+
+    // session 关系图（SVG 树形布局）
+    const sessions = p.sessions || [];
+    const edges = p.edges || [];
+    if (sessions.length > 0) {
+      html += renderSessionGraph(sessions, edges);
+    }
+
+    // session 明细表
+    if (sessions.length > 0) {
+      html += `<table style="margin-top:12px"><thead><tr><th>session_id</th><th>agent</th><th>session_type</th><th>task_type</th><th>parent_id</th><th>phase</th><th>files</th><th>facts</th></tr></thead><tbody>`;
+      for (const s of sessions) {
+        html += `<tr>`
+          + `<td style="font-family:monospace;font-size:11px">${s.session_id || ""}</td>`
+          + `<td>${s.agent || ""}</td>`
+          + `<td>${s.session_type || ""}</td>`
+          + `<td>${s.task_type || ""}</td>`
+          + `<td style="font-family:monospace;font-size:11px">${s.parent_id || ""}</td>`
+          + `<td>${s.phase || ""}</td>`
+          + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:11px">${(s.files || []).join(", ")}</td>`
+          + `<td style="font-size:11px">${(s.facts || []).join(", ")}</td>`
+          + `</tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+
+    // findings
+    const findings = p.findings || [];
+    if (findings.length > 0) {
+      html += `<h4 style="margin:12px 0 6px;color:#aaa;">findings (${findings.length})</h4>`;
+      html += `<table><thead><tr><th>case_id</th><th>vulnerability_type</th><th>source_file</th><th>source_function</th><th>source_line</th><th>locator</th></tr></thead><tbody>`;
+      for (const f of findings) {
+        html += `<tr>`
+          + `<td>${f.case_id || f.id || ""}</td>`
+          + `<td>${f.vulnerability_type || ""}</td>`
+          + `<td style="font-family:monospace;font-size:11px">${f.source_file || ""}</td>`
+          + `<td>${f.source_function || ""}</td>`
+          + `<td>${f.source_line || ""}</td>`
+          + `<td>${f.locator || ""}</td>`
+          + `</tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+  }
+
+  if (!packs.length) {
+    html += '<div class="empty">无解析数据</div>';
+  }
+  el.innerHTML = html;
+};
+
+// ── session 关系图 SVG 渲染 ──
+function renderSessionGraph(sessions, edges) {
+  // 构建邻接表
+  const adj = {};
+  for (const s of sessions) adj[s.session_id] = [];
+  for (const e of edges) {
+    if (!adj[e.from]) adj[e.from] = [];
+    if (!adj[e.to]) adj[e.to] = [];
+    adj[e.from].push(e.to);
+    adj[e.to].push(e.from);
+  }
+
+  // 找根节点（无 parent 的 session）
+  const hasParent = new Set(sessions.map(s => s.parent_id).filter(Boolean));
+  const roots = sessions.filter(s => !s.parent_id).map(s => s.session_id);
+
+  // BFS 层次布局
+  const levels = {};  // sid -> depth
+  const visited = new Set();
+  const queue = roots.map(r => [r, 0]);
+  while (queue.length) {
+    const [sid, depth] = queue.shift();
+    if (visited.has(sid)) continue;
+    visited.add(sid);
+    levels[sid] = depth;
+    for (const next of (adj[sid] || [])) {
+      if (!visited.has(next)) queue.push([next, depth + 1]);
+    }
+  }
+  // 孤立节点
+  for (const s of sessions) {
+    if (!(s.session_id in levels)) levels[s.session_id] = 0;
+  }
+
+  // 按层分组
+  const byLevel = {};
+  for (const [sid, depth] of Object.entries(levels)) {
+    if (!byLevel[depth]) byLevel[depth] = [];
+    byLevel[depth].push(sid);
+  }
+  const maxDepth = Math.max(...Object.values(levels).map(Number), 0);
+
+  // SVG 尺寸
+  const nodeW = 180, nodeH = 40, gapX = 20, gapY = 80;
+  const positions = {};
+  for (let depth = 0; depth <= maxDepth; depth++) {
+    const sids = byLevel[depth] || [];
+    for (let i = 0; i < sids.length; i++) {
+      positions[sids[i]] = { x: i * (nodeW + gapX), y: depth * gapY };
+    }
+  }
+  const totalW = Math.max(...Object.values(positions).map(p => p.x + nodeW), 200);
+  const totalH = (maxDepth + 1) * gapY;
+
+  // session info map
+  const infoMap = {};
+  for (const s of sessions) infoMap[s.session_id] = s;
+
+  let svg = `<svg width="${totalW + 40}" height="${totalH + 40}" style="background:#0d1117;border:1px solid #333;border-radius:4px;margin-bottom:12px">`;
+
+  // 边
+  for (const e of edges) {
+    const a = positions[e.from], b = positions[e.to];
+    if (!a || !b) continue;
+    const x1 = a.x + nodeW / 2, y1 = a.y + nodeH;
+    const x2 = b.x + nodeW / 2, y2 = b.y;
+    svg += `<line x1="${x1}" y1="${y1}" x2="${x2}" y2="${y2}" stroke="#555" stroke-width="1.5"/>`;
+  }
+
+  // 节点
+  for (const [sid, pos] of Object.entries(positions)) {
+    const info = infoMap[sid] || {};
+    const label = sid.length > 20 ? sid.slice(0, 18) + ".." : sid;
+    const agent = info.agent || info.session_type || "";
+    const phase = info.phase || "";
+    const nodeColor = agent === "verify" || info.session_type === "verify" ? "#3a2a4e" : "#1a3a2e";
+    const borderColor = phase ? "#6c5ce7" : "#444";
+    svg += `<rect x="${pos.x}" y="${pos.y}" width="${nodeW}" height="${nodeH}" rx="4" fill="${nodeColor}" stroke="${borderColor}" stroke-width="${phase ? 2 : 1}"/>`;
+    svg += `<text x="${pos.x + 8}" y="${pos.y + 16}" fill="#e0e0e0" font-size="11" font-family="monospace">${label}</text>`;
+    if (agent) svg += `<text x="${pos.x + 8}" y="${pos.y + 32}" fill="#8be9fd" font-size="10">${agent}</text>`;
+  }
+
+  svg += `</svg>`;
+  return svg;
+}
 
 checkSteps();
 </script>
