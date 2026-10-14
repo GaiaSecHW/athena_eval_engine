@@ -117,46 +117,46 @@ _UUID_RE = re.compile(
 # validation_result 枚举
 _VR_ENUM = {"CONFIRMED", "UNCERTAIN", "FALSE_POSITIVE", "LIKELY", "POSSIBLE"}
 
-# ===== agent_name -> 业务阶段映射 =====
-# 来自 docs/agent-session-phase-classification.md §3.2 + docs/knowledge-effect-eval-requirements.md §4.1
-# preprocess -> 不属于 5 阶段（跳过）
-# strategy  -> 入口识别
-# detection -> 入口识别+数据流追踪
-# mining/deep_mining -> 漏洞模式识别+Sink点定位+漏洞判定与上报
-# semantic_analysis -> 漏洞模式识别
-# validation -> 漏洞判定与上报
+# ===== agent_name -> Turing Phase 映射 =====
+# 来自 Turing 平台实际阶段定义（Phase 0-5）
+# Phase 0: 预处理（不属于挖掘流程）
+# Phase 1: 挖掘策略
+# Phase 2: 探测
+# Phase 3: 挖掘
+# Phase 4: 深挖
+# Phase 5: 验证
 _AGENT_NAME_TO_PHASE: dict[str, str] = {
-    # preprocess — 不属于 5 阶段
-    "preprocess": "不属于5阶段",
-    "auto-preprocess": "不属于5阶段",
-    "app-preprocess": "不属于5阶段",
-    "tpc-preprocess": "不属于5阶段",
-    # strategy — 入口识别
-    "web-strategy": "入口识别",
-    "app-strategy": "入口识别",
-    "tpc-strategy": "入口识别",
-    # detection — 入口识别+数据流追踪
-    "web-detect": "入口识别+数据流追踪",
-    "app-detect": "入口识别+数据流追踪",
-    "tpc-detect": "入口识别+数据流追踪",
-    "vuln-hunt-detect": "入口识别+数据流追踪",
-    # mining — 漏洞模式识别+Sink点定位+漏洞判定与上报
-    "web-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "app-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "tpc-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "vuln-hunt-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    # deep_mining — 漏洞模式识别+Sink点定位+漏洞判定与上报
-    "web-deep-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "app-deep-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "tpc-deep-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    "vuln-hunt-deep-mine": "漏洞模式识别+Sink点定位+漏洞判定与上报",
-    # semantic_analysis — 漏洞模式识别
-    "semantic-analysis": "漏洞模式识别",
-    # validation — 漏洞判定与上报
-    "web-validate": "漏洞判定与上报",
-    "app-validate": "漏洞判定与上报",
-    "tpc-validate": "漏洞判定与上报",
-    "vuln-hunt-validate": "漏洞判定与上报",
+    # Phase 0 — 预处理
+    "preprocess": "Phase 0·预处理",
+    "auto-preprocess": "Phase 0·预处理",
+    "app-preprocess": "Phase 0·预处理",
+    "tpc-preprocess": "Phase 0·预处理",
+    # Phase 1 — 挖掘策略
+    "web-strategy": "Phase 1·挖掘策略",
+    "app-strategy": "Phase 1·挖掘策略",
+    "tpc-strategy": "Phase 1·挖掘策略",
+    # Phase 2 — 探测
+    "web-detect": "Phase 2·探测",
+    "app-detect": "Phase 2·探测",
+    "tpc-detect": "Phase 2·探测",
+    "vuln-hunt-detect": "Phase 2·探测",
+    # Phase 3 — 挖掘
+    "web-mine": "Phase 3·挖掘",
+    "app-mine": "Phase 3·挖掘",
+    "tpc-mine": "Phase 3·挖掘",
+    "vuln-hunt-mine": "Phase 3·挖掘",
+    # Phase 4 — 深挖
+    "web-deep-mine": "Phase 4·深挖",
+    "app-deep-mine": "Phase 4·深挖",
+    "tpc-deep-mine": "Phase 4·深挖",
+    "vuln-hunt-deep-mine": "Phase 4·深挖",
+    # semantic_analysis — 归入 Phase 3 挖掘
+    "semantic-analysis": "Phase 3·挖掘",
+    # Phase 5 — 验证
+    "web-validate": "Phase 5·验证",
+    "app-validate": "Phase 5·验证",
+    "tpc-validate": "Phase 5·验证",
+    "vuln-hunt-validate": "Phase 5·验证",
 }
 
 
