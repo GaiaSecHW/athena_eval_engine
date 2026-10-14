@@ -14,7 +14,7 @@ import json
 import os
 
 from fastapi import APIRouter, HTTPException
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse
 
 router = APIRouter(prefix="/api/v2/evaluations", tags=["evaluations"])
 
@@ -155,143 +155,17 @@ def get_report_status(evaluation_id: str):
 _DEBUG_STEPS = ["ingesting", "parsing", "resolving", "calculating",
                 "lifecycle", "causal_chain", "reporting"]
 
+# debug.html 所在目录
+_STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "static")
+
 
 @router.get("/{evaluation_id}/debug")
 def get_debug_page(evaluation_id: str):
-    """调试页面：展示各步骤中间数据。"""
-    # 检查哪些步骤有数据
-    available = []
-    for step in _DEBUG_STEPS:
-        path = os.path.join(REPORTS_DIR, f"{evaluation_id}_debug_{step}.json")
-        if os.path.isfile(path):
-            available.append(step)
-
-    steps_html = "".join(
-        f'<button class="step-btn{" active" if i == 0 else ""}" '
-        f'data-step="{step}">{step}</button>'
-        for i, step in enumerate(available)
-    )
-    no_data = not available
-    empty_msg = '<div class="empty">暂无调试数据。评测运行后此处显示各步骤中间数据。</div>' if no_data else ""
-
-    return HTMLResponse(f"""<!DOCTYPE html>
-<html lang="zh">
-<head>
-<meta charset="utf-8">
-<title>调试 — {evaluation_id}</title>
-<style>
-* {{ margin: 0; padding: 0; box-sizing: border-box; }}
-body {{ font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: #1a1a2e; color: #e0e0e0; padding: 20px; }}
-h1 {{ font-size: 18px; margin-bottom: 16px; color: #8be9fd; word-break: break-all; }}
-.step-bar {{ display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }}
-.step-btn {{ padding: 6px 14px; border: 1px solid #444; background: #2a2a4e; color: #aaa;
-  border-radius: 4px; cursor: pointer; font-size: 13px; }}
-.step-btn:hover {{ background: #3a3a5e; color: #fff; }}
-.step-btn.active {{ background: #6c5ce7; color: #fff; border-color: #6c5ce7; }}
-.content {{ background: #16213e; border: 1px solid #333; border-radius: 6px; padding: 16px;
-  max-height: 75vh; overflow: auto; }}
-.content pre {{ font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }}
-.empty {{ color: #666; padding: 40px; text-align: center; }}
-.stats {{ display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }}
-.stat {{ background: #2a2a4e; padding: 8px 14px; border-radius: 4px; font-size: 13px; }}
-.stat .num {{ font-size: 20px; font-weight: bold; color: #8be9fd; }}
-.stat .label {{ color: #888; font-size: 11px; }}
-table {{ width: 100%; border-collapse: collapse; font-size: 12px; }}
-th {{ text-align: left; padding: 6px 8px; border-bottom: 1px solid #333; color: #888; position: sticky; top: 0; background: #16213e; }}
-td {{ padding: 4px 8px; border-bottom: 1px solid #222; vertical-align: top; }}
-tr:hover {{ background: #1a1a3e; }}
-.badge {{ display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }}
-.badge-vulnerable {{ background: #e74c3c; color: #fff; }}
-.badge-not_vulnerable {{ background: #27ae60; color: #fff; }}
-.badge-pending {{ background: #f39c12; color: #fff; }}
-.badge-inconclusive {{ background: #95a5a6; color: #fff; }}
-.badge-VULNERABLE {{ background: #e74c3c; color: #fff; }}
-.badge-NON_VULNERABLE {{ background: #27ae60; color: #fff; }}
-</style>
-</head>
-<body>
-<h1>调试 — {evaluation_id}</h1>
-<div class="step-bar">{steps_html}</div>
-{empty_msg}
-<div class="content" id="content"></div>
-<script>
-const eid = "{evaluation_id}";
-const available = {available!r};
-
-async function loadStep(step) {{
-  const resp = await fetch(`/api/v2/evaluations/${{eid}}/debug/${{step}}`);
-  if (!resp.ok) {{ document.getElementById("content").innerHTML = "<p>加载失败</p>"; return; }}
-  const data = await resp.json();
-  render(step, data);
-}}
-
-function render(step, data) {{
-  const el = document.getElementById("content");
-  if (step === "ingesting") renderIngesting(el, data);
-  else el.innerHTML = `<pre>${{JSON.stringify(data, null, 2)}}</pre>`;
-}}
-
-function renderIngesting(el, data) {{
-  let html = "";
-
-  // 配置信息
-  html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${{data.benchmark_source}}</div><div class="label">benchmark_source</div></div>`;
-  html += `<div class="stat"><div class="num">${{data.eval_mode}}</div><div class="label">eval_mode</div></div>`;
-  html += `<div class="stat"><div class="num">${{data.raw_data?.total ?? 0}}</div><div class="label">原始数据</div></div>`;
-  html += `<div class="stat"><div class="num">${{data.baseline?.total ?? 0}}</div><div class="label">基线数据</div></div>`;
-  html += `</div>`;
-
-  // 原始数据明细
-  const raw = data.raw_data || {{}};
-  html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">原始数据（告警中心） — ${{raw.total ?? 0}} 条</h3>`;
-  if (raw.cases?.length) {{
-    html += `<table><thead><tr><th>case_id</th><th>title</th><th>validation_result</th><th>stage</th><th>false_positive_reason</th><th>project_id</th></tr></thead><tbody>`;
-    for (const c of raw.cases) {{
-      const vr = c.validation_result || "pending";
-      html += `<tr><td>${{c.case_id ?? ""}}</td><td>${{c.title ?? ""}}</td>`
-        + `<td><span class="badge badge-${{vr}}">${{vr}}</span></td>`
-        + `<td>${{c.current_stage ?? ""}}</td>`
-        + `<td>${{c.false_positive_reason ?? ""}}</td>`
-        + `<td>${{c.project_id ?? ""}}</td></tr>`;
-    }}
-    html += `</tbody></table>`;
-  }}
-
-  // 基线数据明细
-  const bl = data.baseline || {{}};
-  html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">基线数据 — ${{bl.total ?? 0}} 条</h3>`;
-  if (bl.cases?.length) {{
-    html += `<table><thead><tr><th>case_id</th><th>vulnerability_type</th><th>expected_label</th><th>source_file</th><th>false_positive_reason</th><th>false_positive_group</th></tr></thead><tbody>`;
-    for (const c of bl.cases) {{
-      const el2 = c.expected_label || "";
-      html += `<tr><td>${{c.case_id ?? ""}}</td><td>${{c.vulnerability_type ?? ""}}</td>`
-        + `<td><span class="badge badge-${{el2}}">${{el2}}</span></td>`
-        + `<td>${{c.source_file ?? ""}}</td>`
-        + `<td>${{c.false_positive_reason ?? ""}}</td>`
-        + `<td>${{c.false_positive_group ?? ""}}</td></tr>`;
-    }}
-    html += `</tbody></table>`;
-  }}
-
-  el.innerHTML = html;
-}}
-
-// 默认加载第一个
-if (available.length) loadStep(available[0]);
-
-// 按钮点击
-document.querySelectorAll(".step-btn").forEach(btn => {{
-  btn.addEventListener("click", () => {{
-    document.querySelectorAll(".step-btn").forEach(b => b.classList.remove("active"));
-    btn.classList.add("active");
-    loadStep(btn.dataset.step);
-  }});
-}});
-</script>
-</body>
-</html>
-""")
+    """调试页面：展示各步骤中间数据。返回静态 HTML，前端通过 API 获取数据。"""
+    path = os.path.join(_STATIC_DIR, "debug.html")
+    if not os.path.isfile(path):
+        raise HTTPException(status_code=404, detail="debug.html not found")
+    return FileResponse(path, media_type="text/html")
 
 
 @router.get("/{evaluation_id}/debug/{step}")
