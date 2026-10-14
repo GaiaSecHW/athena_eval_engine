@@ -482,17 +482,12 @@ class WebVulnVerifyParser(BaseParser):
     def build_session_graph(self, events: list[RawEvent]) -> dict:
         """构建 session 关系图。
 
-        WebVulnVerify session 关联机制（从 trace 数据论证, 82 sessions）：
-        1. vulnerability_id 共享（三层来源）：
-           a. session_meta.metadata.vulnerability_id — 所有 82 个 session 都有
-           b. vulnerability_analyze/verify/cvss 工具调用中的 vulnerability_id
-           c. 同一漏洞的 analyze session 和 verify session 是不同 session（100%）
-        2. parent_id 父子边（session_meta.session.parent_id）— 37 个 session 有
-        3. 共享文件（与基类默认实现相同）
-
-        关联结构（类似 Argo 的 finding_to_investigate/finding_to_verify）：
-        - vuln_id_to_sessions: vid → {analyze_session, verify_session, ...}
-        - 通过共享 vid 的 session 互相关联
+        WebVulnVerify 是验证 agent，一个 task 验证多个漏洞，每个漏洞有独立的
+        analyze → verify → cvss 流程。session 关系按 vulnerability_id 分组：
+        - 同一个 vid 的 session 按时间顺序串联（analyze → verify → cvss）
+        - 不同 vid 之间没有调用关系
+        - parent_id 不作为调用链边——它只是 session 创建时的父 session，
+          所有子 session 都指向同一个 agent 主 session，不是验证流程关系
         """
         graph = {
             'sessions': {}, 'file_to_sessions': {},
@@ -504,9 +499,12 @@ class WebVulnVerifyParser(BaseParser):
         graph['file_to_sessions'] = _dd(set)
         graph['vuln_id_to_sessions'] = _dd(set)
         graph['edges'] = _dd(set)
-        _MAX_SESSIONS_PER_LINK = 5
         _n = len(events)
         _start = time.time()
+
+        # vid -> list of (timestamp_ms, session_id) — 用于按时间排序建链
+        vid_session_ts: dict[str, list[tuple[int, str]]] = _dd(list)
+
         for idx, ev in enumerate(events):
             if _n > 10000 and idx > 0 and idx % 50000 == 0:
                 _log.debug("WebVulnVerify build_session_graph %d/%d events "
@@ -519,24 +517,16 @@ class WebVulnVerifyParser(BaseParser):
                 graph['sessions'][sid] = {'files': set(), 'vuln_ids': set()}
             sg = graph['sessions'][sid]
 
-            # SESSION_START (session_meta): 提取 metadata.vulnerability_id + parent_id
+            # SESSION_START (session_meta): 提取 metadata.vulnerability_id
             if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
                 sess = ev.input_json
-                # parent_id 父子边
-                pid = sess.get("parent_id", "")
-                if pid:
-                    if pid not in graph['sessions']:
-                        graph['sessions'][pid] = {'files': set(), 'vuln_ids': set()}
-                    graph['edges'][sid].add(pid)
-                    graph['edges'][pid].add(sid)
-                    graph['parent_map'][sid] = pid
-                # metadata.vulnerability_id — 所有 session 都有
                 meta = sess.get("metadata", {})
                 if isinstance(meta, dict):
                     vid = str(meta.get("vulnerability_id", ""))
                     if vid:
                         sg['vuln_ids'].add(vid)
                         graph['vuln_id_to_sessions'][vid].add(sid)
+                        vid_session_ts[vid].append((ev.timestamp_ms or 0, sid))
 
             if not ev.is_tool_call():
                 continue
@@ -549,8 +539,11 @@ class WebVulnVerifyParser(BaseParser):
                 if vid:
                     sg['vuln_ids'].add(vid)
                     graph['vuln_id_to_sessions'][vid].add(sid)
+                    # 记录时间戳用于排序（只在第一次出现时记录）
+                    if not any(s == sid for _, s in vid_session_ts[vid]):
+                        vid_session_ts[vid].append((ev.timestamp_ms or 0, sid))
 
-            # 共享文件（与基类默认实现相同）
+            # 共享文件（保留用于文件关联分析，但不用于建边）
             if tool == "bash":
                 cmd = str(inp.get("command", ""))
                 for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
@@ -566,9 +559,22 @@ class WebVulnVerifyParser(BaseParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：只建真实调用关系边
-        # 不建共享 vulnerability_id/文件 边——共享不是调用关系，会导致 BFS 误连
-        # parent_id 父子边已在 SESSION_START 处理中建立
+        # 按 vulnerability_id 分组建边：同一 vid 的 session 按时间顺序串联
+        # analyze (最早) → verify → cvss (最晚)，形成线性链
+        for vid, ts_sid_list in vid_session_ts.items():
+            if len(ts_sid_list) <= 1:
+                continue
+            # 按时间戳排序
+            ts_sid_list.sort(key=lambda x: x[0])
+            # 串联相邻 session
+            for i in range(len(ts_sid_list) - 1):
+                child_sid = ts_sid_list[i][1]
+                parent_sid = ts_sid_list[i + 1][1]
+                # analyze 是父，verify 是子（analyze 先执行，verify 后执行）
+                graph['edges'][parent_sid].add(child_sid)
+                graph['edges'][child_sid].add(parent_sid)
+                graph['parent_map'][parent_sid] = child_sid
+
         return graph
 
     # ------------------------------------------------------------------
