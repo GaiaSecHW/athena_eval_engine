@@ -705,15 +705,17 @@ class Orchestrator:
 
         # ── 取基线 case 详情 ──
         if bm_source == "vuln_center":
-            # 从告警中心取基线数据（benchmark_set_id 指定项目，取所有 task 的 case）
-            # 与原始数据可能不同项目（开发态），也可能是同一项目（运行态）
+            # 从告警中心取基线数据
+            # benchmark_set_id 指定项目，vc_source_task_id 指定 task
+            # 运行态：与原始数据同项目同 task
+            # 开发态：可能与原始数据不同项目不同 task
             from ...infrastructure.vuln_center_client import (
                 _case_to_benchmark, get_alert_center_summary,
             )
             log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
-                  f"(全部 task)")
+                  f"task={vc_source_task_id or '(未指定)'}")
             baseline_summary = get_alert_center_summary(
-                benchmark_set_id, None,
+                benchmark_set_id, vc_source_task_id,
             )
             baseline_cases = baseline_summary.get("cases", [])
             log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
