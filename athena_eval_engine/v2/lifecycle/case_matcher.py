@@ -63,6 +63,7 @@ def match_cases(
     baseline_cases: list[dict],
     evaluation_id: str,
     cancel_cb=None,
+    progress_cb=None,
 ) -> list[dict]:
     """将原始数据 case 与基线 case 做 LLM 语义匹配。
 
@@ -71,6 +72,7 @@ def match_cases(
         baseline_cases: 基线 case 列表（标准答案）
         evaluation_id: 评测 ID
         cancel_cb: 取消回调
+        progress_cb: 进度回调，签名 progress_cb(done: int, total: int, matched: int)
 
     Returns:
         匹配结果列表，每条：
@@ -199,9 +201,13 @@ def match_cases(
 
     # 收集结果：每条原始数据 case 取所有批次中 confidence 最高的匹配
     best_by_raw: dict[int, dict] = {}
+    done_count = 0
+    total_count = len(futures)
+    matched_count = 0
     for fut in futures:
         try:
             result = fut.result()
+            done_count += 1
             if result is None:
                 continue
             # 从 result 找到 raw_idx
@@ -218,9 +224,19 @@ def match_cases(
             existing = best_by_raw.get(raw_idx)
             if existing is None or result["confidence"] > existing["confidence"]:
                 best_by_raw[raw_idx] = result
+
+            matched_count = sum(
+                1 for v in best_by_raw.values()
+                if v.get("matched_baseline_case_id")
+            )
+            if progress_cb and done_count % 10 == 0:
+                progress_cb(done_count, total_count, matched_count)
         except Exception as e:
             log("MATCH", f"收集匹配结果失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
+
+    if progress_cb:
+        progress_cb(done_count, total_count, matched_count)
 
     # 按原始数据顺序输出
     results = []

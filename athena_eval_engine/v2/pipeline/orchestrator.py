@@ -392,11 +392,18 @@ class Orchestrator:
                         }
                         for cid, detail in case_details.items()
                     ]
+
+                    def _match_progress(done, total, matched):
+                        _set_progress(evaluation_id,
+                            f"LLM 匹配中... {done}/{total} "
+                            f"({matched} 条已匹配)")
+
                     case_matches = match_cases(
                         raw_cases_for_match,
                         baseline_cases_for_match,
                         evaluation_id,
                         cancel_cb=_cancel_cb,
+                        progress_cb=_match_progress,
                     )
                     matched = sum(
                         1 for m in case_matches
