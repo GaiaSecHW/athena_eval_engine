@@ -265,10 +265,10 @@ class TuringParser(BaseParser):
     # ==================================================================
 
     def build_session_graph(self, events: list[RawEvent]) -> dict:
-        """Turing (opencode) session 关系图：parent_id 父子边 + agent 角色。
+        """Turing (opencode) session 关系图。
 
-        只建 parent_id 父子边（SQLite session 表的真实调用关系）。
-        不建共享文件/fact 边——共享文件不是调用关系，会导致 BFS 误连。
+        从 SQLite session 表查询全部字段，建立 session 之间的先后/调用关系。
+        不靠自己分析——直接查 agent 数据库里已有的关系字段。
         """
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
@@ -284,31 +284,50 @@ class TuringParser(BaseParser):
             if sid not in graph['sessions']:
                 graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
 
-        # parent_id 父子边 + agent 角色（从 SQLite session 表）
+        # 从 SQLite session 表查询全部字段
         uri = getattr(self, '_source_uri', None)
         if not uri:
             return graph
         try:
             conn = self._connect(uri)
             conn.row_factory = sqlite3.Row
-            for row in conn.execute("SELECT id, parent_id, agent FROM session WHERE parent_id IS NOT NULL"):
-                sid = row["id"]
-                pid = row["parent_id"]
-                agent = row["agent"] if "agent" in row.keys() else ""
-                if sid in graph['sessions']:
-                    graph['sessions'][sid]['agent'] = agent
-                if sid in graph['sessions'] and pid in graph['sessions']:
+
+            # 查 session 表全部列
+            cols_info = conn.execute("PRAGMA table_info(session)").fetchall()
+            col_names = [c["name"] for c in cols_info]
+            _log.info("Turing session table columns: %s", col_names)
+
+            # 查全部 session 行（取全部字段）
+            all_rows = conn.execute("SELECT * FROM session").fetchall()
+            _log.info("Turing session table: %d rows", len(all_rows))
+
+            for row in all_rows:
+                sid = row["id"] if "id" in col_names else None
+                if not sid:
+                    continue
+                if sid not in graph['sessions']:
+                    graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+                sg = graph['sessions'][sid]
+
+                # agent
+                if "agent" in col_names:
+                    sg['agent'] = row["agent"] or ""
+
+                # parent_id 父子边
+                pid = row["parent_id"] if "parent_id" in col_names else None
+                if pid:
+                    if pid not in graph['sessions']:
+                        graph['sessions'][pid] = {'files': set(), 'facts': set(), 'athena_qs': []}
                     graph['edges'][sid].add(pid)
                     graph['edges'][pid].add(sid)
                     graph['parent_map'][sid] = pid
-            for row in conn.execute("SELECT id, agent FROM session"):
-                sid = row["id"]
-                agent = row["agent"] if "agent" in row.keys() else ""
-                if sid in graph['sessions'] and 'agent' not in graph['sessions'][sid]:
-                    graph['sessions'][sid]['agent'] = agent
+
+                # 保存全部字段到 session meta（供 debug 展示）
+                sg['db_row'] = {c: row[c] for c in col_names if row[c] is not None}
+
             conn.close()
-        except Exception:
-            pass
+        except Exception as e:
+            _log.warning("Turing build_session_graph DB query failed: %s", e)
         return graph
 
     # ==================================================================

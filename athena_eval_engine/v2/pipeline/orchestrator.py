@@ -1564,10 +1564,14 @@ class Orchestrator:
         edges = sg.get("edges", {})
         parent_map = sg.get("parent_map", {})
 
-        # session 列表（含 agent、phase、parent）
+        # session 列表（含 agent、phase、parent + DB 全部字段）
         session_list = []
+        db_columns = []
         for sid, info in sessions.items():
             info_d = info if isinstance(info, dict) else {}
+            db_row = info_d.get("db_row", {})
+            if db_row and not db_columns:
+                db_columns = sorted(db_row.keys())
             session_list.append({
                 "session_id": sid,
                 "agent": info_d.get("agent", ""),
@@ -1577,6 +1581,7 @@ class Orchestrator:
                 "phase": (dp.session_phase_labels or {}).get(sid, ""),
                 "files": sorted(info_d.get("files", set()) if isinstance(info_d.get("files"), set) else info_d.get("files", [])),
                 "facts": sorted(info_d.get("facts", set()) if isinstance(info_d.get("facts"), set) else info_d.get("facts", [])),
+                "db_row": db_row,
             })
 
         # 边列表
@@ -1598,6 +1603,7 @@ class Orchestrator:
             "edge_count": len(edge_list),
             "finding_count": len(dp.findings or []),
             "event_count": len(dp.events or []),
+            "db_columns": db_columns,
             "sessions": session_list,
             "edges": edge_list,
             "findings": dp.findings or [],
