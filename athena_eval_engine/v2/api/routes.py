@@ -16,6 +16,8 @@ import os
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
+from ..pipeline.orchestrator import _get_progress
+
 router = APIRouter(prefix="/api/v2/evaluations", tags=["evaluations"])
 
 # 报告目录（与老代码一致，环境变量优先）
@@ -78,6 +80,7 @@ def get_evaluation(evaluation_id: str):
             "finished_at": row[6].isoformat() if row[6] else None,
             "error_message": row[7],
             "version": row[8],
+            "progress": _get_progress(evaluation_id),
         }
         # 从 config_json 提取 manifest 信息
         if row[9]:
