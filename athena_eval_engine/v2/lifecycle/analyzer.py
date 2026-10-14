@@ -124,18 +124,6 @@ _PROMPT_UNIFIED_SYSTEM = """你是知识访问全链路判定员。对一次知�
 }
 """
 
-# ── 文本压缩 system prompt（用于超长文本预处理）──
-
-_PROMPT_COMPRESS_SYSTEM = """你是文本压缩器。将输入文本压缩成结构化摘要，保留完整语义，不丢失关键信息。
-
-要求：
-1. 保留所有技术细节：函数名、文件名、漏洞类型、工具名、错误信息
-2. 保留逻辑结构：先做了什么、然后做了什么、结论是什么
-3. 删除冗余内容：重复描述、格式化空白、无关上下文
-4. 输出长度不超过原文的 1/3
-
-只返回压缩后的文本，不要 JSON，不要额外说明。"""
-
 # 知识返回内容中的 error/timeout 标记
 _ERROR_MARKERS = ("error", "timeout", "timed out", "exception", "failed",
                   "execution error", "connection refused", "unreachable")
@@ -192,9 +180,9 @@ class LifecycleAnalyzer:
         all_records: list[dict] = []
 
         # 多 case 并行分析
-        # case 级并发不需要太大——每个 case 内的 access 级并行由 submit_llm_batch + gate 控制
-        # case 级只需足够让多个 case 同时推进即可
-        max_workers = min(len(valid_packs), 10)
+        # case 级并发保持低——每个 case 内的 access 级并行由 submit_llm_batch + gate 控制
+        # case 级只需足够让多个 case 同时推进即可，太高会导致线程暴涨
+        max_workers = min(len(valid_packs), 3)
         log("LIFECYCLE",
             f"analyzing {len(valid_packs)} cases in parallel (workers={max_workers})",
             eval_id=evaluation_id)
@@ -546,13 +534,15 @@ class LifecycleAnalyzer:
                             returned_content: str, reasoning_ref: str,
                             evaluation_id: str, cancel_cb=None
                             ) -> tuple[str, str, str, str]:
-        """当文本总量可能超出上下文窗口时，逐字段 LLM 压缩。
+        """当文本总量可能超出上下文窗口时，用采样缩减文本量。
 
         策略（不截断）：
         1. 估算总 token 数（chars / chars_per_token）
-        2. 如超过安全阈值，对超长字段逐个用 LLM 压缩成结构化摘要
-        3. 压缩 LLM 本身失败时，用采样（取首/尾/中间有标记的段落）替代
-        4. 短字段不压缩
+        2. 如超过安全阈值，对超长字段用采样（取首/尾/中间完整句子）缩减
+        3. 短字段不处理
+
+        注意：不使用 LLM 压缩——LLM 压缩在 access 线程内同步调用会绕过 gate
+        并发控制，导致实际 LLM 并发远超 gate 上限。
         """
         max_tokens = llm_mod.get_max_context_tokens() or _DEFAULT_MAX_CONTEXT_TOKENS
         chars_per_token = llm_mod.get_chars_per_token()
@@ -567,41 +557,26 @@ class LifecycleAnalyzer:
 
         total_chars = sum(len(v) for _, v in fields)
         if total_chars <= safe_limit_chars:
-            # 总量在安全范围内，无需压缩
+            # 总量在安全范围内，无需处理
             return reasoning_context, query_content, returned_content, reasoning_ref
 
         log("LIFECYCLE",
             f"文本总量 {total_chars} chars 超过安全阈值 {safe_limit_chars} chars "
-            f"(max_tokens={max_tokens}, c/t={chars_per_token:.2f})，开始压缩",
+            f"(max_tokens={max_tokens}, c/t={chars_per_token:.2f})，开始采样",
             eval_id=evaluation_id)
 
-        compressed: list[str] = []
+        sampled: list[str] = []
         for label, text in fields:
             if len(text) <= _COMPRESS_THRESHOLD_CHARS:
-                compressed.append(text)
-                continue
-            try:
-                summary = self._compress_text(text, cancel_cb=cancel_cb)
+                sampled.append(text)
+            else:
+                result = self._sample_text(text)
                 log("LIFECYCLE",
-                    f"压缩 {label}: {len(text)} → {len(summary)} chars",
+                    f"采样 {label}: {len(text)} → {len(result)} chars",
                     eval_id=evaluation_id)
-                compressed.append(summary)
-            except Exception as e:
-                log("LIFECYCLE",
-                    f"压缩 {label} 失败 ({str(e)[:100]})，改用采样",
-                    eval_id=evaluation_id)
-                compressed.append(self._sample_text(text))
+                sampled.append(result)
 
-        return compressed[0], compressed[1], compressed[2], compressed[3]
-
-    def _compress_text(self, text: str, cancel_cb=None) -> str:
-        """用 LLM 将长文本压缩成结构化摘要。"""
-        messages = [
-            {"role": "system", "content": _PROMPT_COMPRESS_SYSTEM},
-            {"role": "user", "content": text},
-        ]
-        return self._call_llm_chat(messages, cancel_cb=cancel_cb,
-                                   reasoning_effort="none")
+        return sampled[0], sampled[1], sampled[2], sampled[3]
 
     def _sample_text(self, text: str) -> str:
         """LLM 压缩失败时的采样降级：取首/中/尾段，保留完整句子。
@@ -941,23 +916,6 @@ class LifecycleAnalyzer:
                                 reasoning_effort=reasoning_effort,
                                 max_tokens=max_tokens,
                                 cancel_cb=cancel_cb)
-
-    def _call_llm_chat(self, messages: list, **kwargs) -> str:
-        """调用 LLM chat（纯文本返回），用于文本压缩等非 JSON 场景。"""
-        cancel_cb = kwargs.pop("cancel_cb", None)
-        reasoning_effort = kwargs.pop("reasoning_effort", "none")
-        max_tokens = kwargs.pop("max_tokens", None)
-
-        if self.llm is not None:
-            if hasattr(self.llm, "chat"):
-                return self.llm.chat(messages, temperature=0,
-                                     reasoning_effort=reasoning_effort,
-                                     max_tokens=max_tokens,
-                                     cancel_cb=cancel_cb)
-        return llm_mod.chat(messages, temperature=0,
-                           reasoning_effort=reasoning_effort,
-                           max_tokens=max_tokens,
-                           cancel_cb=cancel_cb)
 
     def _make_record(self, access_id: str, dp: DataPack, event_idx: int,
                      source_system: str, l0_origin: str,
