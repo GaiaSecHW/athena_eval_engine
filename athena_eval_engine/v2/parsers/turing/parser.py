@@ -267,8 +267,13 @@ class TuringParser(BaseParser):
     def build_session_graph(self, events: list[RawEvent]) -> dict:
         """Turing (opencode) session 关系图。
 
-        从 SQLite session 表查询全部字段，建立 session 之间的先后/调用关系。
-        不靠自己分析——直接查 agent 数据库里已有的关系字段。
+        两个数据源：
+        1. SQLite opencode.db session 表 — parent_id 父子边（同文件内直接父子）
+        2. Turing MySQL turing_task 表 — parent_task_id 调用链（跨 agent 的完整追溯树）
+
+        turing_task 表通过 agent_session_id 关联到 opencode.db 的 session ID。
+        parent_task_id 记录了任务之间的先后关系（如 web-strategy → web-detect →
+        web-deep-mine → web-validate），这是完整的 session 调用链。
         """
         graph = {
             'sessions': {}, 'file_to_sessions': defaultdict(set),
@@ -284,50 +289,82 @@ class TuringParser(BaseParser):
             if sid not in graph['sessions']:
                 graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
 
-        # 从 SQLite session 表查询全部字段
+        # 数据源 1: SQLite opencode.db session 表 — parent_id 父子边 + agent
         uri = getattr(self, '_source_uri', None)
-        if not uri:
-            return graph
-        try:
-            conn = self._connect(uri)
-            conn.row_factory = sqlite3.Row
+        if uri:
+            try:
+                conn = self._connect(uri)
+                conn.row_factory = sqlite3.Row
+                for row in conn.execute("SELECT id, parent_id, agent FROM session"):
+                    sid = row["id"]
+                    if sid not in graph['sessions']:
+                        graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+                    sg = graph['sessions'][sid]
+                    if "agent" in row.keys():
+                        sg['agent'] = row["agent"] or ""
+                    pid = row["parent_id"] if row["parent_id"] else None
+                    if pid:
+                        if pid not in graph['sessions']:
+                            graph['sessions'][pid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+                        graph['edges'][sid].add(pid)
+                        graph['edges'][pid].add(sid)
+                        graph['parent_map'][sid] = pid
+                conn.close()
+            except Exception as e:
+                _log.warning("Turing build_session_graph SQLite query failed: %s", e)
 
-            # 查 session 表全部列
-            cols_info = conn.execute("PRAGMA table_info(session)").fetchall()
-            col_names = [c["name"] for c in cols_info]
-            _log.info("Turing session table columns: %s", col_names)
+        # 数据源 2: Turing MySQL turing_task 表 — parent_task_id 调用链
+        # 通过 agent_session_id 关联到 opencode.db session ID
+        # 这条链记录了跨 agent 的完整任务追溯树
+        session_ids = set(graph['sessions'].keys())
+        if session_ids:
+            try:
+                mgr = AgentDBManager()
+                conn = mgr.get_connection("turing")
+                if conn is not None:
+                    try:
+                        cur = conn.cursor()
+                        placeholders = ",".join(["%s"] * len(session_ids))
+                        sql = (
+                            f"SELECT agent_session_id, agent_name, parent_task_id, "
+                            f"id FROM turing_task "
+                            f"WHERE agent_session_id IN ({placeholders})"
+                        )
+                        cur.execute(sql, tuple(session_ids))
+                        # 建立 task_id → agent_session_id 映射
+                        task_to_session: dict[str, str] = {}
+                        session_to_task: dict[str, str] = {}
+                        session_to_agent: dict[str, str] = {}
+                        for row in cur.fetchall():
+                            sid = row[0] or ""
+                            agent_name = row[1] or ""
+                            parent_task = row[2] or ""
+                            task_id = row[3] or ""
+                            if sid:
+                                if agent_name:
+                                    session_to_agent[sid] = agent_name
+                                    graph['sessions'][sid]['agent'] = agent_name
+                                if task_id:
+                                    task_to_session[task_id] = sid
+                                    session_to_task[sid] = task_id
 
-            # 查全部 session 行（取全部字段）
-            all_rows = conn.execute("SELECT * FROM session").fetchall()
-            _log.info("Turing session table: %d rows", len(all_rows))
+                        # 用 parent_task_id 建边
+                        cur.execute(sql, tuple(session_ids))
+                        for row in cur.fetchall():
+                            sid = row[0] or ""
+                            parent_task = row[2] or ""
+                            if sid and parent_task and parent_task in task_to_session:
+                                parent_sid = task_to_session[parent_task]
+                                if parent_sid != sid:
+                                    graph['edges'][sid].add(parent_sid)
+                                    graph['edges'][parent_sid].add(sid)
+                                    if sid not in graph['parent_map']:
+                                        graph['parent_map'][sid] = parent_sid
+                    finally:
+                        conn.close()
+            except Exception as e:
+                _log.warning("Turing build_session_graph turing_task query failed: %s", e)
 
-            for row in all_rows:
-                sid = row["id"] if "id" in col_names else None
-                if not sid:
-                    continue
-                if sid not in graph['sessions']:
-                    graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
-                sg = graph['sessions'][sid]
-
-                # agent
-                if "agent" in col_names:
-                    sg['agent'] = row["agent"] or ""
-
-                # parent_id 父子边
-                pid = row["parent_id"] if "parent_id" in col_names else None
-                if pid:
-                    if pid not in graph['sessions']:
-                        graph['sessions'][pid] = {'files': set(), 'facts': set(), 'athena_qs': []}
-                    graph['edges'][sid].add(pid)
-                    graph['edges'][pid].add(sid)
-                    graph['parent_map'][sid] = pid
-
-                # 保存全部字段到 session meta（供 debug 展示）
-                sg['db_row'] = {c: row[c] for c in col_names if row[c] is not None}
-
-            conn.close()
-        except Exception as e:
-            _log.warning("Turing build_session_graph DB query failed: %s", e)
         return graph
 
     # ==================================================================
