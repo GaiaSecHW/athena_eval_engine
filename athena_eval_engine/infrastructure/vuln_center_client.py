@@ -320,6 +320,8 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
     subject = c.get("subject") or {}
     locator = subject.get("locator") or ""
     source_file, source_function, source_line = _parse_locator(locator)
+    # 误报信息：类别（false_positive_reason）+ 人工写的具体原因（human_confirmation.summary）
+    hc = c.get("human_confirmation") or {}
     return {
         "case_id": c.get("id") or "",
         "vulnerability_type": c.get("title") or subject.get("type") or "",
@@ -332,6 +334,7 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
         "locator": locator,
         "false_positive_group": c.get("false_positive_group") or "",
         "false_positive_reason": c.get("false_positive_reason") or "",
+        "human_confirmation_summary": hc.get("summary") or "",
     }
 
 

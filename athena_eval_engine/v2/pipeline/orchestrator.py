@@ -572,6 +572,7 @@ class Orchestrator:
                         "locator": c.get("locator") or "",
                         "false_positive_group": c.get("false_positive_group") or "",
                         "false_positive_reason": c.get("false_positive_reason") or "",
+                        "human_confirmation_summary": c.get("human_confirmation_summary") or "",
                     }
 
         elif bm_source == "vbench_zip":
