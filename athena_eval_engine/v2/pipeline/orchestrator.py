@@ -1,7 +1,7 @@
 """v2 Pipeline 编排器。
 
 阶段流程：
-    INGESTING → PARSING → RESOLVING → CALCULATING
+    INGESTING → PARSING → RESOLVING
         → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
 
 方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
@@ -327,11 +327,10 @@ class Orchestrator:
         1. INGESTING — 取基线 case 详情 + 告警中心数据
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
         3. RESOLVING — 持久化 findings + session_graph 到 DB
-        4. CALCULATING — 指标计算（M5-M13）
-        5. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
-        6. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
-        7. REPORTING — 报告组装（含召回率/准确率计算）
-        8. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
+        4. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
+        5. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
+        6. REPORTING — 报告组装（含召回率/准确率计算）
+        7. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
         Args:
             evaluation_id: 评测 ID。
@@ -501,19 +500,10 @@ class Orchestrator:
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_findings(evaluation_id, data_packs)
 
-            # ── CALCULATING ──
-            _check_cancel(evaluation_id, stages.CALCULATING)
-            assert_transition(stages.RESOLVING, stages.CALCULATING)
-            self._set_status_safe(evaluation_id, stages.CALCULATING)
-            _set_progress(evaluation_id, "指标计算...")
-            metrics = self._calculate_metrics(data_packs, alert_center_data)
-            log("ORCH", f"CALCULATING done: {len(metrics.get('metric_results', []))} "
-                  f"metric_results")
-
             # ── LIFECYCLE_ANALYSIS ──
             # 重试路径：knowledge_access_detail 表已有记录 → 跳过
             _check_cancel(evaluation_id, stages.LIFECYCLE_ANALYSIS)
-            assert_transition(stages.CALCULATING, stages.LIFECYCLE_ANALYSIS)
+            assert_transition(stages.RESOLVING, stages.LIFECYCLE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.LIFECYCLE_ANALYSIS)
             if _has_knowledge_access_details(evaluation_id):
                 log("ORCH", "LIFECYCLE_ANALYSIS skipped: "
@@ -531,11 +521,6 @@ class Orchestrator:
                 )
                 log("ORCH", f"LIFECYCLE_ANALYSIS done: "
                       f"{len(access_details)} access_details")
-
-            # 用 CaseFilter 的 FPR 统计更新 M13
-            fpr_stats = getattr(self, "_lifecycle_fpr_stats", None)
-            if fpr_stats:
-                self._update_m13_fpr(metrics, fpr_stats)
 
             # ── CAUSAL_CHAIN ──
             _check_cancel(evaluation_id, stages.CAUSAL_CHAIN)
@@ -570,7 +555,7 @@ class Orchestrator:
                 )
                 _set_progress(evaluation_id, "报告组装...")
                 self._assemble_report(
-                    evaluation_id, metrics,
+                    evaluation_id,
                     access_details, causal_chain,
                     recall_precision, reports_dir,
                 )
@@ -582,7 +567,7 @@ class Orchestrator:
             assert_transition(stages.REPORTING, "FINALIZING")
             self._set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
-            self._finalize(evaluation_id, reports_dir, metrics,
+            self._finalize(evaluation_id, reports_dir,
                            causal_chain)
             self._set_status_safe(evaluation_id, "COMPLETED")
             _set_progress(evaluation_id, "评测完成")
@@ -1057,107 +1042,6 @@ class Orchestrator:
             log("RESOLVE", f"持久化 findings 失败: {e}")
             raise
 
-    # ── CALCULATING ─────────────────────────────────
-
-    def _calculate_metrics(
-        self, data_packs: list,
-        alert_center_data: dict,
-    ) -> dict:
-        """指标计算（M5-M13）。
-
-        调用 run_all_metrics()，从 data_packs 和 alert_center_data
-        提取计数参数。
-        """
-        from ..metrics.calculator import run_all_metrics
-
-        # 从 data_packs 提取计数
-        kg_access_events = 0
-        kg_successful_reads = 0
-        mem_read_count = 0
-        mem_successful_reads = 0
-        kg_tool_calls = 0
-        total_tool_calls = 0
-
-        for dp in data_packs:
-            kf = dp.knowledge_fact
-            taf = dp.tool_action_fact
-
-            if kf:
-                kg_access_events += len(kf.interactions or [])
-                kg_successful_reads += sum(
-                    1 for i in (kf.interactions or [])
-                    if i.get("output_preview")
-                )
-                mem_read_count += len(kf.memory_interactions or [])
-                mem_successful_reads += sum(
-                    1 for i in (kf.memory_interactions or [])
-                    if i.get("output_preview")
-                )
-
-            if taf:
-                total_tool_calls += taf.total_tool_calls or 0
-                dist = taf.action_distribution or {}
-                kg_tool_calls += dist.get("KG", 0)
-
-        return run_all_metrics(
-            kg_access_events=kg_access_events,
-            kg_successful_reads=kg_successful_reads,
-            mem_read_count=mem_read_count,
-            mem_successful_reads=mem_successful_reads,
-            kg_tool_calls=kg_tool_calls,
-            total_tool_calls=total_tool_calls,
-        )
-
-    @staticmethod
-    def _update_m13_fpr(metrics: dict, fpr_stats: dict):
-        """用 CaseFilter 的 FPR 统计更新 M13 误报率。
-
-        M13 FPR = FP / (FP + TN)
-        - FP = baseline NON_VULNERABLE + trace finding CONFIRMED
-        - TN = baseline NON_VULNERABLE + 无匹配 finding 或 finding 非 CONFIRMED
-
-        CaseFilter 在 lifecycle 分析中已完成 FP/TN 判定，
-        这里直接用其统计结果更新 M13。
-        """
-        fp = fpr_stats.get("fp_count", 0)
-        tn = fpr_stats.get("tn_count", 0)
-        denom = fp + tn
-
-        from ..metrics.m5_m13 import MetricResult, StatisticalResult, CALCULATED, NA
-        from ..metrics.engine import wilson
-
-        for i, mr in enumerate(metrics.get("metric_results", [])):
-            if mr.metric_id == "M13":
-                if denom == 0:
-                    mr.estimate = None
-                    mr.calculation_status = NA
-                    mr.reason_code = "NO_NON_VULN_BASELINE"
-                    mr.n = 0
-                else:
-                    fpr = fp / denom
-                    lo, hi, st, rc = wilson(fp, denom, 0.95)
-                    mr.estimate = fpr
-                    mr.calculation_status = CALCULATED
-                    mr.reason_code = None
-                    mr.n = denom
-                    mr.n_population = "non_vuln_baseline"
-                    mr.method = {
-                        "uncertainty": "wilson",
-                        "fp_count": fp,
-                        "tn_count": tn,
-                        "total_non_vuln": denom,
-                    }
-                    # 更新对应的 StatisticalResult
-                    for sr in metrics.get("statistical_results", []):
-                        if sr.metric_id == "M13":
-                            sr.ci_lower = lo
-                            sr.ci_upper = hi
-                            sr.status = st
-                            sr.reason_code = rc
-                            sr.testing_tier = "PRIMARY"
-                            break
-                break
-
     # ── LIFECYCLE_ANALYSIS ──────────────────────────
 
     def _run_lifecycle(
@@ -1294,7 +1178,7 @@ class Orchestrator:
     # ── REPORTING ────────────────────────────────────
 
     def _assemble_report(
-        self, evaluation_id: str, metrics: dict,
+        self, evaluation_id: str,
         access_details: list, causal_chain: dict,
         recall_precision: dict, reports_dir: str,
     ):
@@ -1316,13 +1200,9 @@ class Orchestrator:
             reports_dir,
         )
 
-        # 写入基础报告段（metrics + 汇总）
+        # 写入基础报告段
         base_report = {
             "evaluation_id": evaluation_id,
-            "metrics": {
-                "metric_results": metrics.get("metric_results", []),
-                "statistical_results": metrics.get("statistical_results", []),
-            },
             "recall_precision": {
                 "recall_rate": recall_precision.get("recall_rate"),
                 "precision_rate": recall_precision.get("precision_rate"),
@@ -1346,7 +1226,7 @@ class Orchestrator:
 
     def _finalize(
         self, evaluation_id: str, reports_dir: str,
-        metrics: dict, causal_chain: dict,
+        causal_chain: dict,
     ):
         """写入 evaluation_report 表，状态设为 COMPLETED。
 
@@ -1363,7 +1243,6 @@ class Orchestrator:
             "evaluation_id": evaluation_id,
             "base_report_path": base_path,
             "lifecycle_report_path": lifecycle_path,
-            "metrics_count": len(metrics.get("metric_results", [])),
             "cause_summary": causal_chain.get("cause_summary", {}),
         }
 
@@ -1461,7 +1340,7 @@ class Orchestrator:
                     "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk "
                     "CHECK (evaluation_status IN "
                     "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING',"
-                    "'PARSING','RESOLVING','PAIRING','CALCULATING',"
+                    "'PARSING','RESOLVING','PAIRING',"
                     "'LIFECYCLE_ANALYSIS','CAUSAL_CHAIN',"
                     "'REPORTING','FINALIZING',"
                     "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"
