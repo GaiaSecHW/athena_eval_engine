@@ -732,9 +732,11 @@ class Orchestrator:
             log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
 
             for c in baseline_cases:
+                # 基线 = 人工标注的数据：只取 current_stage=finished 的 case
+                if c.get("current_stage") != "finished":
+                    continue
                 vr = c.get("validation_result")
                 # 只取人工已判定的 case（vulnerable / not_vulnerable）
-                # pending / inconclusive 不参与评测
                 if vr not in ("vulnerable", "not_vulnerable"):
                     continue
                 expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
