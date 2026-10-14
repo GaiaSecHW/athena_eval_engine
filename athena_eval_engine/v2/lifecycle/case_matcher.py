@@ -157,6 +157,12 @@ def match_cases(
                                     or baseline_cases[
                                         batch_indices[local_idx]
                                     ].get("id") or "",
+                                "matched_baseline_title": baseline_cases[
+                                    batch_indices[local_idx]
+                                ].get("title")
+                                    or baseline_cases[
+                                        batch_indices[local_idx]
+                                    ].get("vulnerability_type") or "",
                                 "matched_baseline_index": batch_indices[local_idx],
                                 "confidence": conf,
                                 "reason": m.get("reason", ""),
@@ -168,6 +174,7 @@ def match_cases(
                 "raw_title": raw_case.get("title")
                     or raw_case.get("vulnerability_type") or "",
                 "matched_baseline_case_id": None,
+                "matched_baseline_title": None,
                 "matched_baseline_index": None,
                 "confidence": 0.0,
                 "reason": "无匹配",
@@ -183,6 +190,7 @@ def match_cases(
                 "raw_title": raw_case.get("title")
                     or raw_case.get("vulnerability_type") or "",
                 "matched_baseline_case_id": None,
+                "matched_baseline_title": None,
                 "matched_baseline_index": None,
                 "confidence": 0.0,
                 "reason": f"LLM 调用失败: {str(e)[:100]}",
@@ -250,6 +258,7 @@ def match_cases(
                 "raw_title": rc.get("title")
                     or rc.get("vulnerability_type") or "",
                 "matched_baseline_case_id": None,
+                "matched_baseline_title": None,
                 "matched_baseline_index": None,
                 "confidence": 0.0,
                 "reason": "未执行匹配",
