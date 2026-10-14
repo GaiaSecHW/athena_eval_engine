@@ -6,7 +6,6 @@
 - ``_try_repair_backslash_quote`` — JSON 转义修复 + 结构补全（parse_json_lenient 策略 4）
 - ``_escape_control_chars_in_strings`` — 字符串值中字面控制字符转义
 - ``extract_json_payloads`` — 从文本提取 JSON 对象（多层策略）
-- ``attach_event_indices`` — 为 finding 关联提交事件索引
 """
 from __future__ import annotations
 import json
@@ -401,20 +400,3 @@ def extract_json_payloads(text: str, keywords: list[str] | None = None) -> list[
             pass
 
     return results
-
-
-def attach_event_indices(findings: dict[str, dict], events: list) -> None:
-    """为每个 finding 关联提交事件索引（用于后续提取挖掘过程上下文）。
-
-    在 events 中搜索包含该 finding_id 的事件，记录其索引。
-    （已废弃，finding 提取已移除）
-    """
-    for fid, f in findings.items():
-        if "_event_idx" not in f:
-            for i, e in enumerate(events):
-                combined = str(e.input_json or "") + str(e.output_json or "")
-                if fid and fid != "?" and fid in combined:
-                    f["_event_idx"] = i
-                    break
-            else:
-                f["_event_idx"] = 0

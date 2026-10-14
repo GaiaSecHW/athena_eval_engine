@@ -70,7 +70,7 @@ class OutcomeResolver:
         pred = "POSITIVE" if validation == "CONFIRMED" else "NEGATIVE"
         outcome = self._classify(benchmark.expected_label.value, pred)
 
-        # 3. 构建 evidence（取 finding submission 事件）
+        # 3. 构建 evidence（取 validation_result 提交事件）
         evs = [_ev(e, "$.validation_result") for e in submission_evs[:1]]
 
         return OutcomeFact(

@@ -1,8 +1,8 @@
 """v2 Pipeline 编排器。
 
 阶段流程：
-    INGESTING → PARSING → RESOLVING
-        → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
+    INGESTING → PARSING → CASE_MATCHING → ROOT_CAUSE_ANALYSIS
+        → RESOLVING → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
 
 方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
 M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
@@ -326,11 +326,13 @@ class Orchestrator:
         阶段流程：
         1. INGESTING — 取基线 case 详情 + 告警中心数据
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
-        3. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB
-        4. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
-        5. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
-        6. REPORTING — 报告组装（含召回率/准确率计算）
-        7. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
+        3. CASE_MATCHING — 基线 case ↔ trace session 精确匹配，判定 TP/FP/FN/TN
+        4. ROOT_CAUSE_ANALYSIS — FP case 挖掘链+验证链各自滚动压缩根因分析
+        5. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB
+        6. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
+        7. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
+        8. REPORTING — 报告组装（含召回率/准确率计算）
+        9. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
         Args:
             evaluation_id: 评测 ID。
@@ -491,6 +493,9 @@ class Orchestrator:
             })
 
             # ── CASE_MATCHING（基线 case ↔ trace session）──
+            _check_cancel(evaluation_id, stages.CASE_MATCHING)
+            assert_transition(stages.PARSING, stages.CASE_MATCHING)
+            self._set_status_safe(evaluation_id, stages.CASE_MATCHING)
             _set_progress(evaluation_id, "case-session 匹配...")
             from ..lifecycle.case_session_matcher import CaseSessionMatcher
             matcher = CaseSessionMatcher()
@@ -526,6 +531,9 @@ class Orchestrator:
                 return
 
             # ── ROOT_CAUSE_ANALYSIS（FP case 滚动压缩根因分析）──
+            _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
+            assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
+            self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
             if fp_cases:
                 _set_progress(evaluation_id,
@@ -565,7 +573,7 @@ class Orchestrator:
             # ── RESOLVING ──
             # 持久化 session_graph + 4 种 fact 到 DB
             _check_cancel(evaluation_id, stages.RESOLVING)
-            assert_transition(stages.PARSING, stages.RESOLVING)
+            assert_transition(stages.ROOT_CAUSE_ANALYSIS, stages.RESOLVING)
             self._set_status_safe(evaluation_id, stages.RESOLVING)
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_data(evaluation_id, data_packs)
@@ -1689,7 +1697,8 @@ class Orchestrator:
                     "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk "
                     "CHECK (evaluation_status IN "
                     "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING',"
-                    "'PARSING','RESOLVING','PAIRING',"
+                    "'PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS',"
+                    "'RESOLVING','PAIRING',"
                     "'LIFECYCLE_ANALYSIS','CAUSAL_CHAIN',"
                     "'REPORTING','FINALIZING',"
                     "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"

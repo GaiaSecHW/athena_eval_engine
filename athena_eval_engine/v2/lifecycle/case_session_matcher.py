@@ -32,10 +32,6 @@ class CaseSessionMatcher:
         "vulnerability_verify",
         "vulnerability_cvss",
         "vulnerability_analyze",
-        "vuln_hunt_update_finding",
-        "vuln_hunt_insert_finding",
-        "update_finding",
-        "insert_finding",
     }
 
     def match(
@@ -87,8 +83,7 @@ class CaseSessionMatcher:
 
         # 按 agent 类型分组 DataPack
         verify_packs = [dp for dp in data_packs
-                        if dp.agent_type in ("webvuln_verify", "cvuln_verify",
-                                              "dataflow_vuln_scan")]
+                        if dp.agent_type in ("webvuln_verify", "cvuln_verify")]
         log("MATCH", f"verify_packs={len(verify_packs)}",
             eval_id=evaluation_id)
 
@@ -195,7 +190,6 @@ class CaseSessionMatcher:
                 cid = (
                     inp.get("vulnerability_id")
                     or inp.get("case_id")
-                    or inp.get("finding_id")
                     or ""
                 )
                 if cid:

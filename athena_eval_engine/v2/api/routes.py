@@ -155,8 +155,8 @@ def get_report_status(evaluation_id: str):
 # ---------------------------------------------------------------------------
 
 # 已知步骤列表（按 pipeline 顺序）
-_DEBUG_STEPS = ["ingesting", "parsing", "resolving",
-                "lifecycle", "causal_chain", "reporting"]
+_DEBUG_STEPS = ["ingesting", "parsing", "case_matching", "root_cause",
+                "resolving", "lifecycle", "causal_chain", "reporting"]
 
 # debug.html 所在目录
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "static")

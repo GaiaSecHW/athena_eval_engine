@@ -321,14 +321,14 @@ class RootCauseAnalyzer:
                 }
 
             summary = result.get("summary", "")
-            l0_l7 = result.get("l0_l7", [])
+            l0_l7 = result.get("l0_l7") or []
 
             compressed_summaries.append({
                 "session_id": sid,
                 "step": i + 1,
                 "is_last": is_last,
                 "summary": summary,
-                "key_findings": result.get("key_findings", []),
+                "key_findings": result.get("key_findings") or [],
                 "l0_l7": l0_l7,
             })
 
@@ -369,14 +369,17 @@ class RootCauseAnalyzer:
         session_graphs 是 {session_id: {parent_map, sessions}} 的合并。
         直接用 parent_map 做拓扑排序，不重新构建关系。
         """
-        # 合并所有 parent_map
+        # 合并所有 parent_map（只保留 key 在 sessions 中的 entry，
+        # 过滤掉 Turing 的 task_id key 混入）
         all_parents: dict[str, str] = {}
         all_sessions: dict[str, dict] = {}
         for sg in session_graphs.values():
             pm = sg.get("parent_map", {})
             ss = sg.get("sessions", {})
-            all_parents.update(pm)
             all_sessions.update(ss)
+            for sid, pid in pm.items():
+                if sid in ss:
+                    all_parents[sid] = pid
 
         if not all_sessions:
             return []
