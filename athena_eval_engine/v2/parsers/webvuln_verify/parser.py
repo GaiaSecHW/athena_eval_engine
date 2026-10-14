@@ -157,11 +157,27 @@ class WebVulnVerifyParser(BaseParser):
         # 第二遍：逐行解析为 RawEvent
         events: list[RawEvent] = []
         for fpath in files:
-            # 从文件名提取 session_id（如果未显式提供）
-            if not session_id:
-                sid = os.path.splitext(os.path.basename(fpath))[0]
-            else:
-                sid = session_id
+            # 优先从 session_meta 行提取真实 session ID
+            # 回退到外部传入的 session_id 或文件名
+            sid = session_id
+            if not sid:
+                # 第一遍扫描：找 session_meta.session.id
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if d.get("type") == "session_meta":
+                            sess = d.get("session", {})
+                            if isinstance(sess, dict) and sess.get("id"):
+                                sid = sess["id"]
+                                break
+                if not sid:
+                    sid = os.path.splitext(os.path.basename(fpath))[0]
 
             with open(fpath, "r", encoding="utf-8") as f:
                 for line_no, line in enumerate(f, 1):
