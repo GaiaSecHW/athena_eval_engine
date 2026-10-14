@@ -719,14 +719,14 @@ class Orchestrator:
         # ── 取基线 case 详情 ──
         if bm_source == "vuln_center":
             # 从告警中心取基线数据（人工标注的标准答案）
-            # 基线按项目取全部 case，不按 task 过滤——基线是人工标注的全量数据
+            # 用 vc_source_task_id 按 task 取，与原始数据同范围
             from ...infrastructure.vuln_center_client import (
                 _case_to_benchmark, get_alert_center_summary,
             )
             log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
-                  f"(全部 task)")
+                  f"task={vc_source_task_id or '(未指定)'}")
             baseline_summary = get_alert_center_summary(
-                benchmark_set_id, None,
+                benchmark_set_id, vc_source_task_id,
             )
             baseline_cases = baseline_summary.get("cases", [])
             log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
