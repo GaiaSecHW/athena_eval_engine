@@ -351,70 +351,52 @@ class Orchestrator:
               f"reports_dir={reports_dir}")
 
         try:
-            # ── INGESTING ──
+            # ── INGESTING（拆分：config+entries 立即返回，数据采集并行） ──
             assert_transition("VALIDATING", stages.INGESTING)
             self._set_status_safe(evaluation_id, "VALIDATING")
             self._set_status_safe(evaluation_id, stages.INGESTING)
-            _set_progress(evaluation_id, "获取基线数据...")
-            benchmark_items, case_details, alert_center_data, entries, cfg = \
-                self._ingest(evaluation_id)
+
+            # 1. 读 config + entries（快，纯 DB 读）
+            cfg = self._read_config(evaluation_id)
+            entries = cfg.get("manifest", {}).get("entries", [])
             eval_mode = cfg.get("manifest", {}).get("eval_mode", "dev")
             benchmark_source = cfg.get("manifest", {}).get(
                 "benchmark_source", "vbench_zip")
-            log("ORCH", f"INGESTING done: {len(benchmark_items)} benchmark_items, "
-                  f"{len(case_details)} case_details, eval_mode={eval_mode}, "
+            log("ORCH", f"INGESTING: {len(entries)} entries, eval_mode={eval_mode}, "
                   f"benchmark_source={benchmark_source}")
 
-            # ── 开发态 LLM 语义匹配：原始数据 case ↔ 基线 case ──
-            # 开发态下原始数据和基线可能来自不同项目，case_id 不重叠，
-            # 需要 LLM 判断哪些 case 描述同一个漏洞
-            case_matches: list[dict] = []
-            if eval_mode == "dev" and alert_center_data.get("cases"):
-                raw_project_ids = set(alert_center_data.get("project_ids", []))
-                baseline_project = cfg.get("manifest", {}).get(
-                    "benchmark_set_id", "")
-                # 原始数据与基线不同项目时才需要匹配
-                needs_match = baseline_project and \
-                    baseline_project not in raw_project_ids
-                if needs_match:
-                    log("ORCH", f"开发态：原始数据 project={raw_project_ids} "
-                          f"≠ 基线 project={baseline_project}，启动 LLM 匹配")
-                    _set_progress(evaluation_id, "LLM 语义匹配原始数据与基线...")
-                    from ..lifecycle.case_matcher import match_cases
-                    # 构造原始数据 case 列表（告警中心格式）
-                    raw_cases_for_match = alert_center_data.get("cases", [])
-                    # 构造基线 case 列表（case_details 格式 → 匹配器需要的格式）
-                    baseline_cases_for_match = [
-                        {
-                            "case_id": cid,
-                            "title": detail.get("vulnerability_type") or "",
-                            "description": detail.get("description") or "",
-                            "vulnerability_type": detail.get(
-                                "vulnerability_type") or "",
-                        }
-                        for cid, detail in case_details.items()
-                    ]
+            # 2. 并行启动：trace 解析 + 数据采集（基线/原始数据/LLM 匹配）
+            _set_progress(evaluation_id, "并行：trace 解析 + 数据采集...")
 
-                    def _match_progress(done, total, matched):
-                        _set_progress(evaluation_id,
-                            f"LLM 匹配中... {done}/{total} "
-                            f"({matched} 条已匹配)")
+            # ── PARSING 线程 ──
+            _check_cancel(evaluation_id, stages.PARSING)
+            assert_transition(stages.INGESTING, stages.PARSING)
+            self._set_status_safe(evaluation_id, stages.PARSING)
 
-                    case_matches = match_cases(
-                        raw_cases_for_match,
-                        baseline_cases_for_match,
-                        evaluation_id,
-                        cancel_cb=_cancel_cb,
-                        progress_cb=_match_progress,
-                    )
-                    matched = sum(
-                        1 for m in case_matches
-                        if m.get("matched_baseline_case_id")
-                    )
-                    log("ORCH", f"LLM 匹配完成: {matched}/{len(case_matches)} "
-                          f"条原始数据找到基线匹配")
-                else:
-                    log("ORCH", "开发态：原始数据与基线同项目，跳过 LLM 匹配")
+            parse_pool = ThreadPoolExecutor(max_workers=1)
+            parse_future = parse_pool.submit(
+                with_eval_ctx(self._parse_traces),
+                evaluation_id, entries, [], {}, cfg,
+                cancel_cb=_cancel_cb,
+            )
+
+            # ── 数据采集线程 ──
+            def _collect_data():
+                return with_eval_ctx(self._collect_baseline_and_raw)(
+                    evaluation_id, cfg,
+                )
+            data_pool = ThreadPoolExecutor(max_workers=1)
+            data_future = data_pool.submit(_collect_data)
+
+            # 等待数据采集完成
+            benchmark_items, case_details, alert_center_data, case_matches = \
+                data_future.result()
+            data_pool.shutdown(wait=False)
+            log("ORCH", f"数据采集 done: {len(benchmark_items)} benchmark_items, "
+                  f"{len(case_details)} case_details")
+
+            # ── 开发态 LLM 语义匹配 ──
+            # （已在 _collect_baseline_and_raw 内完成，case_matches 直接返回）
 
             # debug dump：INGESTING 中间数据明细
             self._dump_debug(reports_dir, evaluation_id, "ingesting", {
@@ -465,7 +447,7 @@ class Orchestrator:
                 "case_matches": case_matches,
             })
 
-            # debug 断点：manifest.debug_stop_after 指定停在哪个步骤之后
+            # debug 断点
             debug_stop = cfg.get("manifest", {}).get("debug_stop_after")
             if debug_stop == "ingesting":
                 log("ORCH", f"DEBUG 断点：停在 INGESTING 之后（debug_stop_after=ingesting）")
@@ -474,16 +456,31 @@ class Orchestrator:
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=ingesting")
                 return
 
-            # ── PARSING ──
-            _check_cancel(evaluation_id, stages.PARSING)
-            assert_transition(stages.INGESTING, stages.PARSING)
-            self._set_status_safe(evaluation_id, stages.PARSING)
-            _set_progress(evaluation_id, "并行 trace 解析...")
-            data_packs = self._parse_traces(
-                evaluation_id, entries, benchmark_items, case_details, cfg,
-                cancel_cb=_cancel_cb,
-            )
+            # 等待 trace 解析完成
+            data_packs = parse_future.result()
+            parse_pool.shutdown(wait=False)
             log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
+
+            # 将 benchmark_items 附加到每个 DataPack（并行解析时未传入）
+            if benchmark_items:
+                from ..core.task_run import BenchmarkItem
+                from ..core.enums import ExpectedLabel
+                for dp in data_packs:
+                    bench = []
+                    for bid in benchmark_items:
+                        cd = case_details.get(bid, {})
+                        exp_label = cd.get("expected_label", "VULNERABLE")
+                        bench.append(BenchmarkItem(
+                            benchmark_item_id=bid,
+                            benchmark_set_id=cfg.get("manifest", {}).get(
+                                "benchmark_set_id", "BS001",
+                            ),
+                            task_id=dp.task_id,
+                            expected_label=ExpectedLabel(exp_label)
+                            if exp_label else None,
+                            metadata=cd,
+                        ))
+                    dp.benchmark_item = bench[0] if bench else None
 
             # debug dump：PARSING 中间数据 — 所有 session 关系图
             self._dump_debug(reports_dir, evaluation_id, "parsing", {
@@ -594,6 +591,235 @@ class Orchestrator:
             _clear_progress(evaluation_id)
 
     # ── INGESTING ────────────────────────────────────
+
+    def _read_config(self, evaluation_id: str) -> dict:
+        """读 evaluation_snapshot 配置（纯 DB 读，快速）。"""
+        def _read(cur):
+            cur.execute(
+                "SELECT config_json FROM evaluation_snapshot "
+                "WHERE evaluation_id=%s",
+                (evaluation_id,),
+            )
+            row = cur.fetchone()
+            if not row:
+                raise ValueError(
+                    f"evaluation {evaluation_id} snapshot not found"
+                )
+            cfg = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+            cur.execute(
+                "SELECT benchmark_set_id FROM evaluation "
+                "WHERE evaluation_id=%s",
+                (evaluation_id,),
+            )
+            eval_row = cur.fetchone()
+            bsid = eval_row[0] if eval_row else "BS001"
+            cfg.setdefault("manifest", {})["benchmark_set_id"] = \
+                cfg.get("manifest", {}).get("benchmark_set_id") or bsid
+            return cfg
+        return _db_query(_read)
+
+    def _collect_baseline_and_raw(
+        self, evaluation_id: str, cfg: dict,
+    ) -> tuple[list, dict, dict, list]:
+        """采集基线 + 原始数据 + LLM 匹配（并行于 trace 解析）。
+
+        返回:
+            (benchmark_items, case_details, alert_center_data, case_matches)
+        """
+        manifest = cfg.get("manifest", {})
+        entries = manifest.get("entries", [])
+        bm_source = manifest.get("benchmark_source", "vbench_zip")
+        benchmark_set_id = manifest.get("benchmark_set_id", "BS001")
+        vc_source_task_id = manifest.get("vc_source_task_id")
+        eval_mode = manifest.get("eval_mode", "dev")
+
+        case_details: dict[str, dict] = {}
+        alert_center_data: dict = {}
+        case_matches: list[dict] = []
+
+        # ── 获取原始数据：从告警中心取挖掘 agent 上报的 case ──
+        _ac_pairs: list[tuple[str, str]] = []
+        _seen: set[tuple[str, str]] = set()
+        for e in entries:
+            if e.get("category") != "mining":
+                continue
+            _pid = e.get("project_id") or ""
+            _tid = e.get("task_id_actual") or ""
+            src = e.get("source_uri", "") or ""
+            if not _tid:
+                import re
+                m = re.search(r"/tasks/([^/]+)", src)
+                if m:
+                    _tid = m.group(1)
+            if _pid and _tid and (_pid, _tid) not in _seen:
+                _ac_pairs.append((_pid, _tid))
+                _seen.add((_pid, _tid))
+
+        if _ac_pairs:
+            try:
+                from ...infrastructure.vuln_center_client import (
+                    get_alert_center_summary,
+                )
+                all_cases: list[dict] = []
+                merged_counts = {
+                    "vulnerable": 0, "not_vulnerable": 0,
+                    "inconclusive": 0, "pending": 0,
+                }
+                ac_pool = ThreadPoolExecutor(
+                    max_workers=min(len(_ac_pairs), _conc_get("ac_fetch_workers")),
+                )
+                try:
+                    ac_futures = {
+                        ac_pool.submit(
+                            with_eval_ctx(self._fetch_ac), pair,
+                        ): pair
+                        for pair in _ac_pairs
+                    }
+                    for fut in ac_futures:
+                        pair = ac_futures[fut]
+                        ac_project, _ = pair
+                        ac_summary = fut.result()
+                        for k in merged_counts:
+                            merged_counts[k] += ac_summary.get("counts", {}).get(k, 0)
+                        for c in ac_summary.get("cases", []):
+                            all_cases.append({
+                                **c,
+                                "project_id": ac_project,
+                            })
+                finally:
+                    ac_pool.shutdown(wait=False)
+
+                alert_center_data = {
+                    "source_task_ids": [t for _, t in _ac_pairs],
+                    "project_ids": [p for p, _ in _ac_pairs],
+                    "total": len(all_cases),
+                    "counts": merged_counts,
+                    "cases": all_cases,
+                }
+                log("INGEST", f"原始数据(告警中心): {len(all_cases)} 条 case "
+                      f"(是漏洞={merged_counts['vulnerable']} "
+                      f"不是漏洞={merged_counts['not_vulnerable']})")
+            except Exception as e:
+                log("INGEST", f"取告警中心数据失败: {e}")
+                raise ValueError(
+                    f"取告警中心数据失败: {e}"
+                ) from e
+
+        # ── 取基线 case 详情 ──
+        if bm_source == "vuln_center":
+            from ...infrastructure.vuln_center_client import (
+                _case_to_benchmark, get_alert_center_summary,
+            )
+            log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
+                  f"task={vc_source_task_id or '(未指定)'}")
+            baseline_summary = get_alert_center_summary(
+                benchmark_set_id, vc_source_task_id,
+            )
+            baseline_cases = baseline_summary.get("cases", [])
+            log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
+
+            for c in baseline_cases:
+                if c.get("current_stage") != "finished":
+                    continue
+                vr = c.get("validation_result")
+                if vr not in ("vulnerable", "not_vulnerable"):
+                    continue
+                expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
+                bm = _case_to_benchmark(c, expected_label)
+                cid = bm.get("case_id") or ""
+                if cid:
+                    case_details[cid] = {
+                        "description": bm.get("description") or "",
+                        "vulnerability_type": bm.get("vulnerability_type") or "",
+                        "expected_label": expected_label,
+                        "source_file": bm.get("source_file") or "",
+                        "source_function": bm.get("source_function") or "",
+                        "source_line": bm.get("source_line") or "",
+                        "locator": bm.get("locator") or "",
+                        "false_positive_group": bm.get("false_positive_group") or "",
+                        "false_positive_reason": bm.get("false_positive_reason") or "",
+                        "human_confirmation_summary": bm.get("human_confirmation_summary") or "",
+                    }
+
+        elif bm_source == "vbench_zip":
+            from ...infrastructure.vbench_client import get_benchmark
+            log("INGEST", f"基线数据(V-Bench): set_id={benchmark_set_id}")
+            bm = get_benchmark(benchmark_set_id)
+            all_cases = bm.get("cases") or []
+            for c in all_cases:
+                cid = c.get("case_id") or c.get("id") or ""
+                if cid:
+                    findings = c.get("findings") or []
+                    desc = (" ".join(
+                        f.get("explanation", "")
+                        for f in findings if f.get("explanation")
+                    ) or c.get("description", "")
+                     or c.get("vulnerability_type", "") or "")
+                    case_details[cid] = {
+                        "description": desc,
+                        "vulnerability_type": c.get("vulnerability_type")
+                        or c.get("category") or "",
+                        "expected_label": c.get("expected_label")
+                        or "VULNERABLE",
+                        "source_file": c.get("source_file") or "",
+                        "source_function": c.get("source_function") or "",
+                        "source_line": c.get("source_line") or "",
+                    }
+
+        if not case_details:
+            raise ValueError(
+                "无法获取基线数据（case_details 为空），"
+                "没有基线的评测无意义。"
+                "请检查 benchmark_source 配置、V-Bench/告警中心服务连通性后重试。"
+            )
+
+        benchmark_items = list(case_details.keys())
+
+        # ── 开发态 LLM 语义匹配 ──
+        if eval_mode == "dev" and alert_center_data.get("cases"):
+            raw_project_ids = set(alert_center_data.get("project_ids", []))
+            baseline_project = benchmark_set_id
+            needs_match = baseline_project and \
+                baseline_project not in raw_project_ids
+            if needs_match:
+                log("ORCH", f"开发态：原始数据 project={raw_project_ids} "
+                      f"≠ 基线 project={baseline_project}，启动 LLM 匹配")
+                _set_progress(evaluation_id, "LLM 语义匹配原始数据与基线...")
+                from ..lifecycle.case_matcher import match_cases
+                raw_cases_for_match = alert_center_data.get("cases", [])
+                baseline_cases_for_match = [
+                    {
+                        "case_id": cid,
+                        "title": detail.get("vulnerability_type") or "",
+                        "description": detail.get("description") or "",
+                        "vulnerability_type": detail.get(
+                            "vulnerability_type") or "",
+                    }
+                    for cid, detail in case_details.items()
+                ]
+
+                def _match_progress(done, total, matched):
+                    _set_progress(evaluation_id,
+                        f"LLM 匹配中... {done}/{total} "
+                        f"({matched} 条已匹配)")
+
+                case_matches = match_cases(
+                    raw_cases_for_match,
+                    baseline_cases_for_match,
+                    evaluation_id,
+                    cancel_cb=_make_cancel_cb(evaluation_id, "MATCH"),
+                    progress_cb=_match_progress,
+                )
+                matched = sum(
+                    1 for m in case_matches
+                    if m.get("matched_baseline_case_id")
+                )
+                log("ORCH", f"LLM 匹配完成: {matched}/{len(case_matches)} "
+                      f"条原始数据找到基线匹配")
+            else:
+                log("ORCH", "开发态：原始数据与基线同项目，跳过 LLM 匹配")
+
+        return benchmark_items, case_details, alert_center_data, case_matches
 
     def _ingest(self, evaluation_id: str) -> tuple:
         """取原始数据 + 基线数据。
@@ -866,6 +1092,7 @@ class Orchestrator:
             project_id = e.get("project_id", "")
 
             # 为每个 entry 创建 TaskRun + benchmark_items
+            # benchmark_items 可能为空（并行模式下数据采集尚未完成）
             bench = []
             for bid in benchmark_items:
                 cd = case_details.get(bid, {})
