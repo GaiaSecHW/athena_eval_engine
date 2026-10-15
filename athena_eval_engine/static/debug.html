@@ -303,28 +303,24 @@ function renderTreeNode(sid, smap, childrenMap, depth, visited) {
   return html;
 }
 
-// ── case_matching 渲染器 ──
+// ── case_matching 渲染器（只显示误报 case）──
 RENDERERS.case_matching = function(el, data) {
   let html = "";
 
-  // 统计
+  // 统计：只显示 FP/TN
   const total = data.total_cases || 0;
   const matched = data.matched || 0;
   const unmatched = data.unmatched || 0;
   const outcomes = data.outcomes || {};
-  const tp = outcomes.TP || 0;
   const fp = outcomes.FP || 0;
-  const fn = outcomes.FN || 0;
   const tn = outcomes.TN || 0;
 
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${total}</div><div class="label">case 总数 (${data.eval_mode || ""})</div></div>`;
+  html += `<div class="stat"><div class="num">${total}</div><div class="label">误报 case 总数 (${data.eval_mode || ""})</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#27ae60">${matched}</div><div class="label">已匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${unmatched}</div><div class="label">未匹配</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#27ae60">${tp}</div><div class="label">真阳性</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#f39c12">${fn}</div><div class="label">漏报</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">真阴性</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报 (FP)</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">真阴性 (TN)</div></div>`;
   html += `</div>`;
 
   const matches = data.matches || [];
@@ -342,12 +338,10 @@ RENDERERS.case_matching = function(el, data) {
   for (const m of matches) {
     const outcome = m.outcome || "?";
     const outcomeColor = {
-      "TP": "#27ae60", "FP": "#e74c3c",
-      "FN": "#f39c12", "TN": "#95a5a6",
+      "FP": "#e74c3c", "TN": "#95a5a6",
     }[outcome] || "#888";
     const outcomeLabel = {
-      "TP": "真阳性", "FP": "误报",
-      "FN": "漏报", "TN": "真阴性",
+      "FP": "误报", "TN": "真阴性",
     }[outcome] || outcome;
 
     const method = m.match_method || "unmatched";

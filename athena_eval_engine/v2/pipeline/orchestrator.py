@@ -514,9 +514,7 @@ class Orchestrator:
                 "unmatched": sum(1 for r in case_session_matches
                                  if r["match_method"] == "unmatched"),
                 "outcomes": {
-                    "TP": sum(1 for r in case_session_matches if r["outcome"] == "TP"),
                     "FP": sum(1 for r in case_session_matches if r["outcome"] == "FP"),
-                    "FN": sum(1 for r in case_session_matches if r["outcome"] == "FN"),
                     "TN": sum(1 for r in case_session_matches if r["outcome"] == "TN"),
                 },
                 "matches": case_session_matches,
