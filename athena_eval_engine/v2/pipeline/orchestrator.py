@@ -607,6 +607,13 @@ class Orchestrator:
                   f"{len(causal_chain.get('per_case_breakpoints', []))} "
                   f"cases with breakpoints")
 
+            # debug dump：L0-L7 全链路分析 + 因果链分析结果
+            self._dump_debug(reports_dir, evaluation_id, "resolving", {
+                "access_detail_count": len(access_details),
+                "access_details": access_details,
+                "causal_chain": causal_chain,
+            })
+
             # ── REPORTING ──
             _check_cancel(evaluation_id, stages.REPORTING)
             assert_transition(stages.RESOLVING, stages.REPORTING)

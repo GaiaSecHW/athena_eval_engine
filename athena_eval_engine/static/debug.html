@@ -36,7 +36,15 @@ tr:hover { background: #1a1a3e; }
 <div class="step-bar" id="stepBar"></div>
 <div class="content" id="content"></div>
 <script>
-const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "resolving", "lifecycle", "causal_chain", "reporting"];
+const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "resolving", "reporting"];
+const STEP_LABELS = {
+  "ingesting": "数据采集",
+  "parsing": "解析 Trace",
+  "case_matching": "Case 匹配",
+  "root_cause": "根因分析",
+  "resolving": "事实写入 + L0-L7 分析",
+  "reporting": "生成报告",
+};
 
 function getEid() {
   const m = location.pathname.match(/\/evaluations\/([^/]+)\/debug/);
@@ -70,7 +78,7 @@ async function checkSteps() {
 function renderStepBar() {
   const bar = document.getElementById("stepBar");
   bar.innerHTML = available.map((step, i) =>
-    `<button class="step-btn${i === 0 ? " active" : ""}" data-step="${step}">${step}</button>`
+    `<button class="step-btn${i === 0 ? " active" : ""}" data-step="${step}">${STEP_LABELS[step] || step}</button>`
   ).join("");
   bar.querySelectorAll(".step-btn").forEach(btn => {
     btn.addEventListener("click", () => {
@@ -106,8 +114,8 @@ RENDERERS.ingesting = function(el, data) {
 
   // 配置信息
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${data.benchmark_source || "-"}</div><div class="label">benchmark_source</div></div>`;
-  html += `<div class="stat"><div class="num">${data.eval_mode || "-"}</div><div class="label">eval_mode</div></div>`;
+  html += `<div class="stat"><div class="num">${data.benchmark_source || "-"}</div><div class="label">基线来源</div></div>`;
+  html += `<div class="stat"><div class="num">${data.eval_mode || "-"}</div><div class="label">评测模式</div></div>`;
   html += `<div class="stat"><div class="num">${data.raw_data?.total ?? 0}</div><div class="label">原始数据</div></div>`;
   html += `<div class="stat"><div class="num">${data.baseline?.total ?? 0}</div><div class="label">基线数据</div></div>`;
   html += `</div>`;
@@ -116,7 +124,7 @@ RENDERERS.ingesting = function(el, data) {
   const raw = data.raw_data || {};
   html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">原始数据（告警中心） — ${raw.total ?? 0} 条</h3>`;
   if (raw.cases?.length) {
-    html += `<table><thead><tr><th>case_id</th><th>title</th><th>validation_result</th><th>stage</th><th>false_positive_reason</th><th>project_id</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报原因</th><th>项目编号</th></tr></thead><tbody>`;
     for (const c of raw.cases) {
       const vr = c.validation_result || "pending";
       html += `<tr><td>${c.case_id ?? ""}</td><td>${c.title ?? ""}</td>`
@@ -132,7 +140,7 @@ RENDERERS.ingesting = function(el, data) {
   const bl = data.baseline || {};
   html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">基线数据 — ${bl.total ?? 0} 条</h3>`;
   if (bl.cases?.length) {
-    html += `<table><thead><tr><th>case_id</th><th>vulnerability_type</th><th>expected_label</th><th>source_file</th><th>false_positive_reason</th><th>false_positive_group</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报原因</th><th>误报分组</th></tr></thead><tbody>`;
     for (const c of bl.cases) {
       const lbl = c.expected_label || "";
       html += `<tr><td>${c.case_id ?? ""}</td><td>${c.vulnerability_type ?? ""}</td>`
@@ -149,7 +157,7 @@ RENDERERS.ingesting = function(el, data) {
   if (matches && matches.length) {
     const matched = matches.filter(m => m.matched_baseline_case_id).length;
     html += `<h3 style="margin:16px 0 8px;color:#8be9fd;">LLM 匹配结果 — ${matched}/${matches.length} 条匹配成功</h3>`;
-    html += `<table><thead><tr><th>原始 case_id</th><th>原始 title</th><th>匹配基线 case_id</th><th>匹配基线 title</th><th>置信度</th><th>原因</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>告警中心编号</th><th>告警中心标题</th><th>匹配基线编号</th><th>匹配基线标题</th><th>置信度</th><th>原因</th></tr></thead><tbody>`;
     for (const m of matches) {
       const conf = m.confidence ?? 0;
       const confColor = conf >= 0.7 ? "#27ae60" : conf >= 0.4 ? "#f39c12" : "#e74c3c";
@@ -177,16 +185,16 @@ RENDERERS.parsing = function(el, data) {
 
   const packs = data.data_packs || [];
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${packs.length}</div><div class="label">data_packs</div></div>`;
+  html += `<div class="stat"><div class="num">${packs.length}</div><div class="label">数据包</div></div>`;
   let totalSessions = 0, totalEdges = 0, totalEvents = 0;
   for (const p of packs) {
     totalSessions += p.session_count || 0;
     totalEdges += p.edge_count || 0;
     totalEvents += p.event_count || 0;
   }
-  html += `<div class="stat"><div class="num">${totalSessions}</div><div class="label">sessions</div></div>`;
-  html += `<div class="stat"><div class="num">${totalEdges}</div><div class="label">edges</div></div>`;
-  html += `<div class="stat"><div class="num">${totalEvents}</div><div class="label">events</div></div>`;
+  html += `<div class="stat"><div class="num">${totalSessions}</div><div class="label">会话数</div></div>`;
+  html += `<div class="stat"><div class="num">${totalEdges}</div><div class="label">边数</div></div>`;
+  html += `<div class="stat"><div class="num">${totalEvents}</div><div class="label">事件数</div></div>`;
   html += `</div>`;
 
   for (const p of packs) {
@@ -195,7 +203,7 @@ RENDERERS.parsing = function(el, data) {
     const sc = p.session_count || 0;
     const ec = p.edge_count || 0;
     html += `<details style="margin:16px 0 8px;" open>`
-      + `<summary style="cursor:pointer;color:#8be9fd;font-size:15px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} sessions, ${ec} edges</summary>`;
+      + `<summary style="cursor:pointer;color:#8be9fd;font-size:15px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} 会话, ${ec} 边</summary>`;
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
@@ -311,10 +319,10 @@ RENDERERS.case_matching = function(el, data) {
   html += `<div class="stat"><div class="num">${total}</div><div class="label">case 总数 (${data.eval_mode || ""})</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#27ae60">${matched}</div><div class="label">已匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${unmatched}</div><div class="label">未匹配</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#27ae60">${tp}</div><div class="label">TP</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">FP</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#f39c12">${fn}</div><div class="label">FN</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">TN</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#27ae60">${tp}</div><div class="label">真阳性</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#f39c12">${fn}</div><div class="label">漏报</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">真阴性</div></div>`;
   html += `</div>`;
 
   const matches = data.matches || [];
@@ -325,7 +333,7 @@ RENDERERS.case_matching = function(el, data) {
   }
 
   html += `<table><thead><tr>`;
-  html += `<th>case_id</th><th>ac_case_id</th><th>漏洞类型</th><th>描述</th>`;
+  html += `<th>基线编号</th><th>告警中心编号</th><th>漏洞标题</th>`;
   html += `<th>判定</th><th>匹配方式</th><th>验证 session</th><th>匹配细节</th>`;
   html += `</tr></thead><tbody>`;
 
@@ -335,6 +343,10 @@ RENDERERS.case_matching = function(el, data) {
       "TP": "#27ae60", "FP": "#e74c3c",
       "FN": "#f39c12", "TN": "#95a5a6",
     }[outcome] || "#888";
+    const outcomeLabel = {
+      "TP": "真阳性", "FP": "误报",
+      "FN": "漏报", "TN": "真阴性",
+    }[outcome] || outcome;
 
     const method = m.match_method || "unmatched";
     const methodColor = method === "unmatched" ? "#e74c3c" : "#27ae60";
@@ -350,8 +362,7 @@ RENDERERS.case_matching = function(el, data) {
     html += `<td style="font-family:monospace;font-size:11px">${m.case_id || ""}</td>`;
     html += `<td style="font-family:monospace;font-size:11px">${m.ac_case_id || '<span style="color:#666">—</span>'}</td>`;
     html += `<td>${m.vulnerability_type || ""}</td>`;
-    html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.description || ""}</td>`;
-    html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcome}</span></td>`;
+    html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
     html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
     html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${detail}">${detail}</td>`;
@@ -369,7 +380,7 @@ RENDERERS.root_cause = function(el, data) {
   const total = data.total_fp || 0;
   const analyzed = data.analyzed || 0;
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${total}</div><div class="label">FP case 数</div></div>`;
+  html += `<div class="stat"><div class="num">${total}</div><div class="label">误报 case 数</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#27ae60">${analyzed}</div><div class="label">已分析</div></div>`;
   html += `</div>`;
 
@@ -470,7 +481,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
 
   html += `<div style="margin:12px 0;padding:12px;background:#1a1a2e;border-radius:6px;border-left:3px solid ${color}">`;
   html += `<div style="color:${color};font-weight:600;font-size:14px;margin-bottom:8px;">`
-    + `${label}链 (${chain.length} sessions) `
+    + `${label}链 (${chain.length} 会话) `
     + `<span class="badge" style="background:${cc};color:#fff">${catLabels[cat] || cat}</span>`
     + `</div>`;
 
@@ -500,7 +511,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   if (bps.length > 0) {
     html += `<div style="margin:8px 0;">`;
     html += `<div style="color:#f39c12;font-weight:600;margin-bottom:4px;font-size:13px;">L0-L7 断点 (${bps.length})</div>`;
-    html += `<table><thead><tr><th>session</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th></tr></thead><tbody>`;
     for (const bp of bps) {
       const lvl = bp.breakpoint || "—";
       const code = bp.cause_code || "—";
@@ -555,6 +566,141 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   html += `</div>`;
   return html;
 }
+
+// ── resolving 渲染器（L0-L7 全链路分析 + 因果链）──
+RENDERERS.resolving = function(el, data) {
+  let html = "";
+
+  const accessDetails = data.access_details || [];
+  const causalChain = data.causal_chain || {};
+
+  // 统计
+  html += `<div class="stats">`;
+  html += `<div class="stat"><div class="num">${data.access_detail_count ?? accessDetails.length}</div><div class="label">知识访问总数</div></div>`;
+
+  // 断点级别分布
+  const bpCounts = {};
+  const causeCounts = {};
+  const causeToLevel = {"A":"L2","B":"L3","C":"L4","D":"L5","E":"L6","F":"L7","G":"L7"};
+  for (const r of accessDetails) {
+    const code = r.cause_code;
+    if (code) {
+      causeCounts[code] = (causeCounts[code] || 0) + 1;
+      const lvl = causeToLevel[code];
+      if (lvl) bpCounts[lvl] = (bpCounts[lvl] || 0) + 1;
+    }
+  }
+  const bpLabels = {"L2":"L2 发起访问","L3":"L3 查询准确","L4":"L4 知识存在","L5":"L5 成功取回","L6":"L6 被使用","L7":"L7 影响结论"};
+  for (const [lvl, cnt] of Object.entries(bpCounts).sort()) {
+    html += `<div class="stat"><div class="num" style="color:#e74c3c">${cnt}</div><div class="label">${bpLabels[lvl] || lvl}</div></div>`;
+  }
+  html += `</div>`;
+
+  // 成因分布
+  if (Object.keys(causeCounts).length > 0) {
+    html += `<div style="margin:8px 0;color:#888;font-size:13px;">成因分布：</div>`;
+    html += `<div class="stats">`;
+    const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判"};
+    for (const [code, cnt] of Object.entries(causeCounts).sort()) {
+      html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
+    }
+    html += `</div>`;
+  }
+
+  // 因果链汇总
+  const causeSummary = causalChain.cause_summary || {};
+  const effectDist = causalChain.effect_label_distribution || {};
+  if (Object.keys(causeSummary).length > 0) {
+    html += `<div style="margin:12px 0 8px;color:#8be9fd;font-size:15px;">因果链汇总</div>`;
+    html += `<div style="margin-bottom:12px;color:#aaa;font-size:13px;">`;
+    html += `成因计数：${Object.entries(causeSummary).map(([k,v])=>`${k}=${v}`).join("，")}　`;
+    html += `效果分布：${Object.entries(effectDist).map(([k,v])=>`${k}=${v}`).join("，")}`;
+    html += `</div>`;
+  }
+
+  // 按 task_run_id 分组（每个 case 一组）
+  const caseMap = {};
+  for (const r of accessDetails) {
+    const tid = r.task_run_id || "";
+    if (!caseMap[tid]) caseMap[tid] = [];
+    caseMap[tid].push(r);
+  }
+
+  if (Object.keys(caseMap).length === 0) {
+    html += '<div class="empty">无 L0-L7 分析数据</div>';
+    el.innerHTML = html;
+    return;
+  }
+
+  // 逐 case 展示
+  for (const [taskRunId, records] of Object.entries(caseMap)) {
+    const hasBp = records.some(r => r.cause_code);
+    const titleColor = hasBp ? "#e74c3c" : "#27ae60";
+    html += `<details style="margin:16px 0 8px;" open>`;
+    html += `<summary style="cursor:pointer;color:${titleColor};font-size:15px;font-weight:600;">`;
+    html += `${taskRunId} — ${records.length} 次知识访问`;
+    html += `</summary>`;
+
+    // 每次知识访问的 L0-L7 判定表
+    html += `<table><thead><tr>`;
+    html += `<th>来源</th><th>L1 需要知识</th><th>L2 发起访问</th><th>L3 查询准确</th><th>L4 知识存在</th><th>L5 成功取回</th><th>L6 被使用</th><th>L7 影响结论</th><th>断点</th><th>成因</th><th>查询内容</th>`;
+    html += `</tr></thead><tbody>`;
+
+    for (const r of records) {
+      const bp = r.cause_code ? causeToLevel[r.cause_code] || "—" : "无";
+      const code = r.cause_code || "—";
+      const bpColor = r.cause_code ? "#e74c3c" : "#27ae60";
+      const src = r.source_system || "—";
+      const b = (v) => v === true ? "✓" : v === false ? "✗" : "—";
+      const l7 = r.l7_influenced === true ? "正向" : r.l7_influenced === false ? "负向" : "—";
+
+      html += `<tr>`;
+      html += `<td>${src}</td>`;
+      html += `<td style="text-align:center">${b(r.l1_need_knowledge)}</td>`;
+      html += `<td style="text-align:center">${b(r.l2_initiated)}</td>`;
+      html += `<td style="text-align:center">${b(r.l3_query_accurate)}</td>`;
+      html += `<td style="text-align:center">${b(r.l4_knowledge_exists)}</td>`;
+      html += `<td style="text-align:center">${b(r.l5_retrieved)}</td>`;
+      html += `<td style="text-align:center">${b(r.l6_used)}</td>`;
+      html += `<td style="text-align:center">${l7}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${bp}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${code}</td>`;
+      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.query_content||"").replace(/"/g,"&quot;")}">${r.query_content || "—"}</td>`;
+      html += `</tr>`;
+    }
+    html += `</tbody></table>`;
+
+    // 每次访问的详细证据（可收起）
+    const hasDetail = records.some(r => r.returned_content || r.reasoning_ref || r.judgment_conclusion);
+    if (hasDetail) {
+      html += `<details style="margin:8px 0;">`;
+      html += `<summary style="cursor:pointer;color:#888;font-size:12px;">详细证据</summary>`;
+      for (const r of records) {
+        if (!r.returned_content && !r.reasoning_ref && !r.judgment_conclusion) continue;
+        html += `<div style="margin:6px 0;padding:8px;background:#1a1a2e;border-radius:4px;">`;
+        html += `<div style="color:#8be9fd;font-size:11px;margin-bottom:4px;">${r.source_system || ""} · 事件 ${r.event_idx ?? "—"}</div>`;
+        if (r.query_content) {
+          html += `<div style="margin:4px 0;color:#bbb;font-size:12px;"><b style="color:#6c5ce7">查询：</b>${r.query_content}</div>`;
+        }
+        if (r.returned_content) {
+          html += `<div style="margin:4px 0;color:#bbb;font-size:12px;"><b style="color:#6c5ce7">返回：</b>${r.returned_content}</div>`;
+        }
+        if (r.reasoning_ref) {
+          html += `<div style="margin:4px 0;color:#bbb;font-size:12px;"><b style="color:#6c5ce7">推理：</b>${r.reasoning_ref}</div>`;
+        }
+        if (r.judgment_conclusion) {
+          html += `<div style="margin:4px 0;color:#bbb;font-size:12px;"><b style="color:#6c5ce7">判定：</b>${r.judgment_conclusion}</div>`;
+        }
+        html += `</div>`;
+      }
+      html += `</details>`;
+    }
+
+    html += `</details>`;
+  }
+
+  el.innerHTML = html;
+};
 
 checkSteps();
 </script>
