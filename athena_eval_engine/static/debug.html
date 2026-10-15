@@ -125,13 +125,14 @@ RENDERERS.ingesting = function(el, data) {
   const raw = data.raw_data || {};
   html += `<h3 style="margin:16px 0 8px;color:#6c5ce7;">原始数据（告警中心） — ${raw.total ?? 0} 条</h3>`;
   if (raw.cases?.length) {
-    html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报原因</th><th>项目编号</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报分组</th><th>人工确认原因</th><th>项目编号</th></tr></thead><tbody>`;
     for (const c of raw.cases) {
       const vr = c.validation_result || "pending";
       html += `<tr><td>${c.case_id ?? ""}</td><td>${c.title ?? ""}</td>`
         + `<td><span class="badge badge-${vr}">${vr}</span></td>`
         + `<td>${c.current_stage ?? ""}</td>`
-        + `<td>${c.false_positive_reason ?? ""}</td>`
+        + `<td>${c.false_positive_group ?? ""}</td>`
+        + `<td>${c.human_confirmation_summary ?? ""}</td>`
         + `<td>${c.project_id ?? ""}</td></tr>`;
     }
     html += `</tbody></table>`;
@@ -141,14 +142,14 @@ RENDERERS.ingesting = function(el, data) {
   const bl = data.baseline || {};
   html += `<h3 style="margin:16px 0 8px;color:#6c5ce7;">基线数据 — ${bl.total ?? 0} 条</h3>`;
   if (bl.cases?.length) {
-    html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报原因</th><th>误报分组</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报分组</th><th>人工确认原因</th></tr></thead><tbody>`;
     for (const c of bl.cases) {
       const lbl = c.expected_label || "";
       html += `<tr><td>${c.case_id ?? ""}</td><td>${c.vulnerability_type ?? ""}</td>`
         + `<td><span class="badge badge-${lbl}">${lbl}</span></td>`
         + `<td>${c.source_file ?? ""}</td>`
-        + `<td>${c.false_positive_reason ?? ""}</td>`
-        + `<td>${c.false_positive_group ?? ""}</td></tr>`;
+        + `<td>${c.false_positive_group ?? ""}</td>`
+        + `<td>${c.human_confirmation_summary ?? ""}</td></tr>`;
     }
     html += `</tbody></table>`;
   }
@@ -335,7 +336,7 @@ RENDERERS.case_matching = function(el, data) {
 
   html += `<table><thead><tr>`;
   html += `<th>基线编号</th><th>告警中心编号</th><th>漏洞标题</th>`;
-  html += `<th>判定</th><th>匹配方式</th><th>挖掘 session</th><th>验证 session</th><th>匹配细节</th>`;
+  html += `<th>判定</th><th>匹配方式</th><th>验证 session</th><th>匹配细节</th>`;
   html += `</tr></thead><tbody>`;
 
   for (const m of matches) {
@@ -356,7 +357,6 @@ RENDERERS.case_matching = function(el, data) {
       "unmatched": "未匹配",
     }[method] || method;
 
-    const miningSids = (m.mining_sessions || []).join(", ") || '<span style="color:#999">—</span>';
     const verifySids = (m.verify_sessions || []).join(", ") || '<span style="color:#999">—</span>';
     const detail = m.match_detail || '<span style="color:#999">—</span>';
 
@@ -366,7 +366,6 @@ RENDERERS.case_matching = function(el, data) {
     html += `<td>${m.vulnerability_type || ""}</td>`;
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
-    html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
     html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
     html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${detail}">${detail}</td>`;
     html += `</tr>`;

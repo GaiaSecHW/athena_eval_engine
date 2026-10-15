@@ -4,12 +4,8 @@
 
 漏洞中心基线已有两类人工确认 case：
 - confirmation_status=vulnerable → expected_label=VULNERABLE（有漏洞）
-- confirmation_status=not_vulnerable → expected_label=NON_VULNERABLE（非漏洞）
-
-FP（误报）判定：
-- 基线 expected_label=NON_VULNERABLE
-- 在告警中心找到匹配 case 且 validation_result=CONFIRMED
-- → agent 误报了漏洞
+- confirmation_status=not_vulnerable → expected_label=NON_VULNERABLE（误报）
+- 排除 false_positive_group=non_fp（非误报，不参与分析）
 
 FN（漏报）判定：
 - 基线 expected_label=VULNERABLE
@@ -26,8 +22,8 @@ FN（漏报）判定：
    - 因为测评集 case 结构与告警中心 case 结构不同，无法用标题/内容直接匹配
 
 按 eval_mode 筛选：
-- runtime（运行态）：只分析 FP
-- dev（开发态）：分析 FP + FN
+- runtime（运行态）：基线含 VULNERABLE + NON_VULNERABLE（已排除 non_fp）
+- dev（开发态）：分析 FN
 
 找不到对应 trace 的 case 在返回结果中标记，供报告告警。
 """
@@ -194,25 +190,9 @@ class CaseFilter:
                     "validation_result": c.get("validation_result") or "",
                 })
 
-        # ── FP 筛选：基线 NON_VULNERABLE → 在告警中心找匹配 ──
-        fp_cases = [bc for bc in baseline_cases
-                    if bc["expected_label"] == "NON_VULNERABLE"]
-
-        # 基线 NON_VULNERABLE case 与告警中心匹配
-        # 告警中心有匹配且 validation_result=CONFIRMED → FP（agent 误报了）
-        # 告警中心无匹配 → TN（agent 正确没报）
-        if benchmark_source == "vuln_center":
-            fp_match_map = self._match_by_code(
-                evaluation_id, fp_cases, ac_cases)
-        else:
-            fp_match_map = self._match_by_llm(
-                evaluation_id, fp_cases, ac_cases)
-
-        # ── FN 筛选（仅 dev 模式）：基线 VULNERABLE → 与告警中心对比 ──
-        fn_cases = []
-        if eval_mode == "dev":
-            fn_cases = [bc for bc in baseline_cases
-                        if bc["expected_label"] == "VULNERABLE"]
+        # ── FN 筛选：基线 VULNERABLE → 与告警中心对比 ──
+        fn_cases = [bc for bc in baseline_cases
+                    if bc["expected_label"] == "VULNERABLE"]
 
         # 基线漏洞与告警中心匹配
         # 告警中心有匹配 → agent 上报了该漏洞，不是漏报
@@ -227,63 +207,6 @@ class CaseFilter:
         # ── 组装有效 DataPack ──
         valid_packs: list[DataPack] = []
         unmatched_cases: list[dict] = []
-
-        # FPR 统计：FP = 误报（baseline NON_VULN + AC CONFIRMED）
-        # TN = 正确未报（baseline NON_VULN + AC 无匹配或非 CONFIRMED）
-        fp_count = 0
-        tn_count = 0
-
-        # 处理 FP
-        for bc in fp_cases:
-            cid = bc["case_id"]
-            title = bc["title"]
-
-            matched_ac = fp_match_map.get(cid)
-
-            if matched_ac is None:
-                # baseline NON_VULNERABLE 且告警中心无匹配 → TN
-                tn_count += 1
-                unmatched_cases.append({
-                    "case_id": cid,
-                    "expected_label": "NON_VULNERABLE",
-                    "title": title,
-                    "reason": "TN: no matching case in alert center",
-                })
-                log("CASE_FILTER",
-                    f"TN case {cid}: no alert center match "
-                    f"(title={title[:60]})",
-                    eval_id=evaluation_id)
-                continue
-
-            vr = matched_ac.get("validation_result", "")
-
-            if vr == "CONFIRMED" or vr == "VULNERABLE":
-                # FP: agent 误报了漏洞
-                fp_count += 1
-                # FP case 需要分析所有 task 的知识访问
-                for task_id, packs in groups.items():
-                    kp = self._get_packs_with_knowledge(groups, task_id)
-                    if kp:
-                        log("CASE_FILTER",
-                            f"keep case {cid}: FP (vr={vr}, "
-                            f"task={task_id}, {len(kp)} packs)",
-                            eval_id=evaluation_id)
-                        valid_packs.extend(kp)
-                        break
-                else:
-                    unmatched_cases.append({
-                        "case_id": cid,
-                        "expected_label": "NON_VULNERABLE",
-                        "title": title,
-                        "reason": "FP but no knowledge access in trace",
-                    })
-            else:
-                # 告警中心有匹配但非 CONFIRMED → TN
-                tn_count += 1
-                log("CASE_FILTER",
-                    f"skip case {cid}: NON_VULNERABLE but vr={vr} "
-                    f"(not CONFIRMED, not FP)",
-                    eval_id=evaluation_id)
 
         # 处理 FN
         fn_baseline_cases = [bc for bc in fn_cases
@@ -318,17 +241,12 @@ class CaseFilter:
             f"filtered {len(valid_packs)}/{len(data_packs)} packs "
             f"from {len(baseline_cases)} baseline cases "
             f"(mode={eval_mode}, source={benchmark_source}, "
-            f"fp_cases={len(fp_cases)}, fn_cases={len(fn_baseline_cases)}, "
+            f"fn_cases={len(fn_baseline_cases)}, "
             f"unmatched={len(unmatched_cases)})",
             eval_id=evaluation_id)
 
-        # 将 unmatched_cases 和 fpr_stats 存到类属性，供报告读取
+        # 将 unmatched_cases 存到类属性，供报告读取
         self.unmatched_cases = unmatched_cases
-        self.fpr_stats = {
-            "total_non_vuln": len(fp_cases),
-            "fp_count": fp_count,
-            "tn_count": tn_count,
-        }
 
         return valid_packs
 

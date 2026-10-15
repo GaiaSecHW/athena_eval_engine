@@ -430,6 +430,7 @@ class Orchestrator:
                             "current_stage": c.get("current_stage"),
                             "false_positive_reason": c.get("false_positive_reason"),
                             "false_positive_group": c.get("false_positive_group"),
+                            "human_confirmation_summary": (c.get("human_confirmation") or {}).get("summary") or "",
                             "project_id": c.get("project_id"),
                         }
                         for c in alert_center_data.get("cases", [])
@@ -626,7 +627,7 @@ class Orchestrator:
                 _set_progress(evaluation_id, "计算召回率/准确率...")
                 recall_precision = self._calc_recall_precision(
                     evaluation_id, case_details, alert_center_data,
-                    benchmark_source,
+                    benchmark_source, case_session_matches,
                 )
                 _set_progress(evaluation_id, "报告组装...")
                 self._assemble_report(
@@ -777,6 +778,9 @@ class Orchestrator:
                     continue
                 vr = c.get("validation_result")
                 if vr not in ("vulnerable", "not_vulnerable"):
+                    continue
+                # 排除 non_fp：人工判定不是漏洞但理由不属于误报分类，不参与分析
+                if c.get("false_positive_group") == "non_fp":
                     continue
                 expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
                 bm = _case_to_benchmark(c, expected_label)
@@ -985,6 +989,9 @@ class Orchestrator:
                 vr = c.get("validation_result")
                 # 只取人工已判定的 case（vulnerable / not_vulnerable）
                 if vr not in ("vulnerable", "not_vulnerable"):
+                    continue
+                # 排除 non_fp：人工判定不是漏洞但理由不属于误报分类，不参与分析
+                if c.get("false_positive_group") == "non_fp":
                     continue
                 expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
                 bm = _case_to_benchmark(c, expected_label)
@@ -1374,6 +1381,7 @@ class Orchestrator:
     def _calc_recall_precision(
         self, evaluation_id: str, case_details: dict,
         alert_center_data: dict, benchmark_source: str,
+        case_session_matches: list[dict] = None,
     ) -> dict:
         """计算召回率和准确率。
 
@@ -1386,8 +1394,8 @@ class Orchestrator:
         FP = 基线 NON_VULNERABLE + trace 有 finding 且 CONFIRMED（agent 误报）
         TN = 基线 NON_VULNERABLE + 无匹配 finding 或 finding 非 CONFIRMED
 
-        FP/TN 从 CaseFilter 的 FPR 统计获取（lifecycle 阶段已计算），
         TP/FN 从告警中心数据与基线对比获取。
+        FP/TN 从 case_session_matches 获取（case_session_matcher 已计算）。
         """
         # TP/FN: 从告警中心数据计算
         tp_count = 0
@@ -1409,10 +1417,9 @@ class Orchestrator:
                 else:
                     fn_count += 1
 
-        # FP: 从 lifecycle FPR 统计获取
-        fpr_stats = getattr(self, "_lifecycle_fpr_stats", None) or {}
-        fp_count = fpr_stats.get("fp_count", 0)
-        tn_count = fpr_stats.get("tn_count", 0)
+        # FP/TN: 从 case_session_matches 获取
+        fp_count = sum(1 for r in case_session_matches if r.get("outcome") == "FP")
+        tn_count = sum(1 for r in case_session_matches if r.get("outcome") == "TN")
 
         # 召回率 = TP / (TP + FN)
         recall_denom = tp_count + fn_count

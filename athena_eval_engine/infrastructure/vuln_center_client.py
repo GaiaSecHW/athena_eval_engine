@@ -384,12 +384,15 @@ def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None
     - ``confirmation_status=not_vulnerable`` → expected_label=NON_VULNERABLE
 
     ``fetch_non_vuln=False`` 时跳过非漏洞 API 调用。
+    排除 ``false_positive_group=non_fp`` 的 case（非误报，不参与分析）。
     """
     vuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="vulnerable")
     cases = [_case_to_benchmark(c, "VULNERABLE") for c in vuln_cases]
     log("VULN_CENTER", f"vulnerable cases: {len(vuln_cases)}")
     if fetch_non_vuln:
         nonvuln_cases = list_vuln_cases(project_id, source_task_id, confirmation_status="not_vulnerable")
+        nonvuln_cases = [c for c in nonvuln_cases
+                         if c.get("false_positive_group") != "non_fp"]
         cases += [_case_to_benchmark(c, "NON_VULNERABLE") for c in nonvuln_cases]
-        log("VULN_CENTER", f"not_vulnerable cases: {len(nonvuln_cases)}")
+        log("VULN_CENTER", f"not_vulnerable cases: {len(nonvuln_cases)} (excluded non_fp)")
     return {"benchmark_id": project_id, "name": None, "cases": cases}
