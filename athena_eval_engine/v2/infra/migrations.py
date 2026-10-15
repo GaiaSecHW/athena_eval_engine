@@ -217,7 +217,7 @@ MIGRATIONS = [
     },
     {
         "id": "009_fix_argo_hostname",
-        "description": "修正 Argo MySQL 主机名拼写：chirmra → chirmera",
+        "desc": "修正 Argo MySQL 主机名拼写：chirmra → chirmera",
         "sql": [
             "UPDATE agent_datasource_config SET host='chirmera-platform-nazhua-mysql.secflow-ns.svc.cluster.local' "
             "WHERE agent_type='argo' AND host='chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local'",

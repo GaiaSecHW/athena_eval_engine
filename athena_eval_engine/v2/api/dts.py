@@ -57,31 +57,46 @@ def list_issues(
     limit: int = 100,
     offset: int = 0,
 ):
-    """列出 DTS 问题单（支持过滤、分页）。"""
-    issues = list_dts_issues(
-        evaluation_id=evaluation_id,
-        agent_type=agent_type,
-        status=status,
-        cause_code=cause_code,
-        case_type=case_type,
-        limit=limit,
-        offset=offset,
-    )
-    stats = get_dts_stats(evaluation_id)
+    """列出 DTS 问题单（支持过滤、分页）。表不存在时返回空结果。"""
+    try:
+        issues = list_dts_issues(
+            evaluation_id=evaluation_id,
+            agent_type=agent_type,
+            status=status,
+            cause_code=cause_code,
+            case_type=case_type,
+            limit=limit,
+            offset=offset,
+        )
+        stats = get_dts_stats(evaluation_id)
+    except Exception as e:
+        from ...infrastructure.log_util import log
+        log("DTS_API", f"list_issues 查询失败（表可能不存在）: {str(e)[:200]}")
+        return {"issues": [], "count": 0, "stats": {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}}
     return {"issues": issues, "count": len(issues), "stats": stats}
 
 
 @router.get("/stats")
 def get_stats(evaluation_id: str | None = None):
-    """获取 DTS 问题单统计。"""
-    stats = get_dts_stats(evaluation_id)
+    """获取 DTS 问题单统计。表不存在时返回空统计。"""
+    try:
+        stats = get_dts_stats(evaluation_id)
+    except Exception as e:
+        from ...infrastructure.log_util import log
+        log("DTS_API", f"get_stats 查询失败（表可能不存在）: {str(e)[:200]}")
+        return {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}
     return stats
 
 
 @router.get("/by-task/{task_id}")
 def list_by_task(task_id: str):
-    """按 task 列出 DTS 问题单。"""
-    issues = list_dts_by_task(task_id)
+    """按 task 列出 DTS 问题单。表不存在时返回空列表。"""
+    try:
+        issues = list_dts_by_task(task_id)
+    except Exception as e:
+        from ...infrastructure.log_util import log
+        log("DTS_API", f"list_by_task 查询失败（表可能不存在）: {str(e)[:200]}")
+        return {"issues": [], "count": 0}
     return {"issues": issues, "count": len(issues)}
 
 
