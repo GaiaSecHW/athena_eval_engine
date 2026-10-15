@@ -33,6 +33,7 @@ FN（漏报）判定：
 """
 from __future__ import annotations
 
+import json
 import re
 from collections import defaultdict
 
@@ -81,18 +82,31 @@ def _parse_locator(locator: str) -> tuple[str, str, str]:
     return source_file, source_function, ""
 
 
+def _to_str(value) -> str:
+    """将任意值转为字符串。dict/list 用 json.dumps，其他用 str()。"""
+    if value is None:
+        return ""
+    if isinstance(value, (dict, list)):
+        return json.dumps(value, ensure_ascii=False)
+    return str(value)
+
+
 def _normalize_ac_description(c: dict) -> str:
-    """从告警中心 case 提取描述文本。"""
+    """从告警中心 case 提取描述文本。
+
+    告警中心字段类型不确定——raw_report_summary 可能是 dict 而非 str，
+    每个字段取值后统一 _to_str 转换，避免 join 崩溃。
+    """
     parts = []
-    summary = c.get("summary") or ""
+    summary = c.get("summary")
     if summary:
-        parts.append(summary)
-    raw_report = c.get("raw_report_summary") or ""
+        parts.append(_to_str(summary))
+    raw_report = c.get("raw_report_summary")
     if raw_report:
-        parts.append(raw_report)
-    display = c.get("display_summary") or ""
+        parts.append(_to_str(raw_report))
+    display = c.get("display_summary")
     if display:
-        parts.append(display)
+        parts.append(_to_str(display))
     return "\n".join(parts) if parts else ""
 
 
