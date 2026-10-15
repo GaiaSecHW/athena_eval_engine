@@ -252,19 +252,27 @@ def _verify_sqlite(path: str) -> bool:
             except: pass
 
 
-def _copy_trace_to_local(remote_path: str) -> str:
+def _copy_trace_to_local(remote_path: str, evaluation_id: str = "") -> str:
     """k8s 模式下将 trace 文件从 NFS 拷贝到本地 /tmp，加速后续 SQLite/JSONL 解析。
 
     单文件（.db/.jsonl）→ 直接 copy；目录（session/）→ copytree。
     已存在且完整 → 直接返回（幂等，resume 场景复用）。
     拷贝后校验大小 + SQLite 可读性；校验失败回退到直接读 NFS 原始路径。
+
+    evaluation_id 非空时，文件存到 {cache}/{evaluation_id}/ 子目录下，
+    清理时只删该评测的文件，不影响并发评测。
     """
     import hashlib, shutil
-    os.makedirs(_K8S_TRACE_CACHE, exist_ok=True)
     h = hashlib.md5(remote_path.encode()).hexdigest()[:8]
     name = os.path.basename(remote_path.rstrip("/"))
-    local = os.path.join(_K8S_TRACE_CACHE, f"{h}_{name}")
     is_sqlite = name.endswith((".db", ".sqlite", ".sqlite3"))
+
+    if evaluation_id:
+        cache_dir = os.path.join(_K8S_TRACE_CACHE, evaluation_id)
+    else:
+        cache_dir = _K8S_TRACE_CACHE
+    os.makedirs(cache_dir, exist_ok=True)
+    local = os.path.join(cache_dir, f"{h}_{name}")
 
     def _verify_local():
         """校验本地文件：大小匹配 + SQLite 可读。"""
@@ -341,18 +349,25 @@ def _copy_trace_to_local(remote_path: str) -> str:
     return local
 
 
-def _cleanup_trace_cache():
-    """解析完成后清理本地 trace 缓存。"""
+def _cleanup_trace_cache(evaluation_id: str = ""):
+    """解析完成后清理本地 trace 缓存。
+
+    evaluation_id 非空时只删该评测的子目录，不影响并发评测。
+    为空时删整个缓存目录（向后兼容，不推荐在并发场景使用）。
+    """
     import shutil
+    target = (os.path.join(_K8S_TRACE_CACHE, evaluation_id)
+              if evaluation_id else _K8S_TRACE_CACHE)
     try:
-        if os.path.exists(_K8S_TRACE_CACHE):
-            shutil.rmtree(_K8S_TRACE_CACHE, ignore_errors=True)
-            log("TRACE_CACHE", f"已清理 {_K8S_TRACE_CACHE}")
+        if os.path.exists(target):
+            shutil.rmtree(target, ignore_errors=True)
+            log("TRACE_CACHE", f"已清理 {target}")
     except Exception:
         pass
 
 
-def _resolve_trace_path(source_uri: str, project_id: str = "", task_id: str = "") -> str:
+def _resolve_trace_path(source_uri: str, project_id: str = "", task_id: str = "",
+                        evaluation_id: str = "") -> str:
     """source_uri 可能是 k8s pod 上的 /data/... 路径；本地开发时拉到本地。
 
     k8s 模式下 /data 在 NFS-backed PVC 上，SQLite 随机读极慢，
@@ -361,7 +376,7 @@ def _resolve_trace_path(source_uri: str, project_id: str = "", task_id: str = ""
     if os.path.exists(source_uri):
         # k8s 模式：/data 上的文件拷贝到本地 /tmp 加速
         if source_uri.startswith("/data/") and os.path.isdir(_K8S_TRACE_CACHE):
-            return _copy_trace_to_local(source_uri)
+            return _copy_trace_to_local(source_uri, evaluation_id=evaluation_id)
         # 判断是否在 NFS 上（k8s 部署时 DATA_ROOT=/data/files 存在）
         from ..config_loader import DATA_ROOT
         if source_uri.startswith("/data/") and os.path.isdir(DATA_ROOT):
@@ -1612,7 +1627,7 @@ def run(evaluation_id: str) -> dict:
                 trace_valid=True, runtime_valid=True, benchmark_item_id=biid,
             )
             src = e["source_uri"]
-            local_path = _local_paths.get(src) or _resolve_trace_path(src, e.get("project_id", ""), e["task_id"])
+            local_path = _local_paths.get(src) or _resolve_trace_path(src, e.get("project_id", ""), e["task_id"], evaluation_id=evaluation_id)
             import os as _os
             exists = _os.path.exists(local_path)
             is_dir = _os.path.isdir(local_path) if exists else False
@@ -1898,7 +1913,7 @@ def run(evaluation_id: str) -> dict:
         for e in entries:
             key = e["source_uri"]
             if key not in _local_paths:
-                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"])
+                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e["task_id"], evaluation_id=evaluation_id)
         # Phase PARSING: 并行解析所有 trace → events（无 LLM，快）
         set_progress(evaluation_id, f"解析 Trace: 0/{len(entries)} 完成")
         with ThreadPoolExecutor(max_workers=max(1, min(len(entries), _conc_get("parse_workers")))) as pool:
@@ -3349,7 +3364,7 @@ def _load_kg_inputs_from_db(evaluation_id: str, entries: list, bench_by_task: di
         key = e.get("source_uri", "")
         if key and key not in _local_paths:
             try:
-                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e.get("task_id", ""))
+                _local_paths[key] = _resolve_trace_path(key, e.get("project_id", ""), e.get("task_id", ""), evaluation_id=evaluation_id)
             except Exception as _e:
                 log("RERUN-KG", f"trace 路径解析失败 {key}: {_e}")
                 _local_paths[key] = key

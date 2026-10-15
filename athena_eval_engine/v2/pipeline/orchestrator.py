@@ -566,7 +566,7 @@ class Orchestrator:
             # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
             try:
                 from ...application.evaluation_service import _cleanup_trace_cache
-                _cleanup_trace_cache()
+                _cleanup_trace_cache(evaluation_id)
             except Exception:
                 pass
 
@@ -1125,7 +1125,8 @@ class Orchestrator:
                     from ...application.evaluation_service import (
                         _copy_trace_to_local,
                     )
-                    return _copy_trace_to_local(source_uri)
+                    return _copy_trace_to_local(
+                        source_uri, evaluation_id=evaluation_id)
                 return source_uri
             # /data/ 路径 — 本地开发时从平台拉取
             if source_uri.startswith("/data/") or source_uri.startswith("data/"):
