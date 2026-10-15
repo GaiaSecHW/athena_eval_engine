@@ -132,10 +132,7 @@ class CaseSessionMatcher:
 
             matched = bool(verify_sessions)
             method = "matched" if matched else "unmatched"
-            parts = []
-            if verify_sessions:
-                parts.append(f"验证 {len(verify_sessions)} session")
-            detail = "、".join(parts) if parts else "未匹配"
+            detail = f"{len(verify_sessions)} session" if verify_sessions else "未匹配"
 
             results.append({
                 "case_id": cid,
