@@ -25,6 +25,7 @@ Turing 平台匹配方式：
 from __future__ import annotations
 
 import json
+import re
 from collections import defaultdict
 
 from ..core.data_pack import DataPack
@@ -55,6 +56,30 @@ class CaseSessionMatcher:
         "vulnerability_cvss",
         "vulnerability_analyze",
     }
+
+    @staticmethod
+    def _extract_keywords(text: str) -> set[str]:
+        """从文本中提取关键词集合（用于 title+description 联合匹配）。
+
+        提取策略：
+        - 中文按字符切分（2+ 字符片段）
+        - 英文按单词切分（小写化）
+        - 过滤常见停用词和短词
+        """
+        if not text:
+            return set()
+        # 统一小写
+        t = text.lower()
+        # 提取英文单词（2+ 字符）
+        en_words = set(re.findall(r'[a-z][a-z0-9_]{1,}', t))
+        # 提取中文片段（2+ 连续中文字符）
+        cn_segs = set(re.findall(r'[\u4e00-\u9fff]{2,}', t))
+        # 合并，过滤停用词
+        _STOP = {"the", "and", "for", "with", "from", "into", "this", "that",
+                 "http", "https", "com", "无", "的", "了", "在", "和", "与",
+                 "导致", "通过", "使用", "进行", "可以", "一个", "该", "其",
+                 "为", "是", "被", "将", "到", "或", "及", "等"}
+        return (en_words | cn_segs) - _STOP
 
     def match(
         self,
@@ -117,7 +142,7 @@ class CaseSessionMatcher:
             f"turing_verify_sids={len(turing_verify_sids)}",
             eval_id=evaluation_id)
 
-        # 预构建验证 agent 的 title → session 索引
+        # 预构建验证 agent 的 (title, description, keywords) → session 索引
         verify_index = self._build_verify_index(
             verify_packs, turing_packs, turing_verify_sids)
 
@@ -126,9 +151,11 @@ class CaseSessionMatcher:
             ac_case_id = baseline_to_ac.get(cid, "")
             vuln_type = cd.get("vulnerability_type", "")
             expected_label = cd.get("expected_label", "")
+            vuln_desc = cd.get("description", "")
 
-            # 验证 agent：用漏洞 title 匹配
-            verify_sessions = verify_index.get(vuln_type, []) if vuln_type else []
+            # 验证 agent：用 title + description 关键词重叠匹配
+            verify_sessions = self._match_verify_sessions(
+                verify_index, vuln_type, vuln_desc)
 
             # 判定 outcome：验证 agent 命中即算匹配
             if expected_label == "VULNERABLE":
@@ -206,23 +233,33 @@ class CaseSessionMatcher:
         verify_packs: list[DataPack],
         turing_packs: list[DataPack],
         turing_verify_sids: set[str],
-    ) -> dict[str, list[str]]:
-        """构建 title → session_id 索引（验证 agent）。
+    ) -> list[dict]:
+        """构建验证 session 索引，每项含 title, description, keywords, session_id。
 
         Turing 平台：
         - 只扫描 turing_verify_sids 中的 session 事件
-        - 从 vuln_hunt_query_finding 的 output_json 解析漏洞 title
-        - output_json 可能是 JSON 字符串（需二次解析）或 dict
+        - 从 vuln_hunt_query_finding 的 output_json 解析漏洞 title + description
 
         WebVulnVerify 平台：
         - 整个 DataPack 都是验证 agent
-        - vulnerability_analyze/verify 的 input_json 含 result 文本和 category
-        - 从 result 提取 title（一句话结论 / 漏洞类型表格行），回退到 category
+        - 从 vulnerability_analyze/verify 的 input_json 提取 title
 
         CVulnVerify 平台：
         - 暂保留旧逻辑（vulnerability_id 匹配），后续适配
         """
-        index: dict[str, list[str]] = defaultdict(list)
+        index: list[dict] = []
+        seen_sids: set[str] = set()
+
+        def _add_entry(title: str, desc: str, sid: str):
+            if not sid or sid in seen_sids:
+                return
+            seen_sids.add(sid)
+            index.append({
+                "title": title,
+                "description": desc,
+                "keywords": self._extract_keywords(title + " " + desc),
+                "session_id": sid,
+            })
 
         # ── Turing 平台 ──
         for dp in turing_packs:
@@ -234,14 +271,9 @@ class CaseSessionMatcher:
                 tool = ev.tool_name or ""
                 if tool not in self._TURING_VERIFY_TOOLS:
                     continue
-                # vuln_hunt_query_finding 的 output 含漏洞 title
-                # vuln_hunt_update_finding 的 input 含 finding_id 但无 title
-                # title 从 query_finding 的 output 解析
-                title = self._extract_title_turing(ev)
+                title, desc = self._extract_title_desc_turing(ev)
                 if title:
-                    sid = ev.session_id or ""
-                    if sid and sid not in index[title]:
-                        index[title].append(sid)
+                    _add_entry(title, desc, ev.session_id or "")
 
         # ── WebVulnVerify 平台 ──
         webvv_packs = [dp for dp in verify_packs
@@ -255,9 +287,7 @@ class CaseSessionMatcher:
                     continue
                 title = self._extract_title_webvv(ev)
                 if title:
-                    sid = ev.session_id or ""
-                    if sid and sid not in index[title]:
-                        index[title].append(sid)
+                    _add_entry(title, "", ev.session_id or "")
 
         # ── CVulnVerify 平台（旧逻辑，后续适配）──
         cvuln_packs = [dp for dp in verify_packs
@@ -276,32 +306,67 @@ class CaseSessionMatcher:
                     or ""
                 )
                 if key:
-                    sid = ev.session_id or ""
-                    if sid and sid not in index[str(key)]:
-                        index[str(key)].append(sid)
+                    _add_entry(str(key), "", ev.session_id or "")
 
-        return dict(index)
+        return index
+
+    def _match_verify_sessions(
+        self,
+        verify_index: list[dict],
+        vuln_type: str,
+        vuln_desc: str,
+    ) -> list[str]:
+        """用 title + description 关键词重叠匹配验证 session。
+
+        匹配规则：
+        1. title 精确匹配（忽略大小写）→ 直接命中
+        2. title 不精确匹配时，用关键词重叠率：
+           - 基线 keywords ∩ session keywords / 基线 keywords ≥ 0.5
+        """
+        if not vuln_type or not verify_index:
+            return []
+
+        baseline_kw = self._extract_keywords(vuln_type + " " + vuln_desc)
+        matched: list[str] = []
+
+        for entry in verify_index:
+            # 1. title 精确匹配
+            if entry["title"].lower().strip() == vuln_type.lower().strip():
+                matched.append(entry["session_id"])
+                continue
+
+            # 2. 关键词重叠匹配
+            if baseline_kw and entry["keywords"]:
+                overlap = baseline_kw & entry["keywords"]
+                ratio = len(overlap) / len(baseline_kw)
+                if ratio >= 0.5:
+                    matched.append(entry["session_id"])
+
+        return matched
 
     @staticmethod
-    def _extract_title_turing(ev) -> str:
-        """从 Turing 验证工具调用事件中提取漏洞 title。
+    def _extract_title_desc_turing(ev) -> tuple[str, str]:
+        """从 Turing 验证工具调用事件中提取漏洞 title + description。
 
         vuln_hunt_query_finding 的 output_json 结构：
-        {"result": "{...JSON string with title...}"}
+        {"result": "{...JSON string with title, description...}"}
         或直接是 JSON 字符串
+
+        Returns:
+            (title, description)
         """
         outp = ev.output_json
         if not outp:
-            return ""
+            return "", ""
 
         # output_json 可能是 str 或 dict
         if isinstance(outp, str):
             try:
                 outp = json.loads(outp)
             except (json.JSONDecodeError, ValueError):
-                return ""
+                return "", ""
         if not isinstance(outp, dict):
-            return ""
+            return "", ""
 
         # output 格式：{"result": "{...}"}
         result_str = outp.get("result", "")
@@ -309,17 +374,18 @@ class CaseSessionMatcher:
             try:
                 result = json.loads(result_str)
             except (json.JSONDecodeError, ValueError):
-                return ""
+                return "", ""
         elif isinstance(result_str, dict):
             result = result_str
         else:
-            return ""
+            return "", ""
 
         if not isinstance(result, dict):
-            return ""
+            return "", ""
 
-        title = result.get("title") or ""
-        return str(title) if title else ""
+        title = str(result.get("title") or "")
+        desc = str(result.get("description") or "")
+        return title, desc
 
     @staticmethod
     def _extract_title_webvv(ev) -> str:
@@ -332,7 +398,6 @@ class CaseSessionMatcher:
         优先从 result 提取一句话结论，其次提取漏洞类型表格行，
         回退到 category。
         """
-        import re
         inp = ev.input_json
         if not isinstance(inp, dict):
             return ""
