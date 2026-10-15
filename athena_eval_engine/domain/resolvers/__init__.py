@@ -128,14 +128,6 @@ class TaskRunResolver(ABC):
     def resolve(self, trace_source, manifest_entry: dict, events: list[RawEvent]) -> "TaskRun": ...
 
 
-class TaskPairMatcher(ABC):
-    """按 (evaluation_id, task_id) 分组配对（§8.5）。"""
-
-    @abstractmethod
-    def match(self, task_runs: list) -> list:  # list[TaskPair]
-        ...
-
-
 class OutcomeResolver(ABC):
     """Finding Candidate → BenchmarkMatch → validation_result → Outcome（§8.6）。
     Determinism：给定相同 Trace + Benchmark + 已持久化 FindingBenchmarkMatch + Config + Version → 相同 Fact。

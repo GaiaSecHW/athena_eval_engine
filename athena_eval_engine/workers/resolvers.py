@@ -16,7 +16,7 @@ from ..domain.facts import (
     OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact, Evidence,
 )
 from ..domain.enums import (
-    Condition, ConditionSource, Outcome, Prediction, ExpectedLabel,
+    Outcome, Prediction, ExpectedLabel,
     CanonicalAction,
 )
 from ..infrastructure.log_util import log
@@ -220,7 +220,7 @@ class KnowledgeResolverImpl:
 
     def _follow_up_summary(self, events: list, start: int, n: int = 3) -> list[dict]:
         """取后续 N 个事件的摘要（tool_name + command/output）。n=3 控制体积。
-        存储到 DB 的 evidence_json 体积敏感，output 截断到 300。"""
+        存储到 DB 的 evidence_json，output 完整保留。"""
         out = []
         for j in range(start + 1, min(start + 1 + n, len(events))):
             e = events[j]
@@ -237,21 +237,6 @@ class KnowledgeResolverImpl:
         return out
 
     def resolve(self, task_run: TaskRun, events: list[RawEvent]) -> KnowledgeInteractionFact:
-        # NOGK 条件不分析知识与记忆交互
-        if task_run.condition == Condition.NOGK:
-            return KnowledgeInteractionFact(
-                knowledge_fact_id=f"kif-{task_run.task_run_id}",
-                task_run_id=task_run.task_run_id, evaluation_id=task_run.evaluation_id,
-                access=False, delivery=False, mount_status="UNKNOWN",
-                access_event_count=0, read_event_count=0,
-                successful_read_count=0,
-                interactions=[],
-                evidence=[],
-                memory_access=False,
-                memory_access_event_count=0,
-                memory_successful_read_count=0,
-                memory_interactions=[],
-            )
         access_evs: list[Evidence] = []
         read_evs: list[Evidence] = []
         delivery_ok = False

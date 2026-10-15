@@ -649,7 +649,7 @@ class CVulnVerifyTraceParser(TraceParser):
                 if etype == "source" and not fn:
                     claim = str(ev_item.get("claim", "") or "")
                     if claim:
-                        fn = claim[:200]
+                        fn = claim
         # regex 回退路径：evidence_locations 是扁平字符串列表
         if not evidence_files:
             for loc in vdata.get("evidence_locations", []):

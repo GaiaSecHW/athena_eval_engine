@@ -274,7 +274,7 @@ class CausalChainAnalyzer:
         # 尝试从 judgment_conclusion 提取
         judgment = rec.get("judgment_conclusion", "")
         if judgment:
-            return str(judgment)[:100]
+            return str(judgment)
 
         return ""
 
@@ -282,7 +282,7 @@ class CausalChainAnalyzer:
         """从 knowledge_access_detail 记录构建断点证据摘要。
 
         组合 query_content + returned_content + reasoning_ref + breakpoint 信息，
-        截取关键部分作为证据。
+        组合关键部分作为证据。
         """
         parts: list[str] = []
 
@@ -293,19 +293,19 @@ class CausalChainAnalyzer:
 
         query = rec.get("query_content", "")
         if query:
-            parts.append(f"查询: {str(query)[:200]}")
+            parts.append(f"查询: {query}")
 
         returned = rec.get("returned_content", "")
         if returned:
-            parts.append(f"返回: {str(returned)[:200]}")
+            parts.append(f"返回: {returned}")
 
         reasoning = rec.get("reasoning_ref", "")
         if reasoning:
-            parts.append(f"引用: {str(reasoning)[:200]}")
+            parts.append(f"引用: {reasoning}")
 
         judgment = rec.get("judgment_conclusion", "")
         if judgment:
-            parts.append(f"结论: {str(judgment)[:100]}")
+            parts.append(f"结论: {judgment}")
 
         # 从 evidence_json 提取 breakpoint 描述
         evidence_json = rec.get("evidence_json")

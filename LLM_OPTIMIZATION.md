@@ -170,8 +170,7 @@
 **文件格式**：
 ```json
 {
-  "kg": {"fpr": 0.12, "matched": 6, "fp": 1, "tp": 5, "total_findings": 50, "total_baseline": 10, "match_details": [...], "vc_ids": ["case-id-1", "case-id-2"]},
-  "nogk": {"fpr": 0.20, "matched": 8, "fp": 2, "tp": 6, "total_findings": 50, "total_baseline": 10, "match_details": [...], "vc_ids": ["case-id-1", "case-id-2"]}
+  "fpr": 0.12, "matched": 6, "fp": 1, "tp": 5, "total_findings": 50, "total_baseline": 10, "match_details": [...], "vc_ids": ["case-id-1", "case-id-2"]
 }
 ```
 
@@ -182,6 +181,6 @@
 - 后续环节可直接读取 `_fpr_match.json` 获取匹配结果
 
 **文件**：
-- `athena_eval_engine/application/evaluation_service.py` — KG/NOGK 并行 FPR 分析后，将 `_ac_fpr_kg`/`_ac_fpr_nogk` + `vc_ids` 写入 `{evaluation_id}_fpr_match.json`
+- `athena_eval_engine/application/evaluation_service.py` — FPR 分析后将 `_ac_fpr_result` + `vc_ids` 写入 `{evaluation_id}_fpr_match.json`
 
 ---

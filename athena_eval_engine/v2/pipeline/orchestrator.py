@@ -7,9 +7,6 @@
 RESOLVING 阶段内完成 L0-L7 全链路分析 + 因果链分析 + 问题单生成
 （knowledge_access_detail 表有 FK 依赖 task_run，必须在 fact 持久化后执行）。
 
-方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
-M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
-
 协作取消：
 - 每个阶段入口检查 ``_check_cancel(evaluation_id)``
 - ``cancel_cb`` 穿透到 LLM 密集内循环
@@ -698,9 +695,17 @@ class Orchestrator:
 
         返回:
             (benchmark_items, case_details, alert_center_data, case_matches)
+
+        采集策略：
+        - 运行态（prod）：原始数据与基线同项目，一次请求拉全量，
+          基线从原始数据中按 engine_confirmed_vulnerable=True 提取。
+        - 开发态（dev）：原始数据与基线不同项目，分别请求。
+          原始数据拉全量，基线用 final_result=vulnerable 拉引擎判定为漏洞的 case。
         """
         manifest = cfg.get("manifest", {})
         entries = manifest.get("entries", [])
+        kg_project_id = manifest.get("kg_project_id", "")
+        kg_task_id = manifest.get("kg_task_id", "")
         bm_source = manifest.get("benchmark_source", "vbench_zip")
         benchmark_set_id = manifest.get("benchmark_set_id", "BS001")
         vc_source_task_id = manifest.get("vc_source_task_id")
@@ -710,68 +715,28 @@ class Orchestrator:
         alert_center_data: dict = {}
         case_matches: list[dict] = []
 
-        # ── 获取原始数据：从告警中心取挖掘 agent 上报的 case ──
-        _ac_pairs: list[tuple[str, str]] = []
-        _seen: set[tuple[str, str]] = set()
-        for e in entries:
-            if e.get("category") != "mining":
-                continue
-            _pid = e.get("project_id") or ""
-            _tid = e.get("task_id_actual") or ""
-            src = e.get("source_uri", "") or ""
-            if not _tid:
-                import re
-                m = re.search(r"/tasks/([^/]+)", src)
-                if m:
-                    _tid = m.group(1)
-            if _pid and _tid and (_pid, _tid) not in _seen:
-                _ac_pairs.append((_pid, _tid))
-                _seen.add((_pid, _tid))
-
-        if _ac_pairs:
+        # ── 获取原始数据：从告警中心取挖掘 agent 上报的全部 case ──
+        if kg_project_id and kg_task_id:
             try:
                 from ...infrastructure.vuln_center_client import (
                     get_alert_center_summary,
                 )
-                all_cases: list[dict] = []
-                merged_counts = {
-                    "vulnerable": 0, "not_vulnerable": 0,
-                    "inconclusive": 0, "pending": 0,
-                }
-                ac_pool = ThreadPoolExecutor(
-                    max_workers=min(len(_ac_pairs), _conc_get("ac_fetch_workers")),
+                ac_summary = with_eval_ctx(self._fetch_ac)(
+                    (kg_project_id, kg_task_id),
                 )
-                try:
-                    ac_futures = {
-                        ac_pool.submit(
-                            with_eval_ctx(self._fetch_ac), pair,
-                        ): pair
-                        for pair in _ac_pairs
-                    }
-                    for fut in ac_futures:
-                        pair = ac_futures[fut]
-                        ac_project, _ = pair
-                        ac_summary = fut.result()
-                        for k in merged_counts:
-                            merged_counts[k] += ac_summary.get("counts", {}).get(k, 0)
-                        for c in ac_summary.get("cases", []):
-                            all_cases.append({
-                                **c,
-                                "project_id": ac_project,
-                            })
-                finally:
-                    ac_pool.shutdown(wait=False)
+                all_cases = ac_summary.get("cases", [])
+                merged_counts = ac_summary.get("counts", {})
 
                 alert_center_data = {
-                    "source_task_ids": [t for _, t in _ac_pairs],
-                    "project_ids": [p for p, _ in _ac_pairs],
+                    "source_task_ids": [kg_task_id],
+                    "project_ids": [kg_project_id],
                     "total": len(all_cases),
                     "counts": merged_counts,
                     "cases": all_cases,
                 }
                 log("INGEST", f"原始数据(告警中心): {len(all_cases)} 条 case "
-                      f"(是漏洞={merged_counts['vulnerable']} "
-                      f"不是漏洞={merged_counts['not_vulnerable']})")
+                      f"(是漏洞={merged_counts.get('vulnerable', 0)} "
+                      f"不是漏洞={merged_counts.get('not_vulnerable', 0)})")
             except Exception as e:
                 log("INGEST", f"取告警中心数据失败: {e}")
                 raise ValueError(
@@ -783,13 +748,29 @@ class Orchestrator:
             from ...infrastructure.vuln_center_client import (
                 _case_to_benchmark, get_alert_center_summary,
             )
-            log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
-                  f"task={vc_source_task_id or '(未指定)'}")
-            baseline_summary = get_alert_center_summary(
-                benchmark_set_id, vc_source_task_id,
-            )
-            baseline_cases = baseline_summary.get("cases", [])
-            log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
+
+            # 判断运行态：原始数据与基线同项目 → 从原始数据提取基线
+            raw_project_ids = set(alert_center_data.get("project_ids", []))
+            same_project = benchmark_set_id in raw_project_ids
+
+            if same_project and alert_center_data.get("cases"):
+                # 运行态：基线从原始数据中提取（engine_confirmed_vulnerable=True）
+                baseline_cases = [
+                    c for c in alert_center_data.get("cases", [])
+                    if c.get("engine_confirmed_vulnerable") is True
+                ]
+                log("INGEST", f"基线数据(运行态从原始数据提取): "
+                      f"{len(baseline_cases)} 条 engine_confirmed_vulnerable=True")
+            else:
+                # 开发态：基线不同项目，单独请求
+                log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
+                      f"task={vc_source_task_id or '(未指定)'}")
+                baseline_summary = get_alert_center_summary(
+                    benchmark_set_id, vc_source_task_id,
+                    final_result="vulnerable",
+                )
+                baseline_cases = baseline_summary.get("cases", [])
+                log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
 
             for c in baseline_cases:
                 if c.get("current_stage") != "finished":
@@ -932,76 +913,36 @@ class Orchestrator:
         cfg, benchmark_set_id = _db_query(_read_config)
         manifest = cfg.get("manifest", {})
         entries = manifest.get("entries", [])
+        kg_project_id = manifest.get("kg_project_id", "")
+        kg_task_id = manifest.get("kg_task_id", "")
         bm_source = manifest.get("benchmark_source", "vbench_zip")
         vc_source_task_id = manifest.get("vc_source_task_id")
 
         case_details: dict[str, dict] = {}
         alert_center_data: dict = {}
 
-        # ── 获取原始数据：从告警中心取挖掘 agent 上报的 case ──
-        # 只取 category=mining 的 entry，验证 agent 不上报新漏洞
-        _ac_pairs: list[tuple[str, str]] = []
-        _seen: set[tuple[str, str]] = set()
-        for e in entries:
-            if e.get("category") != "mining":
-                continue
-            _pid = e.get("project_id") or ""
-            _tid = e.get("task_id_actual") or ""
-            # 从 source_uri 提取 task UUID
-            src = e.get("source_uri", "") or ""
-            if not _tid:
-                import re
-                m = re.search(r"/tasks/([^/]+)", src)
-                if m:
-                    _tid = m.group(1)
-            if _pid and _tid and (_pid, _tid) not in _seen:
-                _ac_pairs.append((_pid, _tid))
-                _seen.add((_pid, _tid))
-
-        if _ac_pairs:
+        # ── 获取原始数据：从告警中心取挖掘 agent 上报的全部 case ──
+        if kg_project_id and kg_task_id:
             try:
                 from ...infrastructure.vuln_center_client import (
                     get_alert_center_summary,
                 )
-                all_cases: list[dict] = []
-                merged_counts = {
-                    "vulnerable": 0, "not_vulnerable": 0,
-                    "inconclusive": 0, "pending": 0,
-                }
-                ac_pool = ThreadPoolExecutor(
-                    max_workers=min(len(_ac_pairs), _conc_get("ac_fetch_workers")),
+                ac_summary = with_eval_ctx(self._fetch_ac)(
+                    (kg_project_id, kg_task_id),
                 )
-                try:
-                    ac_futures = {
-                        ac_pool.submit(
-                            with_eval_ctx(self._fetch_ac), pair,
-                        ): pair
-                        for pair in _ac_pairs
-                    }
-                    for fut in ac_futures:
-                        pair = ac_futures[fut]
-                        ac_project, _ = pair
-                        ac_summary = fut.result()
-                        for k in merged_counts:
-                            merged_counts[k] += ac_summary.get("counts", {}).get(k, 0)
-                        for c in ac_summary.get("cases", []):
-                            all_cases.append({
-                                **c,
-                                "project_id": ac_project,
-                            })
-                finally:
-                    ac_pool.shutdown(wait=False)
+                all_cases = ac_summary.get("cases", [])
+                merged_counts = ac_summary.get("counts", {})
 
                 alert_center_data = {
-                    "source_task_ids": [t for _, t in _ac_pairs],
-                    "project_ids": [p for p, _ in _ac_pairs],
+                    "source_task_ids": [kg_task_id],
+                    "project_ids": [kg_project_id],
                     "total": len(all_cases),
                     "counts": merged_counts,
                     "cases": all_cases,
                 }
                 log("INGEST", f"原始数据(告警中心): {len(all_cases)} 条 case "
-                      f"(是漏洞={merged_counts['vulnerable']} "
-                      f"不是漏洞={merged_counts['not_vulnerable']})")
+                      f"(是漏洞={merged_counts.get('vulnerable', 0)} "
+                      f"不是漏洞={merged_counts.get('not_vulnerable', 0)})")
             except Exception as e:
                 log("INGEST", f"取告警中心数据失败: {e}")
                 raise ValueError(
@@ -1010,18 +951,32 @@ class Orchestrator:
 
         # ── 取基线 case 详情 ──
         if bm_source == "vuln_center":
-            # 从告警中心取基线数据（人工标注的标准答案）
-            # 用 vc_source_task_id 按 task 取，与原始数据同范围
             from ...infrastructure.vuln_center_client import (
                 _case_to_benchmark, get_alert_center_summary,
             )
-            log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
-                  f"task={vc_source_task_id or '(未指定)'}")
-            baseline_summary = get_alert_center_summary(
-                benchmark_set_id, vc_source_task_id,
-            )
-            baseline_cases = baseline_summary.get("cases", [])
-            log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
+
+            # 判断运行态：原始数据与基线同项目 → 从原始数据提取基线
+            raw_project_ids = set(alert_center_data.get("project_ids", []))
+            same_project = benchmark_set_id in raw_project_ids
+
+            if same_project and alert_center_data.get("cases"):
+                # 运行态：基线从原始数据中提取（engine_confirmed_vulnerable=True）
+                baseline_cases = [
+                    c for c in alert_center_data.get("cases", [])
+                    if c.get("engine_confirmed_vulnerable") is True
+                ]
+                log("INGEST", f"基线数据(运行态从原始数据提取): "
+                      f"{len(baseline_cases)} 条 engine_confirmed_vulnerable=True")
+            else:
+                # 开发态：基线不同项目，单独请求
+                log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
+                      f"task={vc_source_task_id or '(未指定)'}")
+                baseline_summary = get_alert_center_summary(
+                    benchmark_set_id, vc_source_task_id,
+                    final_result="vulnerable",
+                )
+                baseline_cases = baseline_summary.get("cases", [])
+                log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
 
             for c in baseline_cases:
                 # 基线 = 人工标注的数据：只取 current_stage=finished 的 case

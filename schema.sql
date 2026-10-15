@@ -19,13 +19,11 @@ DROP TABLE IF EXISTS statistical_result;
 DROP TABLE IF EXISTS metric_result;
 DROP TABLE IF EXISTS evaluation_population_snapshot;
 DROP TABLE IF EXISTS evaluation_calculation_run;
-DROP TABLE IF EXISTS pair_derived_fact;
 DROP TABLE IF EXISTS finding_benchmark_match;
 DROP TABLE IF EXISTS resource_fact;
 DROP TABLE IF EXISTS tool_action_fact;
 DROP TABLE IF EXISTS knowledge_interaction_fact;
 DROP TABLE IF EXISTS outcome_fact;
-DROP TABLE IF EXISTS task_pair;
 DROP TABLE IF EXISTS task_run;
 DROP TABLE IF EXISTS trace_artifact;
 DROP TABLE IF EXISTS trace_source;
@@ -129,7 +127,7 @@ CREATE TABLE trace_source (
     sidecar_uri            TEXT,
     sidecar_hash           VARCHAR(128),
     condition_evidence_hash VARCHAR(128),
-    condition_hint         VARCHAR(16) CHECK (condition_hint IN ('KG','NOGK','UNKNOWN')),
+    condition_hint         VARCHAR(16) CHECK (condition_hint IN ('KG','UNKNOWN')),
     schema_version         VARCHAR(64),
     trace_status           VARCHAR(32),
     created_at             DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)
@@ -154,7 +152,7 @@ CREATE TABLE task_run (
     benchmark_item_id     VARCHAR(128),
     trace_id              VARCHAR(64) NOT NULL,
     turing_session_id     VARCHAR(128),
-    `condition`             VARCHAR(16) NOT NULL CHECK (`condition` IN ('KG','NOGK','UNKNOWN')),
+    `condition`             VARCHAR(16) NOT NULL CHECK (`condition` IN ('KG','UNKNOWN')),
     condition_source      VARCHAR(32) NOT NULL CHECK (condition_source IN
                           ('MANIFEST','TRACE_METADATA','ENV_METADATA','FILENAME','UNKNOWN')),
     condition_conflict    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -202,58 +200,11 @@ CREATE TABLE finding_benchmark_match (
     CHECK (match_method <> 'AI' OR (prompt_hash IS NOT NULL AND model_name IS NOT NULL AND confidence IS NOT NULL))
 ) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
-CREATE TABLE task_pair (
-    task_pair_id          VARCHAR(64) PRIMARY KEY,
-    evaluation_id         VARCHAR(64) NOT NULL,
-    task_id               VARCHAR(128) NOT NULL,
-    benchmark_item_id     VARCHAR(128),
-    nogk_task_run_id      VARCHAR(64),
-    kg_task_run_id        VARCHAR(64),
-    pair_experiment_valid BOOLEAN NOT NULL DEFAULT false,
-    pair_fingerprint_status VARCHAR(32) CHECK (pair_fingerprint_status IN
-                          ('SAME','MISMATCH','UNKNOWN')),
-    pair_match_status     VARCHAR(32) NOT NULL CHECK (pair_match_status IN
-                          ('VALID_PAIR','INCOMPLETE','UNMATCHED')),
-    outcome_valid         BOOLEAN NOT NULL DEFAULT false,
-    pair_transition       VARCHAR(64) CHECK (pair_transition IN
-                          ('PRESERVED','REGRESSED','RECOVERED','PERSISTED_FAILURE','NA')),
-    created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    UNIQUE (evaluation_id, task_id),
-    UNIQUE (evaluation_id, task_pair_id)
-) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-CREATE INDEX idx_task_pair_outcome ON task_pair(evaluation_id, outcome_valid);
-CREATE INDEX idx_task_pair_trans   ON task_pair(evaluation_id, pair_transition);
-
-CREATE TABLE pair_derived_fact (
-    derived_fact_id       VARCHAR(64) PRIMARY KEY,
-    evaluation_id         VARCHAR(64) NOT NULL,
-    task_pair_id          VARCHAR(64) NOT NULL,
-    derived_fact_type     VARCHAR(32) NOT NULL
-                          CHECK (derived_fact_type IN
-                          ('PAIR_TRANSITION','JSD','DELTA_TOKEN','DELTA_STEPS','DELTA_TIME')),
-    value_numeric         DECIMAL(20,6),
-    value_string          VARCHAR(64),
-    status                VARCHAR(32) NOT NULL DEFAULT 'CALCULATED'
-                          CHECK (status IN ('CALCULATED','NA','BLOCKED')),
-    reason_code           VARCHAR(64)
-                          CHECK (reason_code IS NULL OR reason_code IN
-                          ('PAIR_OUTCOME_UNDETERMINED','MISSING_KG_FACT','MISSING_NOGK_FACT',
-                           'TOOL_EVENT_MISSING','TOKEN_INVALID','STEP_INVALID','TIME_INVALID',
-                           'NO_VALID_DENOMINATOR',
-                           'PAIR_INCOMPLETE','PAIR_UNMATCHED','FINGERPRINT_MISMATCH','CONDITION_CONFLICT',
-                           'BENCHMARK_ITEM_MISMATCH','BENCHMARK_SET_MISMATCH','CONDITION_UNKNOWN','PAIR_NOT_EXPERIMENT_VALID')),
-    resolver_version      VARCHAR(64) NOT NULL DEFAULT '1.0',
-    evidence_json         JSON,
-    source_fact_refs_json JSON,
-    created_at            DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),
-    UNIQUE (task_pair_id, derived_fact_type)
-) ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
-
 CREATE TABLE outcome_fact (
     outcome_fact_id       VARCHAR(64) PRIMARY KEY,
     task_run_id           VARCHAR(64) NOT NULL,
     evaluation_id         VARCHAR(64) NOT NULL,
-    `condition`             VARCHAR(16) NOT NULL CHECK (`condition` IN ('KG','NOGK','UNKNOWN')),
+    `condition`             VARCHAR(16) NOT NULL CHECK (`condition` IN ('KG','UNKNOWN')),
     condition_source      VARCHAR(32) NOT NULL CHECK (condition_source IN
                           ('MANIFEST','TRACE_METADATA','ENV_METADATA','FILENAME','UNKNOWN')),
     condition_conflict    BOOLEAN NOT NULL DEFAULT FALSE,
@@ -446,7 +397,7 @@ CREATE TABLE exclusion_record (
     evaluation_id         VARCHAR(64) NOT NULL,
     task_id               VARCHAR(128) NOT NULL,
     `condition`             VARCHAR(16) NOT NULL DEFAULT 'UNKNOWN'
-                          CHECK (`condition` IN ('KG','NOGK','UNKNOWN')),
+                          CHECK (`condition` IN ('KG','UNKNOWN')),
     exclusion_stage       VARCHAR(64) NOT NULL,
     exclusion_reason      VARCHAR(64) NOT NULL,
     detail                TEXT,
@@ -833,22 +784,6 @@ ALTER TABLE task_run
     ADD CONSTRAINT fk_trun_bitem
     FOREIGN KEY (benchmark_item_id) REFERENCES benchmark_item(benchmark_item_id);
 
-ALTER TABLE task_pair
-    ADD CONSTRAINT fk_tpair_eval
-    FOREIGN KEY (evaluation_id) REFERENCES evaluation(evaluation_id);
-
-ALTER TABLE task_pair
-    ADD CONSTRAINT fk_tpair_nogk
-    FOREIGN KEY (evaluation_id, nogk_task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
-
-ALTER TABLE task_pair
-    ADD CONSTRAINT fk_tpair_kg
-    FOREIGN KEY (evaluation_id, kg_task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
-
-ALTER TABLE task_pair
-    ADD CONSTRAINT fk_tpair_bitem
-    FOREIGN KEY (benchmark_item_id) REFERENCES benchmark_item(benchmark_item_id);
-
 ALTER TABLE outcome_fact
     ADD CONSTRAINT fk_ofact_trun
     FOREIGN KEY (evaluation_id, task_run_id) REFERENCES task_run(evaluation_id, task_run_id);
@@ -872,10 +807,6 @@ ALTER TABLE finding_benchmark_match
 ALTER TABLE finding_benchmark_match
     ADD CONSTRAINT fk_fbm_bitem
     FOREIGN KEY (benchmark_item_id) REFERENCES benchmark_item(benchmark_item_id);
-
-ALTER TABLE pair_derived_fact
-    ADD CONSTRAINT fk_pdf_pair
-    FOREIGN KEY (evaluation_id, task_pair_id) REFERENCES task_pair(evaluation_id, task_pair_id);
 
 ALTER TABLE evaluation_calculation_run
     ADD CONSTRAINT fk_crun_eval

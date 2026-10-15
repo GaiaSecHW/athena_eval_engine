@@ -145,7 +145,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
         """预筛选：告警中心 case 标题 + finding 标题 → 候选 finding 索引。"""
         ac = ac_list[ai]
         id_to_idx: dict[str, int] = {}
-        _ac_desc = (ac.get("summary", "") or "")[:500]
+        _ac_desc = ac.get("summary", "") or ""
         lines = [
             f"告警中心案例标题：{ac.get('title', '')}",
             f"告警中心案例描述：{_ac_desc}",
@@ -156,7 +156,7 @@ def match_alert_center_to_findings(alert_center_cases: list[dict], findings: lis
             fid = f.get("display_id") or f.get("finding_id", "") or str(i)
             id_to_idx[fid] = i
             _title = finding_list[i].get("title", "")
-            _desc = (finding_list[i].get("description", "") or "")[:500]
+            _desc = finding_list[i].get("description", "") or ""
             lines.append(f"[{fid}] {_title}\n描述：{_desc}")
         user_msg = "\n".join(lines)
         prompt = [

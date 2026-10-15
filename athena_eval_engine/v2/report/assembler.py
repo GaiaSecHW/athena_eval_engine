@@ -327,6 +327,6 @@ class ReportAssembler:
         # 尝试从 judgment_conclusion 提取
         judgment = rec.get("judgment_conclusion", "")
         if judgment:
-            return str(judgment)[:100]
+            return str(judgment)
 
         return ""

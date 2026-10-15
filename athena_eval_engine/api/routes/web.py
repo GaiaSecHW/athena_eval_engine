@@ -33,8 +33,8 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
         rows = cur.fetchall()
         evals = []
         for r in rows:
-            kg_proj = kg_task = nogk_proj = nogk_task = ""
-            kg_proj_name = kg_task_name = nogk_proj_name = nogk_task_name = ""
+            kg_proj = kg_task = ""
+            kg_proj_name = kg_task_name = ""
             bm_source = ""
             eval_mode = "dev"
             vbench_project_name = ""
@@ -55,18 +55,12 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                             kg_task = e.get("task_id_actual") or ""
                             kg_proj_name = e.get("project_name") or kg_proj
                             kg_task_name = e.get("task_name") or kg_task
-                        elif e.get("condition") == "NOGK" and not nogk_proj:
-                            nogk_proj = e.get("project_id") or ""
-                            nogk_task = e.get("task_id_actual") or ""
-                            nogk_proj_name = e.get("project_name") or nogk_proj
-                            nogk_task_name = e.get("task_name") or nogk_task
                 except (json.JSONDecodeError, TypeError):
                     pass
             evals.append({"evaluation_id": r[0], "name": r[1], "status": r[2],
                           "benchmark_set_id": r[3],
                           "created_at": r[4].isoformat() if r[4] else "",
                           "kg_project": kg_proj_name, "kg_task": kg_task_name,
-                          "nogk_project": nogk_proj_name, "nogk_task": nogk_task_name,
                           "benchmark_source": bm_source,
                           "eval_mode": eval_mode,
                           "vbench_project_name": vbench_project_name,

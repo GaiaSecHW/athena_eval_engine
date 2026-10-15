@@ -635,12 +635,12 @@ class ArgoParser(BaseParser):
                 # 策略 E: 通过 verdict_desc 匹配 verified_finding description
                 # verify session 的 verdict 输出包含 description，与 verified_finding 的 description 一致
                 if fid not in fact_to_creator:
-                    vf_desc = details.get('description', '')[:100]
+                    vf_desc = details.get('description', '')
                     if vf_desc:
                         for sid_key, sg_data in sessions.items():
                             if sg_data.get('task_type') != 'verify' and sg_data.get('session_type') != 'verify':
                                 continue
-                            vd = sg_data.get('verdict_desc', '')[:100]
+                            vd = sg_data.get('verdict_desc', '')
                             if vd and vf_desc == vd:
                                 fact_to_creator[fid] = sid_key
                                 break

@@ -775,7 +775,7 @@ class TuringTraceParser(TraceParser):
 
         if tool == "vuln_hunt_insert_investigation":
             inp = ev.input_json or {}
-            reason = str(inp.get("reason", ""))[:100]
+            reason = str(inp.get("reason", ""))
             boundary = str(inp.get("boundary_type", ""))
             return {"tool": "investigation", "action": f"{boundary}: {reason}", "session_id": ev.session_id, "ts": ts}
 

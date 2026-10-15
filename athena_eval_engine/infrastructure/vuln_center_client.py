@@ -90,16 +90,13 @@ def list_vuln_cases(project_id: str, source_task_id: str | None = None,
 
 
 def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
+                            final_result: str | None = None,
                             page_size: int = 100, max_pages: int = 1000) -> list[dict]:
     """分页拉取告警中心 case。
 
-    ``scope=alert_center`` + ``project_id`` + 可选 ``source_task_ids`` 做项目/任务级过滤。
-    返回全部提交的 case（不限 confirmation_status），含引擎判定字段：
-    - ``validation_result``: vulnerable / not_vulnerable / inconclusive / None
-    - ``current_stage``: receive / validation
-    - ``current_status``: pending / completed
-    - ``latest_engine_decision``: 引擎最新决策
-    - ``confirm_terminal_status``: 引擎处理终态
+    ``project_id`` + 可选 ``source_task_ids`` 做项目/任务级过滤。
+    ``final_result`` 可选，传 ``vulnerable`` 只取引擎判定为漏洞的 case。
+    不传则拉全量。
 
     拉取策略：先查总条数，再并行分页拉取。
     """
@@ -107,16 +104,16 @@ def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
 
     def _build_params(page: int, ps: int) -> dict[str, str | int]:
         params: dict[str, str | int] = {
-            "scope": "alert_center",
             "project_id": project_id,
             "sort_field": "created_at",
             "sort_direction": "desc",
-            "include_decision_reason": "true",
             "page": page,
             "page_size": ps,
         }
         if source_task_id:
             params["source_task_ids"] = source_task_id
+        if final_result:
+            params["final_result"] = final_result
         return params
 
     # 先查总条数（page_size=1，只取 1 条拿 total）
@@ -167,8 +164,11 @@ def list_alert_center_cases(project_id: str, source_task_id: str | None = None,
     return accumulated
 
 
-def get_alert_center_summary(project_id: str, source_task_id: str | None = None) -> dict:
+def get_alert_center_summary(project_id: str, source_task_id: str | None = None,
+                             final_result: str | None = None) -> dict:
     """返回告警中心 case 摘要，用于指标计算和报告展示。
+
+    ``final_result`` 可选，传 ``vulnerable`` 只取引擎判定为漏洞的 case。
 
     返回结构::
 
@@ -189,7 +189,7 @@ def get_alert_center_summary(project_id: str, source_task_id: str | None = None)
             }
         }
     """
-    cases = list_alert_center_cases(project_id, source_task_id)
+    cases = list_alert_center_cases(project_id, source_task_id, final_result=final_result)
     by_verdict: dict[str, list[dict]] = {
         "vulnerable": [],
         "not_vulnerable": [],

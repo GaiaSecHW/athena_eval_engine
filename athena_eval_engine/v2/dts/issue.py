@@ -46,7 +46,7 @@ def _build_breakpoint_desc(
     if vuln_type:
         parts.append(f"漏洞类型: {vuln_type}")
     if evidence:
-        parts.append(f"证据: {evidence[:500]}")
+        parts.append(f"证据: {evidence}")
     return " | ".join(parts)
 
 

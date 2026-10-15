@@ -388,7 +388,7 @@ class CaseFilter:
 
         # 3. 内容匹配（description 关键词）
         if description:
-            desc_sample = description[:200].lower()
+            desc_sample = description.lower()
             for c in ac_cases:
                 c_desc = str(c.get("description") or "").lower()
                 if c_desc and desc_sample and desc_sample in c_desc:
@@ -503,7 +503,7 @@ class CaseFilter:
         def _prefilter_one(bi: int) -> tuple[int, list[int]]:
             bl = baseline_list[bi]
             id_to_idx: dict[str, int] = {}
-            bl_desc = (bl.get("description", "") or "")[:500]
+            bl_desc = bl.get("description", "") or ""
             lines = [
                 f"基线案例标题：{bl.get('title', '')}",
                 f"基线案例描述：{bl_desc}",
@@ -514,7 +514,7 @@ class CaseFilter:
                 fid = str(i)
                 id_to_idx[fid] = i
                 c_title = c.get("title", "")
-                c_desc = (c.get("description", "") or "")[:500]
+                c_desc = c.get("description", "") or ""
                 lines.append(f"[{fid}] {c_title}\n描述：{c_desc}")
             user_msg = "\n".join(lines)
             prompt = [

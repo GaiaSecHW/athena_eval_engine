@@ -1,4 +1,4 @@
-"""Fact / Metric / PairDerivedFact 持久化（§7.9-7.26）。
+"""Fact 持久化（§7.9-7.26）。
 
 Insert-If-Absent：相同 Key+Content → IDEMPOTENT_REPLAY；不同 Content → FACT_CONFLICT（§7.0）。
 Fact 不可变；重新解析须新建 Evaluation。复合 FK 由 DB 强制（§7.27）。
@@ -8,9 +8,8 @@ import json
 import math
 from ...infrastructure.database import connect
 from ...domain.facts import (
-    OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact, PairDerivedFact,
+    OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact,
 )
-from ...domain.metrics import MetricResult, StatisticalResult
 
 
 def _clean(v):
@@ -185,59 +184,4 @@ def insert_session_graph(cur, task_run_id: str, evaluation_id: str, graph: dict)
         task_run_id,
         evaluation_id,
         json.dumps(_serialize(graph), ensure_ascii=False, default=str),
-    ), "IDEMPOTENT_REPLAY")
-
-
-def insert_task_pair(cur, pair) -> str:
-    sql = """INSERT INTO task_pair
-        (task_pair_id, evaluation_id, task_id, benchmark_item_id, nogk_task_run_id, kg_task_run_id,
-         pair_experiment_valid, pair_fingerprint_status, pair_match_status, outcome_valid, pair_transition)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-    return _upsert(cur, sql, (
-        pair.task_pair_id, pair.evaluation_id, pair.task_id, pair.benchmark_item_id,
-        pair.nogk_task_run_id, pair.kg_task_run_id, pair.pair_experiment_valid,
-        pair.pair_fingerprint_status, pair.pair_match_status.value, pair.outcome_valid,
-        pair.pair_transition.value,
-    ), "IDEMPOTENT_REPLAY")
-
-
-def insert_pair_derived_fact(cur, f: PairDerivedFact) -> str:
-    sql = """INSERT INTO pair_derived_fact
-        (derived_fact_id, evaluation_id, task_pair_id, derived_fact_type, value_numeric, value_string,
-         status, reason_code, resolver_version, evidence_json, source_fact_refs_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-    return _upsert(cur, sql, (
-        f.derived_fact_id, f.evaluation_id, f.task_pair_id, f.derived_fact_type,
-        f.value_numeric, f.value_string, f.status, f.reason_code, f.resolver_version,
-        _evid(f.evidence), json.dumps(f.source_fact_refs, ensure_ascii=False) if f.source_fact_refs else None,
-    ), "IDEMPOTENT_REPLAY")
-
-
-def insert_metric_result(cur, cr_id: str, pop_snap_id: str, m: MetricResult, eval_id: str) -> str:
-    sql = """INSERT INTO metric_result
-        (metric_result_id, evaluation_id, calculation_run_id, population_snapshot_id, metric_id,
-         metric_name, metric_version, estimate, unit, n, n_population, median, q1, q3, iqr,
-         reason_code, calculation_status, calculation_method, details_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-    return _upsert(cur, sql, (
-        f"mr-{cr_id}-{m.metric_id}", eval_id, cr_id, pop_snap_id, m.metric_id,
-        m.metric_id, "1.0", _clean(m.estimate), m.unit, m.n, m.n_population, _clean(m.median),
-        _clean(m.q1), _clean(m.q3), _clean(m.iqr),
-        m.reason_code, m.calculation_status, json.dumps(m.method, ensure_ascii=False), None,
-    ), "IDEMPOTENT_REPLAY")
-
-
-def insert_statistical_result(cur, cr_id: str, pop_snap_id: str, s: StatisticalResult, eval_id: str) -> str:
-    sql = """INSERT INTO statistical_result
-        (statistical_result_id, evaluation_id, calculation_run_id, population_snapshot_id, metric_id,
-         metric_version, test_name, statistic, p_value, alternative, effect_size, effect_type,
-         ci_lower, ci_upper, testing_tier, scope_type, joint_analysis_id, related_metric_ids,
-         method_version, status, reason_code, details_json)
-        VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)"""
-    return _upsert(cur, sql, (
-        f"sr-{cr_id}-{s.metric_id or s.joint_analysis_id}-{s.test_name}", eval_id, cr_id, pop_snap_id,
-        s.metric_id, "1.0", s.test_name, _clean(s.statistic), _clean(s.p_value), None, None, None,
-        _clean(s.ci_lower), _clean(s.ci_upper), s.testing_tier, s.scope_type, s.joint_analysis_id,
-        json.dumps(s.related_metric_ids, ensure_ascii=False) if s.related_metric_ids else None,
-        "1.0", s.status, s.reason_code, json.dumps(s.details, ensure_ascii=False) if s.details else None,
     ), "IDEMPOTENT_REPLAY")

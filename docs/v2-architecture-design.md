@@ -116,7 +116,7 @@ class DataPack:
     evaluation_id: str
     task_id: str
     agent_type: str                    # turing/argo/secmate/cvuln_verify/webvuln_verify/dataflow
-    condition: str                     # KG / NOGK / UNKNOWN
+    condition: str                     # KG / UNKNOWN
 
     # 原始数据
     events: list[RawEvent]             # 规范事件序列

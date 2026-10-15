@@ -365,16 +365,13 @@ class CreateRequest:
     """简化版创建请求 — 调用方只需传项目 ID + 任务 ID，trace 路径/kind/验证 trace 全部自动发现。
 
     必传：evaluation_id, kg_project_id, kg_task_id
-    可选：nogk_project_id/nogk_task_id（对照组），benchmark_source，benchmark_set_id，vc_source_task_id，eval_mode
+    可选：benchmark_source，benchmark_set_id，vc_source_task_id，eval_mode
     """
     evaluation_id: str
     evaluation_name: str | None = None
-    # KG 项目（知识图谱组）
+    # 项目
     kg_project_id: str = ""
     kg_task_id: str = ""
-    # NOGK 项目（对照组，可选）
-    nogk_project_id: str = ""
-    nogk_task_id: str = ""
     # 基线来源
     benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
     benchmark_set_id: str | None = None  # vuln_center: 漏洞中心项目ID; vbench_zip: V-Bench set ID; 默认=kg_project_id
@@ -394,7 +391,7 @@ def _build_entries(req: CreateRequest) -> list[dict]:
     # 预收集项目名/任务名（best-effort，平台不可用时不阻断）
     _proj_names: dict[str, str] = {}
     _task_names: dict[str, dict[str, str]] = {}  # project_id -> {task_id -> task_name}
-    _pids = {req.kg_project_id, req.nogk_project_id} - {""}
+    _pids = {req.kg_project_id} - {""}
     if _pids:
         try:
             for p in ps.get_projects():
@@ -409,19 +406,16 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                 _task_names[pid] = {}
 
     # 1. 挖掘 trace
-    for cond, pid, tid in [
-        ("KG", req.kg_project_id, req.kg_task_id),
-        ("NOGK", req.nogk_project_id, req.nogk_task_id),
-    ]:
-        if not pid or not tid:
-            continue
+    pid = req.kg_project_id
+    tid = req.kg_task_id
+    if pid and tid:
         try:
             result = ps.discover_mining_trace(pid, tid)
             if result:
                 kind, uri = result
                 entries.append({
                     "task_id": "T001",
-                    "condition": cond,
+                    "condition": "KG",
                     "source_uri": uri,
                     "trace_kind": kind,
                     "category": "mining",
@@ -432,25 +426,20 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "benchmark_item_ids": [],
                     "expected_label": "VULNERABLE",
                 })
-                log("CREATE", f"自动发现挖掘 trace: cond={cond} kind={kind} project={pid} task={tid}")
+                log("CREATE", f"自动发现挖掘 trace: kind={kind} project={pid} task={tid}")
             else:
-                log("CREATE", f"⚠ 未找到挖掘 trace: cond={cond} project={pid} task={tid}")
+                log("CREATE", f"⚠ 未找到挖掘 trace: project={pid} task={tid}")
         except Exception as err:
-            log("CREATE", f"⚠ 自动发现挖掘 trace 失败: cond={cond} project={pid} task={tid} err={err}")
+            log("CREATE", f"⚠ 自动发现挖掘 trace 失败: project={pid} task={tid} err={err}")
 
-    # 2. 验证 trace（每个项目各自发现）
-    for cond, pid in [
-        ("KG", req.kg_project_id),
-        ("NOGK", req.nogk_project_id),
-    ]:
-        if not pid:
-            continue
+    # 2. 验证 trace
+    if pid:
         try:
             verify_traces = ps.discover_verify_traces(pid)
             for vt in verify_traces:
                 entries.append({
                     "task_id": f"verify-{vt['agent_name']}",
-                    "condition": cond,
+                    "condition": "KG",
                     "source_uri": vt["source_uri"],
                     "trace_kind": vt["trace_kind"],
                     "category": "verify",
@@ -458,9 +447,9 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "project_name": _proj_names.get(pid, pid),
                     "benchmark_item_ids": [],
                 })
-                log("CREATE", f"自动发现验证 trace: cond={cond} kind={vt['trace_kind']} agent={vt['agent_name']}")
+                log("CREATE", f"自动发现验证 trace: kind={vt['trace_kind']} agent={vt['agent_name']}")
         except Exception as err:
-            log("CREATE", f"⚠ 自动发现验证 trace 失败: cond={cond} project={pid} err={err}")
+            log("CREATE", f"⚠ 自动发现验证 trace 失败: project={pid} err={err}")
 
     return entries
 
@@ -479,8 +468,7 @@ def create(req: CreateRequest):
     entries = _build_entries(req)
     if not entries:
         raise ValueError(
-            f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id} "
-            f"nogk_project={req.nogk_project_id} nogk_task={req.nogk_task_id}")
+            f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id}")
 
     # 3. 查基线名称（best-effort）
     vbench_project_name = ""
@@ -515,6 +503,8 @@ def create(req: CreateRequest):
     # 4. benchmark_set + evaluation + snapshot
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
     manifest = {"entries": entries,
+                "kg_project_id": req.kg_project_id,
+                "kg_task_id": req.kg_task_id,
                 "benchmark_source": req.benchmark_source,
                 "benchmark_set_id": req.benchmark_set_id,
                 "vc_source_task_id": req.vc_source_task_id,

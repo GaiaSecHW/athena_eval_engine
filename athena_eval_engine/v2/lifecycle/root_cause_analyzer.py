@@ -311,7 +311,7 @@ class RootCauseAnalyzer:
                     eval_id=evaluation_id)
                 # 降级：用原始摘要
                 result = {
-                    "summary": prev_summary or session_text[:3000],
+                    "summary": prev_summary or session_text,
                     "root_cause": {
                         "category": "llm_error",
                         "description": f"LLM 调用失败: {str(e)[:200]}",

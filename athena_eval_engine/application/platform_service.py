@@ -146,8 +146,7 @@ def _get_vuln_case_index(project_id: str) -> dict | None:
     漏洞平台是任务归属的正式来源；接口短暂不可用时返回 None，调用方再
     从 trace prompt 中的历史记忆路径回退推断任务 ID。
     """
-    # 两侧的 KG/No-KG 选择会并发加载；在首个请求完成前持锁，避免重复拉取
-    # 整个项目的 case 列表。
+    # 并发调用时在首个请求完成前持锁，避免重复拉取整个项目的 case 列表。
     with _vuln_case_cache_lock:
         cached = _vuln_case_cache.get(project_id)
         if cached and time.monotonic() - cached[0] < _VULN_CASE_CACHE_SECONDS:

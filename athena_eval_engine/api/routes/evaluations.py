@@ -242,8 +242,6 @@ class CreateRequest(BaseModel):
     evaluation_name: str | None = None
     kg_project_id: str = ""
     kg_task_id: str = ""
-    nogk_project_id: str = ""
-    nogk_task_id: str = ""
     benchmark_source: str = "vuln_center"  # "vbench_zip" | "vuln_center"
     benchmark_set_id: str | None = None  # 默认=kg_project_id
     vc_source_task_id: str | None = None
@@ -421,8 +419,6 @@ def create_evaluation(req: CreateRequest):
                                    evaluation_name=req.evaluation_name,
                                    kg_project_id=req.kg_project_id,
                                    kg_task_id=req.kg_task_id,
-                                   nogk_project_id=req.nogk_project_id,
-                                   nogk_task_id=req.nogk_task_id,
                                    benchmark_source=req.benchmark_source,
                                    benchmark_set_id=req.benchmark_set_id,
                                    vc_source_task_id=req.vc_source_task_id,
@@ -479,21 +475,12 @@ def delete_evaluation(evaluation_id: str):
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
         # 用 evaluation_id 的表
         eid_tables = [
-            "statistical_result", "metric_result",
-            "pair_derived_fact", "task_pair",
             "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
             "tool_action_fact", "resource_fact", "task_run", "trace_source",
             "evaluation_report",
         ]
         for t in eid_tables:
-            try:
-                cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
-            except Exception as e:
-                # statistical_result / metric_result 用 calculation_run_id
-                if "Unknown column" in str(e):
-                    cur.execute(f"DELETE FROM {t} WHERE calculation_run_id LIKE %s", (f"CR-{evaluation_id}%",))
-                else:
-                    raise
+            cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
         # 用 calculation_run_id 的表
         cr_tables = ["evaluation_population_snapshot", "evaluation_calculation_run"]
         for t in cr_tables:
@@ -562,7 +549,6 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         # 基线数据、告警中心数据、benchmark_items 在 run() INGESTING 阶段重新获取/插入
         tables = [
             # 核心计算结果
-            "statistical_result", "metric_result", "pair_derived_fact", "task_pair",
             "outcome_fact", "knowledge_interaction_fact", "tool_action_fact", "resource_fact",
             # trace 与 finding
             "task_run", "trace_source", "extracted_finding", "finding_benchmark_match",

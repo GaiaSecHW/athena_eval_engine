@@ -51,9 +51,6 @@ def _case_to_text(c: dict) -> str:
     """将 case 转为 LLM 可读的文本。"""
     title = c.get("title") or c.get("vulnerability_type") or ""
     desc = c.get("description") or ""
-    # description 可能很长，截取前 2000 字符
-    if len(desc) > 2000:
-        desc = desc[:2000] + "...(截断)"
     vt = c.get("vulnerability_type") or c.get("vuln_type") or ""
     return f"标题: {title}\n类型: {vt}\n描述: {desc}"
 
