@@ -156,25 +156,20 @@ class RootCauseAnalyzer:
         """
         # 构建 session_id → events 索引
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
-        # 构建 session_id → session_graph 信息（按 agent_type 分组）
-        mining_graphs: dict[str, dict] = {}
-        verify_graphs: dict[str, dict] = {}
+        # 构建 session_id → agent_type 索引，合并全部 parent_map
+        sid_to_agent: dict[str, str] = {}
+        all_parent_map: dict[str, str] = {}
+        all_sessions: dict[str, dict] = {}
         for dp in data_packs:
             sg = dp.session_graph or {}
             sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
             parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
-            graph_info = {
-                "parent_map": parent_map,
-                "sessions": sessions,
-            }
-            if dp.agent_type in _MINING_AGENTS:
-                for sid in sessions:
-                    if sid not in mining_graphs:
-                        mining_graphs[sid] = graph_info
-            elif dp.agent_type in _VERIFY_AGENTS:
-                for sid in sessions:
-                    if sid not in verify_graphs:
-                        verify_graphs[sid] = graph_info
+            for sid, sdata in sessions.items():
+                all_sessions[sid] = sdata
+                sid_to_agent[sid] = dp.agent_type
+            for sid, pid in parent_map.items():
+                if sid in sessions:
+                    all_parent_map[sid] = pid
             for ev in (dp.events or []):
                 sid = ev.session_id or ""
                 if sid:
@@ -188,6 +183,18 @@ class RootCauseAnalyzer:
             case_id = case.get("case_id", "")
             vuln_type = case.get("vulnerability_type", "")
             desc = case.get("description", "")
+            verify_sids = case.get("verify_sessions", [])
+
+            # 从 verify_sessions 沿 parent_map 追溯到根节点，
+            # 用 PARSING 阶段已建好的调用关系，不重新构建
+            case_chain = self._trace_chain(
+                verify_sids, all_parent_map, all_sessions)
+
+            # 按 agent_type 拆分为挖掘链和验证链
+            mining_chain = [sid for sid in case_chain
+                            if sid_to_agent.get(sid) in _MINING_AGENTS]
+            verify_chain = [sid for sid in case_chain
+                            if sid_to_agent.get(sid) in _VERIFY_AGENTS]
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
@@ -196,14 +203,14 @@ class RootCauseAnalyzer:
             # 第一步：挖掘 session 链滚动压缩
             mining_result = self._analyze_chain(
                 evaluation_id, case_id, "mining",
-                mining_graphs, session_events,
+                mining_chain, session_events,
                 vuln_type, desc, cancel_cb,
             )
 
             # 第二步：验证 session 链滚动压缩
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
-                verify_graphs, session_events,
+                verify_chain, session_events,
                 vuln_type, desc, cancel_cb,
             )
 
@@ -217,12 +224,60 @@ class RootCauseAnalyzer:
 
         return results
 
+    @staticmethod
+    def _trace_chain(
+        verify_sids: list[str],
+        parent_map: dict[str, str],
+        sessions: dict[str, dict],
+    ) -> list[str]:
+        """从 verify_sessions 沿 parent_map 追溯到根节点，返回拓扑序（根→叶子）。
+
+        直接用 PARSING 阶段建好的 parent_map 调用关系。
+        """
+        if not verify_sids:
+            return []
+
+        # 从每个 verify session 向上追溯，收集链上全部 session_id
+        chain_set: set[str] = set()
+        for vsid in verify_sids:
+            cur = vsid
+            while cur and cur in sessions and cur not in chain_set:
+                chain_set.add(cur)
+                cur = parent_map.get(cur, "")
+
+        if not chain_set:
+            return []
+
+        # 拓扑排序：根→叶子
+        children: dict[str, list[str]] = defaultdict(list)
+        roots: list[str] = []
+        for sid in chain_set:
+            pid = parent_map.get(sid, "")
+            if pid in chain_set:
+                children[pid].append(sid)
+            else:
+                roots.append(sid)
+
+        ordered: list[str] = []
+        queue = sorted(roots)
+        visited: set[str] = set()
+        while queue:
+            sid = queue.pop(0)
+            if sid in visited:
+                continue
+            visited.add(sid)
+            ordered.append(sid)
+            for child in sorted(children.get(sid, [])):
+                queue.append(child)
+
+        return ordered
+
     def _analyze_chain(
         self,
         evaluation_id: str,
         case_id: str,
         chain_type: str,
-        session_graphs: dict[str, dict],
+        chain: list[str],
         session_events: dict[str, list[RawEvent]],
         vuln_type: str,
         desc: str,
@@ -230,11 +285,9 @@ class RootCauseAnalyzer:
     ) -> dict:
         """对一条 session 链做滚动压缩。
 
+        chain: 已排好序的 session_id 列表（根→叶子）。
         chain_type: "mining" 或 "verification"，仅用于日志。
         """
-        # 从 session_graph 取拓扑序
-        chain = self._topological_order(session_graphs)
-
         if not chain:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 无 session，跳过",
@@ -360,62 +413,6 @@ class RootCauseAnalyzer:
             "compressed_summaries": compressed_summaries,
             "l0_l7_breakpoints": all_breakpoints,
         }
-
-    def _topological_order(
-        self, session_graphs: dict[str, dict],
-    ) -> list[str]:
-        """从 session_graph 取拓扑序（parent → child）。
-
-        session_graphs 是 {session_id: {parent_map, sessions}} 的合并。
-        直接用 parent_map 做拓扑排序，不重新构建关系。
-        """
-        # 合并所有 parent_map（只保留 key 在 sessions 中的 entry，
-        # 过滤掉 Turing 的 task_id key 混入）
-        all_parents: dict[str, str] = {}
-        all_sessions: dict[str, dict] = {}
-        for sg in session_graphs.values():
-            pm = sg.get("parent_map", {})
-            ss = sg.get("sessions", {})
-            all_sessions.update(ss)
-            for sid, pid in pm.items():
-                if sid in ss:
-                    all_parents[sid] = pid
-
-        if not all_sessions:
-            return []
-
-        # 根节点：无 parent 或 parent 不在 sessions 中
-        roots = [sid for sid in all_sessions
-                 if sid not in all_parents
-                 or all_parents[sid] not in all_sessions]
-
-        # 构建子节点映射
-        children: dict[str, list[str]] = defaultdict(list)
-        for sid in all_sessions:
-            parent = all_parents.get(sid)
-            if parent and parent in all_sessions:
-                children[parent].append(sid)
-
-        # BFS 排序（parent → child）
-        chain: list[str] = []
-        queue = list(roots)
-        visited: set[str] = set()
-        while queue:
-            sid = queue.pop(0)
-            if sid in visited:
-                continue
-            visited.add(sid)
-            chain.append(sid)
-            for child in children.get(sid, []):
-                if child not in visited:
-                    queue.append(child)
-
-        # 补上可能遗漏的 session（孤立节点）
-        for sid in all_sessions:
-            if sid not in visited:
-                chain.append(sid)
-
-        return chain
 
     def _format_session_events(
         self, session_id: str, events: list[RawEvent],
