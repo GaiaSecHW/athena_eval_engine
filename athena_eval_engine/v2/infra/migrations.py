@@ -260,6 +260,19 @@ MIGRATIONS = [
             ") ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
     },
+    {
+        "id": "011_evaluation_status_v2_merge",
+        "desc": "evaluation_status CHECK 移除 LIFECYCLE_ANALYSIS/CAUSAL_CHAIN，对齐 v2 合并后阶段",
+        "sql": [
+            "ALTER TABLE evaluation DROP CHECK evaluation_status_chk",
+            "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk CHECK (evaluation_status IN "
+            "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING','PARSING',"
+            "'CASE_MATCHING','ROOT_CAUSE_ANALYSIS','RESOLVING',"
+            "'REPORTING','FINALIZING',"
+            "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"
+            "'CANCEL_REQUESTED','CANCELLING','CANCELLED'))",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

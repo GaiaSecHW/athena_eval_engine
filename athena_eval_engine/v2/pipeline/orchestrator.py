@@ -2,7 +2,10 @@
 
 阶段流程：
     INGESTING → PARSING → CASE_MATCHING → ROOT_CAUSE_ANALYSIS
-        → RESOLVING → LIFECYCLE_ANALYSIS → CAUSAL_CHAIN → REPORTING → FINALIZE
+        → RESOLVING → REPORTING → FINALIZE
+
+RESOLVING 阶段内完成 L0-L7 全链路分析 + 因果链分析 + 问题单生成
+（knowledge_access_detail 表有 FK 依赖 task_run，必须在 fact 持久化后执行）。
 
 方案不含 No-KG 对照组，不执行 KG/No-KG 配对。
 M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
@@ -12,7 +15,7 @@ M7-M10（JSD/ΔToken/ΔSteps/ΔTime）需要配对数据，返回 NA。
 - ``cancel_cb`` 穿透到 LLM 密集内循环
 
 重试路径：
-- knowledge_access_detail 表已有记录 → 跳过 LIFECYCLE_ANALYSIS
+- knowledge_access_detail 表已有记录 → 跳过 L0-L7 分析
 - lifecycle report 已存在 → 跳过 REPORTING
 """
 from __future__ import annotations
@@ -328,11 +331,10 @@ class Orchestrator:
         2. PARSING — 并行 trace 解析，每个 trace 调用 parser.build_data_pack()
         3. CASE_MATCHING — 基线 case ↔ trace session 精确匹配，判定 TP/FP/FN/TN
         4. ROOT_CAUSE_ANALYSIS — FP case 挖掘链+验证链各自滚动压缩根因分析
-        5. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB
-        6. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
-        7. CAUSAL_CHAIN — 因果链分析 + 问题单生成
-        8. REPORTING — 报告组装（含召回率/准确率计算）
-        9. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
+        5. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB；
+           随后完成 L0-L7 全链路分析 + 因果链分析 + 问题单生成
+        6. REPORTING — 报告组装（含召回率/准确率计算）
+        7. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
         Args:
             evaluation_id: 评测 ID。
@@ -578,15 +580,12 @@ class Orchestrator:
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_data(evaluation_id, data_packs)
 
-            # ── LIFECYCLE_ANALYSIS ──
+            # ── L0-L7 全链路分析 + 因果链分析 + 问题单生成（RESOLVING 内完成）──
             # 重试路径：knowledge_access_detail 表已有记录 → 跳过
-            _check_cancel(evaluation_id, stages.LIFECYCLE_ANALYSIS)
-            assert_transition(stages.RESOLVING, stages.LIFECYCLE_ANALYSIS)
-            self._set_status_safe(evaluation_id, stages.LIFECYCLE_ANALYSIS)
             if _has_knowledge_access_details(evaluation_id):
-                log("ORCH", "LIFECYCLE_ANALYSIS skipped: "
+                log("ORCH", "L0-L7 分析 skipped: "
                       "knowledge_access_detail 已有记录（重试路径）")
-                _set_progress(evaluation_id, "生命周期分析（已有记录，跳过）")
+                _set_progress(evaluation_id, "L0-L7 分析（已有记录，跳过）")
                 access_details = _load_existing_access_details(evaluation_id)
             else:
                 _set_progress(evaluation_id, "L0-L7 全链路分析...")
@@ -597,26 +596,20 @@ class Orchestrator:
                     alert_center_data=alert_center_data,
                     case_details=case_details,
                 )
-                log("ORCH", f"LIFECYCLE_ANALYSIS done: "
+                log("ORCH", f"L0-L7 分析 done: "
                       f"{len(access_details)} access_details")
 
-            # ── CAUSAL_CHAIN ──
-            _check_cancel(evaluation_id, stages.CAUSAL_CHAIN)
-            assert_transition(
-                stages.LIFECYCLE_ANALYSIS, stages.CAUSAL_CHAIN,
-            )
-            self._set_status_safe(evaluation_id, stages.CAUSAL_CHAIN)
-            _set_progress(evaluation_id, "因果链分析...")
+            _set_progress(evaluation_id, "因果链分析 + 问题单生成...")
             causal_chain = self._run_causal_chain(
                 access_details, evaluation_id, reports_dir,
             )
-            log("ORCH", f"CAUSAL_CHAIN done: "
+            log("ORCH", f"因果链分析 done: "
                   f"{len(causal_chain.get('per_case_breakpoints', []))} "
                   f"cases with breakpoints")
 
             # ── REPORTING ──
             _check_cancel(evaluation_id, stages.REPORTING)
-            assert_transition(stages.CAUSAL_CHAIN, stages.REPORTING)
+            assert_transition(stages.RESOLVING, stages.REPORTING)
             self._set_status_safe(evaluation_id, stages.REPORTING)
 
             # 重试路径：lifecycle report 已存在 → 跳过报告组装
@@ -1347,7 +1340,7 @@ class Orchestrator:
             log("RESOLVE", f"持久化失败: {e}")
             raise
 
-    # ── LIFECYCLE_ANALYSIS ──────────────────────────
+    # ── L0-L7 全链路分析 ─────────────────────────────
 
     def _run_lifecycle(
         self, data_packs: list, evaluation_id: str,
@@ -1382,7 +1375,7 @@ class Orchestrator:
         self._lifecycle_fpr_stats = getattr(analyzer, "case_filter_stats", None)
         return records
 
-    # ── CAUSAL_CHAIN ─────────────────────────────────
+    # ── 因果链分析 + 问题单生成 ─────────────────────
 
     def _run_causal_chain(
         self, access_details: list[dict],
@@ -1412,7 +1405,7 @@ class Orchestrator:
         )
         if dts_issues:
             upsert_dts_issues(dts_issues, evaluation_id, reports_dir)
-            log("CAUSAL_CHAIN", f"Generated {len(dts_issues)} DTS issues")
+            log("DTS", f"Generated {len(dts_issues)} issues")
 
         return result
 
@@ -1699,8 +1692,7 @@ class Orchestrator:
                     "CHECK (evaluation_status IN "
                     "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING',"
                     "'PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS',"
-                    "'RESOLVING','PAIRING',"
-                    "'LIFECYCLE_ANALYSIS','CAUSAL_CHAIN',"
+                    "'RESOLVING',"
                     "'REPORTING','FINALIZING',"
                     "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"
                     "'CANCEL_REQUESTED','CANCELLING','CANCELLED'))"

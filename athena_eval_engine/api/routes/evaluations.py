@@ -328,8 +328,7 @@ def resume_stuck_evaluations():
                 _submit_paused_eval(eid)
             # RUNNING_STATES = 线程已死但 DB 还显示运行中，续跑
             stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                            'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
-                            'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                            'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
                             'REPORTING', 'FINALIZING')
             placeholders = ','.join(['%s'] * len(stuck_states))
             cur.execute(f"SELECT evaluation_id, evaluation_status FROM evaluation "
@@ -354,8 +353,7 @@ def _run_bg_resume(evaluation_id: str):
     log("THREAD", f"_run_bg_resume: {evaluation_id} 开始执行")
     from ...infrastructure.database import connect
     stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                    'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
-                    'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                    'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
                     'REPORTING', 'FINALIZING')
     placeholders = ','.join(['%s'] * len(stuck_states))
     try:
@@ -531,8 +529,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
         # Step 0: 检查当前状态 — 运行中禁止重跑，避免并发写冲突
         _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                           'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
-                           'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+                           'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
                            'REPORTING', 'FINALIZING')
         conn = connect(autocommit=True)
         try:
@@ -692,9 +689,8 @@ def _mark_cancelled_if_running(evaluation_id: str):
     或已终态（CANCELLED/COMPLETED/FAILED）。
     """
     from ...infrastructure.database import connect
-    _RUNNING_PHASES = ('VALIDATING', 'INGESTING', 'PARSING', 'RESOLVING',
-                       'PAIRING', 'CALCULATING', 'INVENTORY',
-                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
+    _RUNNING_PHASES = ('VALIDATING', 'INGESTING', 'PARSING',
+                       'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
                        'REPORTING', 'FINALIZING')
     try:
         conn = connect(autocommit=True)

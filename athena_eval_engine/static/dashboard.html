@@ -37,7 +37,7 @@ main{flex:1;overflow:hidden;padding:28px}
 .b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
 .b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
 .b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
-.b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-RESOLVING,.b-CALCULATING,.b-LIFECYCLE_ANALYSIS,.b-CAUSAL_CHAIN{background:rgba(96,165,250,.18);color:var(--acc)}
+.b-RUNNING,.b-VALIDATING,.b-INGESTING,.b-PARSING,.b-CASE_MATCHING,.b-ROOT_CAUSE_ANALYSIS,.b-RESOLVING,.b-REPORTING,.b-FINALIZING{background:rgba(96,165,250,.18);color:var(--acc)}
 .rep{flex:1;overflow-y:auto}
 .card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
 .card.f{grid-column:1/-1}
@@ -189,7 +189,7 @@ async function renderHome(){
 
   var total=evals.length;
   var completed=evals.filter(function(e){return e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS';}).length;
-  var running=evals.filter(function(e){return ['RUNNING','VALIDATING','INGESTING','PARSING','RESOLVING','CALCULATING','LIFECYCLE_ANALYSIS','CAUSAL_CHAIN','REPORTING','FINALIZING'].indexOf(e.status)>=0;}).length;
+  var running=evals.filter(function(e){return ['RUNNING','VALIDATING','INGESTING','PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS','RESOLVING','REPORTING','FINALIZING'].indexOf(e.status)>=0;}).length;
   var failed=evals.filter(function(e){return e.status==='FAILED';}).length;
 
   var dtsTotal=dtsStats.total||0;
@@ -245,7 +245,7 @@ async function renderHome(){
 
   $("view").innerHTML=html;
 }
-var _phaseLabelsHome={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","RESOLVING":"事实写入","PAIRING":"任务配对","CALCULATING":"计算指标","LIFECYCLE_ANALYSIS":"生命周期分析","CAUSAL_CHAIN":"因果链分析","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
+var _phaseLabelsHome={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"数据采集","PARSING":"解析 Trace","CASE_MATCHING":"Case 匹配","ROOT_CAUSE_ANALYSIS":"根因分析","RESOLVING":"事实写入","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
 
 // ===== ② 评测列表 =====
 async function renderEvals(){
@@ -288,7 +288,7 @@ function renderEvList(){
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
-    var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"获取基线","PARSING":"解析 Trace","RESOLVING":"事实写入","PAIRING":"任务配对","CALCULATING":"计算指标","LIFECYCLE_ANALYSIS":"生命周期分析","CAUSAL_CHAIN":"因果链分析","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
+    var _phaseLabels={"CREATED":"创建中","QUEUED":"已暂停","RUNNING":"启动中","VALIDATING":"验证中","INGESTING":"数据采集","PARSING":"解析 Trace","CASE_MATCHING":"Case 匹配","ROOT_CAUSE_ANALYSIS":"根因分析","RESOLVING":"事实写入","REPORTING":"生成报告","FINALIZING":"收尾中","COMPLETED":"完成","COMPLETED_WITH_WARNINGS":"完成有告警","FAILED":"失败","CANCEL_REQUESTED":"取消中","CANCELLING":"取消中","CANCELLED":"已取消"};
     var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
     var phaseLabel=_phaseLabels[e.status]||e.status||'-';
@@ -341,8 +341,8 @@ async function selEv(id){
     }
     // 运行中：显示进度
     if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
-      var phases=[{key:"INGESTING",label:"数据采集"},{key:"PARSING",label:"解析 Trace"},{key:"RESOLVING",label:"事实写入"},{key:"CALCULATING",label:"计算指标"},{key:"LIFECYCLE_ANALYSIS",label:"生命周期分析"},{key:"CAUSAL_CHAIN",label:"因果链分析"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZE",label:"完成"}];
-      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"RESOLVING":3,"CALCULATING":4,"LIFECYCLE_ANALYSIS":5,"CAUSAL_CHAIN":6,"REPORTING":7,"FINALIZE":8};
+      var phases=[{key:"INGESTING",label:"数据采集"},{key:"PARSING",label:"解析 Trace"},{key:"CASE_MATCHING",label:"Case 匹配"},{key:"ROOT_CAUSE_ANALYSIS",label:"根因分析"},{key:"RESOLVING",label:"事实写入"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZING",label:"完成"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"CASE_MATCHING":3,"ROOT_CAUSE_ANALYSIS":4,"RESOLVING":5,"REPORTING":6,"FINALIZING":7};
       var curStep=phaseMap[s.status]||0;
       var totalSteps=phases.length;
       var progressPct=Math.round((curStep/(totalSteps+1))*100);
