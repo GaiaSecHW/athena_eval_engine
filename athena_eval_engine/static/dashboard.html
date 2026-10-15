@@ -106,7 +106,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
     <nav style="display:flex;gap:2px;margin-left:20px">
       <button class="ghost nav-item" data-route="home" onclick="Router.navigate('/')">首页</button>
       <button class="ghost nav-item" data-route="evals" onclick="Router.navigate('/evaluations')">评测</button>
-      <button class="ghost nav-item" data-route="dts" onclick="Router.navigate('/dts')">DTS 单</button>
+      <button class="ghost nav-item" data-route="dts" onclick="Router.navigate('/dts')">问题单</button>
     </nav>
     <div class="sp"></div>
     <button class="ghost" data-route="create" onclick="Router.navigate('/create')">+ 新建评测</button>
@@ -218,14 +218,14 @@ async function renderHome(){
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">已完成</div><div class="mc-val" style="color:var(--green)">'+completed+'</div></div>'
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">运行中</div><div class="mc-val" style="color:var(--amber)">'+running+'</div></div>'
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">失败</div><div class="mc-val" style="color:var(--red)">'+failed+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">DTS 问题单</div><div class="mc-val" style="color:var(--acc)">'+dtsTotal+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">DTS 已通过</div><div class="mc-val" style="color:var(--green)">'+dtsPassed+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">DTS 未定位</div><div class="mc-val" style="color:var(--gray)">'+dtsUnlocated+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">DTS 未通过</div><div class="mc-val" style="color:var(--red)">'+dtsFailed+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">问题单</div><div class="mc-val" style="color:var(--acc)">'+dtsTotal+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">已通过</div><div class="mc-val" style="color:var(--green)">'+dtsPassed+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">未定位</div><div class="mc-val" style="color:var(--gray)">'+dtsUnlocated+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">未通过</div><div class="mc-val" style="color:var(--red)">'+dtsFailed+'</div></div>'
     +'</div>'
 
-    // DTS 状态流水线
-    +(dtsTotal>0?'<div class="card" style="margin-bottom:24px"><h3>DTS 问题单状态</h3>'
+    // 问题单状态流水线
+    +(dtsTotal>0?'<div class="card" style="margin-bottom:24px"><h3>问题单状态</h3>'
       +'<div style="display:flex;gap:12px;flex-wrap:wrap">'
       +Object.keys(DTS_STATUS_LABELS).map(function(s){
         var v=dtsByStatus[s]||0;
@@ -640,17 +640,17 @@ function renderV2Report(d){
   <!-- 生命周期分析段 -->
   ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L7 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
 
-  <!-- DTS 问题单 -->
+  <!-- 问题单 -->
   <div id="dts-section"></div>
 
   `;
 
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto">'+html+'</div>';
-  // 异步加载 DTS 问题单
+  // 异步加载问题单
   loadDtsSection(d.evaluation_id||activeId||'');
 }
 
-// ===== DTS 问题单（独立管理页）=====
+// ===== 问题单（独立管理页）=====
 let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',q:''};
 let _dtsData=null;
 
@@ -659,9 +659,9 @@ async function renderDtsList(){
   $("view").innerHTML=`<div class="back-bar"><button class="back-btn" onclick="goBack()">← 返回列表</button></div>
     <div style="flex:1;overflow-y:auto">
     <div class="card" style="margin-bottom:16px">
-      <h3>DTS 问题单</h3>
+      <h3>问题单</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
-        <input id="dts-search" placeholder="搜索 DTS ID / task_id…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:260px">
+        <input id="dts-search" placeholder="搜索问题单 ID / task_id…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:260px">
         <select id="dts-f-status" onchange="_dtsFilter.status=this.value;renderDtsTable()" style="width:auto;max-width:140px">
           <option value="">全部状态</option>
           <option value="unlocated">未定位</option>
@@ -736,7 +736,7 @@ function renderDtsTable(){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>DTS ID</th><th>评测 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>评测 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
     html+='<tr>'
       +'<td style="font-size:12px;font-family:monospace;max-width:120px;overflow:hidden;text-overflow:ellipsis">'+(i.dts_id||'')+'</td>'
@@ -753,7 +753,7 @@ function renderDtsTable(){
   $("dts-table").innerHTML=html;
 }
 
-// ===== DTS 问题单（报告内嵌段）=====
+// ===== 问题单（报告内嵌段）=====
 const DTS_STATUS_LABELS={'unlocated':'未定位','improving':'改进中','confirmed':'已确认','closing':'关闭中','passed':'已通过','failed':'未通过','not_issue':'非问题'};
 const DTS_STATUS_COLORS={'unlocated':'var(--gray)','improving':'var(--acc)','confirmed':'var(--amber)','closing':'var(--amber)','passed':'var(--green)','failed':'var(--red)','not_issue':'var(--gray)'};
 const DTS_RESP_LABELS={'agent':'Agent','knowledge_base':'知识库'};
@@ -765,14 +765,14 @@ function dtsResponsibility(causeCode){return DTS_CAUSE_TO_RESP[causeCode]||'';}
 async function loadDtsSection(evalId){
   var container=$("dts-section");if(!container)return;
   if(!evalId){container.innerHTML='';return;}
-  container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>DTS 问题单</h3><div style="color:var(--sub);padding:12px">加载中…</div></div>';
+  container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>问题单</h3><div style="color:var(--sub);padding:12px">加载中…</div></div>';
   try{
     var dts=await jget(`/api/v2/dts?evaluation_id=${evalId}&limit=9999`);
     var issues=dts.issues||[];
     var stats=dts.stats||{};
     renderDtsSection(evalId,issues,stats);
   }catch(e){
-    container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>DTS 问题单</h3><div style="color:var(--sub);padding:12px">暂无 DTS 问题单</div></div>';
+    container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>问题单</h3><div style="color:var(--sub);padding:12px">暂无问题单</div></div>';
   }
 }
 
@@ -791,7 +791,7 @@ function renderDtsSection(evalId,issues,stats){
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+DTS_STATUS_LABELS[s]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?DTS_STATUS_COLORS[s]:'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
   }).join('');
 
-  var summaryHtml='<div class="card" style="margin-bottom:16px"><h3>DTS 问题单</h3>'
+  var summaryHtml='<div class="card" style="margin-bottom:16px"><h3>问题单</h3>'
     +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px">'
     +'<div class="mcard"><div class="mc-label">总问题单</div><div class="mc-val">'+total+'</div></div>'
     +'<div class="mcard"><div class="mc-label">误报(FP)</div><div class="mc-val" style="color:var(--red)">'+byCaseType.FP+'</div></div>'
@@ -804,7 +804,7 @@ function renderDtsSection(evalId,issues,stats){
 
   var listHtml='';
   if(issues.length){
-    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>DTS ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
     issues.forEach(function(i){
       listHtml+='<tr>'
         +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'').slice(-20)+'</td>'
@@ -823,7 +823,7 @@ function renderDtsSection(evalId,issues,stats){
 
 async function showDtsDetail(dtsId){
   var ov=document.createElement("div");ov.className="modal-overlay";
-  ov.innerHTML='<div class="modal" style="max-width:680px"><div class="modal-head"><h3>DTS 问题单详情</h3></div><div class="modal-body" style="padding:8px 24px 16px"><div style="color:var(--sub)">加载中…</div></div></div>';
+  ov.innerHTML='<div class="modal" style="max-width:680px"><div class="modal-head"><h3>问题单详情</h3></div><div class="modal-body" style="padding:8px 24px 16px"><div style="color:var(--sub)">加载中…</div></div></div>';
   document.body.appendChild(ov);
   ov.addEventListener("click",function(e){if(e.target===ov)ov.remove();});
   try{
@@ -835,7 +835,7 @@ async function showDtsDetail(dtsId){
     var statusColor=DTS_STATUS_COLORS[d.status]||'var(--gray)';
     var html='<div style="margin-bottom:16px">'
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
-      +'<div><span style="color:var(--gray)">DTS ID：</span><b style="font-family:monospace;font-size:12px">'+d.dts_id+'</b></div>'
+      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:12px">'+d.dts_id+'</b></div>'
       +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+statusLabel+'</span></div>'
       +'<div><span style="color:var(--gray)">Case 类型：</span><b>'+caseTypeLabel+'</b></div>'
       +'<div><span style="color:var(--gray)">责任方：</span><b>'+respLabel+'</b></div>'

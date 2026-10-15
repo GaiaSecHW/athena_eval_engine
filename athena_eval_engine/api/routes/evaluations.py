@@ -1,30 +1,40 @@
-"""FastAPI app + 路由（§11.1）。
+"""FastAPI app + 路由。
 
-POST /api/v1/evaluations → 创建 + 后台异步跑（最多 3 个并发，超出排队）
-GET  /api/v1/evaluations/{id} → 状态
-GET  /api/v1/evaluations/{id}/metrics → 指标
-GET  /api/v1/evaluations/{id}/report → 报告
+POST /api/v1/evaluations              → 创建 + 后台异步跑（最多 N 并发，超出排队）
+GET  /api/v1/evaluations              → 列表（web.py）
+GET  /api/v1/evaluations/{id}         → 状态
+DELETE /api/v1/evaluations/{id}       → 删除
+POST /api/v1/evaluations/{id}/retry   → 重试
+POST /api/v1/evaluations/{id}/cancel  → 取消
+GET  /api/v1/evaluations/running      → 运行中列表
+
+v2 报告端点在 v2/api/routes.py（/api/v2/evaluations/{id}/report 等）。
 """
 from __future__ import annotations
 import asyncio
-import json
 import os
 import sys
 import threading
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, Future
 from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from ...application import evaluation_service as es
 from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, log_error
 from ...infrastructure.concurrency import get as _conc_get, set_val as _conc_set
-from ...persistence.repositories import fact_repo
 
 # 调大 GIL 切换间隔：600 线程下减少切换开销，让 HTTP 处理器能及时拿到 GIL
 sys.setswitchinterval(0.015)
 from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
+
+# 报告目录（删除旧 HTML 时用）
+REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR") or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
+    "reports",
+)
 
 # 最多 N 个评测同时运行，其余排队等待
 # 线程池固定大小（上界由 eval_pool_max 控制），通过队列 + 协作取消动态控制实际并发数
@@ -246,11 +256,11 @@ app.include_router(platform_router)
 app.include_router(vbench_router)
 app.include_router(sys_router)
 
-# 挂载 v2 路由（数据源配置 + lifecycle/inventory 报告端点）
+# 挂载 v2 路由（数据源配置 + 报告端点 + 问题单端点）
 from ...v2.api import create_v2_app
 create_v2_app(app)
 
-# v2 pipeline：替代 v1 es.run()，启用 v2 10 阶段编排器
+# v2 pipeline：替代 v1 es.run()，启用 v2 编排器
 from ...v2.pipeline.orchestrator import Orchestrator as _V2Orchestrator
 from ...v2.pipeline.orchestrator import TaskCancelledError as _V2TaskCancelledError
 
@@ -500,11 +510,11 @@ def delete_evaluation(evaluation_id: str):
         log("DELETE", f"评测 {evaluation_id} 已删除")
     finally:
         conn.close()
-    # 删除固化 HTML
+    # 删除报告文件（旧 HTML + JSON）
     try:
-        p = _static_report_path(evaluation_id)
-        if os.path.isfile(p):
-            os.remove(p)
+        import glob as _glob
+        for _f in _glob.glob(os.path.join(REPORTS_DIR, f"{evaluation_id}*")):
+            os.remove(_f)
     except Exception:
         pass
     return {"status": "ok", "evaluation_id": evaluation_id}
@@ -601,22 +611,20 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         _tz_r = _tz_r(_td_r(hours=8))
         _archive_ts = _dt_r.now(_tz_r).strftime("%Y%m%d_%H%M%S")
         try:
-            _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-            for _suffix in (".html", ".json", "_fpr.json", "_kg.json", "_fpr_match.json"):
-                _old = os.path.join(_reports_dir, f"{evaluation_id}{_suffix}")
-                if os.path.isfile(_old):
-                    _arc = os.path.join(_reports_dir, f"{evaluation_id}_archive_{_archive_ts}{_suffix}")
-                    os.rename(_old, _arc)
-                    log("RETRY", f"归档旧报告: {_old} → {_arc}")
-        except Exception:
-            pass
-        # 删除临时 _cr.json 文件（中间产物，非最终报告）
-        try:
-            _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-            import glob as _glob
-            for _f in _glob.glob(os.path.join(_reports_dir, f"{evaluation_id}_*_cr.json")):
-                os.remove(_f)
-                log("RETRY", f"删除临时文件: {_f}")
+            for _suffix in (".html", ".json", "_fpr.json", "_kg.json", "_fpr_match.json",
+                            "_lifecycle.json", "_debug_*.json"):
+                if "*" in _suffix:
+                    import glob as _glob
+                    for _f in _glob.glob(os.path.join(REPORTS_DIR, f"{evaluation_id}{_suffix}")):
+                        _arc = os.path.join(REPORTS_DIR, f"{evaluation_id}_archive_{_archive_ts}"
+                                            + _f.replace(evaluation_id, ""))
+                        os.rename(_f, _arc)
+                else:
+                    _old = os.path.join(REPORTS_DIR, f"{evaluation_id}{_suffix}")
+                    if os.path.isfile(_old):
+                        _arc = os.path.join(REPORTS_DIR, f"{evaluation_id}_archive_{_archive_ts}{_suffix}")
+                        os.rename(_old, _arc)
+                        log("RETRY", f"归档旧报告: {_old} → {_arc}")
         except Exception:
             pass
 
@@ -762,711 +770,6 @@ async def get_status(evaluation_id: str):
     if "error" in r:
         raise HTTPException(status_code=404, detail=r["error"])
     return r
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/metrics")
-async def get_metrics(evaluation_id: str):
-    def _query():
-        from ...infrastructure.database import connect
-        conn = connect(autocommit=True)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT metric_id, estimate, unit, n, calculation_status, reason_code, median, iqr "
-                        "FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
-            return {"evaluation_id": evaluation_id, "metrics": [dict(zip(["metric_id", "estimate", "unit", "n",
-                                "calculation_status", "reason_code", "median", "iqr"], row)) for row in cur.fetchall()]}
-        finally:
-            conn.close()
-    return await asyncio.to_thread(_query)
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/report")
-async def get_report(evaluation_id: str):
-    return await asyncio.to_thread(_build_report, evaluation_id)
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/report/fpr")
-async def get_fpr_report(evaluation_id: str):
-    """误报率分析段：FPR 结果 + match_details + M13 实际值 + fpr_match_lookup。"""
-    def _read():
-        import os as _os
-        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-        _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-        if not _os.path.isfile(_fpr_path):
-            raise HTTPException(status_code=404, detail="FPR report not found")
-        import json as _json
-        with open(_fpr_path, "r", encoding="utf-8") as _f:
-            return _json.loads(_f.read())
-    return await asyncio.to_thread(_read)
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/report/kg")
-async def get_kg_report(evaluation_id: str):
-    """知识图谱与记忆介入分析段：per_case_kg_analysis + 增强版 case_results。"""
-    def _read():
-        import os as _os
-        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-        _kg_path = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
-        if not _os.path.isfile(_kg_path):
-            raise HTTPException(status_code=404, detail="KG report not found")
-        import json as _json
-        with open(_kg_path, "r", encoding="utf-8") as _f:
-            return _json.loads(_f.read())
-    return await asyncio.to_thread(_read)
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/report/status")
-async def get_report_status(evaluation_id: str):
-    """返回各段报告文件的就绪状态，供前端分段加载。"""
-    def _check():
-        import os as _os
-        _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-        _base = _os.path.join(_reports_dir, f"{evaluation_id}.json")
-        _fpr = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-        _kg = _os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
-        _html = _os.path.join(_reports_dir, f"{evaluation_id}.html")
-        return {
-            "base": _os.path.isfile(_base),
-            "fpr": _os.path.isfile(_fpr),
-            "kg": _os.path.isfile(_kg),
-            "html": _os.path.isfile(_html),
-        }
-    return await asyncio.to_thread(_check)
-
-
-@app.post("/api/v1/evaluations/{evaluation_id}/rerun-fpr")
-def rerun_fpr(evaluation_id: str, force: bool = False):
-    """重跑误报率分析段。前置：评测必须 COMPLETED。
-
-    force=true: 跳过状态检查（用于重跑卡住的 FPR 重跑任务）。
-    """
-    from ...infrastructure.database import connect
-    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                       'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
-                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
-                       'REPORTING', 'FINALIZING')
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
-        if row[0] in _RUNNING_STATES and not force:
-            raise HTTPException(status_code=409,
-                               detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
-                                     f"rerun not allowed. Use ?force=true to force.")
-    finally:
-        conn.close()
-
-    _submit_eval(evaluation_id, lambda: es.rerun_fpr(evaluation_id))
-    log("API", f"rerun-fpr submitted: {evaluation_id}")
-    return {"status": "submitted", "evaluation_id": evaluation_id, "section": "fpr"}
-
-
-@app.post("/api/v1/evaluations/{evaluation_id}/rerun-kg")
-def rerun_kg(evaluation_id: str, force: bool = False):
-    """重跑知识图谱与记忆介入分析段。前置：FPR 段必须存在。
-
-    force=true: 跳过状态检查。
-    """
-    import os as _os
-    from ...infrastructure.database import connect
-
-    # 检查 FPR 段文件存在
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-    _fpr_path = _os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-    if not _os.path.isfile(_fpr_path):
-        raise HTTPException(status_code=400,
-                           detail="FPR report not found. Please rerun FPR analysis first "
-                                 "(POST /api/v1/evaluations/{id}/rerun-fpr).")
-
-    _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                       'RESOLVING', 'PAIRING', 'CALCULATING', 'INVENTORY',
-                       'LIFECYCLE_ANALYSIS', 'CAUSAL_CHAIN',
-                       'REPORTING', 'FINALIZING')
-    conn = connect(autocommit=True)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
-        if row[0] in _RUNNING_STATES and not force:
-            raise HTTPException(status_code=409,
-                               detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
-                                     f"rerun not allowed. Use ?force=true to force.")
-    finally:
-        conn.close()
-
-    _submit_eval(evaluation_id, lambda: es.rerun_kg(evaluation_id))
-    log("API", f"rerun-kg submitted: {evaluation_id}")
-    return {"status": "submitted", "evaluation_id": evaluation_id, "section": "kg"}
-
-
-def _build_report(evaluation_id: str):
-    """构建完整报告 JSON（含知识介入、case 结果、元信息）。固化 HTML 和动态接口共用。"""
-    r = es.get_report(evaluation_id)
-    if "error" in r:
-        raise HTTPException(status_code=404, detail=r["error"])
-    # 附加知识介入原始事件 + 评测元信息
-    import json as _json
-    def _do(cur):
-        # 评测元信息：名称、基线项目
-        cur.execute("SELECT evaluation_name, benchmark_set_id, started_at, finished_at FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
-        erow = cur.fetchone()
-        if erow:
-            r["evaluation_name"] = erow[0]
-            # MySQL NOW(3) 返回 UTC，前端统一转北京时间
-            r["started_at"] = erow[2].isoformat() if erow[2] else None
-            r["finished_at"] = erow[3].isoformat() if erow[3] else None
-        # 从 snapshot 的 config_json 提取 manifest 信息
-        cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s", (evaluation_id,))
-        srow = cur.fetchone()
-        if srow:
-            cfg = _json.loads(srow[0]) if isinstance(srow[0], str) else srow[0]
-            manifest = cfg.get("manifest", {})
-            entries = manifest.get("entries", [])
-            r["benchmark_source"] = manifest.get("benchmark_source", "vbench_zip")
-            r["eval_mode"] = manifest.get("eval_mode", "dev")
-            r["vbench_project_name"] = manifest.get("vbench_project_name", "")
-            r["vc_source_project_name"] = manifest.get("vc_source_project_name", "")
-            r["vc_source_task_name"] = manifest.get("vc_source_task_name", "")
-            r["entries_info"] = [{"condition": e.get("condition"), "project_id": e.get("project_id", ""),
-                                  "project_name": e.get("project_name", ""),
-                                  "task_id_actual": e.get("task_id_actual", ""),
-                                  "task_name": e.get("task_name", ""),
-                                  "task_id": e.get("task_id", ""),
-                                  "trace_kind": e.get("trace_kind", ""),
-                                  "category": e.get("category", "")} for e in entries]
-        # 知识介入
-        cur.execute("SELECT task_run_id, access, delivery, access_event_count, "
-                    "read_event_count, evidence_json FROM knowledge_interaction_fact "
-                    "WHERE evaluation_id=%s AND task_run_id LIKE %s AND task_run_id NOT LIKE %s",
-                    (evaluation_id, '%-KG', '%NOGK%'))
-        kgs = []
-        for row in cur.fetchall():
-            ev = _json.loads(row[5]) if row[5] and isinstance(row[5], str) else (row[5] or {})
-            kgs.append({"task_run_id": row[0], "access": bool(row[1]), "delivery": bool(row[2]),
-                        "access_count": row[3], "read_count": row[4],
-                        "interactions": ev.get("interactions", []) if isinstance(ev, dict) else [],
-                        "memory": ev.get("memory", {}) if isinstance(ev, dict) else {}})
-        r["knowledge_interactions"] = kgs
-        # 诊断信息：outcome resolver_status + tool finding counts
-        cur.execute("SELECT task_run_id, outcome, prediction, resolver_status, validation_result "
-                    "FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
-        r["outcome_details"] = [{"task_run_id": row[0], "outcome": row[1], "prediction": row[2],
-                                 "resolver_status": row[3], "validation": row[4]} for row in cur.fetchall()]
-        # 工具统计（confirmed_finding_count 从 action_distribution JSON 提取）
-        cur.execute("SELECT task_run_id, kg_count, finding_count, total_tool_calls, action_distribution FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
-        r["tool_stats"] = [{"task_run_id": row[0], "kg_count": row[1],
-                            "finding_count": (json.loads(row[4]).get("confirmed_finding_count", 0) if row[4] else 0),
-                            "false_positive_count": (json.loads(row[4]).get("false_positive_finding_count", 0) if row[4] else 0),
-                            "analyze_received_count": (json.loads(row[4]).get("analyze_received_count", 0) if row[4] else 0),
-                            "total_tools": row[3]} for row in cur.fetchall()]
-        # 资源统计（token/steps/duration 原始值）
-        cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
-        r["resource_stats"] = [{"task_run_id": row[0], "tokens": row[1], "steps": row[2], "duration": row[3], "time_valid": bool(row[4])} for row in cur.fetchall()]
-        # 基准 case 数 + per-case 匹配结果
-        cur.execute("SELECT benchmark_item_id, expected_label, metadata_json FROM benchmark_item "
-                    "WHERE benchmark_set_id=(SELECT benchmark_set_id FROM evaluation WHERE evaluation_id=%s)", (evaluation_id,))
-        import json as _j
-        raw_rows = cur.fetchall()
-        # 关联 outcome 的 case_results（从 evidence_json 或文件读取，KG 和 No-KG 分别取）
-        def _load_case_results_from_outcome(suffix):
-            """从 outcome_fact.evidence_json 读取 per-case 匹配结果。suffix: '-KG' 或 '-NOGK'
-            多 task run 场景下遍历所有匹配行，合并 case_results。"""
-            cur.execute("SELECT evidence_json FROM outcome_fact WHERE evaluation_id=%s AND task_run_id LIKE %s",
-                        (evaluation_id, f"%{suffix}"))
-            rows = cur.fetchall()
-            merged = []
-            for row in rows:
-                if not row or not row[0]:
-                    continue
-                ev = _j.loads(row[0]) if isinstance(row[0], str) else row[0]
-                if not isinstance(ev, dict):
-                    continue
-                # case_results 存文件时从文件读
-                cr_uri = ev.get("case_results_uri")
-                if cr_uri and os.path.isfile(cr_uri):
-                    with open(cr_uri, "r", encoding="utf-8") as _f:
-                        _file_data = _j.loads(_f.read())
-                        merged.extend(_file_data.get("case_results") or [])
-                else:
-                    merged.extend(ev.get("case_results") or [])
-            return merged
-
-        kg_oc_cases = _load_case_results_from_outcome("-KG")
-        nogk_oc_cases = _load_case_results_from_outcome("-NOGK")
-
-        # 漏洞中心模式：只保留人工确认 case（含漏洞与非漏洞）作为基线。
-        # task_id_actual 不是有效的 source_task_id 时会返回 0 条，不带 task 过滤重试。
-        _vc_fallback = {}
-        _vc_valid_case_ids = None
-        _bm_source = manifest.get("benchmark_source", "vbench_zip")
-        _vc_task = manifest.get("vc_source_task_id")
-        if _bm_source == "vuln_center" and not _vc_task:
-            for e in manifest.get("entries", []):
-                import re as _re
-                _src = e.get("source_uri", "") or ""
-                _m = _re.search(r'/tasks/([^/]+)', _src)
-                _vc_task = e.get("task_id_actual") or (_m.group(1) if _m else "") or e.get("task_id")
-                if _vc_task:
-                    break
-        if _bm_source == "vuln_center" and _vc_task:
-            try:
-                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
-                _vc_proj = erow[1] if erow else None
-                log("REPORT", f"漏洞中心校验基线: project={_vc_proj} task={_vc_task}")
-                _vc_bm = get_vuln_center_benchmark(_vc_proj, _vc_task)
-                _vc_cases = _vc_bm.get("cases") or []
-                if not _vc_cases:
-                    # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
-                    log("REPORT", f"漏洞中心 task={_vc_task} 返回 0 条，不带 task 过滤重试")
-                    _vc_bm = get_vuln_center_benchmark(_vc_proj, None)
-                    _vc_cases = _vc_bm.get("cases") or []
-                    log("REPORT", f"不带 task 过滤返回 {len(_vc_cases)} 条 case")
-                if _vc_cases:
-                    _vc_valid_case_ids = {c.get("case_id") or c.get("id") or "" for c in _vc_cases}
-                    for c in _vc_cases:
-                        cid = c.get("case_id") or c.get("id") or ""
-                        if cid:
-                            _vc_fallback[cid] = c
-                    log("REPORT", f"漏洞中心返回 {len(_vc_valid_case_ids)} 条 case，"
-                          f"benchmark_item 表有 {len(raw_rows)} 条")
-            except Exception as e:
-                log("REPORT", f"漏洞中心校验失败: {e}")
-
-        # 用漏洞中心返回的 case 集合过滤 benchmark_item
-        if _vc_valid_case_ids is not None:
-            _before = len(raw_rows)
-            raw_rows = [r for r in raw_rows if r[0] in _vc_valid_case_ids]
-            log("REPORT", f"过滤 benchmark_item: {_before} → {len(raw_rows)} 条")
-
-        has_null_meta = any(r[2] is None for r in raw_rows)
-        if has_null_meta and not _vc_fallback:
-            try:
-                from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
-                vc_proj = erow[1] if erow else None
-                if not _vc_task:
-                    _vc_task = manifest.get("vc_source_task_id")
-                log("REPORT", f"metadata 缺失，从漏洞中心补取: project={vc_proj} task={_vc_task}")
-                vc_bm = get_vuln_center_benchmark(vc_proj, _vc_task)
-                _vc_fb_count = len(vc_bm.get("cases") or [])
-                if _vc_fb_count == 0 and _vc_task:
-                    # task_id_actual 不是有效的 source_task_id，不带 task 过滤重试
-                    log("REPORT", f"漏洞中心返回 0 条，不带 task 过滤重试")
-                    vc_bm = get_vuln_center_benchmark(vc_proj, None)
-                for c in (vc_bm.get("cases") or []):
-                    _vc_fallback[c.get("case_id") or c.get("id") or ""] = c
-            except Exception as e:
-                log("REPORT", f"漏洞中心补取失败: {e}")
-
-        case_results = []
-        for bid, label, meta in raw_rows:
-            md = _j.loads(meta) if isinstance(meta, str) else (meta or {})
-            if not md and bid in _vc_fallback:
-                vc_c = _vc_fallback[bid]
-                md = {"description": vc_c.get("description", ""),
-                      "vulnerability_type": vc_c.get("vulnerability_type", ""),
-                      "source_file": vc_c.get("source_file", ""),
-                      "source_function": vc_c.get("source_function", ""),
-                      "source_line": vc_c.get("source_line", "")}
-                if not label or label == "VULNERABLE":
-                    label = vc_c.get("expected_label", label)
-            case_results.append({"case_id": bid, "expected_label": label or "NA",
-                                "description": md.get("description", ""),
-                                "vulnerability_type": md.get("vulnerability_type", ""),
-                                "source_file": md.get("source_file", ""),
-                                "source_function": md.get("source_function", ""),
-                                "source_line": md.get("source_line", "")})
-
-        # 用 outcome 的 per-case 结果覆盖（含 matched/confusion）
-        for c in case_results:
-            # KG
-            for oc_c in kg_oc_cases:
-                if c["case_id"] == oc_c.get("case_id"):
-                    c["matched"] = oc_c.get("matched", False)
-                    c["confusion"] = oc_c.get("confusion", "NA")
-                    c["matched_finding_id"] = oc_c.get("matched_finding_id")
-                    break
-            if "confusion" not in c:
-                c["matched"] = False
-                c["confusion"] = "NA"
-            # No-KG
-            for oc_c in nogk_oc_cases:
-                if c["case_id"] == oc_c.get("case_id"):
-                    c["nogk_matched"] = oc_c.get("matched", False)
-                    c["nogk_confusion"] = oc_c.get("confusion", "NA")
-                    break
-            if "nogk_confusion" not in c:
-                c["nogk_matched"] = False
-                c["nogk_confusion"] = "NA"
-        r["case_results"] = case_results
-        r["baseline_count"] = len(case_results)
-        # 同步过滤 metric_groups 中的 case_results 和 per_case_kg_analysis
-        # 始终用 benchmark_item 表的 case 集合过滤，确保 metric_groups 与顶层一致
-        _valid_case_ids = {c["case_id"] for c in case_results}
-        if not _valid_case_ids:
-            log("REPORT", f"⚠ benchmark_item 查询返回 0 行，跳过 metric_groups 过滤（保护已有数据）")
-        else:
-            _rep = r.get("report") or {}
-            for _grp in (_rep.get("metric_groups") or []):
-                _gc = _grp.get("case_results") or []
-                _grp["case_results"] = [c for c in _gc if c.get("case_id") in _valid_case_ids]
-                if len(_gc) != len(_grp["case_results"]):
-                    log("REPORT", f"metric_groups[{_grp.get('task_id','')}] case_results: "
-                          f"{len(_gc)} → {len(_grp['case_results'])} 条")
-                _pcka = _grp.get("per_case_kg_analysis") or []
-                _grp["per_case_kg_analysis"] = [p for p in _pcka if p.get("case_id") in _valid_case_ids]
-    es._db_query(_do)
-
-    # 合并 FPR 段和 KG 段（三段拆分后主报告不含这些字段）
-    _reports_dir = os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
-    _fpr_path = os.path.join(_reports_dir, f"{evaluation_id}_fpr.json")
-    _kg_path = os.path.join(_reports_dir, f"{evaluation_id}_kg.json")
-    _rep = r.get("report") or r  # report 可能在 r["report"] 或 r 本身
-
-    # FPR 段：e2e_fpr_kg/nogk + mining_fpr group + M13
-    if os.path.isfile(_fpr_path):
-        try:
-            with open(_fpr_path, "r", encoding="utf-8") as _f:
-                _fpr_data = _json.loads(_f.read())
-            # 挂载 e2e_fpr 到 verify group
-            _e2e_kg = _fpr_data.get("e2e_fpr_kg")
-            _e2e_nogk = _fpr_data.get("e2e_fpr_nogk")
-            _ac_kg = _fpr_data.get("ac_fpr_kg")
-            _ac_nogk = _fpr_data.get("ac_fpr_nogk")
-            for _grp in (_rep.get("metric_groups") or []):
-                if _grp.get("category") == "verify":
-                    if _e2e_kg:
-                        _grp["e2e_fpr_kg"] = _e2e_kg
-                    if _e2e_nogk:
-                        _grp["e2e_fpr_nogk"] = _e2e_nogk
-            # 添加 mining_fpr group
-            _mining_group = _fpr_data.get("mining_fpr_group")
-            if _mining_group and not any(g.get("category") == "mining_fpr" for g in (_rep.get("metric_groups") or [])):
-                if _ac_kg:
-                    _mining_group["e2e_fpr_kg"] = {**_ac_kg, "vc_ids": _fpr_data.get("vc_ids_kg", [])}
-                if _ac_nogk:
-                    _mining_group["e2e_fpr_nogk"] = {**_ac_nogk, "vc_ids": _fpr_data.get("vc_ids_nogk", [])}
-                (_rep.setdefault("metric_groups", [])).append(_mining_group)
-            # 更新 M13
-            _m13_top = _fpr_data.get("m13_top")
-            if _m13_top:
-                _rep.setdefault("p0", {})["M13"] = _m13_top
-            _group_m13 = _fpr_data.get("group_m13", {})
-            for _grp in (_rep.get("metric_groups") or []):
-                _tid = _grp.get("task_id", "")
-                if _tid in _group_m13:
-                    _grp.setdefault("p0", {})["M13"] = _group_m13[_tid]
-        except Exception as e:
-            log("REPORT", f"⚠ 合并 FPR 段失败: {e}")
-
-    # KG 段：per_case_kg_analysis + case_results
-    if os.path.isfile(_kg_path):
-        try:
-            with open(_kg_path, "r", encoding="utf-8") as _f:
-                _kg_data = _json.loads(_f.read())
-            _kg_groups = {g.get("task_id", ""): g for g in (_kg_data.get("groups") or [])}
-            for _grp in (_rep.get("metric_groups") or []):
-                _tid = _grp.get("task_id", "")
-                if _tid in _kg_groups:
-                    _kg_g = _kg_groups[_tid]
-                    if _kg_g.get("per_case_kg_analysis"):
-                        _grp["per_case_kg_analysis"] = _kg_g["per_case_kg_analysis"]
-                    if _kg_g.get("case_results"):
-                        # KG 段的 case_results 可能更完整（含 FPR 覆盖的 confusion）
-                        _grp["case_results"] = _kg_g["case_results"]
-        except Exception as e:
-            log("REPORT", f"⚠ 合并 KG 段失败: {e}")
-
-    return r
-
-
-REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-    "reports",
-)
-try:
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-except OSError:
-    pass  # 只读文件系统下跳过，首次写入时再创建
-
-
-def _compute_interaction_stats(interactions, is_mem=False):
-    """从原始交互列表预计算统计量（与渲染器 _stats 函数逻辑一致）。
-
-    is_mem=True 时用本地文件读取的失败关键词（permission denied / no such file 等），
-    is_mem=False 时用远程 API 的失败关键词（404 / timeout / connection refused 等）。
-    """
-    call_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "CALL")
-    result_count = sum(1 for iv in interactions if isinstance(iv, dict) and iv.get("type") == "RESULT")
-    no_response = max(0, call_count - result_count)
-    fail = no_response
-    blind = 0
-    success = 0
-    if is_mem:
-        fail_kw = ("permission denied", "cannot access", "i/o error", "is a directory", "no space left")
-        blind_kw = ("no such file", "not found", "does not exist", "no data available")
-    else:
-        fail_kw = ("terminated", "timeout", "error", "404", "failed",
-                    "exception", "unreachable", "connection refused")
-        blind_kw = ("知识库暂无此类知识", "no memory", "not found", "empty")
-    for iv in interactions:
-        if not isinstance(iv, dict) or iv.get("type") != "RESULT" or not iv.get("output"):
-            continue
-        out = str(iv.get("output", "")).lower()
-        if any(kw in out for kw in fail_kw):
-            fail += 1
-        elif any(kw in out for kw in blind_kw):
-            blind += 1
-        else:
-            success += 1
-    return {"call_count": call_count, "result_count": result_count,
-            "no_response": no_response, "fail": fail, "blind": blind, "success": success}
-
-
-def _strip_report_for_html(r):
-    """剥离报告中的大块原始交互数据，用预计算统计量替代，减小 HTML 体积。"""
-    # knowledge_interactions: 预计算统计量，清空原始 interactions
-    for ki in r.get("knowledge_interactions", []):
-        interactions = ki.get("interactions", [])
-        memory = ki.get("memory") or {}
-        mem_interactions = memory.get("interactions", []) if isinstance(memory, dict) else []
-        ki["kg_stats"] = _compute_interaction_stats(interactions, is_mem=False)
-        ki["mem_stats"] = _compute_interaction_stats(mem_interactions, is_mem=True)
-        ki["interactions"] = []
-        ki["memory"] = {"interactions": []}
-
-    # per_case_kg_analysis: 剥离 interactions 和 memory_interactions（原始事件太大）
-    report_obj = r.get("report") or r
-    for group in (report_obj.get("metric_groups") or []):
-        for pcKa in (group.get("per_case_kg_analysis") or []):
-            pcKa.pop("interactions", None)
-            pcKa.pop("memory_interactions", None)
-    for pcKa in (r.get("per_case_kg_analysis") or []):
-        pcKa.pop("interactions", None)
-        pcKa.pop("memory_interactions", None)
-
-    return r
-
-
-def render_static_report(evaluation_id: str) -> str:
-    """固化报告为静态 HTML 文件。FINALIZE 阶段调用；返回文件路径。
-
-    报告完全自包含：CSS + 渲染器 JS + 数据全部内联，无外部依赖，
-    避免 Vite 产物文件名变化导致报告打不开的问题。
-    """
-    import json as _json
-    r = _build_report(evaluation_id)
-    r = _strip_report_for_html(r)
-    # 读取渲染器 JS（内联到 HTML，使报告自包含）
-    renderer_path = os.path.join(
-        os.path.dirname(os.path.dirname(os.path.dirname(__file__))),
-        "static", "report-renderer.js",
-    )
-    with open(renderer_path, "r", encoding="utf-8") as _f:
-        renderer_js = _f.read()
-    html = """<!DOCTYPE html>
-<html lang="zh-CN">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>__EVAL_ID__ 报告</title>
-<style>
-:root{--bg:#f5f6f8;--panel:#ffffff;--p2:#f0f2f5;--p3:#e8eaed;--bd:#e1e4e8;--border:#e1e4e8;--txt:#1a1d23;--sub:#6b7280;--acc:#2563eb;--green:#16a34a;--red:#dc2626;--amber:#d97706;--gray:#9ca3af;--purple:#7c3aed}
-*{box-sizing:border-box;margin:0;padding:0}
-body{font-family:-apple-system,"Segoe UI","Microsoft YaHei",sans-serif;background:var(--bg);color:var(--txt);font-size:18px;line-height:1.6}
-.bdg{font-size:14px;padding:2px 8px;border-radius:12px;font-weight:600}
-.b-COMPLETED{background:rgba(74,222,128,.18);color:var(--green)}
-.b-COMPLETEDWITHWARNINGS,.b-COMPLETED_WITH_WARNINGS{background:rgba(251,191,36,.18);color:var(--amber)}
-.b-FAILED,.b-CANCEL,.b-CANCELLED,.b-CANCELLING{background:rgba(248,113,113,.18);color:var(--red)}
-.b-CREATED{background:rgba(107,114,128,.18);color:var(--gray)}
-.b-QUEUED{background:rgba(251,191,36,.18);color:var(--amber)}
-.b-RUNNING,.b-VALIDATING,.b-PARSING,.b-RESOLVING,.b-CALCULATING,.b-INVENTORY,.b-LIFECYCLE_ANALYSIS,.b-CAUSAL_CHAIN{background:rgba(96,165,250,.18);color:var(--acc)}
-.rep{flex:1;overflow-y:auto}
-.grid{display:grid;grid-template-columns:1fr 1fr;gap:20px}
-.card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px}
-.card.f{grid-column:1/-1}
-.card h3{font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;margin-bottom:16px;display:flex;align-items:center;gap:8px}
-.tier{font-size:14px;padding:3px 8px;border-radius:12px;font-weight:600}
-.t-p0{background:rgba(91,156,246,.18);color:var(--acc)}
-.t-p1{background:rgba(251,191,36,.18);color:var(--amber)}
-.t-p2{background:rgba(107,114,128,.18);color:var(--gray)}
-table{width:100%;border-collapse:collapse;font-size:17px}
-th{color:var(--sub);font-weight:500;text-align:left;padding:10px 8px;border-bottom:1px solid var(--bd);font-size:14px;text-transform:uppercase;letter-spacing:.4px}
-td{padding:12px 8px;border-bottom:1px solid var(--bd);vertical-align:top}
-td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
-.ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
-.na{color:var(--red);font-style:italic;font-size:16px}
-.dp{color:var(--green)}.dn{color:var(--red)}
-details>summary::-webkit-details-marker{display:none}
-details>summary{list-style:none;cursor:pointer}
-details>summary:hover{color:var(--acc)}
-details[open]>summary{margin-bottom:0}
-.diag{background:rgba(251,191,36,.06);border:1px solid rgba(251,191,36,.2);border-radius:10px;padding:12px 14px;margin:8px 0}
-.diag .rid{color:var(--amber);font-weight:600;font-size:14px;font-family:monospace}
-.diag .ob{font-weight:500;font-size:17px}.diag .ip{color:var(--sub);font-size:15px;margin-top:4px}
-.narr{font-size:17px;line-height:1.8}.narr b{color:var(--sub);font-weight:500}
-.note{font-size:14px;color:var(--sub);margin-top:14px;padding-top:14px;border-top:1px solid var(--bd)}
-svg{display:block;margin:0 auto;max-width:100%}
-.lg{display:flex;gap:18px;justify-content:center;margin-top:10px}.lg span{font-size:14px;color:var(--sub);display:flex;align-items:center;gap:6px}.lg i{width:12px;height:12px;border-radius:3px;display:inline-block}
-.mcard{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px 16px;text-align:center;transition:transform .15s}
-.mcard:hover{transform:translateY(-2px);border-color:var(--acc)}
-.mc-icon{font-size:24px;margin-bottom:6px}
-.mc-label{font-size:14px;color:var(--sub);margin-bottom:6px}
-.mc-val{font-size:24px;font-weight:700;font-family:"SF Mono",Consolas,monospace}
-.mc-ci{font-size:14px;color:var(--sub);margin-top:6px;font-family:"SF Mono",Consolas,monospace}
-.mc-n{font-size:14px;color:var(--gray)}
-.barr{display:flex;align-items:center;gap:10px;margin:10px 0}
-.bar-l{font-size:16px;width:140px;flex-shrink:0}
-.bar-track{flex:1;height:28px;background:var(--p2);border-radius:14px;overflow:hidden;border:1px solid var(--bd)}
-.bar-fill{height:100%;border-radius:14px;transition:width .5s}
-.bar-v{font-size:18px;font-weight:600;width:60px;text-align:right;font-family:"SF Mono",Consolas,monospace}
-.ps{display:flex;gap:14px;padding:0;position:relative}
-.ps:not(:last-child)::after{content:"";position:absolute;left:15px;top:36px;bottom:0;width:2px;background:var(--bd)}
-.ps-n{width:32px;height:32px;border-radius:50%;background:var(--green);color:#fff;display:flex;align-items:center;justify-content:center;font-size:16px;font-weight:700;flex-shrink:0;z-index:1}
-.ps-body{flex:1;padding-bottom:20px;font-size:16px;line-height:1.8}
-.ps-det{font-size:14px;color:var(--sub);font-family:"SF Mono",Consolas,monospace}
-.ps-body b{font-size:17px}
-.ef-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:14px;flex:1}
-.ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
-.ef-btn:hover{border-color:var(--acc)}
-.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
-.knd.k-opencode{background:rgba(74,222,128,.18);color:var(--green)}
-.knd.k-argo{background:rgba(96,165,250,.18);color:var(--acc)}
-.knd.k-turing{background:rgba(217,119,6,.18);color:var(--amber)}
-.btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
-.btn:disabled{opacity:.4;cursor:not-allowed}
-.btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
-#rep{padding:28px}
-</style>
-</head>
-<body>
-<div style="background:#1a1d23;color:#9ca3af;font-size:13px;padding:5px 28px;text-align:right;font-family:'SF Mono',Consolas,monospace">报告生成时间：__GEN_TIME__ · 运行时长：__RUN_DUR__</div>
-<div id="archive-bar" style="background:#1e2228;color:#9ca3af;font-size:13px;padding:4px 28px;display:none;gap:8px;align-items:center;border-top:1px solid #2a2e36"></div>
-<div id="rep"></div>
-<script>
-__RENDERER_JS__
-</script>
-<script>
-window.__REPORT_DATA__ = __REPORT_JSON__;
-renderReport(window.__REPORT_DATA__);
-(function(){
-  var archives = __ARCHIVE_LINKS__;
-  if(archives && archives.length){
-    var bar=document.getElementById('archive-bar');
-    bar.style.display='flex';
-    bar.innerHTML='<span style="color:#6b7280">历史报告：</span>'+
-      archives.map(function(a){
-        return '<a href="'+a.url+'" style="color:#60a5fa;text-decoration:none;margin-left:4px">'+a.name+'</a>';
-      }).join('<span style="color:#4b5563;margin:0 4px">|</span>');
-  }
-})();
-</script>
-</body>
-</html>"""
-    # 转义 </script> 防止 JSON 里含脚本闭合标签
-    data_str = _json.dumps(r, ensure_ascii=False).replace("</", "<\\/")
-    from datetime import datetime, timezone, timedelta
-    _tz = timezone(timedelta(hours=8))
-    _gen_time = datetime.now(_tz).strftime("%Y-%m-%d %H:%M:%S")
-    # 计算总运行时长
-    _run_dur = "-"
-    if r.get("started_at") and r.get("finished_at"):
-        from datetime import datetime as _dt
-        _s = _dt.fromisoformat(r["started_at"])
-        _f = _dt.fromisoformat(r["finished_at"])
-        _dur_s = int((_f - _s).total_seconds())
-        if _dur_s >= 3600:
-            _run_dur = f"{_dur_s//3600}时 {(_dur_s%3600)//60}分"
-        elif _dur_s >= 60:
-            _run_dur = f"{_dur_s//60}分 {_dur_s%60}秒"
-        else:
-            _run_dur = f"{_dur_s}秒"
-    html = (
-        html
-        .replace("__EVAL_ID__", evaluation_id)
-        .replace("__GEN_TIME__", _gen_time)
-        .replace("__RUN_DUR__", _run_dur)
-        .replace("__RENDERER_JS__", renderer_js)
-        .replace("__REPORT_JSON__", data_str)
-    )
-    # 扫描归档的旧报告，生成链接列表
-    import glob as _glob
-    _archives = sorted(_glob.glob(os.path.join(REPORTS_DIR, f"{evaluation_id}_archive_*.html")), reverse=True)
-    _archive_links = _json.dumps([
-        {"url": f"/eval/reports/{os.path.basename(a)}", "name": os.path.basename(a).replace(f"{evaluation_id}_archive_", "").replace(".html", "")}
-        for a in _archives
-    ])
-    html = html.replace("__ARCHIVE_LINKS__", _archive_links)
-    out_path = os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
-    os.makedirs(REPORTS_DIR, exist_ok=True)
-    with open(out_path, "w", encoding="utf-8") as f:
-        f.write(html)
-    log("REPORT", f"固化报告 HTML: {out_path} ({len(html)} chars)")
-    return out_path
-
-
-def _static_report_path(evaluation_id: str) -> str:
-    return os.path.join(REPORTS_DIR, f"{evaluation_id}.html")
-
-
-from fastapi.responses import FileResponse, HTMLResponse
-
-
-@app.api_route("/reports/{evaluation_id}.html", methods=["GET", "HEAD"])
-def get_static_report(request: Request, evaluation_id: str):
-    """直接返回固化 HTML（无计算，毫秒级）。不存在时回退动态接口。"""
-    p = _static_report_path(evaluation_id)
-    if os.path.isfile(p):
-        return FileResponse(p, media_type="text/html")
-    # HEAD 请求不触发渲染，直接返回 404
-    if request.method == "HEAD":
-        raise HTTPException(status_code=404, detail="report not found")
-    # 回退：现场固化一次并返回
-    try:
-        render_static_report(evaluation_id)
-        return FileResponse(p, media_type="text/html")
-    except Exception:
-        raise HTTPException(status_code=404, detail="report not found")
-
-
-@app.get("/api/v1/evaluations/{evaluation_id}/pipeline")
-async def get_pipeline(evaluation_id: str):
-    """分析过程日志：管线各阶段数据（parse→resolve→pair→metric）。"""
-    def _query():
-        from ...infrastructure.database import connect
-        conn = connect(autocommit=True)
-        try:
-            cur = conn.cursor()
-            # task_run
-            cur.execute("SELECT task_run_id,task_id,`condition`,trace_valid,runtime_valid,kg_runtime_state FROM task_run WHERE evaluation_id=%s", (evaluation_id,))
-            runs = [dict(zip(["task_run_id","task_id","condition","trace_valid","runtime_valid","kg_runtime_state"], r)) for r in cur.fetchall()]
-            # facts
-            cur.execute("SELECT 'outcome' AS t, task_run_id, outcome, prediction, resolver_status, validation_result FROM outcome_fact WHERE evaluation_id=%s", (evaluation_id,))
-            outcomes = [dict(zip(["type","task_run_id","outcome","prediction","resolver_status","validation_result"], r)) for r in cur.fetchall()]
-            cur.execute("SELECT task_run_id, access, delivery, mount_status FROM knowledge_interaction_fact WHERE evaluation_id=%s", (evaluation_id,))
-            knowledge = [dict(zip(["task_run_id","access","delivery","mount_status"], r)) for r in cur.fetchall()]
-            cur.execute("SELECT task_run_id, kg_count, finding_count, code_count, shell_count, other_count, total_tool_calls FROM tool_action_fact WHERE evaluation_id=%s", (evaluation_id,))
-            tools = [dict(zip(["task_run_id","kg","finding","code","shell","other","total"], r)) for r in cur.fetchall()]
-            cur.execute("SELECT task_run_id, effective_tokens, steps, duration_ms, time_valid FROM resource_fact WHERE evaluation_id=%s", (evaluation_id,))
-            resources = [dict(zip(["task_run_id","tokens","steps","duration","time_valid"], r)) for r in cur.fetchall()]
-            # pair
-            cur.execute("SELECT pair_match_status, pair_experiment_valid, outcome_valid, pair_transition FROM task_pair WHERE evaluation_id=%s", (evaluation_id,))
-            pairs = [dict(zip(["match_status","exp_valid","outcome_valid","transition"], r)) for r in cur.fetchall()]
-            cur.execute("SELECT derived_fact_type, value_numeric, value_string, status, reason_code FROM pair_derived_fact WHERE evaluation_id=%s", (evaluation_id,))
-            derived = [dict(zip(["type","value_num","value_str","status","reason"], r)) for r in cur.fetchall()]
-            # metrics
-            cur.execute("SELECT metric_id, calculation_status, reason_code, n FROM metric_result WHERE evaluation_id=%s", (evaluation_id,))
-            metrics = [dict(zip(["metric_id","status","reason","n"], r)) for r in cur.fetchall()]
-            return {"evaluation_id": evaluation_id, "task_runs": runs, "outcomes": outcomes,
-                    "knowledge": knowledge, "tools": tools, "resources": resources,
-                    "pairs": pairs, "derived": derived, "metrics": metrics}
-        finally:
-            conn.close()
-    return await asyncio.to_thread(_query)
 
 
 # ===== SPA catch-all：必须最后注册，确保不拦截已有路由 =====

@@ -330,7 +330,7 @@ class Orchestrator:
         4. ROOT_CAUSE_ANALYSIS — FP case 挖掘链+验证链各自滚动压缩根因分析
         5. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB
         6. LIFECYCLE_ANALYSIS — L0-L7 全链路分析
-        7. CAUSAL_CHAIN — 因果链分析 + DTS 问题单生成
+        7. CAUSAL_CHAIN — 因果链分析 + 问题单生成
         8. REPORTING — 报告组装（含召回率/准确率计算）
         9. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
@@ -1388,11 +1388,11 @@ class Orchestrator:
         self, access_details: list[dict],
         evaluation_id: str = "", reports_dir: str = "",
     ) -> dict:
-        """因果链分析 + DTS 问题单生成。
+        """因果链分析 + 问题单生成。
 
         调用 CausalChainAnalyzer.analyze()，基于 knowledge_access_detail
         的判定结果按 Agent 类型聚合误报归因。
-        分析完成后，从 per_case_breakpoints 自动生成 DTS 问题单并持久化。
+        分析完成后，从 per_case_breakpoints 自动生成问题单并持久化。
         """
         from ..causal_chain.analyzer import CausalChainAnalyzer
 
@@ -1402,7 +1402,7 @@ class Orchestrator:
             evaluation_id = access_details[0].get("evaluation_id", "")
         result = analyzer.analyze(evaluation_id, access_details)
 
-        # 从断点生成 DTS 问题单
+        # 从断点生成问题单
         from ..dts.issue import generate_dts_issues
         from ..persistence.dts_repo import upsert_dts_issues
 

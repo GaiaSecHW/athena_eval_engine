@@ -1,4 +1,4 @@
-"""DTS 问题单持久化模块。
+"""问题单持久化模块。
 
 DB CRUD 操作，短连接 + 重试模式（与 kad_repo 同模式）。
 表：dts_issue（由 migration 010 创建）。
@@ -112,10 +112,10 @@ def _row_to_dict(row) -> dict:
 
 def upsert_dts_issues(issues: list[dict], evaluation_id: str,
                       reports_dir: str) -> int:
-    """批量写入 DTS 问题单（幂等：ON DUPLICATE KEY UPDATE）。
+    """批量写入问题单（幂等：ON DUPLICATE KEY UPDATE）。
 
     Args:
-        issues: DTS issue dict 列表，每条含 dts_id、evaluation_id 等。
+        issues: 问题单 dict 列表，每条含 dts_id、evaluation_id 等。
         evaluation_id: 评测 ID（仅用于日志）。
         reports_dir: 报告目录（保留参数，当前无大字段需写文件）。
 
@@ -136,7 +136,7 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
 
 
 def get_dts_issue(dts_id: str) -> dict | None:
-    """获取单个 DTS 问题单详情。
+    """获取单个问题单详情。
 
     Args:
         dts_id: 问题单 ID。
@@ -163,7 +163,7 @@ def list_dts_issues(
     limit: int = 100,
     offset: int = 0,
 ) -> list[dict]:
-    """列出 DTS 问题单（支持过滤）。
+    """列出问题单（支持过滤）。
 
     Args:
         evaluation_id: 评测 ID 过滤。
@@ -212,7 +212,7 @@ def list_dts_issues(
 
 
 def update_dts_issue(dts_id: str, updates: dict) -> bool:
-    """更新 DTS 问题单（root_cause / solution / status 等）。
+    """更新问题单（root_cause / solution / status 等）。
 
     Args:
         dts_id: 问题单 ID。
@@ -246,7 +246,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
 
 
 def get_dts_stats(evaluation_id: str | None = None) -> dict:
-    """聚合统计 DTS 问题单（按 status 和 agent_type 分组）。
+    """聚合统计问题单（按 status 和 agent_type 分组）。
 
     Args:
         evaluation_id: 评测 ID 过滤（None 表示全部）。
@@ -302,7 +302,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
 
 
 def list_dts_by_task(task_id: str) -> list[dict]:
-    """列出某个 task 的全部 DTS 问题单。
+    """列出某个 task 的全部问题单。
 
     Args:
         task_id: 任务 ID。
@@ -324,7 +324,7 @@ def list_dts_by_task(task_id: str) -> list[dict]:
 
 
 def get_closing_issues_by_task(task_id: str) -> list[dict]:
-    """列出某个 task 中处于 'closing' 状态的 DTS 问题单。
+    """列出某个 task 中处于 'closing' 状态的问题单。
 
     用于回归验证触发检查：当 task 的所有问题单都进入 closing 状态时，
     触发回归测试。

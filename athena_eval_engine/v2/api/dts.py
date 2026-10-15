@@ -1,4 +1,4 @@
-"""DTS 问题单 API 端点。
+"""问题单 API 端点。
 
 端点：
 - GET    /api/v2/dts                  — 列出问题单（支持过滤）
@@ -31,6 +31,7 @@ router = APIRouter(prefix="/api/v2/dts", tags=["dts"])
 
 class DTSUpdate(BaseModel):
     """问题单更新模型。"""
+
     root_cause: str | None = None
     solution: str | None = None
     status: str | None = None
@@ -57,7 +58,7 @@ def list_issues(
     limit: int = 100,
     offset: int = 0,
 ):
-    """列出 DTS 问题单（支持过滤、分页）。表不存在时返回空结果。"""
+    """列出问题单（支持过滤、分页）。表不存在时返回空结果。"""
     try:
         issues = list_dts_issues(
             evaluation_id=evaluation_id,
@@ -78,7 +79,7 @@ def list_issues(
 
 @router.get("/stats")
 def get_stats(evaluation_id: str | None = None):
-    """获取 DTS 问题单统计。表不存在时返回空统计。"""
+    """获取问题单统计。表不存在时返回空统计。"""
     try:
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
@@ -90,7 +91,7 @@ def get_stats(evaluation_id: str | None = None):
 
 @router.get("/by-task/{task_id}")
 def list_by_task(task_id: str):
-    """按 task 列出 DTS 问题单。表不存在时返回空列表。"""
+    """按 task 列出问题单。表不存在时返回空列表。"""
     try:
         issues = list_dts_by_task(task_id)
     except Exception as e:
@@ -102,19 +103,19 @@ def list_by_task(task_id: str):
 
 @router.get("/{dts_id}")
 def get_issue(dts_id: str):
-    """获取单个 DTS 问题单详情。"""
+    """获取单个问题单详情。"""
     issue = get_dts_issue(dts_id)
     if issue is None:
-        raise HTTPException(status_code=404, detail=f"DTS issue '{dts_id}' not found")
+        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
     return issue
 
 
 @router.put("/{dts_id}")
 def update_issue(dts_id: str, update: DTSUpdate):
-    """更新 DTS 问题单（root_cause / solution / status 等）。"""
+    """更新问题单（root_cause / solution / status 等）。"""
     existing = get_dts_issue(dts_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"DTS issue '{dts_id}' not found")
+        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
 
     updates = update.model_dump(exclude_none=True)
     if not updates:
@@ -122,7 +123,7 @@ def update_issue(dts_id: str, update: DTSUpdate):
 
     success = update_dts_issue(dts_id, updates)
     if not success:
-        raise HTTPException(status_code=500, detail=f"Failed to update DTS issue '{dts_id}'")
+        raise HTTPException(status_code=500, detail=f"更新问题单 '{dts_id}' 失败")
 
     return get_dts_issue(dts_id)
 
@@ -130,21 +131,22 @@ def update_issue(dts_id: str, update: DTSUpdate):
 @router.post("/{dts_id}/close")
 def close_issue(dts_id: str):
     """关闭问题单（status→closing，设置 closed_at）。"""
+
     existing = get_dts_issue(dts_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"DTS issue '{dts_id}' not found")
+        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
 
     if existing["status"] in ("passed", "failed", "not_issue"):
         raise HTTPException(
             status_code=400,
-            detail=f"DTS issue '{dts_id}' already in final state: {existing['status']}",
+            detail=f"问题单 '{dts_id}' 已在终态: {existing['status']}",
         )
 
     success = update_dts_issue(dts_id, {
         "status": "closing",
     })
     if not success:
-        raise HTTPException(status_code=500, detail=f"Failed to close DTS issue '{dts_id}'")
+        raise HTTPException(status_code=500, detail=f"关闭问题单 '{dts_id}' 失败")
 
     return {"dts_id": dts_id, "status": "closing"}
 
@@ -154,13 +156,13 @@ def reject_issue(dts_id: str, body: DTSReject):
     """驳回问题单（status→not_issue，需要理由）。"""
     existing = get_dts_issue(dts_id)
     if existing is None:
-        raise HTTPException(status_code=404, detail=f"DTS issue '{dts_id}' not found")
+        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
 
     success = update_dts_issue(dts_id, {
         "status": "not_issue",
         "root_cause": f"[驳回] {body.reason}",
     })
     if not success:
-        raise HTTPException(status_code=500, detail=f"Failed to reject DTS issue '{dts_id}'")
+        raise HTTPException(status_code=500, detail=f"驳回问题单 '{dts_id}' 失败")
 
     return {"dts_id": dts_id, "status": "not_issue", "reason": body.reason}

@@ -1,7 +1,7 @@
-"""DTS 问题单生成模块。
+"""问题单生成模块。
 
-从因果链分析结果的 per_case_breakpoints 生成 DTS 问题单。
-每个断点生成一条 DTS 记录，映射到对应的责任方（Agent 或 knowledge_base）。
+从因果链分析结果的 per_case_breakpoints 生成问题单。
+每个断点生成一条记录，映射到对应的责任方（Agent 或 knowledge_base）。
 """
 from __future__ import annotations
 
@@ -153,9 +153,9 @@ def generate_dts_issues(
     access_details: list[dict],
     case_filter_stats: dict,
 ) -> list[dict]:
-    """从因果链分析结果生成 DTS 问题单。
+    """从因果链分析结果生成问题单。
 
-    遍历 per_case_breakpoints，为每个断点生成一条 DTS 记录。
+    遍历 per_case_breakpoints，为每个断点生成一条记录。
 
     Args:
         evaluation_id: 评测 ID。
@@ -167,7 +167,7 @@ def generate_dts_issues(
             含 fp/fn case 信息和 fp_type 映射。
 
     Returns:
-        DTS issue dict 列表，每条含 dts_id、evaluation_id、task_run_id、
+        问题单 dict 列表，每条含 dts_id、evaluation_id、task_run_id、
         task_id、agent_type、case_type、fp_type、cause_code、
         breakpoint_level、access_id、breakpoint_desc、evidence_uri、status。
     """

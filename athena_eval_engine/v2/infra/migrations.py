@@ -225,7 +225,7 @@ MIGRATIONS = [
     },
     {
         "id": "010_dts_issue",
-        "desc": "新增 DTS 问题单表",
+        "desc": "新增问题单表",
         "sql": [
             "CREATE TABLE IF NOT EXISTS dts_issue ("
             "  dts_id VARCHAR(64) PRIMARY KEY,"

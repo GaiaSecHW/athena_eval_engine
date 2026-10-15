@@ -78,32 +78,32 @@ class ReplayVerifier:
         dts_issues: list[dict],
         project_id: str = "",
     ) -> list[dict]:
-        """验证一个 task（case）的全部 DTS 单的回归结果。
+        """验证一个 task（case）的全部问题单的回归结果。
 
-        一个 case 可能有多条 DTS 单，统一触发一次回归测试。
-        全部 DTS 单共用同一个回归判定结果。
+        一个 case 可能有多条问题单，统一触发一次回归测试。
+        全部问题单共用同一个回归判定结果。
 
         Args:
             task_id: task ID。
-            dts_issues: 该 task 的全部 DTS 单列表。
+            dts_issues: 该 task 的全部问题单列表。
             project_id: 项目 ID。
 
         Returns:
-            每条 DTS 单对应的回归结果列表。
+            每条问题单对应的回归结果列表。
         """
         if not dts_issues:
             return []
 
-        # 取第一条 DTS 单的 case_type（同一 case 的所有 DTS 单 case_type 相同）
+        # 取第一条问题单的 case_type（同一 case 的所有问题单 case_type 相同）
         case_type = dts_issues[0].get("case_type", "FP")
 
-        # 从 DTS 单中提取 case_id
+        # 从问题单中提取 case_id
         case_id = dts_issues[0].get("task_run_id", "")
 
         # 验证回归
         result = self.verify_replay(case_id, case_type, task_id, project_id)
 
-        # 为每条 DTS 单生成结果
+        # 为每条问题单生成结果
         results = []
         for issue in dts_issues:
             results.append({
