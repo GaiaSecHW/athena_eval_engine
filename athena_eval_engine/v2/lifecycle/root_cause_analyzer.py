@@ -25,10 +25,12 @@ from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
 from ...infrastructure.log_util import log
 
-# ── 挖掘 agent 类型 ──
-_MINING_AGENTS = {"turing", "argo", "secmate", "dataflow"}
-# ── 验证 agent 类型 ──
-_VERIFY_AGENTS = {"cvuln_verify", "webvuln_verify"}
+# ── 挖掘 agent 类型（DataPack 级别）──
+_MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
+# ── 验证 agent 类型（DataPack 级别）──
+_VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
+# ── Turing 平台：验证 session 的 agent 名 ──
+_TURING_VERIFY_AGENT = "vuln-hunt-validate"
 
 # ── 系统 prompt（固定）──
 
@@ -156,8 +158,8 @@ class RootCauseAnalyzer:
         """
         # 构建 session_id → events 索引
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
-        # 构建 session_id → agent_type 索引，合并全部 parent_map
-        sid_to_agent: dict[str, str] = {}
+        # 构建 session_id → 角色（"mining" / "verify"）索引，合并全部 parent_map
+        sid_role: dict[str, str] = {}
         all_parent_map: dict[str, str] = {}
         all_sessions: dict[str, dict] = {}
         for dp in data_packs:
@@ -166,7 +168,14 @@ class RootCauseAnalyzer:
             parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
             for sid, sdata in sessions.items():
                 all_sessions[sid] = sdata
-                sid_to_agent[sid] = dp.agent_type
+                # 判断角色：先看 session 的 agent 字段，再看 DataPack.agent_type
+                session_agent = (sdata or {}).get("agent", "")
+                if session_agent == _TURING_VERIFY_AGENT:
+                    sid_role[sid] = "verify"
+                elif dp.agent_type in _VERIFY_AGENT_TYPES:
+                    sid_role[sid] = "verify"
+                elif dp.agent_type in _MINING_AGENT_TYPES:
+                    sid_role[sid] = "mining"
             for sid, pid in parent_map.items():
                 if sid in sessions:
                     all_parent_map[sid] = pid
@@ -190,11 +199,11 @@ class RootCauseAnalyzer:
             case_chain = self._trace_chain(
                 verify_sids, all_parent_map, all_sessions)
 
-            # 按 agent_type 拆分为挖掘链和验证链
+            # 按角色拆分为挖掘链和验证链
             mining_chain = [sid for sid in case_chain
-                            if sid_to_agent.get(sid) in _MINING_AGENTS]
+                            if sid_role.get(sid) == "mining"]
             verify_chain = [sid for sid in case_chain
-                            if sid_to_agent.get(sid) in _VERIFY_AGENTS]
+                            if sid_role.get(sid) == "verify"]
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
@@ -383,6 +392,8 @@ class RootCauseAnalyzer:
                 "summary": summary,
                 "key_findings": result.get("key_findings") or [],
                 "l0_l7": l0_l7,
+                "root_cause": result.get("root_cause"),
+                "fix_suggestion": result.get("fix_suggestion"),
             })
 
             # 收集断点
