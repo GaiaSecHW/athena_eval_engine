@@ -772,12 +772,15 @@ def discover_mining_trace_kind(project_id: str, task_id: str) -> str | None:
     return r[0] if r else None
 
 
-def discover_verify_traces(project_id: str) -> list[dict]:
+def discover_verify_traces(project_id: str, task_id: str = "") -> list[dict]:
     """自动发现验证 agent 的 trace。
 
     按各适配器定义的绝对路径扫描：
     - cvuln_verify:  /data/files/{project_id}/tasks/c_vuln_verify/*.jsonl
     - webvulnverify: /data/files/{project_id}/tasks/{task_id}/session/WebVerify/*.jsonl
+
+    task_id 指定挖掘 agent 的 task 目录，验证 agent session 在同一 task 目录下。
+    如果 task_id 为空，扫描所有 task 目录（兼容旧调用）。
 
     返回: [{trace_kind, source_uri, agent_name}, ...]
     """
@@ -794,11 +797,13 @@ def discover_verify_traces(project_id: str) -> list[dict]:
                 "agent_name": "CVulnVerify",
             })
         # WebVulnVerify: tasks/{task_id}/session/WebVerify/*.jsonl
-        # 一个项目可能有多个 task 目录下都有 WebVerify session（不同批次的验证），
-        # 全部收集，不能只取第一个——否则会漏掉另一批验证 session。
+        # task_id 指定挖掘 agent 的 task 目录，验证 agent session 在同一目录下。
+        # 如果 task_id 为空，扫描所有 task 目录。
         tasks_dir = os.path.join(project_base, "tasks")
         if os.path.isdir(tasks_dir):
-            for tid in sorted(os.listdir(tasks_dir)):
+            scan_dirs = [task_id] if task_id and os.path.isdir(
+                os.path.join(tasks_dir, task_id)) else sorted(os.listdir(tasks_dir))
+            for tid in scan_dirs:
                 wv_dir = os.path.join(tasks_dir, tid, "session", "WebVerify")
                 if os.path.isdir(wv_dir) and glob.glob(os.path.join(wv_dir, "*.jsonl")):
                     out.append({
@@ -823,31 +828,45 @@ def discover_verify_traces(project_id: str) -> list[dict]:
                 "source_uri": vv_remote,
                 "agent_name": "CVulnVerify",
             })
-        # WebVulnVerify: 遍历 tasks/*/session/WebVerify/（全部目录，非仅第一个）
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", f"{remote_base}/tasks", "-path", "*/session/WebVerify/*.jsonl",
-               "-print"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
-            # 每个文件路径提取其 WebVerify 目录，去重
-            seen_dirs: set[str] = set()
-            for line in r.stdout.strip().split("\n"):
-                wv_dir = os.path.dirname(line)
-                if wv_dir not in seen_dirs:
-                    seen_dirs.add(wv_dir)
-                    # 从路径 tasks/{task_id}/session/WebVerify 提取 task_id
-                    parts = wv_dir.split("/")
-                    tid = ""
-                    if "tasks" in parts:
-                        idx = parts.index("tasks")
-                        if idx + 1 < len(parts):
-                            tid = parts[idx + 1]
-                    out.append({
-                        "trace_kind": "webvulnverify",
-                        "source_uri": wv_dir,
-                        "agent_name": "WebVulnVerify",
-                        "source_task_id": tid,
-                    })
+        # WebVulnVerify: tasks/{task_id}/session/WebVerify/*.jsonl
+        # task_id 指定挖掘 agent 的 task 目录，验证 agent session 在同一目录下。
+        # 如果 task_id 为空，扫描所有 task 目录。
+        if task_id:
+            wv_remote = f"{remote_base}/tasks/{task_id}/session/WebVerify"
+            cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+                   "find", wv_remote, "-maxdepth", "1", "-name", "*.jsonl",
+                   "-print", "-quit"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+            if r.stdout and r.stdout.strip():
+                out.append({
+                    "trace_kind": "webvulnverify",
+                    "source_uri": wv_remote,
+                    "agent_name": "WebVulnVerify",
+                    "source_task_id": task_id,
+                })
+        else:
+            cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+                   "find", f"{remote_base}/tasks", "-path", "*/session/WebVerify/*.jsonl",
+                   "-print"]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
+            if r.stdout and r.stdout.strip():
+                seen_dirs: set[str] = set()
+                for line in r.stdout.strip().split("\n"):
+                    wv_dir = os.path.dirname(line)
+                    if wv_dir not in seen_dirs:
+                        seen_dirs.add(wv_dir)
+                        parts = wv_dir.split("/")
+                        tid = ""
+                        if "tasks" in parts:
+                            idx = parts.index("tasks")
+                            if idx + 1 < len(parts):
+                                tid = parts[idx + 1]
+                        out.append({
+                            "trace_kind": "webvulnverify",
+                            "source_uri": wv_dir,
+                            "agent_name": "WebVulnVerify",
+                            "source_task_id": tid,
+                        })
     return out
 
 

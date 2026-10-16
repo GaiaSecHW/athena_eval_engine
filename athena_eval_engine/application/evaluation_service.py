@@ -435,7 +435,7 @@ def _build_entries(req: CreateRequest) -> list[dict]:
     # 2. 验证 trace
     if pid:
         try:
-            verify_traces = ps.discover_verify_traces(pid)
+            verify_traces = ps.discover_verify_traces(pid, tid)
             for vt in verify_traces:
                 # 多个同类型验证 trace 用 source_task_id 区分，避免 task_run_id 冲突
                 tid = vt.get("source_task_id", "")
