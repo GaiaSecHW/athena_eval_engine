@@ -477,7 +477,7 @@ def delete_evaluation(evaluation_id: str):
         eid_tables = [
             "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
             "tool_action_fact", "resource_fact", "task_run", "trace_source",
-            "evaluation_report",
+            "evaluation_report", "dts_issue", "knowledge_access_detail",
         ]
         for t in eid_tables:
             cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
@@ -553,6 +553,8 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             # trace 与 finding
             "task_run", "trace_source", "extracted_finding", "finding_benchmark_match",
             "session_graph",
+            # 生命周期分析结果
+            "knowledge_access_detail", "dts_issue",
             # 报告
             "evaluation_report",
             # 计算运行记录

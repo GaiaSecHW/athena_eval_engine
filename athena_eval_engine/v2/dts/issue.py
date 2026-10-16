@@ -64,8 +64,9 @@ def generate_dts_issues(
 ) -> list[dict]:
     """从因果链分析结果生成问题单。
 
-    按 (case_id, agent_type) 去重——同一个 case 在同一个 agent 内只提一条单，
-    取最严重的断点（cause_code 严重度最高的），合并其余断点的证据。
+    按 (case_id, agent_type) 分组——同一个 case 在同一个 agent 内只提一条单，
+    所有断点全部列在 breakpoint_desc 中，供开发人员逐条排查。
+    cause_code 和 breakpoint_level 取最严重的断点（严重度 G>F>...>A）。
 
     Args:
         evaluation_id: 评测 ID。
@@ -109,7 +110,7 @@ def generate_dts_issues(
         case_root_cause[cid] = root_causes
         case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
 
-    # 按 (case_id, agent_type) 分组，每组取最严重的断点
+    # 按 (case_id, agent_type) 分组，所有断点合并到一条单
     grouped: dict[tuple[str, str], list[dict]] = {}
     for case_entry in per_case_breakpoints:
         case_id = case_entry.get("case_id", "")
@@ -128,17 +129,23 @@ def generate_dts_issues(
     issues: list[dict] = []
     seq = 0
     for (case_id, agent_type), bps in grouped.items():
-        # 取最严重的断点作为主断点
+        # 按严重度排序，最严重的排前面
         bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
         primary = bps[0]
         vuln_title = primary.get("_vuln_title", "")
         cause_code = primary.get("cause_code", "")
         break_level = primary.get("break_level", "")
 
-        # 合并所有断点的证据
-        all_evidence = " || ".join(
-            bp.get("evidence", "") for bp in bps if bp.get("evidence")
-        )
+        # 所有断点逐条列出，供开发人员排查
+        bp_lines = []
+        for i, bp in enumerate(bps, 1):
+            bp_cause = bp.get("cause_code", "")
+            bp_level = bp.get("break_level", "")
+            bp_evidence = bp.get("evidence", "")
+            bp_lines.append(
+                _build_breakpoint_desc(bp_cause, bp_level, bp_evidence, "")
+            )
+        breakpoint_desc = f"漏洞标题: {vuln_title} | " + " || ".join(bp_lines)
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
@@ -146,9 +153,6 @@ def generate_dts_issues(
 
         seq += 1
         dts_id = f"{evaluation_id}_{case_id}_{agent_type}_{seq}"
-        breakpoint_desc = _build_breakpoint_desc(
-            cause_code, break_level, all_evidence, vuln_title,
-        )
 
         issues.append({
             "dts_id": dts_id,
@@ -161,7 +165,7 @@ def generate_dts_issues(
             "cause_code": cause_code,
             "breakpoint_level": break_level,
             "breakpoint_desc": breakpoint_desc,
-            "evidence_uri": all_evidence[:512] if all_evidence else None,
+            "evidence_uri": None,
             "root_cause": json.dumps(root_cause, ensure_ascii=False) if root_cause else None,
             "solution": fix_suggestion or None,
             "replay_eval_id": None,
