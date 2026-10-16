@@ -152,7 +152,9 @@ def generate_dts_issues(
         responsibility = CAUSE_TO_RESPONSIBILITY.get(cause_code, "agent")
 
         seq += 1
-        dts_id = f"{evaluation_id}_{case_id}_{agent_type}_{seq}"
+        # DTS-{评测编号}-{序号}，评测编号取 evaluation_id 最后一段（7357）
+        eval_seq = evaluation_id.split("-")[-1] if "-" in evaluation_id else evaluation_id[-4:]
+        dts_id = f"DTS-{eval_seq}-{seq:02d}"
 
         issues.append({
             "dts_id": dts_id,
