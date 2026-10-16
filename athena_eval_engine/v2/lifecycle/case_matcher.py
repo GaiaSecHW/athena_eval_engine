@@ -261,6 +261,41 @@ def match_cases(
                 "reason": "未执行匹配",
             })
 
+    # 去重：一个基线 case 只能被一条原始 case 匹配。
+    # 多条原始 case 匹配到同一个基线时，只保留 confidence 最高的，
+    # 其余改为未匹配。
+    baseline_best: dict[str, dict] = {}  # baseline_case_id → result with highest confidence
+    for r in results:
+        bid = r.get("matched_baseline_case_id")
+        if not bid:
+            continue
+        existing = baseline_best.get(bid)
+        if existing is None or r["confidence"] > existing["confidence"]:
+            baseline_best[bid] = r
+
+    deduped_count = 0
+    for i, r in enumerate(results):
+        bid = r.get("matched_baseline_case_id")
+        if not bid:
+            continue
+        winner = baseline_best.get(bid)
+        if winner and r is not winner:
+            # 这条不是最高 confidence 的匹配者，改为未匹配
+            results[i] = {
+                "raw_case_id": r.get("raw_case_id", ""),
+                "raw_title": r.get("raw_title", ""),
+                "matched_baseline_case_id": None,
+                "matched_baseline_title": None,
+                "matched_baseline_index": None,
+                "confidence": 0.0,
+                "reason": f"基线 {bid} 已被更高 confidence 的原始 case 匹配",
+            }
+            deduped_count += 1
+
+    if deduped_count > 0:
+        log("MATCH", f"基线去重: 移除 {deduped_count} 条重复匹配",
+            eval_id=evaluation_id)
+
     matched = sum(1 for r in results if r.get("matched_baseline_case_id"))
     log("MATCH", f"匹配完成: {matched}/{len(results)} 条原始数据找到匹配",
         eval_id=evaluation_id)
