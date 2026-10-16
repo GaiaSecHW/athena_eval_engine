@@ -511,7 +511,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   if (bps.length > 0) {
     html += `<div style="margin:8px 0;">`;
     html += `<div style="color:#f39c12;font-weight:600;margin-bottom:4px;font-size:13px;">L0-L7 断点 (${bps.length})</div>`;
-    html += `<table><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th><th>返回内容</th></tr></thead><tbody>`;
     for (const bp of bps) {
       const lvl = bp.breakpoint || "—";
       const code = bp.cause_code || "—";
@@ -528,6 +528,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `<td>${bp.l6_used === true ? "✓" : bp.l6_used === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l7_influenced === "positive" ? "正向" : bp.l7_influenced === "negative" ? "负向" : "—"}</td>`;
       html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${bp.query_content || ""}">${bp.query_content || "—"}</td>`;
+      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${bp.returned_content || ""}">${bp.returned_content || "—"}</td>`;
       html += `</tr>`;
     }
     html += `</tbody></table>`;
