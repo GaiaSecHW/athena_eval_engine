@@ -268,50 +268,38 @@ def _join_present(*values) -> str | None:
 
 
 def _normalize_case_description(case: dict) -> str:
-    """移植 vbench_next/app/upstream/import_service.py:normalize_case_description。
+    """构建漏洞描述：标题 + 概述 + 人工确认信息。
 
-    渲染 6 段有界语义段，不抬升 report claims 的可信度：
-    1. Vulnerability title
-    2. Human-confirmed black-box vulnerability（固定提示）
-    3. Upstream summary
-    4. Human confirmation notes
-    5. Report claims requiring code verification
-    6. POC or trigger-input evidence
+    直接使用告警中心返回的中文内容，不做英文模板包装。
     """
+    parts: list[str] = []
+    title = case.get("title") or case.get("id") or ""
+    if title:
+        parts.append(title)
+
+    summary = case.get("summary") or ""
+    if summary:
+        parts.append(summary)
+
+    ds = case.get("display_summary")
+    if isinstance(ds, dict):
+        subtitle = ds.get("subtitle") or ""
+        if subtitle:
+            parts.append(subtitle)
+
     confirmation = case.get("human_confirmation")
+    if confirmation:
+        hc_summary = confirmation.get("summary") or ""
+        if hc_summary:
+            parts.append(f"人工确认：{hc_summary}")
+
     latest_decision = case.get("latest_human_decision")
-    fact_detail = (
-        "The upstream human decision confirms that the vulnerability was "
-        "reproduced through black-box observation. This confirms existence, "
-        "not any reported code location or call path."
-    )
-    human_notes = _join_present(
-        confirmation.get("summary") if confirmation else None,
-        latest_decision.get("reason") if latest_decision else None,
-    )
-    subject = case.get("subject")
-    report_claims = _join_present(
-        case.get("raw_report_summary"),
-        subject if subject is not None else None,
-    )
-    poc_detail = _join_present(
-        "POC is evidence only and must not be executed",
-        case.get("display_summary"),
-        "Static POC material is referenced." if case.get("has_static_poc") else None,
-        "Dynamic POC material is referenced." if case.get("has_dynamic_poc") else None,
-    )
-    sections = (
-        ("Vulnerability title", case.get("title") or case.get("id")),
-        ("Human-confirmed black-box vulnerability", fact_detail),
-        ("Upstream summary", case.get("summary")),
-        ("Human confirmation notes", human_notes),
-        ("Report claims requiring code verification", report_claims),
-        ("POC or trigger-input evidence", poc_detail),
-    )
-    return "\n\n".join(
-        f"## {heading}\n{_render_description_value(value)}"
-        for heading, value in sections
-    )
+    if latest_decision:
+        reason = latest_decision.get("reason") or ""
+        if reason:
+            parts.append(f"人工判定原因：{reason}")
+
+    return "\n\n".join(parts) if parts else ""
 
 
 def _parse_locator(locator: str) -> tuple[str, str, str]:
