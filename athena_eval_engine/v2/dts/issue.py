@@ -126,7 +126,7 @@ def generate_dts_issues(
             responsibility = CAUSE_TO_RESPONSIBILITY.get(cause_code, "agent")
 
             seq += 1
-            dts_id = f"DTS-{seq:04d}"
+            dts_id = f"{evaluation_id}_{case_id}_{bp_idx}"
             breakpoint_desc = _build_breakpoint_desc(
                 cause_code, break_level, evidence, vuln_title,
             )

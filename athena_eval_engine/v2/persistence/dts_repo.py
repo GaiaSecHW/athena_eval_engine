@@ -325,6 +325,9 @@ def list_dts_by_case(case_id: str) -> list[dict]:
 def list_dts_by_task(task_id: str) -> list[dict]:
     """列出某个原始数据任务的全部问题单。
 
+    同一个 case+cause_code+breakpoint_level 可能因多次评测产生多条记录，
+    只返回最新评测的记录（按 created_at 降序去重）。
+
     Args:
         task_id: 原始数据任务 ID（manifest 中的 task_id）。
 
@@ -333,7 +336,8 @@ def list_dts_by_task(task_id: str) -> list[dict]:
     """
     sql = (
         f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
-        f" WHERE task_id = %s ORDER BY created_at ASC"
+        f" WHERE task_id = %s"
+        f" ORDER BY created_at DESC"
     )
 
     def _do_query(cur):
@@ -341,7 +345,17 @@ def list_dts_by_task(task_id: str) -> list[dict]:
         return cur.fetchall()
 
     rows = _db_query(_do_query)
-    return [_row_to_dict(r) for r in rows]
+    seen: set[tuple[str, str, str]] = set()
+    result: list[dict] = []
+    for r in rows:
+        d = _row_to_dict(r)
+        key = (d.get("case_id", ""), d.get("cause_code", ""),
+               d.get("breakpoint_level", ""))
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(d)
+    return result
 
 
 def get_closing_issues_by_case(case_id: str) -> list[dict]:
