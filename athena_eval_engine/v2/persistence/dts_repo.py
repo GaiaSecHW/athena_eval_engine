@@ -40,13 +40,17 @@ _INSERT_SQL = (
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
 _SELECT_COLUMNS = (
-    "dts_id, evaluation_id, task_id, case_id, vuln_title, agent_type,"
-    " case_type, cause_code, breakpoint_level,"
-    " breakpoint_desc, evidence_uri,"
-    " root_cause, solution, replay_eval_id, replay_result,"
-    " status, responsibility,"
-    " created_at, updated_at, closed_at"
+    "d.dts_id, d.evaluation_id, d.task_id, d.case_id, d.vuln_title, d.agent_type,"
+    " d.case_type, d.cause_code, d.breakpoint_level,"
+    " d.breakpoint_desc, d.evidence_uri,"
+    " d.root_cause, d.solution, d.replay_eval_id, d.replay_result,"
+    " d.status, d.responsibility,"
+    " d.created_at, d.updated_at, d.closed_at,"
+    " e.evaluation_name"
 )
+
+# JOIN evaluation 表获取评测名称
+_FROM_JOIN = " dts_issue d LEFT JOIN evaluation e ON d.evaluation_id = e.evaluation_id"
 
 
 # ---------------------------------------------------------------------------
@@ -106,6 +110,7 @@ def _row_to_dict(row) -> dict:
         "root_cause", "solution", "replay_eval_id", "replay_result",
         "status", "responsibility",
         "created_at", "updated_at", "closed_at",
+        "evaluation_name",
     )
     return {k: row[i] for i, k in enumerate(keys)}
 
@@ -149,7 +154,7 @@ def get_dts_issue(dts_id: str) -> dict | None:
         问题单 dict 或 None（不存在时）。
     """
     def _do_query(cur):
-        cur.execute(f"SELECT {_SELECT_COLUMNS} FROM dts_issue WHERE dts_id = %s", (dts_id,))
+        cur.execute(f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN} WHERE d.dts_id = %s", (dts_id,))
         return cur.fetchone()
 
     row = _db_query(_do_query)
@@ -176,31 +181,31 @@ def list_dts_issues(
     params: list = []
 
     if evaluation_id:
-        where_parts.append("evaluation_id = %s")
+        where_parts.append("d.evaluation_id = %s")
         params.append(evaluation_id)
     if agent_type:
-        where_parts.append("agent_type = %s")
+        where_parts.append("d.agent_type = %s")
         params.append(agent_type)
     if status:
-        where_parts.append("status = %s")
+        where_parts.append("d.status = %s")
         params.append(status)
     if cause_code:
-        where_parts.append("cause_code = %s")
+        where_parts.append("d.cause_code = %s")
         params.append(cause_code)
     if case_type:
-        where_parts.append("case_type = %s")
+        where_parts.append("d.case_type = %s")
         params.append(case_type)
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     def _do_query(cur):
         # 查总数
-        cur.execute(f"SELECT COUNT(*) FROM dts_issue{where_clause}", tuple(params))
+        cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", tuple(params))
         total = cur.fetchone()[0]
         # 查当前页
         sql = (
-            f"SELECT {_SELECT_COLUMNS} FROM dts_issue{where_clause}"
-            f" ORDER BY created_at DESC LIMIT %s OFFSET %s"
+            f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}{where_clause}"
+            f" ORDER BY d.created_at DESC LIMIT %s OFFSET %s"
         )
         cur.execute(sql, tuple(params + [limit, offset]))
         rows = cur.fetchall()
@@ -258,36 +263,36 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
             "total": N,
         }
     """
-    where_clause = " WHERE evaluation_id = %s" if evaluation_id else ""
+    where_clause = " WHERE d.evaluation_id = %s" if evaluation_id else ""
     params = (evaluation_id,) if evaluation_id else ()
 
     def _do_query(cur):
         # 按 status 分组
         cur.execute(
-            f"SELECT status, COUNT(*) FROM dts_issue{where_clause}"
-            f" GROUP BY status",
+            f"SELECT d.status, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.status",
             params,
         )
         by_status = {row[0]: row[1] for row in cur.fetchall()}
 
         # 按 agent_type 分组
         cur.execute(
-            f"SELECT agent_type, COUNT(*) FROM dts_issue{where_clause}"
-            f" GROUP BY agent_type",
+            f"SELECT d.agent_type, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.agent_type",
             params,
         )
         by_agent = {row[0]: row[1] for row in cur.fetchall()}
 
         # 按 cause_code 分组
         cur.execute(
-            f"SELECT cause_code, COUNT(*) FROM dts_issue{where_clause}"
-            f" GROUP BY cause_code",
+            f"SELECT d.cause_code, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.cause_code",
             params,
         )
         by_cause = {row[0]: row[1] for row in cur.fetchall()}
 
         # 总数
-        cur.execute(f"SELECT COUNT(*) FROM dts_issue{where_clause}", params)
+        cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", params)
         total = cur.fetchone()[0]
 
         return {
@@ -310,8 +315,8 @@ def list_dts_by_case(case_id: str) -> list[dict]:
         问题单 dict 列表。
     """
     sql = (
-        f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
-        f" WHERE case_id = %s ORDER BY created_at ASC"
+        f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}"
+        f" WHERE d.case_id = %s ORDER BY d.created_at ASC"
     )
 
     def _do_query(cur):
@@ -335,9 +340,9 @@ def list_dts_by_task(task_id: str) -> list[dict]:
         问题单 dict 列表。
     """
     sql = (
-        f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
-        f" WHERE task_id = %s"
-        f" ORDER BY created_at DESC"
+        f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}"
+        f" WHERE d.task_id = %s"
+        f" ORDER BY d.created_at DESC"
     )
 
     def _do_query(cur):
@@ -371,9 +376,9 @@ def get_closing_issues_by_case(case_id: str) -> list[dict]:
         closing 状态的问题单 dict 列表。
     """
     sql = (
-        f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
-        f" WHERE case_id = %s AND status = 'closing'"
-        f" ORDER BY created_at ASC"
+        f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}"
+        f" WHERE d.case_id = %s AND d.status = 'closing'"
+        f" ORDER BY d.created_at ASC"
     )
 
     def _do_query(cur):
