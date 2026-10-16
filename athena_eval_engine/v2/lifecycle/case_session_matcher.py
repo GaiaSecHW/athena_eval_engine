@@ -289,26 +289,23 @@ class CaseSessionMatcher:
         sessions: dict[str, dict],
         sid_role: dict[str, str],
     ) -> list[str]:
-        """从 verify_sessions 沿 parent_map 追溯到根节点，返回挖掘 session 列表。
+        """从 verify_sessions 找直接关联的挖掘 session。
 
-        与 root_cause_analyzer._trace_chain 同逻辑：从每个 verify session
-        向上追溯 parent，收集链上全部 session_id，然后只保留角色为
-        mining 的 session。
+        只取 verify session 的直接 parent（vuln-hunt-mine），
+        不追溯公共上游（preprocess/strategy/detect）——这些是多个 case
+        共享的公共 session，不属于特定 case 的挖掘链。
         """
         if not verify_sids:
             return []
 
-        chain_set: set[str] = set()
+        mining_sids: list[str] = []
         for vsid in verify_sids:
-            cur = vsid
-            while cur and cur in sessions and cur not in chain_set:
-                chain_set.add(cur)
-                cur = parent_map.get(cur, "")
+            pid = parent_map.get(vsid, "")
+            if pid and sid_role.get(pid) == "mining":
+                if pid not in mining_sids:
+                    mining_sids.append(pid)
 
-        if not chain_set:
-            return []
-
-        return [sid for sid in chain_set if sid_role.get(sid) == "mining"]
+        return mining_sids
 
     def _build_verify_index(
         self,

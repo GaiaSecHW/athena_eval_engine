@@ -243,15 +243,18 @@ class RootCauseAnalyzer:
             verify_sids = case.get("verify_sessions", [])
             fp_reason = case.get("human_confirmation_summary", "")
 
-            # 从 verify_sessions 沿 parent_map 追溯到根节点
-            case_chain = self._trace_chain(
-                verify_sids, all_parent_map, all_sessions)
-
-            # 按角色拆分为挖掘链和验证链
-            mining_chain = [sid for sid in case_chain
-                            if sid_role.get(sid) == "mining"]
-            verify_chain = [sid for sid in case_chain
-                            if sid_role.get(sid) == "verify"]
+            # 从 verify_sessions 找直接关联的挖掘 session 和验证 session
+            # parent_id 是创建树边，不是 case 链边——一个 detect 可能
+            # 创建多个 mine session 挖不同漏洞，preprocess/strategy/detect
+            # 是公共上游，不属于特定 case。只取直接 parent（mine），
+            # 不追溯公共祖先。
+            mining_chain: list[str] = []
+            verify_chain: list[str] = list(verify_sids)
+            for vsid in verify_sids:
+                pid = all_parent_map.get(vsid, "")
+                if pid and sid_role.get(pid) == "mining":
+                    if pid not in mining_chain:
+                        mining_chain.append(pid)
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
@@ -294,54 +297,6 @@ class RootCauseAnalyzer:
                     results[idx] = result
 
         return [r for r in results if r is not None]
-
-    @staticmethod
-    def _trace_chain(
-        verify_sids: list[str],
-        parent_map: dict[str, str],
-        sessions: dict[str, dict],
-    ) -> list[str]:
-        """从 verify_sessions 沿 parent_map 追溯到根节点，返回拓扑序（根→叶子）。
-
-        直接用 PARSING 阶段建好的 parent_map 调用关系。
-        """
-        if not verify_sids:
-            return []
-
-        # 从每个 verify session 向上追溯，收集链上全部 session_id
-        chain_set: set[str] = set()
-        for vsid in verify_sids:
-            cur = vsid
-            while cur and cur in sessions and cur not in chain_set:
-                chain_set.add(cur)
-                cur = parent_map.get(cur, "")
-
-        if not chain_set:
-            return []
-
-        # 拓扑排序：根→叶子
-        children: dict[str, list[str]] = defaultdict(list)
-        roots: list[str] = []
-        for sid in chain_set:
-            pid = parent_map.get(sid, "")
-            if pid in chain_set:
-                children[pid].append(sid)
-            else:
-                roots.append(sid)
-
-        ordered: list[str] = []
-        queue = sorted(roots)
-        visited: set[str] = set()
-        while queue:
-            sid = queue.pop(0)
-            if sid in visited:
-                continue
-            visited.add(sid)
-            ordered.append(sid)
-            for child in sorted(children.get(sid, [])):
-                queue.append(child)
-
-        return ordered
 
     def _analyze_chain(
         self,
