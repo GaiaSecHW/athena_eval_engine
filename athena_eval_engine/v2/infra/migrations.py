@@ -321,6 +321,18 @@ MIGRATIONS = [
             ")) WHERE vuln_title = '' AND breakpoint_desc LIKE '%漏洞类型:%'",
         ],
     },
+    {
+        "id": "017_cause_code_h",
+        "desc": "dts_issue + knowledge_access_detail 的 cause_code CHECK 增加 H（L8 其他原因）",
+        "sql": [
+            "ALTER TABLE dts_issue DROP CHECK IF EXISTS dts_issue_chk_2",
+            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_chk_2 "
+            "CHECK (cause_code IN ('A','B','C','D','E','F','G','H'))",
+            "ALTER TABLE knowledge_access_detail DROP CHECK IF EXISTS knowledge_access_detail_chk_2",
+            "ALTER TABLE knowledge_access_detail ADD CONSTRAINT knowledge_access_detail_chk_2 "
+            "CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H'))",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

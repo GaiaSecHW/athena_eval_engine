@@ -247,15 +247,6 @@ MIGRATIONS = [
             "MODIFY COLUMN business_phase VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN'",
         ],
     },
-    {
-        "id": "011_dts_issue_cause_code_h",
-        "desc": "dts_issue cause_code CHECK 增加 H（L8 其他原因）",
-        "sql": [
-            "ALTER TABLE dts_issue DROP CHECK dts_issue_chk_2",
-            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_chk_2 "
-            "CHECK (cause_code IN ('A','B','C','D','E','F','G','H'))",
-        ],
-    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
