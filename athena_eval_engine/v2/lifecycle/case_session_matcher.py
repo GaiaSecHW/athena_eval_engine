@@ -7,6 +7,8 @@
 - 在验证 agent（叶子节点）的 session 中找漏洞验证记录
 - 验证 agent 是叶子节点（Phase 5·验证），漏洞判定只看验证 session
 - 挖掘 agent 的 finding 提交在 Phase 3，不是叶子节点，不参与匹配
+- 找到 verify_sessions 后，沿 parent_map 追溯到根节点，
+  链上角色为 mining 的 session 作为 mining_sessions 返回
 
 匹配链：
 - 基线 case ←LLM 语义匹配→ 原始 case（告警中心，case_matches）
@@ -64,6 +66,12 @@ class CaseSessionMatcher:
         "vulnerability_analyze",
     }
 
+    # 挖掘 agent 的 DataPack.agent_type（与 root_cause_analyzer 一致）
+    _MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
+
+    # 验证 agent 的 DataPack.agent_type
+    _VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
+
     def match(
         self,
         evaluation_id: str,
@@ -90,6 +98,7 @@ class CaseSessionMatcher:
             - ac_case_id: 告警中心 case_id（匹配上的）
             - vulnerability_type, expected_label
             - verify_sessions: [session_id, ...]  验证 agent 命中的 session（叶子节点）
+            - mining_sessions: [session_id, ...]  挖掘 agent 的 session（从 verify 沿 parent_map 追溯）
             - outcome: "TP" / "FP" / "FN" / "TN"
             - match_method: "matched" / "unmatched"
             - match_detail: 匹配细节
@@ -147,6 +156,28 @@ class CaseSessionMatcher:
         verify_index = self._build_verify_index(
             verify_packs, turing_packs, turing_verify_sids)
 
+        # 合并全部 DataPack 的 session_graph，构建 parent_map + sid_role
+        # 用于从 verify_sessions 追溯到挖掘 session
+        all_parent_map: dict[str, str] = {}
+        all_sessions: dict[str, dict] = {}
+        sid_role: dict[str, str] = {}
+        for dp in data_packs:
+            sg = dp.session_graph or {}
+            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
+            parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
+            for sid, sdata in sessions.items():
+                all_sessions[sid] = sdata
+                session_agent = (sdata or {}).get("agent", "")
+                if session_agent in self._TURING_VERIFY_AGENTS:
+                    sid_role[sid] = "verify"
+                elif dp.agent_type in self._VERIFY_AGENT_TYPES:
+                    sid_role[sid] = "verify"
+                elif dp.agent_type in self._MINING_AGENT_TYPES:
+                    sid_role[sid] = "mining"
+            for sid, pid in parent_map.items():
+                if sid in sessions:
+                    all_parent_map[sid] = pid
+
         results: list[dict] = []
         for cid, cd in target_cases:
             ac_case_id = baseline_to_ac.get(cid, "")
@@ -177,12 +208,18 @@ class CaseSessionMatcher:
                         verify_sessions = [e[0] for e in entries]
                         match_method_used = "raw_title_multi"
 
+            # 从 verify_sessions 沿 parent_map 追溯到根节点，
+            # 按 session 角色拆分为挖掘链和验证链
+            mining_sessions = self._trace_mining_sessions(
+                verify_sessions, all_parent_map, all_sessions, sid_role)
+
             # 判定 outcome：误报 case，验证 session 命中 = FP，未命中 = TN
             outcome = "FP" if verify_sessions else "TN"
 
             matched = bool(verify_sessions)
             method = "matched" if matched else "unmatched"
-            detail = (f"{len(verify_sessions)} × session ({match_method_used})"
+            detail = (f"{len(verify_sessions)} × verify, "
+                      f"{len(mining_sessions)} × mining ({match_method_used})"
                       if verify_sessions else "未匹配")
 
             results.append({
@@ -191,6 +228,7 @@ class CaseSessionMatcher:
                 "vulnerability_type": vuln_type,
                 "expected_label": expected_label,
                 "verify_sessions": verify_sessions,
+                "mining_sessions": mining_sessions,
                 "outcome": outcome,
                 "match_method": method,
                 "match_detail": detail,
@@ -198,7 +236,8 @@ class CaseSessionMatcher:
 
             log("MATCH",
                 f"case {cid}: outcome={outcome}, method={method}, "
-                f"verify={len(verify_sessions)} sessions ({match_method_used})",
+                f"verify={len(verify_sessions)}, mining={len(mining_sessions)} "
+                f"sessions ({match_method_used})",
                 eval_id=evaluation_id)
 
         matched = sum(1 for r in results if r["match_method"] != "unmatched")
@@ -242,6 +281,34 @@ class CaseSessionMatcher:
             f"基线→告警中心映射",
             eval_id="")
         return mapping
+
+    @staticmethod
+    def _trace_mining_sessions(
+        verify_sids: list[str],
+        parent_map: dict[str, str],
+        sessions: dict[str, dict],
+        sid_role: dict[str, str],
+    ) -> list[str]:
+        """从 verify_sessions 沿 parent_map 追溯到根节点，返回挖掘 session 列表。
+
+        与 root_cause_analyzer._trace_chain 同逻辑：从每个 verify session
+        向上追溯 parent，收集链上全部 session_id，然后只保留角色为
+        mining 的 session。
+        """
+        if not verify_sids:
+            return []
+
+        chain_set: set[str] = set()
+        for vsid in verify_sids:
+            cur = vsid
+            while cur and cur in sessions and cur not in chain_set:
+                chain_set.add(cur)
+                cur = parent_map.get(cur, "")
+
+        if not chain_set:
+            return []
+
+        return [sid for sid in chain_set if sid_role.get(sid) == "mining"]
 
     def _build_verify_index(
         self,
