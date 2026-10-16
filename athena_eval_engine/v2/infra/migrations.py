@@ -303,7 +303,14 @@ MIGRATIONS = [
         ],
     },
     {
-        "id": "015_dts_issue_backfill_vuln_type",
+        "id": "015_dts_issue_rename_vuln_type_to_vuln_title",
+        "desc": "将 dts_issue.vuln_type 列改名为 vuln_title（修正 migration 014 旧版加的列名）",
+        "sql": [
+            "ALTER TABLE dts_issue CHANGE COLUMN vuln_type vuln_title VARCHAR(512) NOT NULL DEFAULT ''",
+        ],
+    },
+    {
+        "id": "016_dts_issue_backfill_vuln_title",
         "desc": "从 breakpoint_desc 中回填已有问题单的 vuln_title（提取'漏洞标题: XXX'或'漏洞类型: XXX'文本）",
         "sql": [
             "UPDATE dts_issue SET vuln_title = TRIM(SUBSTRING_INDEX("
