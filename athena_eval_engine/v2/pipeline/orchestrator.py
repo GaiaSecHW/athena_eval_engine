@@ -528,7 +528,7 @@ class Orchestrator:
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
                 return
 
-            # ── ROOT_CAUSE_ANALYSIS（FP case 滚动压缩根因分析）──
+            # ── ROOT_CAUSE_ANALYSIS（FP case 独立压缩 + 合并输出根因分析）──
             _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)

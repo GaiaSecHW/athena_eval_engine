@@ -170,7 +170,7 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
 
 
 class RootCauseAnalyzer:
-    """误报根因分析器 — 挖掘链 + 验证链各自滚动压缩。"""
+    """误报根因分析器 — 挖掘链 + 验证链各自独立压缩，最后合并输出。"""
 
     def analyze(
         self,
@@ -180,7 +180,7 @@ class RootCauseAnalyzer:
         cancel_cb=None,
         project_id: str = "",
     ) -> list[dict]:
-        """对每个 FP case 的挖掘链和验证链各自做滚动压缩根因分析。
+        """对每个 FP case 的挖掘链和验证链各自做独立压缩 + 合并输出根因分析。
 
         Args:
             evaluation_id: 评测 ID
