@@ -15,21 +15,22 @@ from ...infrastructure.log_util import log, log_to_file
 # ── 字段顺序（与 INSERT SQL 列顺序一致）──
 
 _FIELD_ORDER = (
-    "dts_id", "evaluation_id", "task_run_id", "task_id", "agent_type",
-    "case_type", "fp_type", "cause_code", "breakpoint_level",
-    "access_id", "breakpoint_desc", "evidence_uri",
-    "root_cause", "solution", "replay_eval_id", "replay_result",
-    "status",
+    "dts_id", "evaluation_id", "task_id", "case_id", "agent_type",
+    "case_type", "cause_code", "breakpoint_level",
+    "breakpoint_desc", "evidence_uri",
+    "root_cause", "fix_suggestion", "replay_eval_id", "replay_result",
+    "status", "responsibility",
 )
 
 _INSERT_SQL = (
     "INSERT INTO dts_issue ("
-    "  dts_id, evaluation_id, task_run_id, task_id, agent_type,"
-    "  case_type, fp_type, cause_code, breakpoint_level,"
-    "  access_id, breakpoint_desc, evidence_uri,"
-    "  root_cause, solution, replay_eval_id, replay_result, status"
+    "  dts_id, evaluation_id, task_id, case_id, agent_type,"
+    "  case_type, cause_code, breakpoint_level,"
+    "  breakpoint_desc, evidence_uri,"
+    "  root_cause, solution, replay_eval_id, replay_result,"
+    "  status, responsibility"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
@@ -38,10 +39,11 @@ _INSERT_SQL = (
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
 _SELECT_COLUMNS = (
-    "dts_id, evaluation_id, task_run_id, task_id, agent_type,"
-    " case_type, fp_type, cause_code, breakpoint_level,"
-    " access_id, breakpoint_desc, evidence_uri,"
-    " root_cause, solution, replay_eval_id, replay_result, status,"
+    "dts_id, evaluation_id, task_id, case_id, agent_type,"
+    " case_type, cause_code, breakpoint_level,"
+    " breakpoint_desc, evidence_uri,"
+    " root_cause, solution, replay_eval_id, replay_result,"
+    " status, responsibility,"
     " created_at, updated_at, closed_at"
 )
 
@@ -97,11 +99,12 @@ def _db_query(fn, _retries: int = 8):
 def _row_to_dict(row) -> dict:
     """将 SELECT 行转换为 dict。"""
     keys = (
-        "dts_id", "evaluation_id", "task_run_id", "task_id", "agent_type",
-        "case_type", "fp_type", "cause_code", "breakpoint_level",
-        "access_id", "breakpoint_desc", "evidence_uri",
+        "dts_id", "evaluation_id", "task_id", "case_id", "agent_type",
+        "case_type", "cause_code", "breakpoint_level",
+        "breakpoint_desc", "evidence_uri",
         "root_cause", "solution", "replay_eval_id", "replay_result",
-        "status", "created_at", "updated_at", "closed_at",
+        "status", "responsibility",
+        "created_at", "updated_at", "closed_at",
     )
     return {k: row[i] for i, k in enumerate(keys)}
 
@@ -301,11 +304,33 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
     return _db_query(_do_query)
 
 
-def list_dts_by_task(task_id: str) -> list[dict]:
-    """列出某个 task 的全部问题单。
+def list_dts_by_case(case_id: str) -> list[dict]:
+    """列出某个 case 的全部问题单。
 
     Args:
-        task_id: 任务 ID。
+        case_id: case ID。
+
+    Returns:
+        问题单 dict 列表。
+    """
+    sql = (
+        f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
+        f" WHERE case_id = %s ORDER BY created_at ASC"
+    )
+
+    def _do_query(cur):
+        cur.execute(sql, (case_id,))
+        return cur.fetchall()
+
+    rows = _db_query(_do_query)
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_dts_by_task(task_id: str) -> list[dict]:
+    """列出某个原始数据任务的全部问题单。
+
+    Args:
+        task_id: 原始数据任务 ID（manifest 中的 task_id）。
 
     Returns:
         问题单 dict 列表。
@@ -323,26 +348,26 @@ def list_dts_by_task(task_id: str) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
-def get_closing_issues_by_task(task_id: str) -> list[dict]:
-    """列出某个 task 中处于 'closing' 状态的问题单。
+def get_closing_issues_by_case(case_id: str) -> list[dict]:
+    """列出某个 case 中处于 'closing' 状态的问题单。
 
-    用于回归验证触发检查：当 task 的所有问题单都进入 closing 状态时，
+    用于回归验证触发检查：当 case 的所有问题单都进入 closing 状态时，
     触发回归测试。
 
     Args:
-        task_id: 任务 ID。
+        case_id: case ID。
 
     Returns:
         closing 状态的问题单 dict 列表。
     """
     sql = (
         f"SELECT {_SELECT_COLUMNS} FROM dts_issue"
-        f" WHERE task_id = %s AND status = 'closing'"
+        f" WHERE case_id = %s AND status = 'closing'"
         f" ORDER BY created_at ASC"
     )
 
     def _do_query(cur):
-        cur.execute(sql, (task_id,))
+        cur.execute(sql, (case_id,))
         return cur.fetchall()
 
     rows = _db_query(_do_query)

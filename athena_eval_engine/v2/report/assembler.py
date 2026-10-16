@@ -63,8 +63,8 @@ _ALL_AGENT_TYPES = [
 class ReportAssembler:
     """报告组装器 — 组装生命周期分析段报告。
 
-    不执行 L0-L7 判定或因果链分析（那是 LifecycleAnalyzer / CausalChainAnalyzer
-    的职责），只负责将已有结果组装为报告 JSON 并写入文件。
+    不执行 L0-L7 判定或因果链分析（那是 RootCauseAnalyzer /
+    CausalChainAnalyzer 的职责），只负责将已有结果组装为报告 JSON 并写入文件。
 
     大字段处理：per_case_details 中超过 64KB 的 evidence 写入
     {reports_dir}/{eid}_lifecycle_data/ 目录，报告 JSON 中存文件路径。
@@ -75,7 +75,7 @@ class ReportAssembler:
     def assemble_lifecycle_report(
         self,
         evaluation_id: str,
-        access_details: list[dict],
+        root_cause_results: list[dict],
         causal_chain_result: dict,
         recall_precision: dict,
         reports_dir: str,
@@ -84,9 +84,8 @@ class ReportAssembler:
 
         Args:
             evaluation_id: 评测 ID。
-            access_details: knowledge_access_detail 记录列表（dict），每条含
-                            l0_origin、agent_type、cause_code、effect_label、
-                            task_run_id、evidence_json 等字段。
+            root_cause_results: RootCauseAnalyzer.analyze() 的输出，
+                                含 mining/verification 的 l0_l7_breakpoints。
             causal_chain_result: CausalChainAnalyzer.analyze() 的输出 dict，
                                  含 cross_attribution_matrix、cause_summary、
                                  effect_label_distribution、per_case_breakpoints。
@@ -100,13 +99,14 @@ class ReportAssembler:
         log(
             "REPORT_ASSEMBLER",
             f"assemble_lifecycle_report: eval={evaluation_id}, "
-            f"{len(access_details)} access details",
+            f"{len(root_cause_results)} root cause results",
             eval_id=evaluation_id,
         )
 
         report: dict[str, Any] = {
             "evaluation_id": evaluation_id,
-            "l0_origin_distribution": self._build_l0_distribution(access_details),
+            "l0_origin_distribution": self._build_l0_distribution(
+                root_cause_results),
             "breakpoint_distribution": self._build_breakpoint_distribution(
                 causal_chain_result
             ),
@@ -120,7 +120,7 @@ class ReportAssembler:
             ),
             "recall_precision": recall_precision,
             "per_case_details": self._build_per_case_details(
-                evaluation_id, access_details, causal_chain_result,
+                evaluation_id, root_cause_results, causal_chain_result,
                 reports_dir,
             ),
         }
@@ -141,38 +141,34 @@ class ReportAssembler:
 
     # ── 私有方法 ────────────────────────────────────────
 
-    def _build_l0_distribution(self, access_details: list[dict]) -> dict:
+    def _build_l0_distribution(
+        self, root_cause_results: list[dict],
+    ) -> dict:
         """统计 L0 原始来源分布。
 
-        从 access_details 的 l0_origin 字段统计各原始来源的出现次数。
-        l0_origin 为 None 或空字符串时归入 "未知"。
-
-        Returns:
-            {"已有知识升华": 10, "历史漏洞经验": 5, "未知": 3, ...}
+        从 root_cause_results 的 l0_l7_breakpoints 中 l0_source 字段统计。
+        l0_source 为 None 或空字符串时归入 "未知"。
         """
         counter: Counter = Counter()
-        for rec in access_details:
-            origin = rec.get("l0_origin")
-            if origin:
-                counter[str(origin)] += 1
-            else:
-                counter["未知"] += 1
+        for case in root_cause_results:
+            for chain_type in ("mining", "verification"):
+                chain_data = case.get(chain_type, {})
+                if not chain_data or not isinstance(chain_data, dict):
+                    continue
+                for bp in chain_data.get("l0_l7_breakpoints", []):
+                    if not isinstance(bp, dict):
+                        continue
+                    origin = bp.get("l0_source", "")
+                    if origin:
+                        counter[str(origin)] += 1
+                    else:
+                        counter["未知"] += 1
         return dict(counter)
 
     def _build_breakpoint_distribution(self, causal_chain_result: dict) -> dict:
-        """从因果链结果提取断点分布（直接用 cross_attribution_matrix）。
-
-        cross_attribution_matrix 结构：
-        {"turing": {"L2": 3, "L3": 1, ...}, "argo": {...}, ...}
-
-        如果 causal_chain_result 中没有 cross_attribution_matrix，返回全零矩阵。
-
-        Returns:
-            {"turing": {"L2": 3, "L3": 1, "L4": 2, "L5": 0, "L6": 1, "L7": 0}, ...}
-        """
+        """从因果链结果提取断点分布（直接用 cross_attribution_matrix）。"""
         matrix = causal_chain_result.get("cross_attribution_matrix")
         if matrix and isinstance(matrix, dict):
-            # 确保每个 agent_type 都有完整的 L2-L7 键
             result: dict[str, dict[str, int]] = {}
             for agent_type in _ALL_AGENT_TYPES:
                 agent_data = matrix.get(agent_type, {})
@@ -185,7 +181,6 @@ class ReportAssembler:
                     result[agent_type] = {level: 0 for level in _ALL_LEVELS}
             return result
 
-        # 无矩阵数据，返回全零
         return {
             agent_type: {level: 0 for level in _ALL_LEVELS}
             for agent_type in _ALL_AGENT_TYPES
@@ -194,7 +189,7 @@ class ReportAssembler:
     def _build_per_case_details(
         self,
         evaluation_id: str,
-        access_details: list[dict],
+        root_cause_results: list[dict],
         causal_chain_result: dict,
         reports_dir: str,
     ) -> list[dict]:
@@ -202,13 +197,33 @@ class ReportAssembler:
 
         从 causal_chain_result.per_case_breakpoints 构建，为每个 case 附加：
         - vuln_type
+        - root_cause
+        - fix_suggestion
         - breakpoints（含 evidence，大字段写文件）
-
-        大字段处理：evidence 超过 64KB 时写入
-        {reports_dir}/{eid}_lifecycle_data/{case_id}_evidence_{idx}.json，
-        报告 JSON 中存文件路径。
         """
         per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
+
+        # 从 root_cause_results 获取每条 case 的根因和修复建议
+        case_root_cause: dict[str, dict] = {}
+        case_fix: dict[str, str] = {}
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            mining = case.get("mining", {}) or {}
+            verify = case.get("verification", {}) or {}
+            root_causes = {}
+            fix_parts = []
+            for chain_data in (mining, verify):
+                rc = chain_data.get("root_cause", {})
+                if rc:
+                    cat = rc.get("category", "")
+                    desc = rc.get("description", "")
+                    if cat:
+                        root_causes[cat] = desc
+                fs = chain_data.get("fix_suggestion", "")
+                if fs:
+                    fix_parts.append(fs)
+            case_root_cause[cid] = root_causes
+            case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
 
         result: list[dict] = []
         for case_data in per_case_breakpoints:
@@ -216,11 +231,11 @@ class ReportAssembler:
             vuln_type = case_data.get("vuln_type", "")
             breakpoints_raw = case_data.get("breakpoints", [])
 
-            # 处理每个 breakpoint 的 evidence（大字段写文件）
             processed_breakpoints: list[dict] = []
             for idx, bp in enumerate(breakpoints_raw):
                 bp_processed = {
                     "agent_type": bp.get("agent_type", ""),
+                    "chain_type": bp.get("chain_type", ""),
                     "break_level": bp.get("break_level", ""),
                     "cause_code": bp.get("cause_code", ""),
                     "evidence": self._handle_large_evidence(
@@ -231,17 +246,11 @@ class ReportAssembler:
                 }
                 processed_breakpoints.append(bp_processed)
 
-            # 从 access_details 中提取该 case 的漏洞类型（如果 per_case_breakpoints 中没有）
-            if not vuln_type:
-                for rec in access_details:
-                    if rec.get("task_run_id") == case_id:
-                        vuln_type = self._extract_vuln_type(rec)
-                        if vuln_type:
-                            break
-
             result.append({
                 "case_id": case_id,
                 "vuln_type": vuln_type,
+                "root_cause": case_root_cause.get(case_id, {}),
+                "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": processed_breakpoints,
             })
 
@@ -255,28 +264,18 @@ class ReportAssembler:
         evidence: str,
         reports_dir: str,
     ) -> str:
-        """处理单个断点的 evidence 字段。
-
-        如果 evidence 超过 64KB，写入文件并返回文件路径；
-        否则原样返回 evidence 内容。
-
-        文件路径格式：
-        {reports_dir}/{eid}_lifecycle_data/{case_id}_evidence_{idx}.json
-        """
+        """处理单个断点的 evidence 字段。"""
         if not evidence:
             return ""
 
         evidence_str = str(evidence)
 
-        # 判断是否超过阈值（按 UTF-8 字节数计算）
         if len(evidence_str.encode("utf-8")) <= _LARGE_FIELD_THRESHOLD:
             return evidence_str
 
-        # 大字段写入文件
         field_dir = os.path.join(reports_dir, f"{evaluation_id}_lifecycle_data")
         os.makedirs(field_dir, exist_ok=True)
 
-        # 清理 case_id 中的非法文件名字符
         safe_case_id = self._sanitize_filename(case_id or "unknown")
         file_name = f"{safe_case_id}_evidence_{bp_idx}.json"
         file_path = os.path.join(field_dir, file_name)
@@ -296,37 +295,6 @@ class ReportAssembler:
     @staticmethod
     def _sanitize_filename(name: str) -> str:
         """清理文件名中的非法字符。"""
-        # Windows 文件名非法字符：\ / : * ? " < > |
         for ch in ('\\', '/', ':', '*', '?', '"', '<', '>', '|'):
             name = name.replace(ch, '_')
         return name
-
-    @staticmethod
-    def _extract_vuln_type(rec: dict) -> str:
-        """从 knowledge_access_detail 记录中提取漏洞类型。
-
-        漏洞类型可能存在：
-        - evidence_json 中的 vuln_type 字段
-        - judgment_conclusion 中包含的漏洞类型描述
-        """
-        # 尝试从 evidence_json 提取
-        evidence_json = rec.get("evidence_json")
-        if evidence_json:
-            try:
-                if isinstance(evidence_json, str):
-                    parsed = json.loads(evidence_json)
-                else:
-                    parsed = evidence_json
-                if isinstance(parsed, dict):
-                    vuln_type = parsed.get("vuln_type")
-                    if vuln_type:
-                        return str(vuln_type)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # 尝试从 judgment_conclusion 提取
-        judgment = rec.get("judgment_conclusion", "")
-        if judgment:
-            return str(judgment)
-
-        return ""

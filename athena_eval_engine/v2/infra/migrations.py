@@ -273,6 +273,29 @@ MIGRATIONS = [
             "'CANCEL_REQUESTED','CANCELLING','CANCELLED'))",
         ],
     },
+    {
+        "id": "012_dts_issue_schema_v2",
+        "desc": "dts_issue 表适配根因分析结果：case_id 替代 task_run_id/task_id，新增 responsibility，删除 access_id/fp_type/FK",
+        "sql": [
+            "ALTER TABLE dts_issue DROP FOREIGN KEY IF EXISTS fk_dts_trun",
+            "ALTER TABLE dts_issue DROP INDEX IF EXISTS idx_dts_task",
+            "ALTER TABLE dts_issue DROP COLUMN IF EXISTS task_run_id",
+            "ALTER TABLE dts_issue DROP COLUMN IF EXISTS task_id",
+            "ALTER TABLE dts_issue DROP COLUMN IF EXISTS access_id",
+            "ALTER TABLE dts_issue DROP COLUMN IF EXISTS fp_type",
+            "ALTER TABLE dts_issue ADD COLUMN IF NOT EXISTS case_id VARCHAR(64) NOT NULL DEFAULT '' AFTER evaluation_id",
+            "ALTER TABLE dts_issue ADD COLUMN IF NOT EXISTS responsibility VARCHAR(16) AFTER status",
+            "ALTER TABLE dts_issue ADD INDEX IF NOT EXISTS idx_dts_case (case_id)",
+        ],
+    },
+    {
+        "id": "013_dts_issue_add_task_id",
+        "desc": "dts_issue 表新增 task_id 字段（原始数据任务 ID，用于按任务查询问题单）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN IF NOT EXISTS task_id VARCHAR(128) NOT NULL DEFAULT '' AFTER evaluation_id",
+            "ALTER TABLE dts_issue ADD INDEX IF NOT EXISTS idx_dts_task_id (task_id)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

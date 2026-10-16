@@ -5,6 +5,8 @@
 """
 from __future__ import annotations
 
+import json
+
 from ...infrastructure.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
@@ -50,108 +52,11 @@ def _build_breakpoint_desc(
     return " | ".join(parts)
 
 
-def _determine_case_type(
-    task_run_id: str,
-    case_filter_stats: dict,
-) -> str:
-    """从 case_filter_stats 判断 case 类型（FP/FN）。
-
-    case_filter_stats 包含 fp/fn case 的 task_run_id 集合。
-    如果无法确定，默认 FP（因果链分析主要针对误报）。
-    """
-    if not case_filter_stats:
-        return "FP"
-
-    # case_filter_stats 可能有 fp_task_run_ids 或 fn_task_run_ids
-    fp_ids = case_filter_stats.get("fp_task_run_ids", set())
-    fn_ids = case_filter_stats.get("fn_task_run_ids", set())
-
-    # 兼容 set 和 list
-    if isinstance(fp_ids, (list, tuple)):
-        fp_ids = set(fp_ids)
-    if isinstance(fn_ids, (list, tuple)):
-        fn_ids = set(fn_ids)
-
-    if task_run_id in fp_ids:
-        return "FP"
-    if task_run_id in fn_ids:
-        return "FN"
-
-    # case_filter_stats 可能用 fp_cases/fn_cases 列表（每项含 case_id 或 task_run_id）
-    fp_cases = case_filter_stats.get("fp_cases", [])
-    fn_cases = case_filter_stats.get("fn_cases", [])
-    for c in fp_cases:
-        if isinstance(c, dict):
-            if c.get("task_run_id") == task_run_id or c.get("case_id") == task_run_id:
-                return "FP"
-    for c in fn_cases:
-        if isinstance(c, dict):
-            if c.get("task_run_id") == task_run_id or c.get("case_id") == task_run_id:
-                return "FN"
-
-    return "FP"
-
-
-def _lookup_fp_type(
-    task_run_id: str,
-    case_filter_stats: dict,
-) -> str | None:
-    """从 case_filter_stats 查找 fp_type（C1-C10）。
-
-    如果 case_filter_stats 中包含 case→fp_type 映射，返回对应值；
-    否则返回 None。
-    """
-    if not case_filter_stats:
-        return None
-
-    # 尝试从 fp_type_map 查找
-    fp_type_map = case_filter_stats.get("fp_type_map", {})
-    if fp_type_map and task_run_id in fp_type_map:
-        return fp_type_map[task_run_id]
-
-    # 尝试从 fp_cases 列表中查找
-    fp_cases = case_filter_stats.get("fp_cases", [])
-    for c in fp_cases:
-        if isinstance(c, dict):
-            cid = c.get("task_run_id") or c.get("case_id")
-            if cid == task_run_id:
-                return c.get("fp_type")
-
-    return None
-
-
-def _lookup_task_id(
-    task_run_id: str,
-    access_details: list[dict],
-) -> str:
-    """从 access_details 中查找 task_run_id 对应的 task_id。"""
-    for rec in access_details:
-        if rec.get("task_run_id") == task_run_id:
-            return rec.get("task_id", "")
-    return ""
-
-
-def _lookup_access_id(
-    task_run_id: str,
-    cause_code: str,
-    access_details: list[dict],
-) -> str:
-    """从 access_details 中查找对应断点的 access_id。
-
-    按 task_run_id + cause_code 匹配，返回第一条匹配记录的 access_id。
-    """
-    for rec in access_details:
-        if (rec.get("task_run_id") == task_run_id
-                and rec.get("cause_code") == cause_code):
-            return rec.get("access_id", "")
-    return ""
-
-
 def generate_dts_issues(
     evaluation_id: str,
     causal_chain_result: dict,
-    access_details: list[dict],
-    case_filter_stats: dict,
+    root_cause_results: list[dict],
+    task_id: str = "",
 ) -> list[dict]:
     """从因果链分析结果生成问题单。
 
@@ -161,36 +66,52 @@ def generate_dts_issues(
         evaluation_id: 评测 ID。
         causal_chain_result: CausalChainAnalyzer.analyze() 返回值，
             含 per_case_breakpoints 字段。
-        access_details: knowledge_access_detail 记录列表，
-            用于查找 task_id、access_id 等补充信息。
-        case_filter_stats: CaseFilter 的 FPR 统计，
-            含 fp/fn case 信息和 fp_type 映射。
+        root_cause_results: RootCauseAnalyzer.analyze() 的输出，
+            用于查找 case_id、vulnerability_type 等补充信息。
+        task_id: 原始数据任务 ID（manifest 中的 task_id）。
 
     Returns:
-        问题单 dict 列表，每条含 dts_id、evaluation_id、task_run_id、
-        task_id、agent_type、case_type、fp_type、cause_code、
-        breakpoint_level、access_id、breakpoint_desc、evidence_uri、status。
+        问题单 dict 列表，每条含 dts_id、evaluation_id、task_id、case_id、
+        agent_type、case_type、cause_code、breakpoint_level、
+        breakpoint_desc、evidence_uri、root_cause、fix_suggestion、
+        status、responsibility。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
         return []
 
-    # 构建 task_run_id → access_details 的索引，加速查找
-    _td_map: dict[str, list[dict]] = {}
-    for rec in access_details:
-        trid = rec.get("task_run_id", "")
-        if trid:
-            _td_map.setdefault(trid, []).append(rec)
+    # 从 root_cause_results 构建 case_id → root_cause/fix_suggestion 索引
+    case_root_cause: dict[str, dict] = {}
+    case_fix: dict[str, str] = {}
+    for case in root_cause_results:
+        cid = case.get("case_id", "")
+        if not cid:
+            continue
+        mining = case.get("mining", {}) or {}
+        verify = case.get("verification", {}) or {}
+        root_causes = {}
+        fix_parts = []
+        for chain_data in (mining, verify):
+            rc = chain_data.get("root_cause", {})
+            if rc:
+                cat = rc.get("category", "")
+                desc = rc.get("description", "")
+                if cat:
+                    root_causes[cat] = desc
+            fs = chain_data.get("fix_suggestion", "")
+            if fs:
+                fix_parts.append(fs)
+        case_root_cause[cid] = root_causes
+        case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
 
     issues: list[dict] = []
     for case_entry in per_case_breakpoints:
-        task_run_id = case_entry.get("case_id", "")
+        case_id = case_entry.get("case_id", "")
         vuln_type = case_entry.get("vuln_type", "")
         breakpoints = case_entry.get("breakpoints", [])
 
-        case_type = _determine_case_type(task_run_id, case_filter_stats)
-        fp_type = _lookup_fp_type(task_run_id, case_filter_stats)
-        task_id = _lookup_task_id(task_run_id, access_details)
+        root_cause = case_root_cause.get(case_id, {})
+        fix_suggestion = case_fix.get(case_id, "")
 
         for bp_idx, bp in enumerate(breakpoints):
             cause_code = bp.get("cause_code", "")
@@ -201,10 +122,9 @@ def generate_dts_issues(
             break_level = bp.get("break_level", "")
             evidence = bp.get("evidence", "")
 
-            access_id = _lookup_access_id(task_run_id, cause_code, access_details)
             responsibility = CAUSE_TO_RESPONSIBILITY.get(cause_code, "agent")
 
-            dts_id = f"{evaluation_id}_{task_run_id}_{access_id}_{bp_idx}"
+            dts_id = f"{evaluation_id}_{case_id}_{bp_idx}"
             breakpoint_desc = _build_breakpoint_desc(
                 cause_code, break_level, evidence, vuln_type,
             )
@@ -212,18 +132,16 @@ def generate_dts_issues(
             issues.append({
                 "dts_id": dts_id,
                 "evaluation_id": evaluation_id,
-                "task_run_id": task_run_id,
                 "task_id": task_id,
+                "case_id": case_id,
                 "agent_type": agent_type,
-                "case_type": case_type,
-                "fp_type": fp_type,
+                "case_type": "FP",
                 "cause_code": cause_code,
                 "breakpoint_level": break_level,
-                "access_id": access_id,
                 "breakpoint_desc": breakpoint_desc,
                 "evidence_uri": evidence[:512] if evidence else None,
-                "root_cause": None,
-                "solution": None,
+                "root_cause": json.dumps(root_cause, ensure_ascii=False) if root_cause else None,
+                "fix_suggestion": fix_suggestion or None,
                 "replay_eval_id": None,
                 "replay_result": None,
                 "status": "unlocated",

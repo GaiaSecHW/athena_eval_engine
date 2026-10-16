@@ -456,7 +456,8 @@ class RootCauseAnalyzer:
             # 收集断点
             l0_l7 = cs.get("l0_l7") or []
             for kp in l0_l7:
-                if isinstance(kp, dict) and kp.get("breakpoint"):
+                if isinstance(kp, dict) and kp.get("breakpoint") \
+                        and kp.get("breakpoint") != "null":
                     all_breakpoints.append({
                         "session_id": cs["session_id"],
                         **kp,
@@ -513,7 +514,8 @@ class RootCauseAnalyzer:
 
         # 合并后的 L0-L7 断点也收集
         for kp in merge_l0_l7:
-            if isinstance(kp, dict) and kp.get("breakpoint"):
+            if isinstance(kp, dict) and kp.get("breakpoint") \
+                    and kp.get("breakpoint") != "null":
                 all_breakpoints.append({
                     "session_id": "merge",
                     **kp,

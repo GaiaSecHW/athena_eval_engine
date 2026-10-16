@@ -4,15 +4,14 @@
     INGESTING → PARSING → CASE_MATCHING → ROOT_CAUSE_ANALYSIS
         → RESOLVING → REPORTING → FINALIZE
 
-RESOLVING 阶段内完成 L0-L7 全链路分析 + 因果链分析 + 问题单生成
-（knowledge_access_detail 表有 FK 依赖 task_run，必须在 fact 持久化后执行）。
+RESOLVING 阶段内完成 fact 持久化 + 因果链分析 + 问题单生成
+（从根因分析结果的 l0_l7_breakpoints 构建，不再有独立的 L0-L7 逐条分析）。
 
 协作取消：
 - 每个阶段入口检查 ``_check_cancel(evaluation_id)``
 - ``cancel_cb`` 穿透到 LLM 密集内循环
 
 重试路径：
-- knowledge_access_detail 表已有记录 → 跳过 L0-L7 分析
 - lifecycle report 已存在 → 跳过 REPORTING
 """
 from __future__ import annotations
@@ -250,24 +249,7 @@ def _set_failed(evaluation_id: str, error_msg: str):
         log("STATUS", f"设 FAILED 状态失败: {e}")
 
 
-# ── 重试路径幂等检查 ──────────────────────────────────
-
-
-def _has_knowledge_access_details(evaluation_id: str) -> bool:
-    """检查 knowledge_access_detail 表是否已有该 evaluation_id 的记录。"""
-    def _do(cur):
-        cur.execute(
-            "SELECT 1 FROM knowledge_access_detail "
-            "WHERE evaluation_id=%s LIMIT 1",
-            (evaluation_id,),
-        )
-        return cur.fetchone() is not None
-
-    try:
-        return _db_query(_do)
-    except Exception as e:
-        log("RETRY_CHECK", f"检查 knowledge_access_detail 失败: {e}")
-        return False
+# ── 编排器 ────────────────────────────────────────────
 
 
 def _has_lifecycle_report(evaluation_id: str, reports_dir: str) -> bool:
@@ -275,34 +257,6 @@ def _has_lifecycle_report(evaluation_id: str, reports_dir: str) -> bool:
     return os.path.isfile(
         os.path.join(reports_dir, f"{evaluation_id}_lifecycle.json")
     )
-
-
-def _load_existing_access_details(evaluation_id: str) -> list[dict]:
-    """从 DB 加载已有的 knowledge_access_detail 记录（重试路径用）。"""
-    def _do(cur):
-        cur.execute(
-            "SELECT access_id, evaluation_id, task_run_id, task_id, event_idx, "
-            "source_system, l0_origin, "
-            "l1_need_knowledge, l2_initiated, l3_query_accurate, l4_knowledge_exists, "
-            "l5_retrieved, l6_used, l7_influenced, l7_method, "
-            "effect_label, cause_code, "
-            "query_content, returned_content, reasoning_ref, judgment_conclusion, "
-            "evidence_json, evidence_file "
-            "FROM knowledge_access_detail WHERE evaluation_id=%s",
-            (evaluation_id,),
-        )
-        cols = [d[0] for d in cur.description]
-        rows = cur.fetchall()
-        return [dict(zip(cols, row)) for row in rows]
-
-    try:
-        return _db_query(_do)
-    except Exception as e:
-        log("RETRY_LOAD", f"加载 knowledge_access_detail 失败: {e}")
-        return []
-
-
-# ── 编排器 ────────────────────────────────────────────
 
 
 class Orchestrator:
@@ -329,7 +283,7 @@ class Orchestrator:
         3. CASE_MATCHING — 基线 case ↔ trace session 精确匹配，判定 TP/FP/FN/TN
         4. ROOT_CAUSE_ANALYSIS — FP case 挖掘链+验证链各自滚动压缩根因分析
         5. RESOLVING — 持久化 session_graph + 4 种 fact 到 DB；
-           随后完成 L0-L7 全链路分析 + 因果链分析 + 问题单生成
+           随后完成因果链分析 + 问题单生成（从根因分析结果构建）
         6. REPORTING — 报告组装（含召回率/准确率计算）
         7. FINALIZE — 写入 evaluation_report 表，状态设为 COMPLETED
 
@@ -588,38 +542,20 @@ class Orchestrator:
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_data(evaluation_id, data_packs)
 
-            # ── L0-L7 全链路分析 + 因果链分析 + 问题单生成（RESOLVING 内完成）──
-            # 重试路径：knowledge_access_detail 表已有记录 → 跳过
-            if _has_knowledge_access_details(evaluation_id):
-                log("ORCH", "L0-L7 分析 skipped: "
-                      "knowledge_access_detail 已有记录（重试路径）")
-                _set_progress(evaluation_id, "L0-L7 分析（已有记录，跳过）")
-                access_details = _load_existing_access_details(evaluation_id)
-            else:
-                _set_progress(evaluation_id, "L0-L7 全链路分析...")
-                access_details = self._run_lifecycle(
-                    data_packs, evaluation_id, reports_dir,
-                    cancel_cb=_cancel_cb, eval_mode=eval_mode,
-                    benchmark_source=benchmark_source,
-                    alert_center_data=alert_center_data,
-                    case_details=case_details,
-                    case_session_matches=case_session_matches,
-                )
-                log("ORCH", f"L0-L7 分析 done: "
-                      f"{len(access_details)} access_details")
-
+            # ── 因果链分析 + 问题单生成（从根因分析结果构建）──
             _set_progress(evaluation_id, "因果链分析 + 问题单生成...")
+            # 从 manifest 取原始数据 task_id，写入问题单供按任务查询
+            _task_id = cfg.get("manifest", {}).get("kg_task_id", "")
             causal_chain = self._run_causal_chain(
-                access_details, evaluation_id, reports_dir,
+                root_cause_results, evaluation_id, reports_dir,
+                task_id=_task_id,
             )
             log("ORCH", f"因果链分析 done: "
                   f"{len(causal_chain.get('per_case_breakpoints', []))} "
                   f"cases with breakpoints")
 
-            # debug dump：L0-L7 全链路分析 + 因果链分析结果
+            # debug dump：因果链分析结果
             self._dump_debug(reports_dir, evaluation_id, "resolving", {
-                "access_detail_count": len(access_details),
-                "access_details": access_details,
                 "causal_chain": causal_chain,
             })
 
@@ -643,7 +579,7 @@ class Orchestrator:
                 _set_progress(evaluation_id, "报告组装...")
                 self._assemble_report(
                     evaluation_id,
-                    access_details, causal_chain,
+                    root_cause_results, causal_chain,
                     recall_precision, reports_dir,
                 )
                 log("ORCH", f"REPORTING done: recall={recall_precision.get('recall_rate')}, "
@@ -1322,69 +1258,31 @@ class Orchestrator:
 
     # ── L0-L7 全链路分析 ─────────────────────────────
 
-    def _run_lifecycle(
-        self, data_packs: list, evaluation_id: str,
-        reports_dir: str, cancel_cb=None, eval_mode: str = "dev",
-        benchmark_source: str = "vbench_zip",
-        alert_center_data: dict | None = None,
-        case_details: dict | None = None,
-        case_session_matches: list[dict] | None = None,
-    ) -> list[dict]:
-        """L0-L7 全链路分析。
-
-        调用 LifecycleAnalyzer.analyze()，对有效 case 的每次知识访问
-        执行 L0-L7 逐级判定，写入 knowledge_access_detail 表。
-
-        cancel_cb 穿透到 LLM 密集内循环。
-        eval_mode: "dev"（开发态，分析 FP+FN）| "runtime"（运行态，只分析 FP）
-        benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
-                          "vbench_zip"（V-Bench 测评集，LLM 匹配）
-        alert_center_data: 告警中心数据，用于 FN 判定（基线漏洞与告警中心对比，
-                          匹配上的不是漏报，没匹配上的是漏报）
-        case_session_matches: case_session_matcher 的匹配结果，用于 FP case 筛选
-        """
-        from ..lifecycle.analyzer import LifecycleAnalyzer
-
-        analyzer = LifecycleAnalyzer()
-        records = analyzer.analyze(
-            evaluation_id, data_packs, reports_dir,
-            cancel_cb=cancel_cb, eval_mode=eval_mode,
-            benchmark_source=benchmark_source,
-            alert_center_data=alert_center_data,
-            case_details=case_details,
-            case_session_matches=case_session_matches,
-        )
-        # 将 FPR 统计存到实例，供 run() 计算 M13
-        self._lifecycle_fpr_stats = getattr(analyzer, "case_filter_stats", None)
-        return records
-
     # ── 因果链分析 + 问题单生成 ─────────────────────
 
     def _run_causal_chain(
-        self, access_details: list[dict],
+        self, root_cause_results: list[dict],
         evaluation_id: str = "", reports_dir: str = "",
+        task_id: str = "",
     ) -> dict:
         """因果链分析 + 问题单生成。
 
-        调用 CausalChainAnalyzer.analyze()，基于 knowledge_access_detail
-        的判定结果按 Agent 类型聚合误报归因。
+        调用 CausalChainAnalyzer.analyze()，基于根因分析结果的
+        l0_l7_breakpoints 按 Agent 类型聚合误报归因。
         分析完成后，从 per_case_breakpoints 自动生成问题单并持久化。
         """
         from ..causal_chain.analyzer import CausalChainAnalyzer
 
         analyzer = CausalChainAnalyzer()
-        # access_details 需要包含 evaluation_id（从第一条记录取）
-        if not evaluation_id and access_details:
-            evaluation_id = access_details[0].get("evaluation_id", "")
-        result = analyzer.analyze(evaluation_id, access_details)
+        result = analyzer.analyze(evaluation_id, root_cause_results)
 
         # 从断点生成问题单
         from ..dts.issue import generate_dts_issues
         from ..persistence.dts_repo import upsert_dts_issues
 
-        case_filter_stats = getattr(self, "_lifecycle_fpr_stats", None) or {}
         dts_issues = generate_dts_issues(
-            evaluation_id, result, access_details, case_filter_stats,
+            evaluation_id, result, root_cause_results,
+            task_id=task_id,
         )
         if dts_issues:
             upsert_dts_issues(dts_issues, evaluation_id, reports_dir)
@@ -1460,7 +1358,7 @@ class Orchestrator:
 
     def _assemble_report(
         self, evaluation_id: str,
-        access_details: list, causal_chain: dict,
+        root_cause_results: list, causal_chain: dict,
         recall_precision: dict, reports_dir: str,
     ):
         """报告组装。
@@ -1475,7 +1373,7 @@ class Orchestrator:
         # 组装生命周期分析段报告
         assembler.assemble_lifecycle_report(
             evaluation_id,
-            access_details,
+            root_cause_results,
             causal_chain,
             recall_precision,
             reports_dir,

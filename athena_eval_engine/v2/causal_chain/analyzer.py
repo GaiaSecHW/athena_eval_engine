@@ -1,9 +1,9 @@
 """因果链断点分析模块（§4.2）。
 
-基于 knowledge_access_detail 的判定结果，按 Agent 类型聚合误报归因。
+基于根因分析结果的 L0-L7 断点，按 Agent 类型聚合误报归因。
 L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不产生断链。
 
-输入：knowledge_access_detail 表中该 evaluation 的全部记录
+输入：RootCauseAnalyzer.analyze() 的输出（root_cause_results）
 输出：
   - 交叉归因矩阵：Agent 类型（行）× L2-L7 级别（列）
   - 成因汇总（cause_code A-G 计数）
@@ -12,10 +12,8 @@ L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不
 """
 from __future__ import annotations
 
-import json
 from collections import Counter, defaultdict
 
-from ..infra.database import connect
 from ...infrastructure.log_util import log
 
 # ── 断点→级别映射（§4.1 断点→成因映射）──
@@ -42,45 +40,59 @@ _ALL_AGENT_TYPES = [
 # 所有 cause_code
 _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
 
-# 所有 effect_label（含 NULL——DB 中 effect_label 为 NULL 时表示证据不足）
+# 所有 effect_label（含 NULL——无 effect 时表示证据不足）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
+
+# ── 链类型→agent_type 映射 ──
+# root_cause_results 中 mining/verification 链需要映射到 agent_type
+_CHAIN_TO_AGENT_TYPE = {
+    "mining": "mining",
+    "verification": "verify",
+}
 
 
 class CausalChainAnalyzer:
     """因果链断点分析器。
 
-    基于 knowledge_access_detail 已有的 L1-L7 判定结果聚合。
-    不执行 L0-L7 判定（那是 LifecycleAnalyzer 的职责），只做聚合统计。
+    基于根因分析结果中的 l0_l7_breakpoints 聚合统计。
+    不执行 L0-L7 判定（那是 RootCauseAnalyzer 的职责），只做聚合统计。
     """
 
-    def analyze(self, evaluation_id: str, access_details: list[dict]) -> dict:
-        """基于 knowledge_access_detail 的判定结果，按 Agent 类型聚合误报归因。
+    def analyze(self, evaluation_id: str,
+                root_cause_results: list[dict]) -> dict:
+        """基于根因分析结果的 L0-L7 断点，按 Agent 类型聚合误报归因。
 
         Args:
             evaluation_id: 评测 ID。
-            access_details: knowledge_access_detail 记录列表（dict），每条含
-                            cause_code、effect_label、task_run_id 等字段。
+            root_cause_results: RootCauseAnalyzer.analyze() 的输出，每个 case 含
+                case_id, vulnerability_type, mining{...}, verification{...}，
+                其中 mining/verification 各含 l0_l7_breakpoints 列表。
 
         Returns:
             因果链分析结果 dict，结构见模块 docstring。
         """
         log("CAUSAL_CHAIN",
-            f"analyze: {len(access_details)} access details for eval={evaluation_id}",
+            f"analyze: {len(root_cause_results)} root cause results "
+            f"for eval={evaluation_id}",
             eval_id=evaluation_id)
 
-        if not access_details:
+        if not root_cause_results:
             log("CAUSAL_CHAIN",
-                f"no access details for eval={evaluation_id}, returning empty result",
+                f"no root cause results for eval={evaluation_id}, "
+                f"returning empty result",
                 eval_id=evaluation_id)
             return self._empty_result(evaluation_id)
 
-        # 从 DB 补充 FP case 集合（outcome_fact 表中 validation_result='FALSE_POSITIVE'）
-        fp_task_run_ids = self._load_fp_task_run_ids(evaluation_id)
+        # 从 root_cause_results 提取扁平的断点记录列表
+        flat_breakpoints = self._flatten_breakpoints(root_cause_results)
 
-        cross_attribution_matrix = self._build_cross_attribution_matrix(access_details)
-        cause_summary = self._build_cause_summary(access_details)
-        effect_label_distribution = self._build_effect_label_distribution(access_details)
-        per_case_breakpoints = self._build_per_case_breakpoints(access_details)
+        cross_attribution_matrix = self._build_cross_attribution_matrix(
+            flat_breakpoints)
+        cause_summary = self._build_cause_summary(flat_breakpoints)
+        effect_label_distribution = self._build_effect_label_distribution(
+            flat_breakpoints)
+        per_case_breakpoints = self._build_per_case_breakpoints(
+            root_cause_results, flat_breakpoints)
 
         result = {
             "evaluation_id": evaluation_id,
@@ -92,30 +104,86 @@ class CausalChainAnalyzer:
 
         log("CAUSAL_CHAIN",
             f"analyze done: {len(per_case_breakpoints)} cases with breakpoints, "
-            f"{len(fp_task_run_ids)} FP cases, "
+            f"{len(flat_breakpoints)} total breakpoints, "
             f"cause_summary={cause_summary}",
             eval_id=evaluation_id)
 
         return result
 
+    # ── 扁平化断点 ──
+
+    def _flatten_breakpoints(
+        self, root_cause_results: list[dict],
+    ) -> list[dict]:
+        """从 root_cause_results 的嵌套结构提取扁平的断点记录列表。
+
+        每个 root_cause_result 含 mining 和 verification 两段，
+        每段含 l0_l7_breakpoints 列表。
+
+        Returns:
+            扁平断点记录列表，每条含：
+            - case_id, vulnerability_type
+            - chain_type: "mining" / "verification"
+            - agent_type: 从 chain_type 推导
+            - cause_code, breakpoint, l0_source
+            - query_content, returned_content
+            - l7_influenced (effect_label)
+        """
+        flat: list[dict] = []
+
+        for case in root_cause_results:
+            case_id = case.get("case_id", "")
+            vuln_type = case.get("vulnerability_type", "")
+
+            for chain_type in ("mining", "verification"):
+                chain_data = case.get(chain_type, {})
+                if not chain_data or not isinstance(chain_data, dict):
+                    continue
+
+                breakpoints = chain_data.get("l0_l7_breakpoints", [])
+                for bp in breakpoints:
+                    if not isinstance(bp, dict):
+                        continue
+
+                    cause_code = bp.get("cause_code")
+                    # LLM 可能返回 "null" 字符串表示无断点
+                    if not cause_code or cause_code == "null":
+                        continue
+
+                    flat.append({
+                        "case_id": case_id,
+                        "vulnerability_type": vuln_type,
+                        "chain_type": chain_type,
+                        "agent_type": _CHAIN_TO_AGENT_TYPE.get(
+                            chain_type, chain_type),
+                        "cause_code": cause_code,
+                        "breakpoint": bp.get("breakpoint", ""),
+                        "l0_source": bp.get("l0_source", ""),
+                        "query_content": bp.get("query_content", ""),
+                        "returned_content": bp.get("returned_content", ""),
+                        "l7_influenced": bp.get("l7_influenced"),
+                        "root_cause": chain_data.get("root_cause", {}),
+                        "fix_suggestion": chain_data.get("fix_suggestion", ""),
+                    })
+
+        return flat
+
     # ── 交叉归因矩阵 ──
 
-    def _build_cross_attribution_matrix(self, access_details: list[dict]) -> dict:
+    def _build_cross_attribution_matrix(
+        self, flat_breakpoints: list[dict],
+    ) -> dict:
         """构建 Agent 类型 × L2-L7 级别的交叉归因矩阵。
 
-        从 access_details 中按 agent_type 分组，统计每个 Agent 在各 L 级别的断点数。
+        从扁平断点记录中按 agent_type 分组，统计每个 Agent 在各 L 级别的断点数。
         断点级别由 cause_code 反推（CAUSE_TO_LEVEL 映射）。
-
-        只有 cause_code 非空的记录才计入断点矩阵——cause_code 为 None 表示
-        该访问无断点（L1=False 短路或 L6=True 待 L7 判定且 L7 正向）。
         """
-        # 初始化矩阵：{agent_type: {L2: 0, L3: 0, ...}}
         matrix: dict[str, dict[str, int]] = {
             agent_type: {level: 0 for level in _ALL_LEVELS}
             for agent_type in _ALL_AGENT_TYPES
         }
 
-        for rec in access_details:
+        for rec in flat_breakpoints:
             cause_code = rec.get("cause_code")
             if not cause_code:
                 continue
@@ -132,42 +200,56 @@ class CausalChainAnalyzer:
 
     # ── 成因汇总 ──
 
-    def _build_cause_summary(self, access_details: list[dict]) -> dict:
+    def _build_cause_summary(
+        self, flat_breakpoints: list[dict],
+    ) -> dict:
         """统计各 cause_code 的数量。
 
         Returns:
-            {"A": 8, "B": 3, ...} — 所有 A-H 键都存在，值为计数。
+            {"A": 8, "B": 3, ...} — 所有 A-G 键都存在，值为计数。
         """
         counter: Counter = Counter()
-        for rec in access_details:
+        for rec in flat_breakpoints:
             cause_code = rec.get("cause_code")
             if cause_code:
                 counter[cause_code] += 1
 
-        # 确保所有 cause_code 都在结果中
         return {code: counter.get(code, 0) for code in _ALL_CAUSES}
 
     # ── 效果标签分布 ──
 
-    def _build_effect_label_distribution(self, access_details: list[dict]) -> dict:
+    def _build_effect_label_distribution(
+        self, flat_breakpoints: list[dict],
+    ) -> dict:
         """统计 effect_label 的分布。
 
-        effect_label 可为 POSITIVE / NEGATIVE / NEUTRAL / NULL（DB 中为 NULL）。
+        effect_label 从 l7_influenced 字段映射：
+        - "positive" → POSITIVE
+        - "negative" → NEGATIVE
+        - None/null → NULL（证据不足）
         """
         counter: Counter = Counter()
-        for rec in access_details:
-            effect = rec.get("effect_label")
-            if effect:
-                counter[effect] += 1
+        for rec in flat_breakpoints:
+            l7 = rec.get("l7_influenced")
+            if l7 == "positive":
+                counter["POSITIVE"] += 1
+            elif l7 == "negative":
+                counter["NEGATIVE"] += 1
+            elif l7 == "neutral":
+                counter["NEUTRAL"] += 1
             else:
-                # DB 中 NULL → 显示为 "NULL"
+                # None 或 "null" 字符串 → NULL（证据不足）
                 counter["NULL"] += 1
 
         return {label: counter.get(label, 0) for label in _ALL_EFFECTS}
 
     # ── 每 case 断点清单 ──
 
-    def _build_per_case_breakpoints(self, access_details: list[dict]) -> list[dict]:
+    def _build_per_case_breakpoints(
+        self,
+        root_cause_results: list[dict],
+        flat_breakpoints: list[dict],
+    ) -> list[dict]:
         """按 case 分组，列出每个 case 的断点清单。
 
         一个 case 可能有多个断点（多次知识访问，每次可能有各自的断点）。
@@ -176,42 +258,62 @@ class CausalChainAnalyzer:
         Returns:
             [{"case_id": ..., "vuln_type": ..., "breakpoints": [...]}, ...]
         """
-        # 按 task_run_id 分组
+        # 按 case_id 分组
         case_map: dict[str, list[dict]] = defaultdict(list)
-        for rec in access_details:
-            cause_code = rec.get("cause_code")
-            if not cause_code:
-                continue  # 无断点的记录不计入
+        for rec in flat_breakpoints:
+            case_id = rec.get("case_id", "")
+            case_map[case_id].append(rec)
 
-            task_run_id = rec.get("task_run_id", "")
-            case_map[task_run_id].append(rec)
+        # 从 root_cause_results 获取每条 case 的根因和修复建议
+        case_root_cause: dict[str, dict] = {}
+        case_fix: dict[str, str] = {}
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            mining = case.get("mining", {}) or {}
+            verify = case.get("verification", {}) or {}
+            # 合并 mining 和 verification 的根因
+            root_causes = {}
+            fix_parts = []
+            for chain_data in (mining, verify):
+                rc = chain_data.get("root_cause", {})
+                if rc:
+                    cat = rc.get("category", "")
+                    desc = rc.get("description", "")
+                    if cat:
+                        root_causes[cat] = desc
+                fs = chain_data.get("fix_suggestion", "")
+                if fs:
+                    fix_parts.append(fs)
+            case_root_cause[cid] = root_causes
+            case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
 
         result: list[dict] = []
-        for task_run_id, records in case_map.items():
-            breakpoints: list[dict] = []
+        for case_id, records in case_map.items():
             vuln_type = ""
+            breakpoints: list[dict] = []
 
             for rec in records:
+                if not vuln_type:
+                    vuln_type = rec.get("vulnerability_type", "")
+
                 cause_code = rec.get("cause_code", "")
                 level = CAUSE_TO_LEVEL.get(cause_code, "")
 
-                # 收集漏洞类型（从 evidence_json 或 judgment_conclusion 中提取）
-                if not vuln_type:
-                    vuln_type = self._extract_vuln_type(rec)
-
-                # 构建证据摘要
                 evidence = self._build_evidence(rec)
 
                 breakpoints.append({
                     "agent_type": rec.get("agent_type", ""),
+                    "chain_type": rec.get("chain_type", ""),
                     "break_level": level,
                     "cause_code": cause_code,
                     "evidence": evidence,
                 })
 
             result.append({
-                "case_id": task_run_id,
+                "case_id": case_id,
                 "vuln_type": vuln_type,
+                "root_cause": case_root_cause.get(case_id, {}),
+                "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": breakpoints,
             })
 
@@ -219,70 +321,10 @@ class CausalChainAnalyzer:
 
     # ── 辅助方法 ──
 
-    def _load_fp_task_run_ids(self, evaluation_id: str) -> set[str]:
-        """从 outcome_fact 表加载 FP case 的 task_run_id 集合。
-
-        FP case = validation_result = 'FALSE_POSITIVE' 的 task_run。
-        """
-        fp_ids: set[str] = set()
-
-        conn = None
-        try:
-            conn = connect(autocommit=True)
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT task_run_id FROM outcome_fact "
-                "WHERE evaluation_id = %s AND validation_result = 'FALSE_POSITIVE'",
-                (evaluation_id,),
-            )
-            for row in cur.fetchall():
-                fp_ids.add(row[0])
-        except Exception as e:
-            log("CAUSAL_CHAIN",
-                f"load FP task_run_ids failed: {str(e)[:200]}",
-                eval_id=evaluation_id)
-            # 不跳过——向上抛出，遵循"禁止降级跳过"铁律
-            raise
-        finally:
-            if conn is not None:
-                conn.close()
-
-        return fp_ids
-
-    def _extract_vuln_type(self, rec: dict) -> str:
-        """从 knowledge_access_detail 记录中提取漏洞类型。
-
-        漏洞类型可能存在：
-        - evidence_json 中的 vuln_type 字段
-        - judgment_conclusion 中包含的漏洞类型描述
-        """
-        # 尝试从 evidence_json 提取
-        evidence_json = rec.get("evidence_json")
-        if evidence_json:
-            try:
-                if isinstance(evidence_json, str):
-                    parsed = json.loads(evidence_json)
-                else:
-                    parsed = evidence_json
-                if isinstance(parsed, dict):
-                    vuln_type = parsed.get("vuln_type")
-                    if vuln_type:
-                        return str(vuln_type)
-            except (json.JSONDecodeError, TypeError):
-                pass
-
-        # 尝试从 judgment_conclusion 提取
-        judgment = rec.get("judgment_conclusion", "")
-        if judgment:
-            return str(judgment)
-
-        return ""
-
     def _build_evidence(self, rec: dict) -> str:
-        """从 knowledge_access_detail 记录构建断点证据摘要。
+        """从断点记录构建证据摘要。
 
-        组合 query_content + returned_content + reasoning_ref + breakpoint 信息，
-        组合关键部分作为证据。
+        组合 query_content + returned_content + breakpoint 信息。
         """
         parts: list[str] = []
 
@@ -299,29 +341,13 @@ class CausalChainAnalyzer:
         if returned:
             parts.append(f"返回: {returned}")
 
-        reasoning = rec.get("reasoning_ref", "")
-        if reasoning:
-            parts.append(f"引用: {reasoning}")
+        bp = rec.get("breakpoint", "")
+        if bp:
+            parts.append(f"断点级别: {bp}")
 
-        judgment = rec.get("judgment_conclusion", "")
-        if judgment:
-            parts.append(f"结论: {judgment}")
-
-        # 从 evidence_json 提取 breakpoint 描述
-        evidence_json = rec.get("evidence_json")
-        if evidence_json:
-            try:
-                if isinstance(evidence_json, str):
-                    parsed = json.loads(evidence_json)
-                else:
-                    parsed = evidence_json
-                if isinstance(parsed, dict):
-                    bp = parsed.get("breakpoint")
-                    cause = parsed.get("cause")
-                    if bp and cause:
-                        parts.append(f"L{bp}: {cause}")
-            except (json.JSONDecodeError, TypeError):
-                pass
+        l0 = rec.get("l0_source", "")
+        if l0:
+            parts.append(f"知识来源: {l0}")
 
         return " | ".join(parts) if parts else ""
 
@@ -339,7 +365,7 @@ class CausalChainAnalyzer:
         return descriptions.get(cause_code, "")
 
     def _empty_result(self, evaluation_id: str) -> dict:
-        """空结果（无 access_details 时返回）。"""
+        """空结果（无 root_cause_results 时返回）。"""
         return {
             "evaluation_id": evaluation_id,
             "cross_attribution_matrix": {
