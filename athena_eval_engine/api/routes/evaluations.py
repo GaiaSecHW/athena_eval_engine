@@ -290,7 +290,7 @@ def resume_stuck_evaluations():
     """
     # 执行 schema 迁移 + 加载系统参数 + 续跑卡住的评测
     try:
-        from ...infrastructure.migrations import run_migrations
+        from ...v2.infra.migrations import run_migrations
         run_migrations()
         from .benchmark_system import load_system_config
         load_system_config()
