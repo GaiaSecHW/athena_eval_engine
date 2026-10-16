@@ -539,22 +539,35 @@ function renderV2Report(d){
   // 指标分组
   var mById={};
   metricResults.forEach(function(m){mById[m.metric_id]=m;});
-  // 基础效果指标：误报率 + 召回率 + 准确率
+  // 基础效果指标：按评测模式动态显示
+  // 开发态：基线=外部 ground truth，有完整 TP/FN/FP/TN → 显示 误报率+召回率+准确率
+  // 运行态：基线=Agent 自身上报的 case，TP+FP=基线总数，无 FN/TN → 只显示 误报率+准确率（互补）
   var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
   var fpCnt=rpData.fp_count||0;
   var tpCnt=rpData.tp_count||0;
   var fnCnt=rpData.fn_count||0;
   var tnCnt=rpData.tn_count||0;
-  var baselineTotal=tpCnt+fnCnt+fpCnt+tnCnt;
-  var fprVal=baselineTotal>0?(fpCnt/baselineTotal):null;
-  var recallVal=(tpCnt+fnCnt)>0?(tpCnt/(tpCnt+fnCnt)):null;
-  var precisionVal=(tpCnt+fpCnt)>0?(tpCnt/(tpCnt+fpCnt)):null;
-  var baseMetrics='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/基线总数 = '+fpCnt+'/'+baselineTotal+'</div></div>';
-  if(tpCnt+fnCnt>0){
-    baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(recallVal!=null?(recallVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN) = '+tpCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
-  }
-  if(tpCnt+fpCnt>0){
-    baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+  var baseMetrics='';
+  if(evalMode==='runtime'){
+    // 运行态：基线=Agent 上报的 case，FPR = FP/(TP+FP)，与准确率互补
+    var rtTotal=tpCnt+fpCnt;
+    var fprVal=rtTotal>0?(fpCnt/rtTotal):null;
+    var precisionVal=rtTotal>0?(tpCnt/rtTotal):null;
+    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(TP+FP) = '+fpCnt+'/'+rtTotal+'</div></div>';
+    baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+rtTotal+'</div></div>';
+  }else{
+    // 开发态：基线=外部 ground truth，完整 TP/FN/FP/TN
+    var baselineTotal=tpCnt+fnCnt+fpCnt+tnCnt;
+    var fprVal=baselineTotal>0?(fpCnt/baselineTotal):null;
+    var recallVal=(tpCnt+fnCnt)>0?(tpCnt/(tpCnt+fnCnt)):null;
+    var precisionVal=(tpCnt+fpCnt)>0?(tpCnt/(tpCnt+fpCnt)):null;
+    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/基线总数 = '+fpCnt+'/'+baselineTotal+'</div></div>';
+    if(tpCnt+fnCnt>0){
+      baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(recallVal!=null?(recallVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN) = '+tpCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
+    }
+    if(tpCnt+fpCnt>0){
+      baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    }
   }
   // 回归后误报率（回归验证完成后重新计算，当前无数据时显示 NA）
   var postFpr=base.post_regression_fpr;
