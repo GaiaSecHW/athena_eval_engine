@@ -49,7 +49,7 @@ def _build_breakpoint_desc(
         parts.append(f"漏洞标题: {vuln_title}")
     if evidence:
         parts.append(f"证据: {evidence}")
-    return " | ".join(parts)
+    return "\n".join(parts)
 
 
 # ── cause_code 严重度排序（G 最严重，A 最轻）──
@@ -145,7 +145,7 @@ def generate_dts_issues(
             bp_lines.append(
                 _build_breakpoint_desc(bp_cause, bp_level, bp_evidence, "")
             )
-        breakpoint_desc = f"漏洞标题: {vuln_title} | " + " || ".join(bp_lines)
+        breakpoint_desc = f"漏洞标题: {vuln_title}\n" + "\n".join(bp_lines)
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
