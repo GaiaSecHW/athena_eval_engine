@@ -4,29 +4,30 @@
 
 匹配策略：
 - 只对误报（NON_VULNERABLE）case 进行匹配
-- 在验证 agent（叶子节点）的 session 中找漏洞验证记录
-- 验证 agent 是叶子节点（Phase 5·验证），漏洞判定只看验证 session
-- 挖掘 agent 的 finding 提交在 Phase 3，不是叶子节点，不参与匹配
-- 找到 verify_sessions 后，沿 parent_map 追溯到根节点，
-  链上角色为 mining 的 session 作为 mining_sessions 返回
+- 在 trace 中找漏洞 finding 记录（title 精确匹配，多个用 description 消歧）
+- 命中的 session 按 DataPack.agent_type 分类：
+  - 挖掘 agent session：turing/argo/secmate/dataflow 的 session
+  - 验证 agent session：cvuln_verify/webvuln_verify 的 session
+- Turing 的 vuln-hunt-validate 是挖掘 agent 内部的验证阶段，
+  不是独立验证 agent，归类为挖掘 agent session
 
 匹配链：
 - 基线 case ←LLM 语义匹配→ 原始 case（告警中心，case_matches）
 - 原始 case ←程序精确匹配→ trace session（用 title 精确匹配，多个用 description 消歧）
 
 Turing 平台匹配方式：
-- 验证 session 的 agent ∈ {"vuln-hunt-validate", "web-validate"}
-- 工具调用 vuln_hunt_query_finding 的 output 含漏洞 title + description
-- 用原始 case title 精确匹配 finding title
+- 从 vuln-hunt-validate session 的 vuln_hunt_query_finding 工具调用
+  output 解析漏洞 title + description
+- 命中的 session 归类为挖掘 agent session（Turing 是挖掘 agent）
 
 其他平台（webvuln_verify / cvuln_verify）：
-- DataPack.agent_type 即为验证 agent，整个 DataPack 都是验证 session
+- DataPack.agent_type 即为验证 agent，整个 DataPack 都是验证 agent session
 - 从验证工具调用提取 title + description
 
 运行态：基线 case_id 就是告警中心 case_id，直接映射
 开发态：从 case_matches（LLM 匹配结果）提取基线→告警中心映射
 
-- 基线 NON_VULNERABLE + 验证 session 命中 = FP，未命中 = TN
+- 基线 NON_VULNERABLE + finding 命中 = FP，未命中 = TN
 """
 from __future__ import annotations
 
@@ -41,36 +42,36 @@ from ...infrastructure.log_util import log
 class CaseSessionMatcher:
     """case↔session 匹配器。"""
 
-    # Turing 平台：验证 session 的 agent 名（多版本命名）
-    _TURING_VERIFY_AGENTS = {
-        "vuln-hunt-validate",  # 旧版命名
-        "web-validate",         # 新版命名
-    }
-
-    # Turing 平台：验证 session 的工具名（已归一化，横线→下划线）
-    _TURING_VERIFY_TOOLS = {
-        "vuln_hunt_query_finding",
-        "vuln_hunt_update_finding",
-    }
-
-    # WebVulnVerify 平台：验证工具名
-    _WEBVV_VERIFY_TOOLS = {
-        "vulnerability_analyze",
-        "vulnerability_verify",
-    }
-
-    # CVulnVerify 平台：验证工具名（暂保留旧工具名，后续适配）
-    _OTHER_VERIFY_TOOLS = {
-        "vulnerability_verify",
-        "vulnerability_cvss",
-        "vulnerability_analyze",
-    }
-
-    # 挖掘 agent 的 DataPack.agent_type（与 root_cause_analyzer 一致）
+    # 挖掘 agent 的 DataPack.agent_type
     _MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
 
     # 验证 agent 的 DataPack.agent_type
     _VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
+
+    # Turing 平台：含漏洞 finding 的 session agent 名（挖掘 agent 内部阶段）
+    _TURING_FINDING_AGENTS = {
+        "vuln-hunt-validate",  # 旧版命名
+        "web-validate",         # 新版命名
+    }
+
+    # Turing 平台：提取 finding 的工具名（已归一化，横线→下划线）
+    _TURING_FINDING_TOOLS = {
+        "vuln_hunt_query_finding",
+        "vuln_hunt_update_finding",
+    }
+
+    # WebVulnVerify 平台：提取 finding 的工具名
+    _WEBVV_FINDING_TOOLS = {
+        "vulnerability_analyze",
+        "vulnerability_verify",
+    }
+
+    # CVulnVerify 平台：提取 finding 的工具名
+    _CVULN_FINDING_TOOLS = {
+        "vulnerability_verify",
+        "vulnerability_cvss",
+        "vulnerability_analyze",
+    }
 
     def match(
         self,
@@ -81,7 +82,7 @@ class CaseSessionMatcher:
         eval_mode: str = "runtime",
         alert_center_data: dict | None = None,
     ) -> list[dict]:
-        """对基线 case，在 trace 中找到挖掘 + 验证 session。
+        """对基线 case，在 trace 中找到挖掘 agent session 和验证 agent session。
 
         Args:
             evaluation_id: 评测 ID
@@ -97,9 +98,9 @@ class CaseSessionMatcher:
             - case_id: 基线 case_id
             - ac_case_id: 告警中心 case_id（匹配上的）
             - vulnerability_type, expected_label
-            - verify_sessions: [session_id, ...]  验证 agent 命中的 session（叶子节点）
-            - mining_sessions: [session_id, ...]  挖掘 agent 的 session（从 verify 沿 parent_map 追溯）
-            - outcome: "TP" / "FP" / "FN" / "TN"
+            - mining_sessions: [session_id, ...]  挖掘 agent 命中的 session
+            - verify_sessions: [session_id, ...]  验证 agent 命中的 session
+            - outcome: "FP" / "TN"
             - match_method: "matched" / "unmatched"
             - match_detail: 匹配细节
         """
@@ -108,18 +109,14 @@ class CaseSessionMatcher:
             case_details, case_matches, eval_mode)
 
         # 构建告警中心 case_id → 原始 case title 的映射
-        # 原始 case 就是 agent 上报的漏洞结果，原始 case title 跟 trace 中
-        # finding title 一致，可以用来精确匹配验证 session
         ac_title_map: dict[str, str] = {}
         if case_matches:
-            # 开发态：从 case_matches 提取 raw_case_id → raw_title
             for m in case_matches:
                 raw_id = str(m.get("raw_case_id", "") or "")
                 raw_title = str(m.get("raw_title", "") or "")
                 if raw_id and raw_title:
                     ac_title_map[raw_id] = raw_title
         elif alert_center_data:
-            # 运行态：从告警中心 cases 提取 case_id → title
             for c in alert_center_data.get("cases", []):
                 cid = str(c.get("case_id") or c.get("id") or "")
                 title = str(c.get("title") or "")
@@ -135,48 +132,32 @@ class CaseSessionMatcher:
             f"{len(data_packs)} 个 data_packs",
             eval_id=evaluation_id)
 
-        # 筛选验证 agent 的 DataPack 和 session
-        # 1. 其他平台（cvuln_verify / webvuln_verify）：整个 DataPack 是验证 agent
+        # 按 DataPack.agent_type 分类
+        mining_packs = [dp for dp in data_packs
+                        if dp.agent_type in self._MINING_AGENT_TYPES]
         verify_packs = [dp for dp in data_packs
-                        if dp.agent_type in ("webvuln_verify", "cvuln_verify")]
-        # 2. Turing 平台：验证 session 在 turing pack 里，按 session.agent 过滤
-        turing_packs = [dp for dp in data_packs if dp.agent_type == "turing"]
-        turing_verify_sids: set[str] = set()
-        for dp in turing_packs:
+                        if dp.agent_type in self._VERIFY_AGENT_TYPES]
+
+        # Turing 内部：含 finding 的 session（vuln-hunt-validate/web-validate）
+        # 这些是挖掘 agent 内部的验证阶段 session，归类为挖掘 agent session
+        turing_finding_sids: set[str] = set()
+        for dp in mining_packs:
+            if dp.agent_type != "turing":
+                continue
             for sid, sdata in (dp.session_graph.get("sessions") or {}).items():
-                if sdata.get("agent") in self._TURING_VERIFY_AGENTS:
-                    turing_verify_sids.add(sid)
+                if sdata.get("agent") in self._TURING_FINDING_AGENTS:
+                    turing_finding_sids.add(sid)
+
         log("MATCH",
+            f"mining_packs={len(mining_packs)}, "
             f"verify_packs={len(verify_packs)}, "
-            f"turing_packs={len(turing_packs)}, "
-            f"turing_verify_sids={len(turing_verify_sids)}",
+            f"turing_finding_sids={len(turing_finding_sids)}",
             eval_id=evaluation_id)
 
-        # 预构建验证 agent 的 title → [(session_id, description)] 索引
-        verify_index = self._build_verify_index(
-            verify_packs, turing_packs, turing_verify_sids)
-
-        # 合并全部 DataPack 的 session_graph，构建 parent_map + sid_role
-        # 用于从 verify_sessions 追溯到挖掘 session
-        all_parent_map: dict[str, str] = {}
-        all_sessions: dict[str, dict] = {}
-        sid_role: dict[str, str] = {}
-        for dp in data_packs:
-            sg = dp.session_graph or {}
-            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
-            parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
-            for sid, sdata in sessions.items():
-                all_sessions[sid] = sdata
-                session_agent = (sdata or {}).get("agent", "")
-                if session_agent in self._TURING_VERIFY_AGENTS:
-                    sid_role[sid] = "verify"
-                elif dp.agent_type in self._VERIFY_AGENT_TYPES:
-                    sid_role[sid] = "verify"
-                elif dp.agent_type in self._MINING_AGENT_TYPES:
-                    sid_role[sid] = "mining"
-            for sid, pid in parent_map.items():
-                if sid in sessions:
-                    all_parent_map[sid] = pid
+        # 构建 title → [(session_id, description, agent_type)] 索引
+        # 跨全部 agent 类型，命中后按 agent_type 分类到 mining/verify
+        finding_index = self._build_finding_index(
+            mining_packs, verify_packs, turing_finding_sids)
 
         results: list[dict] = []
         for cid, cd in target_cases:
@@ -185,50 +166,53 @@ class CaseSessionMatcher:
             expected_label = cd.get("expected_label", "")
             baseline_desc = cd.get("description", "")
 
+            mining_sessions: list[str] = []
             verify_sessions: list[str] = []
             match_method_used = ""
 
-            # 匹配策略：用原始 case title 去验证 session 的 finding title 精确匹配
+            # 匹配策略：用原始 case title 去 finding title 精确匹配
             raw_title = ac_title_map.get(ac_case_id, "")
-            if raw_title and raw_title in verify_index:
-                entries = verify_index[raw_title]
+            if raw_title and raw_title in finding_index:
+                entries = finding_index[raw_title]
                 if len(entries) == 1:
-                    # 只有一个，直接使用
-                    verify_sessions = [entries[0][0]]
+                    sid, _, agent_type = entries[0]
+                    self._classify_session(sid, agent_type,
+                                           mining_sessions, verify_sessions)
                     match_method_used = "raw_title"
                 elif len(entries) > 1:
                     # 多个匹配，用漏洞描述精确匹配消歧
-                    for sid, desc in entries:
+                    matched_any = False
+                    for sid, desc, agent_type in entries:
                         if desc and baseline_desc and desc == baseline_desc:
-                            verify_sessions = [sid]
+                            self._classify_session(sid, agent_type,
+                                                   mining_sessions, verify_sessions)
                             match_method_used = "raw_title+desc"
+                            matched_any = True
                             break
-                    if not verify_sessions:
+                    if not matched_any:
                         # 描述没匹配上，用全部 session
-                        verify_sessions = [e[0] for e in entries]
+                        for sid, _, agent_type in entries:
+                            self._classify_session(sid, agent_type,
+                                                   mining_sessions, verify_sessions)
                         match_method_used = "raw_title_multi"
 
-            # 从 verify_sessions 沿 parent_map 追溯到根节点，
-            # 按 session 角色拆分为挖掘链和验证链
-            mining_sessions = self._trace_mining_sessions(
-                verify_sessions, all_parent_map, all_sessions, sid_role)
+            # 判定 outcome：误报 case，finding 命中 = FP，未命中 = TN
+            all_sessions = mining_sessions + verify_sessions
+            outcome = "FP" if all_sessions else "TN"
 
-            # 判定 outcome：误报 case，验证 session 命中 = FP，未命中 = TN
-            outcome = "FP" if verify_sessions else "TN"
-
-            matched = bool(verify_sessions)
+            matched = bool(all_sessions)
             method = "matched" if matched else "unmatched"
-            detail = (f"{len(verify_sessions)} × verify, "
-                      f"{len(mining_sessions)} × mining ({match_method_used})"
-                      if verify_sessions else "未匹配")
+            detail = (f"{len(mining_sessions)} × mining, "
+                      f"{len(verify_sessions)} × verify ({match_method_used})"
+                      if all_sessions else "未匹配")
 
             results.append({
                 "case_id": cid,
                 "ac_case_id": ac_case_id,
                 "vulnerability_type": vuln_type,
                 "expected_label": expected_label,
-                "verify_sessions": verify_sessions,
                 "mining_sessions": mining_sessions,
+                "verify_sessions": verify_sessions,
                 "outcome": outcome,
                 "match_method": method,
                 "match_detail": detail,
@@ -236,16 +220,31 @@ class CaseSessionMatcher:
 
             log("MATCH",
                 f"case {cid}: outcome={outcome}, method={method}, "
-                f"verify={len(verify_sessions)}, mining={len(mining_sessions)} "
+                f"mining={len(mining_sessions)}, verify={len(verify_sessions)} "
                 f"sessions ({match_method_used})",
                 eval_id=evaluation_id)
 
-        matched = sum(1 for r in results if r["match_method"] != "unmatched")
+        matched_count = sum(1 for r in results if r["match_method"] != "unmatched")
         log("MATCH",
-            f"匹配完成: {matched}/{len(target_cases)} case 命中",
+            f"匹配完成: {matched_count}/{len(target_cases)} case 命中",
             eval_id=evaluation_id)
 
         return results
+
+    @staticmethod
+    def _classify_session(
+        sid: str,
+        agent_type: str,
+        mining_sessions: list[str],
+        verify_sessions: list[str],
+    ):
+        """按 agent_type 将 session 分类到挖掘或验证列表。"""
+        if agent_type in CaseSessionMatcher._VERIFY_AGENT_TYPES:
+            if sid not in verify_sessions:
+                verify_sessions.append(sid)
+        else:
+            if sid not in mining_sessions:
+                mining_sessions.append(sid)
 
     def _build_baseline_ac_map(
         self,
@@ -261,12 +260,10 @@ class CaseSessionMatcher:
         mapping: dict[str, str] = {}
 
         if eval_mode == "runtime":
-            # 运行态：基线 case_id 就是告警中心 case_id
             for cid in case_details:
                 mapping[cid] = cid
             return mapping
 
-        # 开发态：从 case_matches 提取
         if not case_matches:
             return mapping
 
@@ -282,101 +279,66 @@ class CaseSessionMatcher:
             eval_id="")
         return mapping
 
-    @staticmethod
-    def _trace_mining_sessions(
-        verify_sids: list[str],
-        parent_map: dict[str, str],
-        sessions: dict[str, dict],
-        sid_role: dict[str, str],
-    ) -> list[str]:
-        """从 verify_sessions 找直接关联的挖掘 session。
-
-        只取 verify session 的直接 parent（vuln-hunt-mine），
-        不追溯公共上游（preprocess/strategy/detect）——这些是多个 case
-        共享的公共 session，不属于特定 case 的挖掘链。
-        """
-        if not verify_sids:
-            return []
-
-        mining_sids: list[str] = []
-        for vsid in verify_sids:
-            pid = parent_map.get(vsid, "")
-            if pid and sid_role.get(pid) == "mining":
-                if pid not in mining_sids:
-                    mining_sids.append(pid)
-
-        return mining_sids
-
-    def _build_verify_index(
+    def _build_finding_index(
         self,
+        mining_packs: list[DataPack],
         verify_packs: list[DataPack],
-        turing_packs: list[DataPack],
-        turing_verify_sids: set[str],
-    ) -> dict[str, list[tuple[str, str]]]:
-        """构建 title → [(session_id, description)] 索引（验证 agent）。
+        turing_finding_sids: set[str],
+    ) -> dict[str, list[tuple[str, str, str]]]:
+        """构建 title → [(session_id, description, agent_type)] 索引。
 
-        返回值中每个 title 对应一个列表，列表元素是 (session_id, description)。
-        title 唯一时列表长度为 1，可直接使用；
-        title 有多个匹配时用 description 精确匹配消歧。
-
-        Turing 平台：
-        - 只扫描 turing_verify_sids 中的 session 事件
-        - 从 vuln_hunt_query_finding 的 output_json 解析漏洞 title + description
-
-        WebVulnVerify 平台：
-        - 整个 DataPack 都是验证 agent
-        - 从 vulnerability_analyze/verify 的 input_json 提取 title + description
-
-        CVulnVerify 平台：
-        - 暂保留旧逻辑（vulnerability_id 匹配），后续适配
+        跨全部 agent 类型扫描 finding，命中后按 agent_type 分类。
         """
-        index: dict[str, list[tuple[str, str]]] = defaultdict(list)
+        index: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
 
-        # ── Turing 平台 ──
-        for dp in turing_packs:
+        # ── Turing 平台（挖掘 agent）──
+        # 从 vuln-hunt-validate session 的工具调用提取 finding
+        for dp in mining_packs:
+            if dp.agent_type != "turing":
+                continue
             for ev in (dp.events or []):
                 if not ev.is_tool_call():
                     continue
-                if ev.session_id not in turing_verify_sids:
+                if ev.session_id not in turing_finding_sids:
                     continue
                 tool = ev.tool_name or ""
-                if tool not in self._TURING_VERIFY_TOOLS:
+                if tool not in self._TURING_FINDING_TOOLS:
                     continue
                 title, desc = self._extract_title_desc_turing(ev)
                 if title:
                     sid = ev.session_id or ""
                     if sid:
-                        entry = (sid, desc)
+                        entry = (sid, desc, dp.agent_type)
                         if entry not in index[title]:
                             index[title].append(entry)
 
-        # ── WebVulnVerify 平台 ──
-        webvv_packs = [dp for dp in verify_packs
-                       if dp.agent_type == "webvuln_verify"]
-        for dp in webvv_packs:
+        # ── WebVulnVerify 平台（验证 agent）──
+        for dp in verify_packs:
+            if dp.agent_type != "webvuln_verify":
+                continue
             for ev in (dp.events or []):
                 if not ev.is_tool_call():
                     continue
                 tool = ev.tool_name or ""
-                if tool not in self._WEBVV_VERIFY_TOOLS:
+                if tool not in self._WEBVV_FINDING_TOOLS:
                     continue
                 title, desc = self._extract_title_desc_webvv(ev)
                 if title:
                     sid = ev.session_id or ""
                     if sid:
-                        entry = (sid, desc)
+                        entry = (sid, desc, dp.agent_type)
                         if entry not in index[title]:
                             index[title].append(entry)
 
-        # ── CVulnVerify 平台（旧逻辑，后续适配）──
-        cvuln_packs = [dp for dp in verify_packs
-                       if dp.agent_type == "cvuln_verify"]
-        for dp in cvuln_packs:
+        # ── CVulnVerify 平台（验证 agent）──
+        for dp in verify_packs:
+            if dp.agent_type != "cvuln_verify":
+                continue
             for ev in (dp.events or []):
                 if not ev.is_tool_call():
                     continue
                 tool = ev.tool_name or ""
-                if tool not in self._OTHER_VERIFY_TOOLS:
+                if tool not in self._CVULN_FINDING_TOOLS:
                     continue
                 inp = ev.input_json or {}
                 key = (
@@ -387,7 +349,7 @@ class CaseSessionMatcher:
                 if key:
                     sid = ev.session_id or ""
                     if sid:
-                        entry = (sid, "")
+                        entry = (sid, "", dp.agent_type)
                         if entry not in index[str(key)]:
                             index[str(key)].append(entry)
 
@@ -395,7 +357,7 @@ class CaseSessionMatcher:
 
     @staticmethod
     def _extract_title_desc_turing(ev) -> tuple[str, str]:
-        """从 Turing 验证工具调用事件中提取漏洞 title + description。
+        """从 Turing 工具调用事件中提取漏洞 title + description。
 
         vuln_hunt_query_finding 的 output_json 结构：
         {"result": "{...JSON string with title/description...}"}
@@ -408,7 +370,6 @@ class CaseSessionMatcher:
         if not outp:
             return "", ""
 
-        # output_json 可能是 str 或 dict
         if isinstance(outp, str):
             try:
                 outp = json.loads(outp)
@@ -417,7 +378,6 @@ class CaseSessionMatcher:
         if not isinstance(outp, dict):
             return "", ""
 
-        # output 格式：{"result": "{...}"}
         result_str = outp.get("result", "")
         if isinstance(result_str, str):
             try:
@@ -438,7 +398,7 @@ class CaseSessionMatcher:
 
     @staticmethod
     def _extract_title_desc_webvv(ev) -> tuple[str, str]:
-        """从 WebVulnVerify 验证工具调用事件中提取漏洞 title + description。
+        """从 WebVulnVerify 工具调用事件中提取漏洞 title + description。
 
         vulnerability_analyze / vulnerability_verify 的 input_json 含：
         - result: 验证报告文本（含"一句话结论"或"漏洞类型"表格行）
@@ -457,23 +417,19 @@ class CaseSessionMatcher:
         if not isinstance(inp, dict):
             return "", ""
 
-        # 提取 description
         desc = str(inp.get("description", "") or "")
 
         result_text = str(inp.get("result", "") or "")
         if result_text:
-            # 1. "一句话结论：xxx"
             m = re.search(
                 r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)',
                 result_text, re.DOTALL,
             )
             if m:
                 return m.group(1).strip(), desc
-            # 2. "| 漏洞类型 | xxx |"
             m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
             if m:
                 return m.group(1).strip(), desc
 
-        # 3. 回退到 category
         category = inp.get("category", "") or inp.get("vuln_type", "") or ""
         return (str(category) if category else "", desc)

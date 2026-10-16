@@ -32,13 +32,6 @@ from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ...infrastructure.log_util import log
 
-# ── 挖掘 agent 类型（DataPack 级别）──
-_MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
-# ── 验证 agent 类型（DataPack 级别）──
-_VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
-# ── Turing 平台：验证 session 的 agent 名（多版本命名）──
-_TURING_VERIFY_AGENTS = {"vuln-hunt-validate", "web-validate"}
-
 # ── 系统 prompt（固定）──
 
 _SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的误报原因。
@@ -182,12 +175,13 @@ class RootCauseAnalyzer:
         cancel_cb=None,
         project_id: str = "",
     ) -> list[dict]:
-        """对每个 FP case 的挖掘链和验证链各自做独立压缩 + 合并输出根因分析。
+        """对每个 FP case 的挖掘 agent session 和验证 agent session 各自做独立压缩 + 合并输出根因分析。
 
         Args:
             evaluation_id: 评测 ID
             fp_cases: case_matching 结果中 outcome=FP 的 case 列表，
-                      每项含 case_id, verify_sessions, vulnerability_type, description
+                      每项含 case_id, mining_sessions, verify_sessions,
+                      vulnerability_type, description
             data_packs: DataPack 列表
             cancel_cb: 取消回调
             project_id: 项目 ID（知识库主动验证用，空则跳过 Athena API 查询）
@@ -200,27 +194,7 @@ class RootCauseAnalyzer:
         """
         # 构建 session_id → events 索引
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
-        # 构建 session_id → 角色（"mining" / "verify"）索引，合并全部 parent_map
-        sid_role: dict[str, str] = {}
-        all_parent_map: dict[str, str] = {}
-        all_sessions: dict[str, dict] = {}
         for dp in data_packs:
-            sg = dp.session_graph or {}
-            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
-            parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
-            for sid, sdata in sessions.items():
-                all_sessions[sid] = sdata
-                # 判断角色：先看 session 的 agent 字段，再看 DataPack.agent_type
-                session_agent = (sdata or {}).get("agent", "")
-                if session_agent in _TURING_VERIFY_AGENTS:
-                    sid_role[sid] = "verify"
-                elif dp.agent_type in _VERIFY_AGENT_TYPES:
-                    sid_role[sid] = "verify"
-                elif dp.agent_type in _MINING_AGENT_TYPES:
-                    sid_role[sid] = "mining"
-            for sid, pid in parent_map.items():
-                if sid in sessions:
-                    all_parent_map[sid] = pid
             for ev in (dp.events or []):
                 sid = ev.session_id or ""
                 if sid:
@@ -240,21 +214,9 @@ class RootCauseAnalyzer:
             case_id = case.get("case_id", "")
             vuln_type = case.get("vulnerability_type", "")
             desc = case.get("description", "")
-            verify_sids = case.get("verify_sessions", [])
+            mining_chain = list(case.get("mining_sessions", []))
+            verify_chain = list(case.get("verify_sessions", []))
             fp_reason = case.get("human_confirmation_summary", "")
-
-            # 从 verify_sessions 找直接关联的挖掘 session 和验证 session
-            # parent_id 是创建树边，不是 case 链边——一个 detect 可能
-            # 创建多个 mine session 挖不同漏洞，preprocess/strategy/detect
-            # 是公共上游，不属于特定 case。只取直接 parent（mine），
-            # 不追溯公共祖先。
-            mining_chain: list[str] = []
-            verify_chain: list[str] = list(verify_sids)
-            for vsid in verify_sids:
-                pid = all_parent_map.get(vsid, "")
-                if pid and sid_role.get(pid) == "mining":
-                    if pid not in mining_chain:
-                        mining_chain.append(pid)
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
