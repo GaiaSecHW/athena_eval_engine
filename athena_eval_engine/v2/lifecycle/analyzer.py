@@ -150,7 +150,8 @@ class LifecycleAnalyzer:
                 eval_mode: str = "dev",
                 benchmark_source: str = "vbench_zip",
                 alert_center_data: dict | None = None,
-                case_details: dict | None = None) -> list[dict]:
+                case_details: dict | None = None,
+                case_session_matches: list[dict] | None = None) -> list[dict]:
         """对有效 case 的每次知识访问执行 L0-L7 分析。
 
         流程：
@@ -165,6 +166,7 @@ class LifecycleAnalyzer:
             benchmark_source: "vuln_center"（漏洞中心，纯代码匹配）|
                               "vbench_zip"（V-Bench 测评集，LLM 匹配）
             alert_center_data: 告警中心数据，用于 FN 判定
+            case_session_matches: case_session_matcher 的匹配结果，用于 FP case 筛选
 
         Returns:
             list[dict]，每个 dict 是一条 knowledge_access_detail 记录
@@ -175,6 +177,7 @@ class LifecycleAnalyzer:
             benchmark_source=benchmark_source,
             alert_center_data=alert_center_data,
             case_details=case_details,
+            case_session_matches=case_session_matches,
         )
 
         all_records: list[dict] = []

@@ -603,6 +603,7 @@ class Orchestrator:
                     benchmark_source=benchmark_source,
                     alert_center_data=alert_center_data,
                     case_details=case_details,
+                    case_session_matches=case_session_matches,
                 )
                 log("ORCH", f"L0-L7 分析 done: "
                       f"{len(access_details)} access_details")
@@ -1327,6 +1328,7 @@ class Orchestrator:
         benchmark_source: str = "vbench_zip",
         alert_center_data: dict | None = None,
         case_details: dict | None = None,
+        case_session_matches: list[dict] | None = None,
     ) -> list[dict]:
         """L0-L7 全链路分析。
 
@@ -1339,6 +1341,7 @@ class Orchestrator:
                           "vbench_zip"（V-Bench 测评集，LLM 匹配）
         alert_center_data: 告警中心数据，用于 FN 判定（基线漏洞与告警中心对比，
                           匹配上的不是漏报，没匹配上的是漏报）
+        case_session_matches: case_session_matcher 的匹配结果，用于 FP case 筛选
         """
         from ..lifecycle.analyzer import LifecycleAnalyzer
 
@@ -1349,6 +1352,7 @@ class Orchestrator:
             benchmark_source=benchmark_source,
             alert_center_data=alert_center_data,
             case_details=case_details,
+            case_session_matches=case_session_matches,
         )
         # 将 FPR 统计存到实例，供 run() 计算 M13
         self._lifecycle_fpr_stats = getattr(analyzer, "case_filter_stats", None)
