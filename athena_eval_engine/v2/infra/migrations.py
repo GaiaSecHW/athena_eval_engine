@@ -328,6 +328,7 @@ _IDEMPOTENT_KEYWORDS = (
     "duplicate", "already exists", "can't drop",
     "unknown constraint", "check that does not exist",
     "duplicate key name", "is not found",
+    "unknown column",
 )
 
 
