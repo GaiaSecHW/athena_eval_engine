@@ -145,7 +145,7 @@ RENDERERS.ingesting = function(el, data) {
     html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报分组</th><th>人工确认原因</th></tr></thead><tbody>`;
     for (const c of bl.cases) {
       const lbl = c.expected_label || "";
-      html += `<tr><td>${c.case_id ?? ""}</td><td>${c.vulnerability_type ?? ""}</td>`
+      html += `<tr><td>${c.case_id ?? ""}</td><td>${c.vuln_title ?? ""}</td>`
         + `<td><span class="badge badge-${lbl}">${lbl}</span></td>`
         + `<td>${c.source_file ?? ""}</td>`
         + `<td>${c.false_positive_group ?? ""}</td>`
@@ -358,7 +358,7 @@ RENDERERS.case_matching = function(el, data) {
     html += `<tr>`;
     html += `<td style="font-family:monospace;font-size:11px">${m.case_id || ""}</td>`;
     html += `<td style="font-family:monospace;font-size:11px">${m.ac_case_id || '<span style="color:#999">—</span>'}</td>`;
-    html += `<td>${m.vulnerability_type || ""}</td>`;
+    html += `<td>${m.vuln_title || ""}</td>`;
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
     html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
@@ -459,7 +459,7 @@ RENDERERS.root_cause = function(el, data) {
     const fpReason = r.human_confirmation_summary || "";
     html += `<details style="margin:16px 0 8px;" open>`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:15px;font-weight:600;">`
-      + `${r.case_id} — ${r.vulnerability_type}`
+      + `${r.case_id} — ${r.vuln_title}`
       + (fpReason ? ` <span style="color:#e74c3c;font-size:13px;">—— ${fpReason}</span>` : "")
       + `</summary>`;
 
@@ -673,7 +673,7 @@ RENDERERS.resolving = function(el, data) {
     const titleColor = hasBp ? "#e74c3c" : "#27ae60";
     html += `<details style="margin:16px 0 8px;" open>`;
     html += `<summary style="cursor:pointer;color:${titleColor};font-size:15px;font-weight:600;">`;
-    html += `${c.case_id || ""} — ${c.vuln_type || ""} (${bps.length} 断点)`;
+    html += `${c.case_id || ""} — ${c.vuln_title || ""} (${bps.length} 断点)`;
     html += `</summary>`;
     html += `<div style="margin-top:8px;">`;
 

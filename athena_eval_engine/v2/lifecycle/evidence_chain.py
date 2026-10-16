@@ -136,7 +136,7 @@ class EvidenceChain:
 
         log("L7",
             f"judge_l7: {len(pending)} records pending L7 "
-            f"(total {len(records)}, baseline_vuln_type={baseline_vuln_info.get('vuln_type', '')})",
+            f"(total {len(records)}, baseline_vuln_title={baseline_vuln_info.get('vuln_title', '')})",
             eval_id=evaluation_id)
 
         # LLM 不可用时降级处理
@@ -332,7 +332,7 @@ class EvidenceChain:
         """从 BenchmarkItem 提取基线漏洞信息。
 
         参考 docs/l7-baseline-data-source.md：
-        - vuln_type: metadata["vulnerability_type"]
+        - vuln_title: metadata["vuln_title"]
         - description: metadata["description"]
         - file: metadata.get("source_file")  # 实际存的是 sink 点文件
         - sink: metadata.get("source_function") or metadata.get("locator")
@@ -342,11 +342,11 @@ class EvidenceChain:
             benchmark_item: BenchmarkItem 或 None
 
         Returns:
-            dict with keys: vuln_type, description, file, sink, source
+            dict with keys: vuln_title, description, file, sink, source
         """
         if benchmark_item is None:
             return {
-                "vuln_type": "",
+                "vuln_title": "",
                 "description": "",
                 "file": "",
                 "sink": "",
@@ -355,8 +355,8 @@ class EvidenceChain:
 
         meta = getattr(benchmark_item, "metadata", None) or {}
 
-        vuln_type = str(meta.get("vulnerability_type", "")
-                        or meta.get("vuln_type", "")
+        vuln_title = str(meta.get("vuln_title", "")
+                        or meta.get("vulnerability_type", "")
                         or meta.get("type", ""))
 
         description = str(meta.get("description", "") or "")
@@ -375,7 +375,7 @@ class EvidenceChain:
             source = None  # 标注为"不可用"
 
         return {
-            "vuln_type": vuln_type,
+            "vuln_title": vuln_title,
             "description": description,
             "file": file,
             "sink": sink,
@@ -416,7 +416,7 @@ class EvidenceChain:
             f"{reasoning_ref}\n\n"
             f"判定结论: {judgment_conclusion}\n\n"
             f"基线漏洞信息:\n"
-            f"漏洞类型: {baseline_vuln_info.get('vuln_type', '')}\n"
+            f"漏洞标题: {baseline_vuln_info.get('vuln_title', '')}\n"
             f"Source: {baseline_source_str}\n"
             f"Sink: {baseline_vuln_info.get('sink', '')}\n"
             f"文件: {baseline_vuln_info.get('file', '')}\n"

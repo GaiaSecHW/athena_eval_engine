@@ -6,7 +6,7 @@
 分别标记为 VULNERABLE 和 NON_VULNERABLE。
 
 本 client 在评测基线「漏洞中心数据」模式下替代 ``vbench_client.get_benchmark``，
-归一成同构的 ``{cases: [{case_id, vulnerability_type, description, expected_label}]}``。
+归一成同构的 ``{cases: [{case_id, vuln_title, description, expected_label}]}``。
 
 description 渲染完全移植 V-Bench builder 的
 ``vbench_next/app/upstream/import_service.py:normalize_case_description``（6 段），
@@ -362,7 +362,8 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
     hc = c.get("human_confirmation") or {}
     return {
         "case_id": c.get("id") or "",
-        "vulnerability_type": c.get("title") or subject.get("type") or "",
+        "vuln_title": c.get("title") or "",
+        "vuln_type": subject.get("type") or "",
         "description": _normalize_case_description(c),
         "expected_label": expected_label,
         "source_file": source_file,

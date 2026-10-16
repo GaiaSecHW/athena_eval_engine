@@ -181,14 +181,14 @@ class RootCauseAnalyzer:
             evaluation_id: 评测 ID
             fp_cases: case_matching 结果中 outcome=FP 的 case 列表，
                       每项含 case_id, mining_sessions, verify_sessions,
-                      vulnerability_type, description
+                      vuln_title, description
             data_packs: DataPack 列表
             cancel_cb: 取消回调
             project_id: 项目 ID（知识库主动验证用，空则跳过 Athena API 查询）
 
         Returns:
             分析结果列表，每项含：
-            - case_id, vulnerability_type, description
+            - case_id, vuln_title, description
             - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
             - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
         """
@@ -215,26 +215,26 @@ class RootCauseAnalyzer:
                 cancel_cb()
 
             case_id = case.get("case_id", "")
-            vuln_type = case.get("vulnerability_type", "")
+            vuln_title = case.get("vuln_title", "")
             desc = case.get("description", "")
             mining_chain = list(case.get("mining_sessions", []))
             verify_chain = list(case.get("verify_sessions", []))
             fp_reason = case.get("human_confirmation_summary", "")
 
             log("ROOT_CAUSE",
-                f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
+                f"case {case_id}: 开始分析 (vuln_title={vuln_title})",
                 eval_id=evaluation_id)
 
             mining_result = self._analyze_chain(
                 evaluation_id, case_id, "mining",
                 mining_chain, session_events,
-                vuln_type, desc, fp_reason, cancel_cb,
+                vuln_title, desc, fp_reason, cancel_cb,
                 project_id=project_id,
             )
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
                 verify_chain, session_events,
-                vuln_type, desc, fp_reason, cancel_cb,
+                vuln_title, desc, fp_reason, cancel_cb,
                 project_id=project_id,
             )
 
@@ -254,7 +254,7 @@ class RootCauseAnalyzer:
 
             return idx, {
                 "case_id": case_id,
-                "vulnerability_type": vuln_type,
+                "vuln_title": vuln_title,
                 "description": desc,
                 "human_confirmation_summary": fp_reason,
                 "mining": {**mining_result, "agent_type": mining_agent_type},
@@ -284,7 +284,7 @@ class RootCauseAnalyzer:
         chain_type: str,
         chain: list[str],
         session_events: dict[str, list[RawEvent]],
-        vuln_type: str,
+        vuln_title: str,
         desc: str,
         fp_reason: str = "",
         cancel_cb=None,
@@ -333,7 +333,7 @@ class RootCauseAnalyzer:
             session_text = self._format_session_events(sid, events)
 
             user_content = (
-                f"漏洞类型：{vuln_type}\n"
+                f"漏洞标题：{vuln_title}\n"
                 f"漏洞描述：{desc}\n"
                 f"人工标注的误报原因：{fp_reason or '（未给出）'}\n\n"
                 f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
@@ -408,7 +408,7 @@ class RootCauseAnalyzer:
 
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
-            chain_type, vuln_type, desc, fp_reason,
+            chain_type, vuln_title, desc, fp_reason,
             compressed_summaries,
         )
 
@@ -463,7 +463,7 @@ class RootCauseAnalyzer:
 
         # ── L4 独立验证 ──
         l4_verification = self._verify_l4_independently(
-            case_id, chain_type, vuln_type, fp_reason,
+            case_id, chain_type, vuln_title, fp_reason,
             all_breakpoints, project_id, cancel_cb,
         )
 
@@ -480,14 +480,14 @@ class RootCauseAnalyzer:
     @staticmethod
     def _build_merge_prompt(
         chain_type: str,
-        vuln_type: str,
+        vuln_title: str,
         desc: str,
         fp_reason: str,
         compressed_summaries: list[dict],
     ) -> str:
         """构建合并压缩的用户消息。"""
         parts = [
-            f"漏洞类型：{vuln_type}",
+            f"漏洞标题：{vuln_title}",
             f"漏洞描述：{desc}",
             f"人工标注的误报原因：{fp_reason or '（未给出）'}",
             f"\n以下是 {chain_type} 链中 {len(compressed_summaries)} 个 session "
@@ -515,7 +515,7 @@ class RootCauseAnalyzer:
         self,
         case_id: str,
         chain_type: str,
-        vuln_type: str,
+        vuln_title: str,
         fp_reason: str,
         all_breakpoints: list[dict],
         project_id: str,
@@ -539,7 +539,7 @@ class RootCauseAnalyzer:
             from .knowledge_verifier import KnowledgeVerifier
             verifier = KnowledgeVerifier()
             result = verifier.verify(
-                vuln_type=vuln_type,
+                vuln_title=vuln_title,
                 fp_reason=fp_reason,
                 project_id=project_id,
                 cancel_cb=cancel_cb,

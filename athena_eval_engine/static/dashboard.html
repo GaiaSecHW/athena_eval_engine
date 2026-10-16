@@ -540,12 +540,17 @@ function renderV2Report(d){
   var mById={};
   metricResults.forEach(function(m){mById[m.metric_id]=m;});
   // 基础效果指标：误报率 + 召回率 + 准确率
-  var baseMetrics=mCard('M13',mById['M13']);
+  // 误报率 FPR = FP / (FP + TN)，从 recall_precision 数据计算
+  var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
+  var fpCnt=rpData.fp_count||0;
+  var tnCnt=rpData.tn_count||0;
+  var fprDenom=fpCnt+tnCnt;
+  var fprVal=fprDenom>0?(fpCnt/fprDenom):null;
+  var baseMetrics='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(FP+TN)</div></div>';
   // 召回率/准确率（从 base.recall_precision 或 lifecycle.recall_precision 取）
-  var rp=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
-  if(rp.recall_rate!=null||rp.precision_rate!=null){
-    baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(rp.recall_rate!=null?(rp.recall_rate*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN)</div></div>';
-    baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(rp.precision_rate!=null?(rp.precision_rate*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP)</div></div>';
+  if(rpData.recall_rate!=null||rpData.precision_rate!=null){
+    baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(rpData.recall_rate!=null?(rpData.recall_rate*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN)</div></div>';
+    baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(rpData.precision_rate!=null?(rpData.precision_rate*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP)</div></div>';
   }
   // 回归后误报率（回归验证完成后重新计算，当前无数据时显示 NA）
   var postFpr=base.post_regression_fpr;
@@ -709,7 +714,7 @@ function renderDtsTable(){
   // 客户端过滤（responsibility + 搜索）
   var filtered=_dtsData.filter(function(i){
     if(_dtsFilter.responsibility&&dtsResponsibility(i.cause_code)!==_dtsFilter.responsibility)return false;
-    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')+' '+(i.vuln_type||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
+    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')+' '+(i.vuln_title||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
   if(!filtered.length){
@@ -720,7 +725,7 @@ function renderDtsTable(){
   filtered.forEach(function(i){
     html+='<tr>'
       +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
-      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_type||'').replace(/"/g,'&quot;')+'">'+(i.vuln_type||'-')+'</td>'
+      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
       +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+(DTS_AGENT_LABELS[i.agent_type]||i.agent_type||'-')+'</td>'
@@ -803,7 +808,7 @@ function renderDtsSection(evalId,issues,stats){
     issues.forEach(function(i){
       listHtml+='<tr>'
         +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
-        +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_type||'').replace(/"/g,'&quot;')+'">'+(i.vuln_type||'-')+'</td>'
+        +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
         +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
         +'<td style="font-size:14px">'+(DTS_RESP_LABELS[dtsResponsibility(i.cause_code)]||'-')+'</td>'
@@ -873,7 +878,7 @@ async function renderDtsDetailPage(dtsId){
       html+='<div class="card" style="margin-bottom:16px">'
         +'<h3>原始问题</h3>'
         +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
-        +'<div><span style="color:var(--gray)">漏洞类型：</span><b>'+(caseData.vulnerability_type||'-')+'</b></div>'
+        +'<div><span style="color:var(--gray)">漏洞标题：</span><b>'+(caseData.vuln_title||'-')+'</b></div>'
         +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+(caseData.case_id||'-')+'</b></div>'
         +'</div>';
       if(caseData.description){
@@ -1147,7 +1152,7 @@ async function renderRunConf(){
         bodyHtml=`<div style="margin-bottom:10px"><label>V-Bench 基线项目</label><input id="vb-search" placeholder="搜索项目名…" oninput="filterVbList()" style="margin-bottom:8px"><div class="sel" id="vb-list" style="max-height:200px"></div></div>`;
       }else{
         if(!_vbCases){_vbCases=(await jget(`/api/v1/vbench/projects/${sel.vbProj}/benchmark`)).cases||[];}
-        const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vulnerability_type||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");
+        const casesHtml=_vbCases.map(c=>{const nfind=c.findings?c.findings.length:0;return `<div style="padding:6px 0;border-bottom:1px solid var(--bd)"><span style="font-weight:600;font-size:13px">${c.vuln_title||c.case_id.slice(0,8)}</span> ${nfind?`<span class="bdg b-COMPLETED" style="font-size:11px">${nfind} finding</span>`:""} <span style="font-size:12px;color:var(--sub)">${c.case_id.slice(0,8)}</span></div>`}).join("");
         bodyHtml=`<div style="margin-bottom:8px;font-size:14px">V-Bench 项目：<b>${sel.vbProjName}</b> · 基线漏洞 <b>${_vbCases.length}</b> 条 <button class="btn g" style="font-size:12px;padding:3px 8px" onclick="sel.vbProj='';sel.vbProjName='';_vbCases=null;renderRunConf()">重选</button></div><div class="sel" style="max-height:150px;margin-bottom:10px">${casesHtml||'<div style="padding:16px;color:var(--sub)">无 case</div>'}</div>`;
       }
       bound=!!sel.vbProj;

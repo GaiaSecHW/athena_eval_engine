@@ -11,7 +11,7 @@ class BenchmarkItem:
     task_id: str
     expected_label: ExpectedLabel | None  # None = 未标注 GT（无 benchmark 模式，M1-M4=NA）
     target_finding_id: str | None = None
-    metadata: dict | None = None  # case 详情：description, vulnerability_type, failure_scenario
+    metadata: dict | None = None  # case 详情：description, vuln_title, failure_scenario
 
 
 @dataclass

@@ -41,7 +41,7 @@ _COMPRESS_THRESHOLD_CHARS = 4000  # 单个文本字段超过此字符数时触�
 _PROMPT_UNIFIED_SYSTEM = """你是知识访问全链路判定员。对一次知识访问执行 L1-L7 全部判定。
 
 # 你收到的信息
-1. vuln_type：基线漏洞类型
+1. vuln_title：基线漏洞标题
 2. reasoning_context：知识访问前 Agent 的推理上下文
 3. query_content：Agent 发给知识库的查询内容
 4. returned_content：知识库返回的内容
@@ -430,8 +430,8 @@ class LifecycleAnalyzer:
         # 提取判定结论
         judgment_conclusion = self._get_judgment_conclusion(dp)
 
-        # 获取漏洞类型
-        vuln_type = self._get_vuln_type(dp)
+        # 获取漏洞标题
+        vuln_title = self._get_vuln_title(dp)
 
         # 提取调用链经过的 session 列表
         session_chain = self._extract_session_chain(events, event_idx, dp)
@@ -443,7 +443,7 @@ class LifecycleAnalyzer:
                                              l0_origin, reasoning_context,
                                              query_content, returned_content,
                                              reasoning_ref, judgment_conclusion,
-                                             vuln_type, session_chain)
+                                             vuln_title, session_chain)
 
         # ── 文本压缩：当总文本量可能超出上下文窗口时，逐字段 LLM 压缩 ──
         reasoning_context, query_content, returned_content, reasoning_ref = \
@@ -459,14 +459,14 @@ class LifecycleAnalyzer:
             baseline_source_str = str(baseline_source)
 
         user_content = (
-            f"漏洞类型: {vuln_type}\n\n"
+            f"漏洞标题: {vuln_title}\n\n"
             f"推理上下文（知识访问前）:\n{reasoning_context}\n\n"
             f"查询内容:\n{query_content}\n\n"
             f"返回内容:\n{returned_content}\n\n"
             f"推理引用（知识访问后）:\n{reasoning_ref}\n\n"
             f"判定结论: {judgment_conclusion}\n\n"
             f"基线漏洞信息:\n"
-            f"  漏洞类型: {baseline_vuln_info.get('vuln_type', '')}\n"
+            f"  漏洞标题: {baseline_vuln_info.get('vuln_title', '')}\n"
             f"  Source: {baseline_source_str}\n"
             f"  Sink: {baseline_vuln_info.get('sink', '')}\n"
             f"  文件: {baseline_vuln_info.get('file', '')}\n"
@@ -492,7 +492,7 @@ class LifecycleAnalyzer:
                                              l0_origin, reasoning_context,
                                              query_content, returned_content,
                                              reasoning_ref, judgment_conclusion,
-                                             vuln_type, session_chain)
+                                             vuln_title, session_chain)
 
         # 从 LLM 结果构建 record
         l1 = result.get("l1_need_knowledge")
@@ -677,7 +677,7 @@ class LifecycleAnalyzer:
                             l0_origin, reasoning_context,
                             query_content, returned_content,
                             reasoning_ref, judgment_conclusion,
-                            vuln_type, session_chain) -> dict:
+                            vuln_title, session_chain) -> dict:
         """LLM 不可用时的降级规则判定。"""
         # L1: 默认需要知识
         l1 = True
@@ -840,20 +840,20 @@ class LifecycleAnalyzer:
         parts = [p for p in (validation, outcome_str) if p]
         return " / ".join(parts) if parts else ""
 
-    def _get_vuln_type(self, dp: DataPack) -> str:
-        """从 benchmark_item 获取漏洞类型。"""
+    def _get_vuln_title(self, dp: DataPack) -> str:
+        """从 benchmark_item 获取漏洞标题。"""
         if dp.benchmark_item is None:
             return ""
         meta = getattr(dp.benchmark_item, "metadata", None) or {}
-        return str(meta.get("vulnerability_type", "")
-                  or meta.get("vuln_type", "")
+        return str(meta.get("vuln_title", "")
+                  or meta.get("vulnerability_type", "")
                   or meta.get("type", ""))
 
     def _get_baseline_vuln_info(self, dp: DataPack) -> dict:
         """从 DataPack.benchmark_item 提取基线漏洞信息。
 
         参考 docs/l7-baseline-data-source.md：
-        - vuln_type: metadata["vulnerability_type"]
+        - vuln_title: metadata["vuln_title"]
         - description: metadata["description"]
         - file: metadata.get("source_file")  # 实际存的是 sink 点文件
         - sink: metadata.get("source_function") or metadata.get("locator")
@@ -861,7 +861,7 @@ class LifecycleAnalyzer:
         """
         if dp.benchmark_item is None:
             return {
-                "vuln_type": "",
+                "vuln_title": "",
                 "description": "",
                 "file": "",
                 "sink": "",
@@ -870,8 +870,8 @@ class LifecycleAnalyzer:
 
         meta = getattr(dp.benchmark_item, "metadata", None) or {}
 
-        vuln_type = str(meta.get("vulnerability_type", "")
-                        or meta.get("vuln_type", "")
+        vuln_title = str(meta.get("vuln_title", "")
+                        or meta.get("vulnerability_type", "")
                         or meta.get("type", ""))
 
         description = str(meta.get("description", "") or "")
@@ -887,7 +887,7 @@ class LifecycleAnalyzer:
             source = None
 
         return {
-            "vuln_type": vuln_type,
+            "vuln_title": vuln_title,
             "description": description,
             "file": file,
             "sink": sink,

@@ -736,7 +736,7 @@ class Orchestrator:
                 if cid:
                     case_details[cid] = {
                         "description": bm.get("description") or "",
-                        "vulnerability_type": bm.get("vulnerability_type") or "",
+                        "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",
                         "source_function": bm.get("source_function") or "",
@@ -760,10 +760,10 @@ class Orchestrator:
                         f.get("explanation", "")
                         for f in findings if f.get("explanation")
                     ) or c.get("description", "")
-                     or c.get("vulnerability_type", "") or "")
+                     or c.get("vuln_title", "") or "")
                     case_details[cid] = {
                         "description": desc,
-                        "vulnerability_type": c.get("vulnerability_type")
+                        "vuln_title": c.get("vuln_title")
                         or c.get("category") or "",
                         "expected_label": c.get("expected_label")
                         or "VULNERABLE",
@@ -796,10 +796,10 @@ class Orchestrator:
                 baseline_cases_for_match = [
                     {
                         "case_id": cid,
-                        "title": detail.get("vulnerability_type") or "",
+                        "title": detail.get("vuln_title") or "",
                         "description": detail.get("description") or "",
-                        "vulnerability_type": detail.get(
-                            "vulnerability_type") or "",
+                        "vuln_title": detail.get(
+                            "vuln_title") or "",
                     }
                     for cid, detail in case_details.items()
                 ]
@@ -947,7 +947,7 @@ class Orchestrator:
                 if cid:
                     case_details[cid] = {
                         "description": bm.get("description") or "",
-                        "vulnerability_type": bm.get("vulnerability_type") or "",
+                        "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",
                         "source_function": bm.get("source_function") or "",
@@ -972,10 +972,10 @@ class Orchestrator:
                         f.get("explanation", "")
                         for f in findings if f.get("explanation")
                     ) or c.get("description", "")
-                     or c.get("vulnerability_type", "") or "")
+                     or c.get("vuln_title", "") or "")
                     case_details[cid] = {
                         "description": desc,
-                        "vulnerability_type": c.get("vulnerability_type")
+                        "vuln_title": c.get("vuln_title")
                         or c.get("category") or "",
                         "expected_label": c.get("expected_label")
                         or "VULNERABLE",

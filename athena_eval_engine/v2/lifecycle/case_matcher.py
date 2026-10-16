@@ -25,7 +25,7 @@ _PROMPT_SYSTEM = """你是漏洞匹配判定器。给你一条待判定的漏洞
 每个漏洞包含：
 - title：漏洞标题
 - description：漏洞描述（可能很长）
-- vuln_type：漏洞类型
+- vuln_title：漏洞标题
 
 判断维度：
 1. 代码位置：漏洞出现在哪个代码文件里（严格匹配）
@@ -49,9 +49,9 @@ _PROMPT_SYSTEM = """你是漏洞匹配判定器。给你一条待判定的漏洞
 
 def _case_to_text(c: dict) -> str:
     """将 case 转为 LLM 可读的文本。"""
-    title = c.get("title") or c.get("vulnerability_type") or ""
+    title = c.get("title") or c.get("vuln_title") or ""
     desc = c.get("description") or ""
-    vt = c.get("vulnerability_type") or c.get("vuln_type") or ""
+    vt = c.get("vuln_title") or c.get("vuln_type") or ""
     return f"标题: {title}\n类型: {vt}\n描述: {desc}"
 
 
@@ -147,7 +147,7 @@ def match_cases(
                                 "raw_case_id": raw_case.get("case_id")
                                     or raw_case.get("id") or "",
                                 "raw_title": raw_case.get("title")
-                                    or raw_case.get("vulnerability_type") or "",
+                                    or raw_case.get("vuln_title") or "",
                                 "matched_baseline_case_id": baseline_cases[
                                     batch_indices[local_idx]
                                 ].get("case_id")
@@ -159,7 +159,7 @@ def match_cases(
                                 ].get("title")
                                     or baseline_cases[
                                         batch_indices[local_idx]
-                                    ].get("vulnerability_type") or "",
+                                    ].get("vuln_title") or "",
                                 "matched_baseline_index": batch_indices[local_idx],
                                 "confidence": conf,
                                 "reason": m.get("reason", ""),
@@ -169,7 +169,7 @@ def match_cases(
                 "raw_case_id": raw_case.get("case_id")
                     or raw_case.get("id") or "",
                 "raw_title": raw_case.get("title")
-                    or raw_case.get("vulnerability_type") or "",
+                    or raw_case.get("vuln_title") or "",
                 "matched_baseline_case_id": None,
                 "matched_baseline_title": None,
                 "matched_baseline_index": None,
@@ -185,7 +185,7 @@ def match_cases(
                 "raw_case_id": raw_case.get("case_id")
                     or raw_case.get("id") or "",
                 "raw_title": raw_case.get("title")
-                    or raw_case.get("vulnerability_type") or "",
+                    or raw_case.get("vuln_title") or "",
                 "matched_baseline_case_id": None,
                 "matched_baseline_title": None,
                 "matched_baseline_index": None,
@@ -253,7 +253,7 @@ def match_cases(
             results.append({
                 "raw_case_id": rc.get("case_id") or rc.get("id") or "",
                 "raw_title": rc.get("title")
-                    or rc.get("vulnerability_type") or "",
+                    or rc.get("vuln_title") or "",
                 "matched_baseline_case_id": None,
                 "matched_baseline_title": None,
                 "matched_baseline_index": None,

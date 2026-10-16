@@ -2,7 +2,7 @@
 
 benchmark.zip 位于 /data/files/vbench/workspaces/{benchmark_set_id}/output/benchmark.zip
 zip 内含：
-  - benchmark_{id}/benchmark.json（case_id, vulnerability_type）
+  - benchmark_{id}/benchmark.json（case_id, vuln_title）
   - benchmark_{id}/ground_truths/{case_id}.json（finding_id, explanation）
   - benchmark_{id}/manifest.json
 """
@@ -188,7 +188,7 @@ def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
             _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
             result.append({
                 "case_id": cid,
-                "vulnerability_type": _title or reason or "",
+                "vuln_title": _title or reason or "",
                 "description": desc,
                 "target_finding_id": "",
                 "expected_label": "NON_VULNERABLE",
@@ -280,7 +280,7 @@ def get_benchmark(benchmark_set_id: str) -> dict:
             _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
             cases.append({
                 "case_id": cid,
-                "vulnerability_type": _title or reason or "",
+                "vuln_title": _title or reason or "",
                 "description": desc,
                 "target_finding_id": "",
                 "expected_label": "NON_VULNERABLE",

@@ -196,7 +196,7 @@ class ReportAssembler:
         """组装 per_case_details 列表。
 
         从 causal_chain_result.per_case_breakpoints 构建，为每个 case 附加：
-        - vuln_type
+        - vuln_title
         - root_cause
         - fix_suggestion
         - breakpoints（含 evidence，大字段写文件）
@@ -228,7 +228,7 @@ class ReportAssembler:
         result: list[dict] = []
         for case_data in per_case_breakpoints:
             case_id = case_data.get("case_id", "")
-            vuln_type = case_data.get("vuln_type", "")
+            vuln_title = case_data.get("vuln_title", "")
             breakpoints_raw = case_data.get("breakpoints", [])
 
             processed_breakpoints: list[dict] = []
@@ -248,7 +248,7 @@ class ReportAssembler:
 
             result.append({
                 "case_id": case_id,
-                "vuln_type": vuln_type,
+                "vuln_title": vuln_title,
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": processed_breakpoints,

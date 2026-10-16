@@ -297,9 +297,21 @@ MIGRATIONS = [
     },
     {
         "id": "014_dts_issue_add_vuln_type",
-        "desc": "dts_issue 表新增 vuln_type 字段（漏洞类型名称，列表展示用）",
+        "desc": "dts_issue 表新增 vuln_title 字段（漏洞标题，列表展示用）",
         "sql": [
-            "ALTER TABLE dts_issue ADD COLUMN vuln_type VARCHAR(512) NOT NULL DEFAULT '' AFTER case_id",
+            "ALTER TABLE dts_issue ADD COLUMN vuln_title VARCHAR(512) NOT NULL DEFAULT '' AFTER case_id",
+        ],
+    },
+    {
+        "id": "015_dts_issue_backfill_vuln_type",
+        "desc": "从 breakpoint_desc 中回填已有问题单的 vuln_title（提取'漏洞标题: XXX'或'漏洞类型: XXX'文本）",
+        "sql": [
+            "UPDATE dts_issue SET vuln_title = TRIM(SUBSTRING_INDEX("
+            "  SUBSTRING_INDEX(breakpoint_desc, '漏洞标题:', -1), ' |', 1"
+            ")) WHERE vuln_title = '' AND breakpoint_desc LIKE '%漏洞标题:%'",
+            "UPDATE dts_issue SET vuln_title = TRIM(SUBSTRING_INDEX("
+            "  SUBSTRING_INDEX(breakpoint_desc, '漏洞类型:', -1), ' |', 1"
+            ")) WHERE vuln_title = '' AND breakpoint_desc LIKE '%漏洞类型:%'",
         ],
     },
 ]

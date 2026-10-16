@@ -552,25 +552,25 @@ def run_fpr_analysis(project_id: str, task_id: str,
         return None
 
     # 从 case_details 构建基线行（与 benchmark_item 表同源）
-    # vulnerability_type 已由 vbench_client 从 description 第一行提取（去掉 # 前缀）
+    # vuln_title 已由 vbench_client 从 description 第一行提取（去掉 # 前缀）
     baseline_rows = []
     for cid, cd in case_details.items():
-        _vuln_type = cd.get("vulnerability_type", "")
+        _vuln_title = cd.get("vuln_title", "")
         _source_file = cd.get("source_file", "") or cd.get("locator", "") or ""
         _description = cd.get("description", "") or ""
         # 基线描述：标题 + 描述 + sink 路径
-        _content_parts = [f"标题: {_vuln_type}"]
+        _content_parts = [f"标题: {_vuln_title}"]
         if _description:
             _content_parts.append(f"描述: {_description}")
         if _source_file:
             _content_parts.append(f"Sink: {_source_file}")
         baseline_rows.append({
             "case_id": cid,
-            "title": _vuln_type,
+            "title": _vuln_title,
             "content": "\n".join(_content_parts),
             "source_file": _source_file,
             "label": cd.get("expected_label", "VULNERABLE"),
-            "category": _vuln_type,
+            "category": _vuln_title,
         })
     _vuln_n = sum(1 for r in baseline_rows if r["label"] == "VULNERABLE")
     _nonvuln_n = sum(1 for r in baseline_rows if r["label"] == "NON_VULNERABLE")

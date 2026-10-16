@@ -64,7 +64,7 @@ class CausalChainAnalyzer:
         Args:
             evaluation_id: 评测 ID。
             root_cause_results: RootCauseAnalyzer.analyze() 的输出，每个 case 含
-                case_id, vulnerability_type, mining{...}, verification{...}，
+                case_id, vuln_title, mining{...}, verification{...}，
                 其中 mining/verification 各含 l0_l7_breakpoints 列表。
 
         Returns:
@@ -121,7 +121,7 @@ class CausalChainAnalyzer:
 
         Returns:
             扁平断点记录列表，每条含：
-            - case_id, vulnerability_type
+            - case_id, vuln_title
             - chain_type: "mining" / "verification"
             - agent_type: 从 chain_type 推导
             - cause_code, breakpoint, l0_source
@@ -132,7 +132,7 @@ class CausalChainAnalyzer:
 
         for case in root_cause_results:
             case_id = case.get("case_id", "")
-            vuln_type = case.get("vulnerability_type", "")
+            vuln_title = case.get("vuln_title", "")
 
             for chain_type in ("mining", "verification"):
                 chain_data = case.get(chain_type, {})
@@ -151,7 +151,7 @@ class CausalChainAnalyzer:
 
                     flat.append({
                         "case_id": case_id,
-                        "vulnerability_type": vuln_type,
+                        "vuln_title": vuln_title,
                         "chain_type": chain_type,
                         "agent_type": chain_data.get("agent_type") or
                             _CHAIN_DEFAULT_AGENT_TYPE.get(chain_type, ""),
@@ -255,7 +255,7 @@ class CausalChainAnalyzer:
         只有 cause_code 非空的记录才产生断点条目。
 
         Returns:
-            [{"case_id": ..., "vuln_type": ..., "breakpoints": [...]}, ...]
+            [{"case_id": ..., "vuln_title": ..., "breakpoints": [...]}, ...]
         """
         # 按 case_id 分组
         case_map: dict[str, list[dict]] = defaultdict(list)
@@ -288,12 +288,12 @@ class CausalChainAnalyzer:
 
         result: list[dict] = []
         for case_id, records in case_map.items():
-            vuln_type = ""
+            vuln_title = ""
             breakpoints: list[dict] = []
 
             for rec in records:
-                if not vuln_type:
-                    vuln_type = rec.get("vulnerability_type", "")
+                if not vuln_title:
+                    vuln_title = rec.get("vuln_title", "")
 
                 cause_code = rec.get("cause_code", "")
                 level = CAUSE_TO_LEVEL.get(cause_code, "")
@@ -310,7 +310,7 @@ class CausalChainAnalyzer:
 
             result.append({
                 "case_id": case_id,
-                "vuln_type": vuln_type,
+                "vuln_title": vuln_title,
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": breakpoints,

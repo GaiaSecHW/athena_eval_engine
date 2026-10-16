@@ -16,7 +16,7 @@
      - AGENTS.md 含 Fast Memory Index 表
 
 流程：
-  1. 从 vuln_type + human_confirmation_summary 提取查询关键词
+  1. 从 vuln_title + human_confirmation_summary 提取查询关键词
   2. 查 Athena API knowledge/concepts → 候选知识文件
   3. 查 NFS compiled_knowledge → 候选 wiki 文件
   4. 读取候选文件内容摘要
@@ -108,7 +108,7 @@ class KnowledgeVerifier:
 
     def verify(
         self,
-        vuln_type: str,
+        vuln_title: str,
         fp_reason: str,
         project_id: str = "",
         cancel_cb=None,
@@ -116,7 +116,7 @@ class KnowledgeVerifier:
         """主动搜索知识库 + 记忆/wiki，验证是否有解决该误报所需的知识。
 
         Args:
-            vuln_type: 漏洞类型
+            vuln_title: 漏洞标题
             fp_reason: 人工标注的误报原因
             project_id: 项目 ID（Athena API 查询用，空则跳过 API 查询）
             cancel_cb: 取消回调
@@ -131,13 +131,13 @@ class KnowledgeVerifier:
             }
         """
         # 1. 提取查询关键词
-        keywords = self._extract_keywords(vuln_type, fp_reason)
+        keywords = self._extract_keywords(vuln_title, fp_reason)
         if not keywords:
-            log("KB_VERIFY", f"无法提取关键词: vuln_type={vuln_type}, fp_reason={fp_reason}")
+            log("KB_VERIFY", f"无法提取关键词: vuln_title={vuln_title}, fp_reason={fp_reason}")
             return self._empty_result()
 
         log("KB_VERIFY",
-            f"关键词: {keywords} (vuln_type={vuln_type[:50]}, "
+            f"关键词: {keywords} (vuln_title={vuln_title[:50]}, "
             f"fp_reason={fp_reason[:50]}, project_id={project_id})")
 
         candidates: list[dict] = []
@@ -181,7 +181,7 @@ class KnowledgeVerifier:
                 c["content_preview"] = self._read_content(c)
 
         # 5. LLM 判定
-        result = self._llm_verify(vuln_type, fp_reason, candidates, cancel_cb)
+        result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb)
         result["kb_searched"] = {
             "athena_api": bool(project_id),
             "wiki_nfs": os.path.isdir(_WIKI_ROOT),
@@ -196,12 +196,12 @@ class KnowledgeVerifier:
 
     # ── 关键词提取 ──
 
-    def _extract_keywords(self, vuln_type: str, fp_reason: str) -> list[str]:
+    def _extract_keywords(self, vuln_title: str, fp_reason: str) -> list[str]:
         """从误报原因和漏洞类型提取知识查询关键词。
 
         优先从 fp_reason 提取验证维度关键词（如"网络可达性"、"输入校验"），
         这些关键词能查到"为什么是误报"的知识。
-        vuln_type 关键词作为补充（如"SSRF"），查到的是"怎么挖漏洞"的知识，
+        vuln_title 关键词作为补充（如"SSRF"），查到的是"怎么挖漏洞"的知识，
         对误报消减参考价值较低。
         """
         keywords: list[str] = []
@@ -218,15 +218,15 @@ class KnowledgeVerifier:
                     keywords.append(seg)
 
         # ── 从漏洞类型提取（补充）──
-        if vuln_type:
-            vuln_lower = vuln_type.lower()
+        if vuln_title:
+            vuln_lower = vuln_title.lower()
             vuln_keywords = [
                 "sql注入", "xss", "ssrf", "csrf", "dos", "rce",
                 "命令注入", "路径穿越", "文件上传", "反序列化",
                 "信息泄露", "越权", "认证绕过", "权限提升",
             ]
             for kw in vuln_keywords:
-                if kw in vuln_lower or kw in vuln_type:
+                if kw in vuln_lower or kw in vuln_title:
                     if kw not in keywords:
                         keywords.append(kw)
 
@@ -550,7 +550,7 @@ class KnowledgeVerifier:
 
     def _llm_verify(
         self,
-        vuln_type: str,
+        vuln_title: str,
         fp_reason: str,
         candidates: list[dict],
         cancel_cb=None,
@@ -573,7 +573,7 @@ class KnowledgeVerifier:
             )
 
         user_content = (
-            f"漏洞类型: {vuln_type}\n\n"
+            f"漏洞标题: {vuln_title}\n\n"
             f"人工标注的误报原因: {fp_reason}\n\n"
             f"知识库候选文章 ({len(candidates)} 个):\n\n"
             f"{''.join(files_desc)}\n\n"

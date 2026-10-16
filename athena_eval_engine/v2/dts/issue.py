@@ -40,13 +40,13 @@ def _build_breakpoint_desc(
     cause_code: str,
     break_level: str,
     evidence: str,
-    vuln_type: str,
+    vuln_title: str,
 ) -> str:
     """构建人类可读的断点描述。"""
     cause_desc = CAUSE_DESCRIPTIONS.get(cause_code, f"未知成因({cause_code})")
     parts: list[str] = [f"[{break_level}] {cause_desc}"]
-    if vuln_type:
-        parts.append(f"漏洞类型: {vuln_type}")
+    if vuln_title:
+        parts.append(f"漏洞标题: {vuln_title}")
     if evidence:
         parts.append(f"证据: {evidence}")
     return " | ".join(parts)
@@ -67,7 +67,7 @@ def generate_dts_issues(
         causal_chain_result: CausalChainAnalyzer.analyze() 返回值，
             含 per_case_breakpoints 字段。
         root_cause_results: RootCauseAnalyzer.analyze() 的输出，
-            用于查找 case_id、vulnerability_type 等补充信息。
+            用于查找 case_id、vuln_title 等补充信息。
         task_id: 原始数据任务 ID（manifest 中的 task_id）。
 
     Returns:
@@ -108,7 +108,7 @@ def generate_dts_issues(
     seq = 0
     for case_entry in per_case_breakpoints:
         case_id = case_entry.get("case_id", "")
-        vuln_type = case_entry.get("vuln_type", "")
+        vuln_title = case_entry.get("vuln_title", "")
         breakpoints = case_entry.get("breakpoints", [])
 
         root_cause = case_root_cause.get(case_id, {})
@@ -128,7 +128,7 @@ def generate_dts_issues(
             seq += 1
             dts_id = f"DTS-{seq:04d}"
             breakpoint_desc = _build_breakpoint_desc(
-                cause_code, break_level, evidence, vuln_type,
+                cause_code, break_level, evidence, vuln_title,
             )
 
             issues.append({
@@ -136,7 +136,7 @@ def generate_dts_issues(
                 "evaluation_id": evaluation_id,
                 "task_id": task_id,
                 "case_id": case_id,
-                "vuln_type": vuln_type,
+                "vuln_title": vuln_title,
                 "agent_type": agent_type,
                 "case_type": "FP",
                 "cause_code": cause_code,

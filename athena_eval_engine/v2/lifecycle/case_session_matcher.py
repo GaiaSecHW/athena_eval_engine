@@ -87,7 +87,7 @@ class CaseSessionMatcher:
         Args:
             evaluation_id: 评测 ID
             data_packs: DataPack 列表（含挖掘 + 验证 agent）
-            case_details: 基线 case 详情 {case_id: {vulnerability_type, description, expected_label, ...}}
+            case_details: 基线 case 详情 {case_id: {vuln_title, description, expected_label, ...}}
             case_matches: INGESTING 阶段的 LLM 匹配结果（开发态用）
             eval_mode: "runtime"（运行态）| "dev"（开发态）
             alert_center_data: 告警中心数据（运行态用，含 cases 列表，
@@ -97,7 +97,7 @@ class CaseSessionMatcher:
             匹配结果列表，每项含：
             - case_id: 基线 case_id
             - ac_case_id: 告警中心 case_id（匹配上的）
-            - vulnerability_type, expected_label
+            - vuln_title, expected_label
             - mining_sessions: [session_id, ...]  挖掘 agent 命中的 session
             - verify_sessions: [session_id, ...]  验证 agent 命中的 session
             - outcome: "FP" / "TN"
@@ -162,7 +162,7 @@ class CaseSessionMatcher:
         results: list[dict] = []
         for cid, cd in target_cases:
             ac_case_id = baseline_to_ac.get(cid, "")
-            vuln_type = cd.get("vulnerability_type", "")
+            vuln_title = cd.get("vuln_title", "")
             expected_label = cd.get("expected_label", "")
             baseline_desc = cd.get("description", "")
 
@@ -209,7 +209,8 @@ class CaseSessionMatcher:
             results.append({
                 "case_id": cid,
                 "ac_case_id": ac_case_id,
-                "vulnerability_type": vuln_type,
+                "vuln_title": vuln_title,
+                "description": baseline_desc,
                 "expected_label": expected_label,
                 "mining_sessions": mining_sessions,
                 "verify_sessions": verify_sessions,
