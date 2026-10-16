@@ -714,18 +714,19 @@ function renderDtsTable(){
   // 客户端过滤（responsibility + 搜索）
   var filtered=_dtsData.filter(function(i){
     if(_dtsFilter.responsibility&&dtsResponsibility(i.cause_code)!==_dtsFilter.responsibility)return false;
-    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')+' '+(i.vuln_title||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
+    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
   if(!filtered.length){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>任务 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>评测 ID</th><th>任务 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
     html+='<tr>'
       +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
       +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
+      +'<td style="font-size:12px;font-family:monospace;cursor:pointer;color:var(--acc)" onclick="Router.navigate(\'/evaluations/\'+\''+(i.evaluation_id||'')+'\')">'+(i.evaluation_id||'-')+'</td>'
       +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+(DTS_AGENT_LABELS[i.agent_type]||i.agent_type||'-')+'</td>'
