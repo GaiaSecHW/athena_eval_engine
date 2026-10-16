@@ -211,6 +211,7 @@ class CaseSessionMatcher:
                 "case_id": cid,
                 "ac_case_id": ac_case_id,
                 "vuln_title": vuln_title,
+                "summary": baseline_summary,
                 "description": baseline_desc,
                 "expected_label": expected_label,
                 "mining_sessions": mining_sessions,
