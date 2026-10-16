@@ -501,8 +501,9 @@ function renderLifecycle(lc){
       var v=row[l]||0;
       return '<td class="num">'+(v>0?'<b style="color:var(--red)">'+v+'</b>':'<span style="color:var(--gray)">0</span>')+'</td>';
     }).join('');
-    return '<tr><td style="font-size:14px">'+(agentLabels[a]||a)+'</td>'+cells+'</tr>';
-  }).join('');
+    var rowTotal=levels.reduce(function(s,l){return s+(row[l]||0);},0);
+    return {label:agentLabels[a]||a,html:'<tr><td style="font-size:14px">'+(agentLabels[a]||a)+'</td>'+cells+'</tr>',total:rowTotal};
+  }).filter(function(r){return r.total>0;}).map(function(r){return r.html;}).join('');
 
   // Per-case 断点详情
   var pcHtml='';
@@ -547,14 +548,11 @@ function renderV2Report(d){
   var tpCnt=rpData.tp_count||0;
   var fnCnt=rpData.fn_count||0;
   var tnCnt=rpData.tn_count||0;
+  var postFpr=base.post_regression_fpr;
   var baseMetrics='';
   if(evalMode==='runtime'){
-    // 运行态：基线=Agent 上报的 case，FPR = FP/(TP+FP)，与准确率互补
-    var rtTotal=tpCnt+fpCnt;
-    var fprVal=rtTotal>0?(fpCnt/rtTotal):null;
-    var precisionVal=rtTotal>0?(tpCnt/rtTotal):null;
-    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(TP+FP) = '+fpCnt+'/'+rtTotal+'</div></div>';
-    baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+rtTotal+'</div></div>';
+    // 运行态：基线=Agent 上报的 case，只显示回归后误报率
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">回归验证后重新计算</div></div>';
   }else{
     // 开发态：基线=外部 ground truth，完整 TP/FN/FP/TN
     var baselineTotal=tpCnt+fnCnt+fpCnt+tnCnt;
@@ -570,10 +568,8 @@ function renderV2Report(d){
     if(tpCnt+fpCnt>0){
       baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
     }
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">回归验证后重新计算</div></div>';
   }
-  // 回归后误报率（回归验证完成后重新计算，当前无数据时显示 NA）
-  var postFpr=base.post_regression_fpr;
-  baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">回归验证后重新计算</div></div>';
 
   // 因果链汇总
   var causeSum=ccSum.cause_summary||{};
