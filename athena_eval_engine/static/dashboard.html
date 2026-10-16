@@ -543,6 +543,7 @@ function renderV2Report(d){
   // 基础效果指标：按评测模式动态显示
   // 开发态：基线=外部 ground truth，有完整 TP/FN/FP/TN → 显示 误报率+召回率+准确率
   // 运行态：基线=Agent 自身上报的 case，TP+FP=基线总数，无 FN/TN → 只显示 误报率+准确率（互补）
+  var evalMode=d.eval_mode||(base.eval_mode||'dev');
   var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
   var fpCnt=rpData.fp_count||0;
   var tpCnt=rpData.tp_count||0;
@@ -592,7 +593,6 @@ function renderV2Report(d){
   var bsrc=d.benchmark_source||(base.benchmark_source||'vuln_center');
   var vcProj=d.vc_source_project_name||(base.vc_source_project_name||'');
   var vcTask=d.vc_source_task_name||(base.vc_source_task_name||'');
-  var evalMode=d.eval_mode||(base.eval_mode||'dev');
 
   var html=`
   ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">

@@ -129,6 +129,9 @@ class CausalChainAnalyzer:
             - l7_influenced (effect_label)
         """
         flat: list[dict] = []
+        # 去重键：(case_id, chain_type, cause_code, breakpoint, query_content)
+        # 同一断点可能在 session 级和 merge 级各出现一次，只保留一条
+        seen_keys: set[tuple] = set()
 
         for case in root_cause_results:
             case_id = case.get("case_id", "")
@@ -148,6 +151,15 @@ class CausalChainAnalyzer:
                     # LLM 可能返回 "null" 字符串表示无断点
                     if not cause_code or cause_code == "null":
                         continue
+
+                    dedup_key = (
+                        case_id, chain_type,
+                        cause_code, bp.get("breakpoint", ""),
+                        bp.get("query_content", ""),
+                    )
+                    if dedup_key in seen_keys:
+                        continue
+                    seen_keys.add(dedup_key)
 
                     flat.append({
                         "case_id": case_id,
@@ -284,7 +296,7 @@ class CausalChainAnalyzer:
                 if fs:
                     fix_parts.append(fs)
             case_root_cause[cid] = root_causes
-            case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
+            case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
         result: list[dict] = []
         for case_id, records in case_map.items():
@@ -340,15 +352,11 @@ class CausalChainAnalyzer:
         if returned:
             parts.append(f"返回: {returned}")
 
-        bp = rec.get("breakpoint", "")
-        if bp:
-            parts.append(f"断点级别: {bp}")
-
         l0 = rec.get("l0_source", "")
         if l0:
             parts.append(f"知识来源: {l0}")
 
-        return " | ".join(parts) if parts else ""
+        return "\n".join(parts) if parts else ""
 
     def _cause_description(self, cause_code: str) -> str:
         """cause_code → 中文描述。"""

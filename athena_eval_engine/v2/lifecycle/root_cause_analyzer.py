@@ -217,6 +217,7 @@ class RootCauseAnalyzer:
             case_id = case.get("case_id", "")
             vuln_title = case.get("vuln_title", "")
             desc = case.get("description", "")
+            summary = case.get("summary", "")
             mining_chain = list(case.get("mining_sessions", []))
             verify_chain = list(case.get("verify_sessions", []))
             fp_reason = case.get("human_confirmation_summary", "")
@@ -256,6 +257,7 @@ class RootCauseAnalyzer:
                 "case_id": case_id,
                 "vuln_title": vuln_title,
                 "description": desc,
+                "summary": summary,
                 "human_confirmation_summary": fp_reason,
                 "mining": {**mining_result, "agent_type": mining_agent_type},
                 "verification": {**verification_result, "agent_type": verify_agent_type},

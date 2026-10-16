@@ -493,6 +493,7 @@ class Orchestrator:
                 cd = case_details.get(fc.get("case_id", ""), {})
                 fc["human_confirmation_summary"] = cd.get(
                     "human_confirmation_summary", "")
+                fc["summary"] = cd.get("summary", "")
             if fp_cases:
                 _set_progress(evaluation_id,
                               f"根因分析中... {len(fp_cases)} 个 FP case")

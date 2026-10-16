@@ -48,7 +48,7 @@ def _build_breakpoint_desc(
     if vuln_title:
         parts.append(f"漏洞标题: {vuln_title}")
     if evidence:
-        parts.append(f"证据: {evidence}")
+        parts.append(evidence)
     return "\n".join(parts)
 
 
@@ -102,13 +102,14 @@ def generate_dts_issues(
             if rc:
                 cat = rc.get("category", "")
                 desc = rc.get("description", "")
-                if cat:
+                # 跳过无意义的占位根因
+                if cat and cat not in ("no_session", "llm_error", "unknown"):
                     root_causes[cat] = desc
             fs = chain_data.get("fix_suggestion", "")
             if fs:
                 fix_parts.append(fs)
         case_root_cause[cid] = root_causes
-        case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
+        case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
     # 按 (case_id, agent_type) 分组，所有断点合并到一条单
     grouped: dict[tuple[str, str], list[dict]] = {}
@@ -143,9 +144,9 @@ def generate_dts_issues(
             bp_level = bp.get("break_level", "")
             bp_evidence = bp.get("evidence", "")
             bp_lines.append(
-                _build_breakpoint_desc(bp_cause, bp_level, bp_evidence, "")
+                _build_breakpoint_desc(bp_cause, bp_level, bp_evidence, vuln_title)
             )
-        breakpoint_desc = f"漏洞标题: {vuln_title}\n" + "\n".join(bp_lines)
+        breakpoint_desc = "\n".join(bp_lines)
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
