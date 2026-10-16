@@ -42,7 +42,7 @@ const STEP_LABELS = {
   "parsing": "解析 Trace",
   "case_matching": "Case 匹配",
   "root_cause": "根因分析",
-  "resolving": "事实写入 + L0-L7 分析",
+  "resolving": "因果链 + 问题单",
   "reporting": "生成报告",
 };
 
@@ -332,7 +332,7 @@ RENDERERS.case_matching = function(el, data) {
 
   html += `<table><thead><tr>`;
   html += `<th>基线编号</th><th>告警中心编号</th><th>漏洞标题</th>`;
-  html += `<th>判定</th><th>匹配方式</th><th>验证 session</th><th>匹配细节</th>`;
+  html += `<th>判定</th><th>匹配方式</th><th>挖掘 session</th><th>验证 session</th><th>匹配细节</th>`;
   html += `</tr></thead><tbody>`;
 
   for (const m of matches) {
@@ -351,6 +351,7 @@ RENDERERS.case_matching = function(el, data) {
       "unmatched": "未匹配",
     }[method] || method;
 
+    const miningSids = (m.mining_sessions || []).join(", ") || '<span style="color:#999">—</span>';
     const verifySids = (m.verify_sessions || []).join(", ") || '<span style="color:#999">—</span>';
     const detail = m.match_detail || '<span style="color:#999">—</span>';
 
@@ -360,6 +361,7 @@ RENDERERS.case_matching = function(el, data) {
     html += `<td>${m.vulnerability_type || ""}</td>`;
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
+    html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
     html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
     html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${detail}">${detail}</td>`;
     html += `</tr>`;
@@ -621,134 +623,96 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   return html;
 }
 
-// ── resolving 渲染器（L0-L7 全链路分析 + 因果链）──
+// ── resolving 渲染器（因果链 + 问题单）──
 RENDERERS.resolving = function(el, data) {
   let html = "";
 
-  const accessDetails = data.access_details || [];
   const causalChain = data.causal_chain || {};
+  const causeSummary = causalChain.cause_summary || {};
+  const effectDist = causalChain.effect_label_distribution || {};
+  const perCase = causalChain.per_case_breakpoints || [];
 
   // 统计
+  const totalBp = perCase.reduce((s, c) => s + (c.breakpoints?.length || 0), 0);
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${data.access_detail_count ?? accessDetails.length}</div><div class="label">知识访问总数</div></div>`;
-
-  // 断点级别分布
-  const bpCounts = {};
-  const causeCounts = {};
-  const causeToLevel = {"A":"L2","B":"L3","C":"L4","D":"L5","E":"L6","F":"L7","G":"L7"};
-  for (const r of accessDetails) {
-    const code = r.cause_code;
-    if (code) {
-      causeCounts[code] = (causeCounts[code] || 0) + 1;
-      const lvl = causeToLevel[code];
-      if (lvl) bpCounts[lvl] = (bpCounts[lvl] || 0) + 1;
-    }
-  }
-  const bpLabels = {"L2":"L2 发起访问","L3":"L3 查询准确","L4":"L4 知识存在","L5":"L5 成功取回","L6":"L6 被使用","L7":"L7 影响结论"};
-  for (const [lvl, cnt] of Object.entries(bpCounts).sort()) {
-    html += `<div class="stat"><div class="num" style="color:#e74c3c">${cnt}</div><div class="label">${bpLabels[lvl] || lvl}</div></div>`;
-  }
+  html += `<div class="stat"><div class="num">${perCase.length}</div><div class="label">FP case 数</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#e74c3c">${totalBp}</div><div class="label">断点总数</div></div>`;
   html += `</div>`;
 
   // 成因分布
-  if (Object.keys(causeCounts).length > 0) {
+  const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判"};
+  if (Object.keys(causeSummary).length > 0) {
     html += `<div style="margin:8px 0;color:#888;font-size:13px;">成因分布：</div>`;
     html += `<div class="stats">`;
-    const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判"};
-    for (const [code, cnt] of Object.entries(causeCounts).sort()) {
+    for (const [code, cnt] of Object.entries(causeSummary).sort()) {
       html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
     }
     html += `</div>`;
   }
 
-  // 因果链汇总
-  const causeSummary = causalChain.cause_summary || {};
-  const effectDist = causalChain.effect_label_distribution || {};
-  if (Object.keys(causeSummary).length > 0) {
-    html += `<div style="margin:12px 0 8px;color:#6c5ce7;font-size:15px;">因果链汇总</div>`;
-    html += `<div style="margin-bottom:12px;color:#666;font-size:13px;">`;
-    html += `成因计数：${Object.entries(causeSummary).map(([k,v])=>`${k}=${v}`).join("，")}　`;
-    html += `效果分布：${Object.entries(effectDist).map(([k,v])=>`${k}=${v}`).join("，")}`;
+  // 效果标签分布
+  if (Object.keys(effectDist).length > 0) {
+    html += `<div style="margin:8px 0;color:#888;font-size:13px;">效果标签分布：</div>`;
+    html += `<div class="stats">`;
+    for (const [label, cnt] of Object.entries(effectDist)) {
+      html += `<div class="stat"><div class="num">${cnt}</div><div class="label">${label}</div></div>`;
+    }
     html += `</div>`;
   }
 
-  // 按 task_run_id 分组（每个 case 一组）
-  const caseMap = {};
-  for (const r of accessDetails) {
-    const tid = r.task_run_id || "";
-    if (!caseMap[tid]) caseMap[tid] = [];
-    caseMap[tid].push(r);
-  }
-
-  if (Object.keys(caseMap).length === 0) {
-    html += '<div class="empty">无 L0-L7 分析数据</div>';
+  // 逐 case 断点展示
+  if (perCase.length === 0) {
+    html += '<div class="empty">无因果链断点数据</div>';
     el.innerHTML = html;
     return;
   }
 
-  // 逐 case 展示
-  for (const [taskRunId, records] of Object.entries(caseMap)) {
-    const hasBp = records.some(r => r.cause_code);
+  for (const c of perCase) {
+    const bps = c.breakpoints || [];
+    const hasBp = bps.length > 0;
     const titleColor = hasBp ? "#e74c3c" : "#27ae60";
     html += `<details style="margin:16px 0 8px;" open>`;
     html += `<summary style="cursor:pointer;color:${titleColor};font-size:15px;font-weight:600;">`;
-    html += `${taskRunId} — ${records.length} 次知识访问`;
+    html += `${c.case_id || ""} — ${c.vuln_type || ""} (${bps.length} 断点)`;
     html += `</summary>`;
     html += `<div style="margin-top:8px;">`;
 
-    // 每次知识访问的 L0-L7 判定表
-    html += `<table><thead><tr>`;
-    html += `<th>来源</th><th>L1 需要知识</th><th>L2 发起访问</th><th>L3 查询准确</th><th>L4 知识存在</th><th>L5 成功取回</th><th>L6 被使用</th><th>L7 影响结论</th><th>断点</th><th>成因</th><th>查询内容</th>`;
-    html += `</tr></thead><tbody>`;
-
-    for (const r of records) {
-      const bp = r.cause_code ? causeToLevel[r.cause_code] || "—" : "无";
-      const code = r.cause_code || "—";
-      const bpColor = r.cause_code ? "#e74c3c" : "#27ae60";
-      const src = r.source_system || "—";
-      const b = (v) => v === true ? "✓" : v === false ? "✗" : "—";
-      const l7 = r.l7_influenced === true ? "正向" : r.l7_influenced === false ? "负向" : "—";
-
-      html += `<tr>`;
-      html += `<td>${src}</td>`;
-      html += `<td style="text-align:center">${b(r.l1_need_knowledge)}</td>`;
-      html += `<td style="text-align:center">${b(r.l2_initiated)}</td>`;
-      html += `<td style="text-align:center">${b(r.l3_query_accurate)}</td>`;
-      html += `<td style="text-align:center">${b(r.l4_knowledge_exists)}</td>`;
-      html += `<td style="text-align:center">${b(r.l5_retrieved)}</td>`;
-      html += `<td style="text-align:center">${b(r.l6_used)}</td>`;
-      html += `<td style="text-align:center">${l7}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${bp}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${code}</td>`;
-      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(r.query_content||"").replace(/"/g,"&quot;")}">${r.query_content || "—"}</td>`;
-      html += `</tr>`;
-    }
-    html += `</tbody></table>`;
-
-    // 每次访问的详细证据（可收起）
-    const hasDetail = records.some(r => r.returned_content || r.reasoning_ref || r.judgment_conclusion);
-    if (hasDetail) {
-      html += `<details style="margin:8px 0;">`;
-      html += `<summary style="cursor:pointer;color:#888;font-size:12px;">详细证据</summary>`;
-      for (const r of records) {
-        if (!r.returned_content && !r.reasoning_ref && !r.judgment_conclusion) continue;
-        html += `<div style="margin:6px 0;padding:8px;background:#f0f0f5;border-radius:4px;">`;
-        html += `<div style="color:#6c5ce7;font-size:11px;margin-bottom:4px;">${r.source_system || ""} · 事件 ${r.event_idx ?? "—"}</div>`;
-        if (r.query_content) {
-          html += `<div style="margin:4px 0;color:#555;font-size:12px;"><b style="color:#6c5ce7">查询：</b>${r.query_content}</div>`;
-        }
-        if (r.returned_content) {
-          html += `<div style="margin:4px 0;color:#555;font-size:12px;"><b style="color:#6c5ce7">返回：</b>${r.returned_content}</div>`;
-        }
-        if (r.reasoning_ref) {
-          html += `<div style="margin:4px 0;color:#555;font-size:12px;"><b style="color:#6c5ce7">推理：</b>${r.reasoning_ref}</div>`;
-        }
-        if (r.judgment_conclusion) {
-          html += `<div style="margin:4px 0;color:#555;font-size:12px;"><b style="color:#6c5ce7">判定：</b>${r.judgment_conclusion}</div>`;
-        }
-        html += `</div>`;
+    // 根因
+    const rc = c.root_cause || {};
+    if (Object.keys(rc).length > 0) {
+      html += `<div style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
+      html += `<div style="color:#e74c3c;font-weight:600;margin-bottom:4px;font-size:13px;">根因</div>`;
+      for (const [cat, desc] of Object.entries(rc)) {
+        html += `<div style="color:#555;font-size:12px;line-height:1.6;"><b>${cat}:</b> ${desc}</div>`;
       }
-      html += `</details>`;
+      html += `</div>`;
+    }
+
+    // 修复建议
+    if (c.fix_suggestion) {
+      html += `<div style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
+      html += `<div style="color:#27ae60;font-weight:600;margin-bottom:4px;font-size:13px;">修复建议</div>`;
+      html += `<div style="color:#555;font-size:12px;line-height:1.6;">${c.fix_suggestion}</div>`;
+      html += `</div>`;
+    }
+
+    // 断点表
+    if (bps.length > 0) {
+      html += `<table><thead><tr>`;
+      html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>证据</th>`;
+      html += `</tr></thead><tbody>`;
+      for (const bp of bps) {
+        const code = bp.cause_code || "—";
+        const bpColor = code !== "—" ? "#e74c3c" : "#888";
+        html += `<tr>`;
+        html += `<td>${bp.agent_type || "—"}</td>`;
+        html += `<td>${bp.chain_type || "—"}</td>`;
+        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${bp.break_level || "—"}</td>`;
+        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${code}</td>`;
+        html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(bp.evidence||"").replace(/"/g,"&quot;")}">${bp.evidence || "—"}</td>`;
+        html += `</tr>`;
+      }
+      html += `</tbody></table>`;
     }
 
     html += `</div>`;
