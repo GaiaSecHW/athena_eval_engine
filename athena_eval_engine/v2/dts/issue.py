@@ -136,6 +136,7 @@ def generate_dts_issues(
                 "evaluation_id": evaluation_id,
                 "task_id": task_id,
                 "case_id": case_id,
+                "vuln_type": vuln_type,
                 "agent_type": agent_type,
                 "case_type": "FP",
                 "cause_code": cause_code,

@@ -119,7 +119,7 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
 if(DEBUG){var _sb=document.getElementById("sys-btn");if(_sb)_sb.style.display="";}
 const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
-const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
+const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u.indexOf("/dts")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
@@ -633,7 +633,7 @@ async function renderDtsList(){
     <div class="card" style="margin-bottom:16px">
       <h3>问题单</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
-        <input id="dts-search" placeholder="搜索问题单 ID / 任务 ID…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:260px">
+        <input id="dts-search" placeholder="搜索问题单 ID / 任务 ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
         <select id="dts-f-status" onchange="_dtsFilter.status=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部状态</option>
           <option value="unlocated">未定位</option>
@@ -709,17 +709,18 @@ function renderDtsTable(){
   // 客户端过滤（responsibility + 搜索）
   var filtered=_dtsData.filter(function(i){
     if(_dtsFilter.responsibility&&dtsResponsibility(i.cause_code)!==_dtsFilter.responsibility)return false;
-    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
+    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.task_id||'')+' '+(i.vuln_type||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
   if(!filtered.length){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>问题单 ID</th><th>任务 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>任务 ID</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
     html+='<tr>'
       +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
+      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_type||'').replace(/"/g,'&quot;')+'">'+(i.vuln_type||'-')+'</td>'
       +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+(DTS_AGENT_LABELS[i.agent_type]||i.agent_type||'-')+'</td>'
@@ -798,10 +799,11 @@ function renderDtsSection(evalId,issues,stats){
 
   var listHtml='';
   if(issues.length){
-    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>任务 ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>任务 ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
     issues.forEach(function(i){
       listHtml+='<tr>'
         +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
+        +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_type||'').replace(/"/g,'&quot;')+'">'+(i.vuln_type||'-')+'</td>'
         +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
         +'<td style="font-size:14px">'+(DTS_RESP_LABELS[dtsResponsibility(i.cause_code)]||'-')+'</td>'

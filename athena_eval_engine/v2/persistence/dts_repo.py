@@ -15,7 +15,7 @@ from ...infrastructure.log_util import log, log_to_file
 # ── 字段顺序（与 INSERT SQL 列顺序一致）──
 
 _FIELD_ORDER = (
-    "dts_id", "evaluation_id", "task_id", "case_id", "agent_type",
+    "dts_id", "evaluation_id", "task_id", "case_id", "vuln_type", "agent_type",
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
     "root_cause", "solution", "replay_eval_id", "replay_result",
@@ -24,14 +24,15 @@ _FIELD_ORDER = (
 
 _INSERT_SQL = (
     "INSERT INTO dts_issue ("
-    "  dts_id, evaluation_id, task_id, case_id, agent_type,"
+    "  dts_id, evaluation_id, task_id, case_id, vuln_type, agent_type,"
     "  case_type, cause_code, breakpoint_level,"
     "  breakpoint_desc, evidence_uri,"
     "  root_cause, solution, replay_eval_id, replay_result,"
     "  status, responsibility"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
+    "  vuln_type=VALUES(vuln_type),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
     "  replay_result=VALUES(replay_result)"
@@ -39,7 +40,7 @@ _INSERT_SQL = (
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
 _SELECT_COLUMNS = (
-    "dts_id, evaluation_id, task_id, case_id, agent_type,"
+    "dts_id, evaluation_id, task_id, case_id, vuln_type, agent_type,"
     " case_type, cause_code, breakpoint_level,"
     " breakpoint_desc, evidence_uri,"
     " root_cause, solution, replay_eval_id, replay_result,"
@@ -99,7 +100,7 @@ def _db_query(fn, _retries: int = 8):
 def _row_to_dict(row) -> dict:
     """将 SELECT 行转换为 dict。"""
     keys = (
-        "dts_id", "evaluation_id", "task_id", "case_id", "agent_type",
+        "dts_id", "evaluation_id", "task_id", "case_id", "vuln_type", "agent_type",
         "case_type", "cause_code", "breakpoint_level",
         "breakpoint_desc", "evidence_uri",
         "root_cause", "solution", "replay_eval_id", "replay_result",

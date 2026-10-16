@@ -295,6 +295,13 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD INDEX idx_dts_task_id (task_id)",
         ],
     },
+    {
+        "id": "014_dts_issue_add_vuln_type",
+        "desc": "dts_issue 表新增 vuln_type 字段（漏洞类型名称，列表展示用）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN vuln_type VARCHAR(512) NOT NULL DEFAULT '' AFTER case_id",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
