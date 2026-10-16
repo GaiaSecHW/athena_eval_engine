@@ -91,6 +91,17 @@ class CaseSessionMatcher:
         baseline_to_ac = self._build_baseline_ac_map(
             case_details, case_matches, eval_mode)
 
+        # 构建告警中心 case_id → 原始 case title 的映射（程序匹配用）
+        # 原始 case 就是 agent 上报的漏洞结果，原始 case title 跟 trace 中
+        # finding title 一致或非常接近，可以用来程序匹配验证 session
+        ac_title_map: dict[str, str] = {}
+        if case_matches:
+            for m in case_matches:
+                raw_id = str(m.get("raw_case_id", "") or "")
+                raw_title = str(m.get("raw_title", "") or "")
+                if raw_id and raw_title:
+                    ac_title_map[raw_id] = raw_title
+
         # 只对误报（NON_VULNERABLE）case 进行匹配
         target_cases = [(cid, cd) for cid, cd in case_details.items()
                         if cd.get("expected_label") == "NON_VULNERABLE"]
@@ -121,21 +132,44 @@ class CaseSessionMatcher:
         verify_index = self._build_verify_index(
             verify_packs, turing_packs, turing_verify_sids)
 
+        # 预构建验证 agent 的 case_id → session 索引（webvuln_verify 的 .md 文件名）
+        verify_case_index = self._build_verify_case_index(
+            verify_packs, turing_packs, turing_verify_sids)
+
         results: list[dict] = []
         for cid, cd in target_cases:
             ac_case_id = baseline_to_ac.get(cid, "")
             vuln_type = cd.get("vulnerability_type", "")
             expected_label = cd.get("expected_label", "")
 
-            # 验证 agent：用 title 精确匹配
-            verify_sessions = verify_index.get(vuln_type, []) if vuln_type else []
+            verify_sessions: list[str] = []
+            match_method_used = ""
+
+            # 匹配策略（按优先级）：
+            # 1. 用原始 case_id 去 .md 文件名索引匹配（webvuln_verify）
+            if ac_case_id and ac_case_id in verify_case_index:
+                verify_sessions = verify_case_index[ac_case_id]
+                match_method_used = "case_id_file"
+
+            # 2. 用原始 case title 去验证 session 的 finding title 匹配
+            if not verify_sessions:
+                raw_title = ac_title_map.get(ac_case_id, "")
+                if raw_title and raw_title in verify_index:
+                    verify_sessions = verify_index[raw_title]
+                    match_method_used = "raw_title"
+
+            # 3. 用基线 vuln_type 匹配（回退，命中率低）
+            if not verify_sessions and vuln_type and vuln_type in verify_index:
+                verify_sessions = verify_index[vuln_type]
+                match_method_used = "baseline_title"
 
             # 判定 outcome：误报 case，验证 session 命中 = FP，未命中 = TN
             outcome = "FP" if verify_sessions else "TN"
 
             matched = bool(verify_sessions)
             method = "matched" if matched else "unmatched"
-            detail = f"{len(verify_sessions)} × session" if verify_sessions else "未匹配"
+            detail = (f"{len(verify_sessions)} × session ({match_method_used})"
+                      if verify_sessions else "未匹配")
 
             results.append({
                 "case_id": cid,
@@ -150,7 +184,7 @@ class CaseSessionMatcher:
 
             log("MATCH",
                 f"case {cid}: outcome={outcome}, method={method}, "
-                f"verify={len(verify_sessions)} sessions",
+                f"verify={len(verify_sessions)} sessions ({match_method_used})",
                 eval_id=evaluation_id)
 
         matched = sum(1 for r in results if r["match_method"] != "unmatched")
@@ -194,6 +228,50 @@ class CaseSessionMatcher:
             f"基线→告警中心映射",
             eval_id="")
         return mapping
+
+    def _build_verify_case_index(
+        self,
+        verify_packs: list[DataPack],
+        turing_packs: list[DataPack],
+        turing_verify_sids: set[str],
+    ) -> dict[str, list[str]]:
+        """构建 case_id → session_id 索引（验证 agent）。
+
+        webvuln_verify 平台：
+        - 验证 session 的 files 含 .md 文件名
+        - 文件名格式 20260918-143201-1bba5a59.md
+        - 对应原始 case_id: case-20260918-143201-1bba5a59
+
+        Turing 平台：
+        - 验证 session 事件中 vuln_hunt_query_finding 的 output 含漏洞 title
+        - 但 Turing 没有 case_id，不在此索引中
+        """
+        import re
+        index: dict[str, list[str]] = defaultdict(list)
+
+        # ── webvuln_verify：从 session files 的 .md 文件名提取 case_id ──
+        webvv_packs = [dp for dp in verify_packs
+                       if dp.agent_type == "webvuln_verify"]
+        for dp in webvv_packs:
+            sg = dp.session_graph or {}
+            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
+            for sid, sdata in sessions.items():
+                files = (sdata or {}).get("files", set()) if isinstance(sdata, dict) else set()
+                if isinstance(files, set):
+                    files = list(files)
+                elif not isinstance(files, list):
+                    files = []
+                for f in files:
+                    if not isinstance(f, str) or not f.endswith(".md"):
+                        continue
+                    # 文件名 20260918-143201-1bba5a59.md → case-20260918-143201-1bba5a59
+                    base = f[:-3]  # 去掉 .md
+                    if re.match(r'^\d{8}-\d{6}-[0-9a-f]+$', base):
+                        case_id = f"case-{base}"
+                        if sid not in index[case_id]:
+                            index[case_id].append(sid)
+
+        return dict(index)
 
     def _build_verify_index(
         self,
