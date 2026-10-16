@@ -882,7 +882,8 @@ async function renderDtsDetailPage(dtsId){
       +'</div>';
 
     if(d.breakpoint_desc){
-      html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">断点描述</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div></div>';
+      var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
+      html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">'+bpTitle+'</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div></div>';
     }
     if(d.evidence_uri){
       html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+String(d.evidence_uri).replace(/</g,'&lt;')+'</div></div>';
