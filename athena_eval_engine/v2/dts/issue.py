@@ -105,6 +105,7 @@ def generate_dts_issues(
         case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
 
     issues: list[dict] = []
+    seq = 0
     for case_entry in per_case_breakpoints:
         case_id = case_entry.get("case_id", "")
         vuln_type = case_entry.get("vuln_type", "")
@@ -124,7 +125,8 @@ def generate_dts_issues(
 
             responsibility = CAUSE_TO_RESPONSIBILITY.get(cause_code, "agent")
 
-            dts_id = f"{evaluation_id}_{case_id}_{bp_idx}"
+            seq += 1
+            dts_id = f"DTS-{seq:04d}"
             breakpoint_desc = _build_breakpoint_desc(
                 cause_code, break_level, evidence, vuln_type,
             )
@@ -141,7 +143,7 @@ def generate_dts_issues(
                 "breakpoint_desc": breakpoint_desc,
                 "evidence_uri": evidence[:512] if evidence else None,
                 "root_cause": json.dumps(root_cause, ensure_ascii=False) if root_cause else None,
-                "fix_suggestion": fix_suggestion or None,
+                "solution": fix_suggestion or None,
                 "replay_eval_id": None,
                 "replay_result": None,
                 "status": "unlocated",

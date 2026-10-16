@@ -75,7 +75,7 @@ def list_issues(
 ):
     """列出问题单（支持过滤、分页）。表不存在时返回空结果。"""
     try:
-        issues = list_dts_issues(
+        issues, total = list_dts_issues(
             evaluation_id=evaluation_id,
             agent_type=agent_type,
             status=status,
@@ -88,8 +88,8 @@ def list_issues(
     except Exception as e:
         from ...infrastructure.log_util import log
         log("DTS_API", f"list_issues 查询失败（表可能不存在）: {str(e)[:200]}")
-        return {"issues": [], "count": 0, "stats": {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}}
-    return {"issues": issues, "count": len(issues), "stats": stats}
+        return {"issues": [], "count": 0, "total": 0, "stats": {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}}
+    return {"issues": issues, "count": len(issues), "total": total, "stats": stats}
 
 
 @router.get("/stats")

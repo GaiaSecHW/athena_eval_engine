@@ -18,7 +18,7 @@ _FIELD_ORDER = (
     "dts_id", "evaluation_id", "task_id", "case_id", "agent_type",
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
-    "root_cause", "fix_suggestion", "replay_eval_id", "replay_result",
+    "root_cause", "solution", "replay_eval_id", "replay_result",
     "status", "responsibility",
 )
 
@@ -165,20 +165,11 @@ def list_dts_issues(
     case_type: str | None = None,
     limit: int = 100,
     offset: int = 0,
-) -> list[dict]:
-    """列出问题单（支持过滤）。
-
-    Args:
-        evaluation_id: 评测 ID 过滤。
-        agent_type: Agent 类型过滤。
-        status: 状态过滤。
-        cause_code: 成因码过滤。
-        case_type: case 类型过滤（FP/FN）。
-        limit: 返回条数上限。
-        offset: 偏移量（分页）。
+) -> tuple[list[dict], int]:
+    """列出问题单（支持过滤 + 分页）。
 
     Returns:
-        问题单 dict 列表。
+        (问题单 dict 列表, 匹配总数)
     """
     where_parts: list[str] = []
     params: list = []
@@ -200,18 +191,22 @@ def list_dts_issues(
         params.append(case_type)
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
-    sql = (
-        f"SELECT {_SELECT_COLUMNS} FROM dts_issue{where_clause}"
-        f" ORDER BY created_at DESC LIMIT %s OFFSET %s"
-    )
-    params.extend([limit, offset])
 
     def _do_query(cur):
-        cur.execute(sql, tuple(params))
-        return cur.fetchall()
+        # 查总数
+        cur.execute(f"SELECT COUNT(*) FROM dts_issue{where_clause}", tuple(params))
+        total = cur.fetchone()[0]
+        # 查当前页
+        sql = (
+            f"SELECT {_SELECT_COLUMNS} FROM dts_issue{where_clause}"
+            f" ORDER BY created_at DESC LIMIT %s OFFSET %s"
+        )
+        cur.execute(sql, tuple(params + [limit, offset]))
+        rows = cur.fetchall()
+        return rows, total
 
-    rows = _db_query(_do_query)
-    return [_row_to_dict(r) for r in rows]
+    rows, total = _db_query(_do_query)
+    return [_row_to_dict(r) for r in rows], total
 
 
 def update_dts_issue(dts_id: str, updates: dict) -> bool:

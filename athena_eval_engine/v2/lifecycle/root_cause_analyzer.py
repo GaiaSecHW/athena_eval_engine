@@ -192,13 +192,16 @@ class RootCauseAnalyzer:
             - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
             - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
         """
-        # 构建 session_id → events 索引
+        # 构建 session_id → events 索引 + session_id → agent_type 映射
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
+        session_agent_type: dict[str, str] = {}
         for dp in data_packs:
             for ev in (dp.events or []):
                 sid = ev.session_id or ""
                 if sid:
                     session_events[sid].append(ev)
+                    if sid not in session_agent_type:
+                        session_agent_type[sid] = dp.agent_type or ""
 
         # 多 case 并发分析（最多 10 个 case 同时处理）
         # 每个 case 内挖掘链和验证链串行执行，
@@ -235,13 +238,27 @@ class RootCauseAnalyzer:
                 project_id=project_id,
             )
 
+            # 从 session_chain 推导 agent_type（取第一个 session 的 agent_type）
+            mining_agent_type = ""
+            for sid in mining_chain:
+                at = session_agent_type.get(sid, "")
+                if at:
+                    mining_agent_type = at
+                    break
+            verify_agent_type = ""
+            for sid in verify_chain:
+                at = session_agent_type.get(sid, "")
+                if at:
+                    verify_agent_type = at
+                    break
+
             return idx, {
                 "case_id": case_id,
                 "vulnerability_type": vuln_type,
                 "description": desc,
                 "human_confirmation_summary": fp_reason,
-                "mining": mining_result,
-                "verification": verification_result,
+                "mining": {**mining_result, "agent_type": mining_agent_type},
+                "verification": {**verification_result, "agent_type": verify_agent_type},
             }
 
         results: list[dict | None] = [None] * len(fp_cases)

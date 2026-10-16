@@ -43,11 +43,10 @@ _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
 # 所有 effect_label（含 NULL——无 effect 时表示证据不足）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 
-# ── 链类型→agent_type 映射 ──
-# root_cause_results 中 mining/verification 链需要映射到 agent_type
-_CHAIN_TO_AGENT_TYPE = {
-    "mining": "mining",
-    "verification": "verify",
+# ── 链类型→默认 agent_type 映射（回退用，优先从 chain_data.agent_type 取）──
+_CHAIN_DEFAULT_AGENT_TYPE = {
+    "mining": "turing",
+    "verification": "",
 }
 
 
@@ -154,8 +153,8 @@ class CausalChainAnalyzer:
                         "case_id": case_id,
                         "vulnerability_type": vuln_type,
                         "chain_type": chain_type,
-                        "agent_type": _CHAIN_TO_AGENT_TYPE.get(
-                            chain_type, chain_type),
+                        "agent_type": chain_data.get("agent_type") or
+                            _CHAIN_DEFAULT_AGENT_TYPE.get(chain_type, ""),
                         "cause_code": cause_code,
                         "breakpoint": bp.get("breakpoint", ""),
                         "l0_source": bp.get("l0_source", ""),
