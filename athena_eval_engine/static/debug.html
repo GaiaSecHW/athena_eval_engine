@@ -36,13 +36,12 @@ tr:hover { background: #f5f5ff; }
 <div class="step-bar" id="stepBar"></div>
 <div class="content" id="content"></div>
 <script>
-const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "resolving", "reporting"];
+const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "reporting"];
 const STEP_LABELS = {
   "ingesting": "数据采集",
   "parsing": "解析 Trace",
   "case_matching": "Case 匹配",
   "root_cause": "根因分析",
-  "resolving": "因果链 + 问题单",
   "reporting": "生成报告",
 };
 
