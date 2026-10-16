@@ -563,6 +563,8 @@ function renderV2Report(d){
     var precisionVal=(tpCnt+fpCnt)>0?(tpCnt/(tpCnt+fpCnt)):null;
     baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/基线总数 = '+fpCnt+'/'+baselineTotal+'</div></div>';
     if(tpCnt+fnCnt>0){
+      var fnrVal=fnCnt/(tpCnt+fnCnt);
+      baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">漏报率 (FNR)</div><div class="mc-val" style="color:var(--amber)">'+(fnrVal*100).toFixed(1)+'%</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FN/(TP+FN) = '+fnCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
       baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(recallVal!=null?(recallVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN) = '+tpCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
     }
     if(tpCnt+fpCnt>0){
