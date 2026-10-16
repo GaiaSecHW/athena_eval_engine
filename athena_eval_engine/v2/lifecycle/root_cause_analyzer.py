@@ -34,8 +34,8 @@ from ...infrastructure.log_util import log
 _MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
 # ── 验证 agent 类型（DataPack 级别）──
 _VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
-# ── Turing 平台：验证 session 的 agent 名 ──
-_TURING_VERIFY_AGENT = "vuln-hunt-validate"
+# ── Turing 平台：验证 session 的 agent 名（多版本命名）──
+_TURING_VERIFY_AGENTS = {"vuln-hunt-validate", "web-validate"}
 
 # ── 系统 prompt（固定）──
 
@@ -210,7 +210,7 @@ class RootCauseAnalyzer:
                 all_sessions[sid] = sdata
                 # 判断角色：先看 session 的 agent 字段，再看 DataPack.agent_type
                 session_agent = (sdata or {}).get("agent", "")
-                if session_agent == _TURING_VERIFY_AGENT:
+                if session_agent in _TURING_VERIFY_AGENTS:
                     sid_role[sid] = "verify"
                 elif dp.agent_type in _VERIFY_AGENT_TYPES:
                     sid_role[sid] = "verify"

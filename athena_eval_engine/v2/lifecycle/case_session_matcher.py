@@ -35,8 +35,11 @@ from ...infrastructure.log_util import log
 class CaseSessionMatcher:
     """case↔session 匹配器。"""
 
-    # Turing 平台：验证 session 的 agent 名
-    _TURING_VERIFY_AGENT = "vuln-hunt-validate"
+    # Turing 平台：验证 session 的 agent 名（多版本命名）
+    _TURING_VERIFY_AGENTS = {
+        "vuln-hunt-validate",  # 旧版命名
+        "web-validate",         # 新版命名
+    }
 
     # Turing 平台：验证 session 的工具名（已归一化，横线→下划线）
     _TURING_VERIFY_TOOLS = {
@@ -106,7 +109,7 @@ class CaseSessionMatcher:
         turing_verify_sids: set[str] = set()
         for dp in turing_packs:
             for sid, sdata in (dp.session_graph.get("sessions") or {}).items():
-                if sdata.get("agent") == self._TURING_VERIFY_AGENT:
+                if sdata.get("agent") in self._TURING_VERIFY_AGENTS:
                     turing_verify_sids.add(sid)
         log("MATCH",
             f"verify_packs={len(verify_packs)}, "
