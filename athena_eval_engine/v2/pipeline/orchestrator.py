@@ -721,6 +721,7 @@ class Orchestrator:
                 baseline_cases = baseline_summary.get("cases", [])
                 log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
 
+            from ...infrastructure.vuln_center_client import get_case_raw_report
             for c in baseline_cases:
                 if c.get("current_stage") != "finished":
                     continue
@@ -735,7 +736,7 @@ class Orchestrator:
                 cid = bm.get("case_id") or ""
                 if cid:
                     case_details[cid] = {
-                        "description": bm.get("description") or "",
+                        "description": get_case_raw_report(cid) or bm.get("description") or "",
                         "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",
@@ -945,8 +946,9 @@ class Orchestrator:
                 bm = _case_to_benchmark(c, expected_label)
                 cid = bm.get("case_id") or ""
                 if cid:
+                    from ...infrastructure.vuln_center_client import get_case_raw_report
                     case_details[cid] = {
-                        "description": bm.get("description") or "",
+                        "description": get_case_raw_report(cid) or bm.get("description") or "",
                         "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",

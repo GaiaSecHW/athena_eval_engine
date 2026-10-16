@@ -50,6 +50,27 @@ def _get(url: str, params: dict | None = None, retries: int = 20,
     raise last_err
 
 
+def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:
+    """获取 case 的原始漏洞报告内容。
+
+    调用漏洞中心 API ``GET /api/vuln/cases/{case_id}/report?report_id=raw-intake``，
+    返回 report 的 ``content`` 字段（Markdown 格式的完整漏洞报告）。
+
+    失败时返回空字符串，不抛异常（原始报告是补充信息，不阻塞主流程）。
+    """
+    try:
+        data = _get(
+            f"{VULN_CENTER_API_URL}/{case_id}/report",
+            params={"report_id": report_id},
+            retries=3,
+        )
+        if isinstance(data, dict):
+            return data.get("content") or ""
+    except Exception as e:
+        log("VULN_CENTER", f"获取原始报告失败 case={case_id}: {e}")
+    return ""
+
+
 def list_vuln_cases(project_id: str, source_task_id: str | None = None,
                     confirmation_status: str | None = None,
                     page_size: int = 1000, max_pages: int = 100) -> list[dict]:
@@ -384,4 +405,11 @@ def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None
                          if c.get("false_positive_group") != "non_fp"]
         cases += [_case_to_benchmark(c, "NON_VULNERABLE") for c in nonvuln_cases]
         log("VULN_CENTER", f"not_vulnerable cases: {len(nonvuln_cases)} (excluded non_fp)")
+
+    # 拉取每个 case 的原始漏洞报告
+    for c in cases:
+        cid = c.get("case_id") or ""
+        if cid:
+            c["description"] = get_case_raw_report(cid) or c.get("description") or ""
+
     return {"benchmark_id": project_id, "name": None, "cases": cases}
