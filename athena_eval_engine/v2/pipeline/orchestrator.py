@@ -737,6 +737,7 @@ class Orchestrator:
                 if cid:
                     case_details[cid] = {
                         "description": get_case_raw_report(cid) or bm.get("description") or "",
+                        "summary": c.get("summary") or "",
                         "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",
@@ -949,6 +950,7 @@ class Orchestrator:
                     from ...infrastructure.vuln_center_client import get_case_raw_report
                     case_details[cid] = {
                         "description": get_case_raw_report(cid) or bm.get("description") or "",
+                        "summary": c.get("summary") or "",
                         "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
                         "source_file": bm.get("source_file") or "",

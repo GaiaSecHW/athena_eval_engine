@@ -165,6 +165,7 @@ class CaseSessionMatcher:
             vuln_title = cd.get("vuln_title", "")
             expected_label = cd.get("expected_label", "")
             baseline_desc = cd.get("description", "")
+            baseline_summary = cd.get("summary", "")
 
             mining_sessions: list[str] = []
             verify_sessions: list[str] = []
@@ -180,17 +181,17 @@ class CaseSessionMatcher:
                                            mining_sessions, verify_sessions)
                     match_method_used = "raw_title"
                 elif len(entries) > 1:
-                    # 多个匹配，用漏洞描述精确匹配消歧
+                    # 多个匹配，用漏洞摘要精确匹配消歧
                     matched_any = False
                     for sid, desc, agent_type in entries:
-                        if desc and baseline_desc and desc == baseline_desc:
+                        if desc and baseline_summary and desc == baseline_summary:
                             self._classify_session(sid, agent_type,
                                                    mining_sessions, verify_sessions)
-                            match_method_used = "raw_title+desc"
+                            match_method_used = "raw_title+summary"
                             matched_any = True
                             break
                     if not matched_any:
-                        # 描述没匹配上，用全部 session
+                        # 摘要没匹配上，用全部 session
                         for sid, _, agent_type in entries:
                             self._classify_session(sid, agent_type,
                                                    mining_sessions, verify_sessions)
