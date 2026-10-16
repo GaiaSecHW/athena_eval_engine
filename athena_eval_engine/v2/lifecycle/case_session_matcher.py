@@ -71,6 +71,7 @@ class CaseSessionMatcher:
         case_details: dict[str, dict],
         case_matches: list[dict] | None = None,
         eval_mode: str = "runtime",
+        alert_center_data: dict | None = None,
     ) -> list[dict]:
         """对基线 case，在 trace 中找到挖掘 + 验证 session。
 
@@ -80,6 +81,8 @@ class CaseSessionMatcher:
             case_details: 基线 case 详情 {case_id: {vulnerability_type, description, expected_label, ...}}
             case_matches: INGESTING 阶段的 LLM 匹配结果（开发态用）
             eval_mode: "runtime"（运行态）| "dev"（开发态）
+            alert_center_data: 告警中心数据（运行态用，含 cases 列表，
+                               每条含 case_id 和 title）
 
         Returns:
             匹配结果列表，每项含：
@@ -100,11 +103,19 @@ class CaseSessionMatcher:
         # finding title 一致，可以用来精确匹配验证 session
         ac_title_map: dict[str, str] = {}
         if case_matches:
+            # 开发态：从 case_matches 提取 raw_case_id → raw_title
             for m in case_matches:
                 raw_id = str(m.get("raw_case_id", "") or "")
                 raw_title = str(m.get("raw_title", "") or "")
                 if raw_id and raw_title:
                     ac_title_map[raw_id] = raw_title
+        elif alert_center_data:
+            # 运行态：从告警中心 cases 提取 case_id → title
+            for c in alert_center_data.get("cases", []):
+                cid = str(c.get("case_id") or c.get("id") or "")
+                title = str(c.get("title") or "")
+                if cid and title:
+                    ac_title_map[cid] = title
 
         # 只对误报（NON_VULNERABLE）case 进行匹配
         target_cases = [(cid, cd) for cid, cd in case_details.items()

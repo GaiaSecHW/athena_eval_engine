@@ -457,6 +457,7 @@ class Orchestrator:
                 evaluation_id, data_packs, case_details,
                 case_matches=case_matches,
                 eval_mode=eval_mode,
+                alert_center_data=alert_center_data,
             )
 
             # debug dump：CASE_MATCHING 中间数据
