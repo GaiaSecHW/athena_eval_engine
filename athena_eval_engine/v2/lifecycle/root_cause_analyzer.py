@@ -48,6 +48,7 @@ _SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误
 **重点保留**：知识与记忆访问的总结与影响——agent 查了什么知识/记忆、返回了什么内容、这些内容是否影响了 agent 的推理和判定。
 
 同时，对这个 session 里的每次知识访问，执行 L0-L7 逐级判定。
+如果 session 中没有知识访问断点，但存在其他导致误报的问题（如验证维度遗漏、推理逻辑错误、验证不充分等），执行 L8 判定。
 
 # 知识库与记忆访问的识别
 
@@ -67,7 +68,7 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 - L0 来源：从标记判断是"知识库"还是"记忆"
 - L2 发起访问：有 `[知识库访问]` 或 `[记忆访问]` 标记即为 true
 
-# L0-L7 知识访问全链路判定规则
+# L0-L8 知识访问全链路判定规则
 
 对 session 里的每次知识访问（带 `[知识库访问]`/`[记忆访问]` 标记的工具调用），逐级判定：
 
@@ -81,12 +82,18 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 | L5 | 成功取回？ | 返回内容是否有效（无 error/timeout/exception） | D 链路问题 | Agent + 知识方 |
 | L6 | 被使用？ | agent 推理文本是否引用了知识返回内容 | E 查到没用 | Agent |
 | L7 | 影响结论？ | 知识是否影响了判定结论 | F 用了没推动 / G 导致误判 | F: Agent/知识方, G: 知识方 |
+| L8 | 其他问题？ | 知识访问链路全程通过（L7=positive）后，agent 仍误报。分析是否存在知识访问之外的问题导致误报 | H 其他（自行总结） | Agent |
 
 判定规则：
 - 逐级判定，不通过的级别即为断点，后续级别填 null
 - L7 三种结果：positive（正确+一致=正向）、negative（错误+一致=负向，知识方向对但内容有误/过时）、null（不一致=中性，知识未影响结论）
-- 如果 session 中没有知识访问行为，L1-L7 全部填 null，breakpoint=null，cause_code=null
-- 如果 L1=false（不需要知识），后续级别全部 null，breakpoint=null，cause_code=null
+- 如果 session 中没有知识访问行为，L1-L7 全部填 null
+- 如果 L1-L7 全部通过（L7=positive），但 agent 仍误报，执行 L8 判定：
+  - L8 断点表示知识访问链路无问题，但存在其他导致误报的原因
+  - 常见场景：验证维度遗漏（如未验证接口网络可达性、部署环境约束等）、推理逻辑错误、验证条件不充分等
+  - cause_code 填 "H"，breakpoint 填 "L8"
+  - 在 l0_l7 数组中新增一条记录，l0_source 填空，query_content 填问题总结，returned_content 填空
+- 如果 L1=false（不需要知识），后续级别全部 null，不产生断点
 
 # 输出格式
 
@@ -104,8 +111,8 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
       "l5_retrieved": true/false/null,
       "l6_used": true/false/null,
       "l7_influenced": "positive/negative/null",
-      "breakpoint": "L2/L3/L4/L5/L6/L7/null",
-      "cause_code": "A/B/C/D/E/F/G/null",
+      "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
+      "cause_code": "A/B/C/D/E/F/G/H/null",
       "query_content": "查询内容摘要",
       "returned_content": "返回内容摘要"
     }
@@ -132,6 +139,15 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
    - 验证逻辑不充分：验证条件错误 / 验证覆盖不足
 2. 修复建议：针对根因，给出可执行的修复方案
 
+3. L0-L8 断点判定：
+   - 如果知识访问链路有断点（L2-L7），照常输出
+   - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
+     - cause_code 填 "H"
+     - breakpoint 填 "L8"
+     - query_content 填问题总结（如"验证维度遗漏：未验证接口网络可达性"）
+     - l0_source 填空字符串
+   - L8 覆盖知识访问之外的所有误报原因：推理逻辑错误、验证维度遗漏、验证不充分等
+
 # 输出格式
 
 合并模式返回 JSON：
@@ -153,8 +169,8 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
       "l5_retrieved": true/false/null,
       "l6_used": true/false/null,
       "l7_influenced": "positive/negative/null",
-      "breakpoint": "L2/L3/L4/L5/L6/L7/null",
-      "cause_code": "A/B/C/D/E/F/G/null",
+      "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
+      "cause_code": "A/B/C/D/E/F/G/H/null",
       "query_content": "查询内容摘要",
       "returned_content": "返回内容摘要"
     }

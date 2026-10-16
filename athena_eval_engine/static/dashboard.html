@@ -492,8 +492,8 @@ function renderLifecycle(lc){
 
   const agents=['turing','argo','secmate','dataflow','cvuln_verify','webvuln_verify'];
   const agentLabels={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
-  const levels=['L2','L3','L4','L5','L6','L7'];
-  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)'};
+  const levels=['L2','L3','L4','L5','L6','L7','L8'];
+  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
 
   let matrixRows=agents.map(function(a){
     var row=bp[a]||{};
@@ -521,7 +521,7 @@ function renderLifecycle(lc){
     pcHtml+='</div></details>';
   }
 
-  return '<div class="card" style="margin-bottom:16px"><h3>L0-L7 生命周期分析</h3>'
+  return '<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3>'
     +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（Agent × 级别）</h4>'
     +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
     +matrixRows+'</tbody></table></div></div>'
@@ -576,7 +576,7 @@ function renderV2Report(d){
   var causeSum=ccSum.cause_summary||{};
   var effectSum=ccSum.effect_label_distribution||{};
   var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
-  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)'};
+  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
   var causeBars=Object.keys(causeLabels).map(function(c){
     var v=causeSum[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
@@ -626,7 +626,7 @@ function renderV2Report(d){
     </div></div>`:''}
 
   <!-- 生命周期分析段 -->
-  ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L7 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
+  ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
 
   <!-- 问题单 -->
   <div id="dts-section"></div>
@@ -774,8 +774,8 @@ const DTS_STATUS_COLORS={'unlocated':'var(--gray)','improving':'var(--acc)','con
 const DTS_RESP_LABELS={'agent':'Agent','knowledge_base':'知识库'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
 const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
-const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)'};
-const DTS_CAUSE_TO_RESP={'A':'agent','B':'agent','C':'knowledge_base','D':'knowledge_base','E':'agent','F':'agent','G':'knowledge_base'};
+const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
+const DTS_CAUSE_TO_RESP={'A':'agent','B':'agent','C':'knowledge_base','D':'knowledge_base','E':'agent','F':'agent','G':'knowledge_base','H':'agent'};
 function dtsResponsibility(causeCode){return DTS_CAUSE_TO_RESP[causeCode]||'';}
 
 async function loadDtsSection(evalId){

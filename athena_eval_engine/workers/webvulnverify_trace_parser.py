@@ -114,7 +114,7 @@ class WebVulnVerifyTraceParser(TraceParser):
                         d = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-                    if d.get("type") != "message_completed":
+                    if d.get("type") not in ("message_completed", "message_upsert"):
                         continue
                     msg = d.get("message", {})
                     if not isinstance(msg, dict):
@@ -142,6 +142,8 @@ class WebVulnVerifyTraceParser(TraceParser):
             else:
                 sid = session_id
 
+            # 每个 session_meta 只发一次 SESSION_START（后续是更新快照）
+            seen_session_meta = False
             with open(fpath, "r", encoding="utf-8") as f:
                 for line_no, line in enumerate(f, 1):
                     line = line.strip()
@@ -151,6 +153,11 @@ class WebVulnVerifyTraceParser(TraceParser):
                         d = json.loads(line)
                     except json.JSONDecodeError:
                         continue
+                    # 跳过重复的 session_meta 快照（只保留第一个）
+                    if d.get("type") == "session_meta":
+                        if seen_session_meta:
+                            continue
+                        seen_session_meta = True
                     for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_call_info):
                         yield ev
 
@@ -187,7 +194,7 @@ class WebVulnVerifyTraceParser(TraceParser):
                 parser_version=self.parser_version,
             ))
 
-        elif t == "message_completed":
+        elif t in ("message_completed", "message_upsert"):
             msg = d.get("message", {})
             if not isinstance(msg, dict):
                 return evs
@@ -215,14 +222,14 @@ class WebVulnVerifyTraceParser(TraceParser):
                         parser_version=self.parser_version,
                     ))
 
-                elif ptype == "thinking" and role == "Assistant":
+                elif ptype in ("thinking", "reasoning") and role == "Assistant":
                     evs.append(RawEvent(
                         event_id=f"{eid_prefix}-{j}", trace_id=trace_id, session_id=session_id,
                         event_type="REASONING", timestamp_ms=ts,
                         message_id=msg_id, part_id=part_id,
                         step_no=step_no, tool_name=None,
-                        input_json=None, output_json=pt.get("thinking"),
-                        raw_type="thinking", parse_status="OK",
+                        input_json=None, output_json=pt.get("thinking") or pt.get("reasoning"),
+                        raw_type=ptype, parse_status="OK",
                         source_table="jsonl", source_row_id=part_id,
                         parser_version=self.parser_version,
                     ))
@@ -402,7 +409,7 @@ class WebVulnVerifyTraceParser(TraceParser):
                             if meta.get("agent_id"):
                                 agent = meta.get("agent_id")
 
-                    elif t == "message_completed":
+                    elif t in ("message_completed", "message_upsert"):
                         msg = d.get("message", {})
                         if not isinstance(msg, dict):
                             continue
@@ -562,10 +569,10 @@ class WebVulnVerifyTraceParser(TraceParser):
                     graph['edges'][sid].add(pid)
                     graph['edges'][pid].add(sid)
                     graph['parent_map'][sid] = pid
-                # metadata.vulnerability_id — 所有 session 都有
+                # metadata.vulnerability_id 或 metadata.chimera_vuln_id — 所有 session 都有
                 meta = sess.get("metadata", {})
                 if isinstance(meta, dict):
-                    vid = str(meta.get("vulnerability_id", ""))
+                    vid = str(meta.get("vulnerability_id", "") or meta.get("chimera_vuln_id", ""))
                     if vid:
                         sg['vuln_ids'].add(vid)
                         graph['vuln_id_to_sessions'][vid].add(sid)

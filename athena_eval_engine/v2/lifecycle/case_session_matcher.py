@@ -197,6 +197,33 @@ class CaseSessionMatcher:
                                                    mining_sessions, verify_sessions)
                         match_method_used = "raw_title_multi"
 
+            # 验证 agent 回退：用 session_graph.vuln_id_to_sessions 匹配
+            # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id），
+            # 但 vulnerability_analyze/verify 的 result 文本标题与告警中心 title 不一致，
+            # 导致 title 精确匹配失败。用 case_id 直接从 vuln_id_to_sessions 查找。
+            if not verify_sessions:
+                for dp in verify_packs:
+                    v2s = (dp.session_graph or {}).get("vuln_id_to_sessions", {})
+                    if not v2s:
+                        continue
+                    # case_id 可能带前缀（case-20260730-...），也可能只有数字 ID
+                    sids = v2s.get(cid, set()) or v2s.get(ac_case_id, set())
+                    if not sids:
+                        # 尝试用数字 ID 匹配（case_id 中提取数字部分）
+                        for vid, vid_sids in v2s.items():
+                            if vid == cid or vid == ac_case_id:
+                                sids = vid_sids
+                                break
+                    if sids:
+                        for sid in sids:
+                            self._classify_session(sid, dp.agent_type,
+                                                   mining_sessions, verify_sessions)
+                        if not match_method_used:
+                            match_method_used = "vuln_id_map"
+                        else:
+                            match_method_used += "+vuln_id_map"
+                        break
+
             # 判定 outcome：误报 case，finding 命中 = FP，未命中 = TN
             all_sessions = mining_sessions + verify_sessions
             outcome = "FP" if all_sessions else "TN"

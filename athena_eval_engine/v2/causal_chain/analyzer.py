@@ -26,10 +26,11 @@ CAUSE_TO_LEVEL = {
     "E": "L6",   # 查到没用——L6 断（召回了但推理没引用）
     "F": "L7",   # 用了没推动——L7 断（未影响结论）
     "G": "L7",   # 导致误判——L7 负向（知识推动了判定但方向错了）
+    "H": "L8",   # 其他——L8 断（知识访问链路无问题，但存在其他导致误报的原因）
 }
 
 # 所有 L 级别（列头）
-_ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7"]
+_ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
 # 所有 Agent 类型（行头）
 _ALL_AGENT_TYPES = [
@@ -38,7 +39,7 @@ _ALL_AGENT_TYPES = [
 ]
 
 # 所有 cause_code
-_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
+_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 # 所有 effect_label（含 NULL——无 effect 时表示证据不足）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
@@ -368,6 +369,7 @@ class CausalChainAnalyzer:
             "E": "查到没用（死知识，推理未引用）",
             "F": "用了没推动（未影响结论）",
             "G": "导致误判（知识推动但方向错）",
+            "H": "其他（知识访问链路无问题，其他原因导致误报）",
         }
         return descriptions.get(cause_code, "")
 

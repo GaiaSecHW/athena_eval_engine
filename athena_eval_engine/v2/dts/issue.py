@@ -19,11 +19,12 @@ CAUSE_DESCRIPTIONS = {
     "E": "查到没用（死知识，推理未引用）",
     "F": "用了没推动（未影响结论）",
     "G": "导致误判（知识内容有误/过时/不适用）",
+    "H": "其他（知识访问链路无问题，其他原因导致误报）",
 }
 
 # ── 成因码→责任方映射 ──
-# A/B/E/F → Agent 责任（召回意识、查询聚焦、推理引用、结论推动）
-# C/D/G   → knowledge_base 责任（知识覆盖度、工具链路、知识内容准确性）
+# A/B/E/F/H → Agent 责任（召回意识、查询聚焦、推理引用、结论推动、其他）
+# C/D/G     → knowledge_base 责任（知识覆盖度、工具链路、知识内容准确性）
 
 CAUSE_TO_RESPONSIBILITY = {
     "A": "agent",
@@ -33,6 +34,7 @@ CAUSE_TO_RESPONSIBILITY = {
     "E": "agent",
     "F": "agent",
     "G": "knowledge_base",
+    "H": "agent",
 }
 
 
@@ -53,7 +55,7 @@ def _build_breakpoint_desc(
 
 
 # ── cause_code 严重度排序（G 最严重，A 最轻）──
-_CAUSE_SEVERITY = {"G": 7, "F": 6, "E": 5, "D": 4, "C": 3, "B": 2, "A": 1}
+_CAUSE_SEVERITY = {"G": 7, "H": 6, "F": 5, "E": 4, "D": 3, "C": 2, "B": 1, "A": 0}
 
 
 def generate_dts_issues(
