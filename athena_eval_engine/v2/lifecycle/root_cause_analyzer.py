@@ -24,10 +24,12 @@ from __future__ import annotations
 
 import json
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
+from ..infra.parallel import iter_completed
 from ...infrastructure.log_util import log
 
 # ── 挖掘 agent 类型（DataPack 级别）──
@@ -224,8 +226,14 @@ class RootCauseAnalyzer:
                 if sid:
                     session_events[sid].append(ev)
 
-        results: list[dict] = []
-        for case in fp_cases:
+        # 多 case 并发分析（最多 10 个 case 同时处理）
+        # 每个 case 内挖掘链和验证链串行执行，
+        # 链内 session 压缩通过 submit_llm_batch 并发（受 LLM gate 控制）
+        max_workers = min(len(fp_cases), 10)
+
+        def _run_case(idx_case):
+            """分析单个 FP case，返回 (idx, result_dict)。"""
+            idx, case = idx_case
             if cancel_cb:
                 cancel_cb()
 
@@ -235,8 +243,7 @@ class RootCauseAnalyzer:
             verify_sids = case.get("verify_sessions", [])
             fp_reason = case.get("human_confirmation_summary", "")
 
-            # 从 verify_sessions 沿 parent_map 追溯到根节点，
-            # 用 PARSING 阶段已建好的调用关系，不重新构建
+            # 从 verify_sessions 沿 parent_map 追溯到根节点
             case_chain = self._trace_chain(
                 verify_sids, all_parent_map, all_sessions)
 
@@ -250,15 +257,12 @@ class RootCauseAnalyzer:
                 f"case {case_id}: 开始分析 (vuln_type={vuln_type})",
                 eval_id=evaluation_id)
 
-            # 第一步：挖掘 session 链滚动压缩
             mining_result = self._analyze_chain(
                 evaluation_id, case_id, "mining",
                 mining_chain, session_events,
                 vuln_type, desc, fp_reason, cancel_cb,
                 project_id=project_id,
             )
-
-            # 第二步：验证 session 链滚动压缩
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
                 verify_chain, session_events,
@@ -266,16 +270,30 @@ class RootCauseAnalyzer:
                 project_id=project_id,
             )
 
-            results.append({
+            return idx, {
                 "case_id": case_id,
                 "vulnerability_type": vuln_type,
                 "description": desc,
                 "human_confirmation_summary": fp_reason,
                 "mining": mining_result,
                 "verification": verification_result,
-            })
+            }
 
-        return results
+        results: list[dict | None] = [None] * len(fp_cases)
+
+        if max_workers <= 1:
+            for i, case in enumerate(fp_cases):
+                idx, result = _run_case((i, case))
+                results[idx] = result
+        else:
+            with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                futures = {pool.submit(_run_case, (i, c)): i
+                           for i, c in enumerate(fp_cases)}
+                for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
+                    idx, result = fut.result()
+                    results[idx] = result
+
+        return [r for r in results if r is not None]
 
     @staticmethod
     def _trace_chain(
@@ -367,11 +385,13 @@ class RootCauseAnalyzer:
             f"case {case_id}: {chain_type} session 链 {len(chain)} 个 session",
             eval_id=evaluation_id)
 
-        # ── 第一步：每个 session 独立压缩 ──
+        # ── 第一步：每个 session 独立压缩（并发提交）──
         compressed_summaries: list[dict] = []
         all_breakpoints: list[dict] = []
 
-        for i, sid in enumerate(chain):
+        def _compress_session(args: tuple) -> dict:
+            """压缩单个 session，返回含 step/session_id/summary 等的 dict。"""
+            i, sid = args
             if cancel_cb:
                 cancel_cb()
 
@@ -408,30 +428,48 @@ class RootCauseAnalyzer:
                     "l0_l7": [],
                 }
 
-            summary = result.get("summary", "")
-            l0_l7 = result.get("l0_l7") or []
-
-            compressed_summaries.append({
+            return {
                 "session_id": sid,
                 "step": i + 1,
-                "summary": summary,
+                "summary": result.get("summary", ""),
                 "key_findings": result.get("key_findings") or [],
-                "l0_l7": l0_l7,
-            })
+                "l0_l7": result.get("l0_l7") or [],
+            }
+
+        # 构建任务列表：(step_index, session_id)
+        tasks = [(i, sid) for i, sid in enumerate(chain)]
+
+        futures = llm_mod.submit_llm_batch(
+            _compress_session, tasks, cancel_cb=cancel_cb)
+
+        for fut in futures:
+            try:
+                cs = fut.result()
+            except Exception as e:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} session 压缩失败: {str(e)[:200]}",
+                    eval_id=evaluation_id)
+                continue
+
+            compressed_summaries.append(cs)
 
             # 收集断点
+            l0_l7 = cs.get("l0_l7") or []
             for kp in l0_l7:
                 if isinstance(kp, dict) and kp.get("breakpoint"):
                     all_breakpoints.append({
-                        "session_id": sid,
+                        "session_id": cs["session_id"],
                         **kp,
                     })
 
             log("ROOT_CAUSE",
-                f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                f"独立压缩完成 (summary {len(summary)} 字, "
+                f"case {case_id}: {chain_type} session {cs['step']}/{len(chain)} "
+                f"独立压缩完成 (summary {len(cs.get('summary', ''))} 字, "
                 f"{len(l0_l7)} 条知识访问)",
                 eval_id=evaluation_id)
+
+        # 按 step 排序，保证拓扑序
+        compressed_summaries.sort(key=lambda x: x["step"])
 
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
