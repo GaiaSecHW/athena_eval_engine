@@ -951,6 +951,7 @@ class LifecycleAnalyzer:
             "event_idx": event_idx,
             "source_system": source_system,
             "l0_origin": l0_origin,
+            "business_phase": "UNKNOWN",
             "l1_need_knowledge": l1_need_knowledge,
             "l2_initiated": l2_initiated,
             "l3_query_accurate": l3_query_accurate,

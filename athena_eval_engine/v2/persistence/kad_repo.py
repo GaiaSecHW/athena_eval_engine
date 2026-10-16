@@ -31,15 +31,16 @@ _LARGE_TEXT_FIELDS = ("query_content", "returned_content", "reasoning_ref")
 _INSERT_SQL = """\
 INSERT INTO knowledge_access_detail (
     access_id, evaluation_id, task_run_id, task_id, event_idx,
-    source_system, l0_origin,
+    source_system, l0_origin, business_phase,
     l1_need_knowledge, l2_initiated, l3_query_accurate, l4_knowledge_exists,
     l5_retrieved, l6_used, l7_influenced, l7_method,
     effect_label, cause_code,
     query_content, returned_content, reasoning_ref, judgment_conclusion,
     evidence_json, evidence_file
-) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
 ON DUPLICATE KEY UPDATE
     source_system=VALUES(source_system), l0_origin=VALUES(l0_origin),
+    business_phase=VALUES(business_phase),
     l1_need_knowledge=VALUES(l1_need_knowledge),
     l2_initiated=VALUES(l2_initiated), l3_query_accurate=VALUES(l3_query_accurate),
     l4_knowledge_exists=VALUES(l4_knowledge_exists), l5_retrieved=VALUES(l5_retrieved),
@@ -50,10 +51,10 @@ ON DUPLICATE KEY UPDATE
     evidence_json=VALUES(evidence_json), evidence_file=VALUES(evidence_file)
 """
 
-# 23 个占位符对应 VALUES 中的 23 个 %s
+# 24 个占位符对应 VALUES 中的 24 个 %s
 _FIELD_ORDER = (
     "access_id", "evaluation_id", "task_run_id", "task_id", "event_idx",
-    "source_system", "l0_origin",
+    "source_system", "l0_origin", "business_phase",
     "l1_need_knowledge", "l2_initiated", "l3_query_accurate", "l4_knowledge_exists",
     "l5_retrieved", "l6_used", "l7_influenced", "l7_method",
     "effect_label", "cause_code",

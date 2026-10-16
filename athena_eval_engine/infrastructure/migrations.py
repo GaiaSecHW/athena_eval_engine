@@ -236,6 +236,17 @@ MIGRATIONS = [
             "WHERE agent_type='argo' AND host='chirmra-platform-nazhua-mysql.secflow-ns.svc.cluster.local'",
         ],
     },
+    {
+        "id": "010_business_phase_default",
+        "desc": "business_phase 加默认值 UNKNOWN，未实现业务阶段分类时允许插入",
+        "sql": [
+            # 先删除原 CHECK 约束（列级约束自动生成名，用 DROP CHECK）
+            "ALTER TABLE knowledge_access_detail DROP CHECK IF EXISTS knowledge_access_detail_chk_1",
+            # 改为有默认值，不再有 CHECK 约束（业务阶段分类未实现）
+            "ALTER TABLE knowledge_access_detail "
+            "MODIFY COLUMN business_phase VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN'",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

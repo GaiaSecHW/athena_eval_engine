@@ -553,11 +553,7 @@ CREATE TABLE IF NOT EXISTS knowledge_access_detail (
     source_system        VARCHAR(32) NOT NULL
                          CHECK (source_system IN ('KNOWLEDGE_BASE','MEMORY_ENGINE')),
     l0_origin            VARCHAR(64),
-    business_phase       VARCHAR(32) NOT NULL
-                         CHECK (business_phase IN
-                         ('ENTRY_IDENTIFICATION','DATA_FLOW_TRACKING','VULN_PATTERN_RECOGNITION',
-                          'SINK_POINT_LOCALIZATION','VULN_VERDICT_REPORTING',
-                          'VULN_UNDERSTANDING','CODE_LOCALIZATION','VERIFICATION_EXECUTION','VERDICT_REPORTING')),
+    business_phase       VARCHAR(32) NOT NULL DEFAULT 'UNKNOWN',
     l1_need_knowledge    BOOLEAN,
     l2_initiated         BOOLEAN,
     l3_query_accurate    BOOLEAN,
