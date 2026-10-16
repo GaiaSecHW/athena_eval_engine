@@ -1,17 +1,22 @@
-"""误报根因分析器 — 挖掘链 + 验证链各自滚动压缩。
+"""误报根因分析器 — 挖掘链 + 验证链各自独立压缩，最后合并输出。
 
 对每个 FP case：
-  1. 挖掘 agent session 链 → 滚动压缩 → 挖掘根因 + 修复建议 + session 级 L0-L7 断点
-  2. 验证 agent session 链 → 滚动压缩 → 验证根因 + 修复建议 + session 级 L0-L7 断点
+  1. 挖掘 agent session 链 → 每个 session 独立压缩 → 各自摘要 + L0-L7
+  2. 验证 agent session 链 → 每个 session 独立压缩 → 各自摘要 + L0-L7
+  3. 挖掘链所有 session 摘要合并 → LLM 合并压缩 → 最终根因 + 修复建议
+  4. 验证链所有 session 摘要合并 → LLM 合并压缩 → 最终根因 + 修复建议
 
 两步独立，各自有各自的 session 链、压缩过程、根因和修复建议。
 session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不重新构建。
 
-滚动压缩：
+独立压缩（不滚动）：
   session1 → LLM 压缩 → 摘要1 + L0-L7
-  摘要1 + session2 → LLM 压缩 → 摘要2 + L0-L7
+  session2 → LLM 压缩 → 摘要2 + L0-L7
   ...
-  摘要N-1 + sessionN → LLM（最终模式）→ 根因 + 修复建议 + L0-L7
+  sessionN → LLM 压缩 → 摘要N + L0-L7
+
+合并压缩：
+  摘要1 + 摘要2 + ... + 摘要N → LLM → 最终根因 + 修复建议 + L0-L7
 
 不截断，不丢信息。压缩去掉冗余，保留逻辑链路。
 """
@@ -34,28 +39,20 @@ _TURING_VERIFY_AGENT = "vuln-hunt-validate"
 
 # ── 系统 prompt（固定）──
 
-_SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的 session 链（漏洞挖掘到验证的完整流程）。
+_SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的误报原因。
 
 # 任务
 
-分两种模式工作：
-
-## 压缩模式（非最后一个 session）
-将收到的内容压缩为结构化摘要，保留以下信息，丢弃冗余文本：
+## 压缩模式
+将收到的 session 内容压缩为结构化摘要，保留以下信息，丢弃冗余文本：
 - 推理逻辑：agent 的分析思路、判断依据
 - 工具调用：调了什么工具、参数是什么、返回了什么
 - 知识访问：查了知识库什么内容、返回了什么、是否被引用
 - 判定结论：agent 对漏洞的判定结果
 
-同时，对这个 session 里的每次知识访问，执行 L0-L7 逐级判定。
+**重点保留**：知识与记忆访问的总结与影响——agent 查了什么知识/记忆、返回了什么内容、这些内容是否影响了 agent 的推理和判定。
 
-## 最终模式（最后一个 session）
-在压缩基础上，额外输出：
-1. 误报根因：为什么 agent 会误报这个漏洞？从以下维度分析：
-   - 知识访问问题：该查没查 / 查了但查询不准 / 知识错误 / 查到没用
-   - 推理问题：逻辑跳跃 / 忽略关键证据 / 错误关联
-   - 验证问题：验证逻辑不充分 / 验证条件错误
-2. 修复建议：针对根因，给出可执行的修复方案
+同时，对这个 session 里的每次知识访问，执行 L0-L7 逐级判定。
 
 # L0-L7 知识访问全链路判定规则
 
@@ -82,7 +79,7 @@ _SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误
 
 压缩模式返回 JSON：
 {
-  "summary": "结构化摘要，3000字以内",
+  "summary": "结构化摘要，3000字以内。必须包含知识与记忆访问的总结与影响",
   "key_findings": ["关键发现1", "关键发现2"],
   "l0_l7": [
     {
@@ -102,12 +99,35 @@ _SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误
   ]
 }
 
-最终模式返回 JSON：
+只返回 JSON，不要任何额外文字。"""
+
+
+_MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的多个 session 的独立压缩摘要，以及人工标注的误报原因。
+
+# 任务
+
+## 合并模式
+将多个 session 的压缩摘要合并为最终结论。你需要：
+
+1. 误报根因：为什么 agent 会误报这个漏洞？你已知人工标注的误报原因（在用户消息中给出），
+   需要分析 agent 在 session 链中的哪个环节出了问题，导致没有发现人工标注的误报原因。
+   从以下维度分析：
+   - 知识访问问题：该查没查 / 查了但查询不准 / 知识错误 / 查到没用
+   - 推理问题：逻辑跳跃 / 忽略关键证据 / 错误关联
+   - 验证维度遗漏：agent 验证了哪些维度，遗漏了哪些维度（如接口实际网络可达性、
+     防护机制实践有效性、部署环境约束等代码层面看不到的因素）
+   - 验证逻辑不充分：验证条件错误 / 验证覆盖不足
+2. 修复建议：针对根因，给出可执行的修复方案
+
+# 输出格式
+
+合并模式返回 JSON：
 {
-  "summary": "最后一个 session 的摘要，3000字以内",
+  "summary": "合并后的最终摘要，3000字以内",
   "root_cause": {
-    "category": "knowledge_gap|query_inaccurate|knowledge_error|reasoning_flaw|verification_insufficient",
-    "description": "根因描述，500字以内"
+    "category": "knowledge_gap|query_inaccurate|knowledge_error|reasoning_flaw|verification_dimension_missing|verification_insufficient",
+    "description": "根因描述，500字以内",
+    "human_confirmation_reason": "人工标注的误报原因（从用户消息中提取）"
   },
   "fix_suggestion": "修复建议，300字以内",
   "l0_l7": [
@@ -140,6 +160,7 @@ class RootCauseAnalyzer:
         fp_cases: list[dict],
         data_packs: list[DataPack],
         cancel_cb=None,
+        project_id: str = "",
     ) -> list[dict]:
         """对每个 FP case 的挖掘链和验证链各自做滚动压缩根因分析。
 
@@ -149,12 +170,13 @@ class RootCauseAnalyzer:
                       每项含 case_id, verify_sessions, vulnerability_type, description
             data_packs: DataPack 列表
             cancel_cb: 取消回调
+            project_id: 项目 ID（知识库主动验证用，空则跳过 Athena API 查询）
 
         Returns:
             分析结果列表，每项含：
             - case_id, vulnerability_type, description
-            - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints}
-            - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints}
+            - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
+            - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
         """
         # 构建 session_id → events 索引
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
@@ -193,6 +215,7 @@ class RootCauseAnalyzer:
             vuln_type = case.get("vulnerability_type", "")
             desc = case.get("description", "")
             verify_sids = case.get("verify_sessions", [])
+            fp_reason = case.get("human_confirmation_summary", "")
 
             # 从 verify_sessions 沿 parent_map 追溯到根节点，
             # 用 PARSING 阶段已建好的调用关系，不重新构建
@@ -213,20 +236,23 @@ class RootCauseAnalyzer:
             mining_result = self._analyze_chain(
                 evaluation_id, case_id, "mining",
                 mining_chain, session_events,
-                vuln_type, desc, cancel_cb,
+                vuln_type, desc, fp_reason, cancel_cb,
+                project_id=project_id,
             )
 
             # 第二步：验证 session 链滚动压缩
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
                 verify_chain, session_events,
-                vuln_type, desc, cancel_cb,
+                vuln_type, desc, fp_reason, cancel_cb,
+                project_id=project_id,
             )
 
             results.append({
                 "case_id": case_id,
                 "vulnerability_type": vuln_type,
                 "description": desc,
+                "human_confirmation_summary": fp_reason,
                 "mining": mining_result,
                 "verification": verification_result,
             })
@@ -290,12 +316,19 @@ class RootCauseAnalyzer:
         session_events: dict[str, list[RawEvent]],
         vuln_type: str,
         desc: str,
+        fp_reason: str = "",
         cancel_cb=None,
+        project_id: str = "",
     ) -> dict:
-        """对一条 session 链做滚动压缩。
+        """对一条 session 链做独立压缩 + 合并输出。
+
+        每个 session 独立调 LLM 压缩（不传递前一个摘要），
+        收集所有摘要后合并调一次 LLM 输出最终根因。
 
         chain: 已排好序的 session_id 列表（根→叶子）。
         chain_type: "mining" 或 "verification"，仅用于日志。
+        fp_reason: 人工标注的误报原因，传给 LLM 做根因分析。
+        project_id: 项目 ID，用于知识库主动验证 L4。
         """
         if not chain:
             log("ROOT_CAUSE",
@@ -316,44 +349,24 @@ class RootCauseAnalyzer:
             f"case {case_id}: {chain_type} session 链 {len(chain)} 个 session",
             eval_id=evaluation_id)
 
+        # ── 第一步：每个 session 独立压缩 ──
         compressed_summaries: list[dict] = []
         all_breakpoints: list[dict] = []
-        prev_summary = ""
 
         for i, sid in enumerate(chain):
             if cancel_cb:
                 cancel_cb()
 
-            is_last = (i == len(chain) - 1)
             events = session_events.get(sid, [])
-
-            # 提取当前 session 的事件文本
             session_text = self._format_session_events(sid, events)
 
-            # 构建用户消息
-            if i == 0:
-                user_content = (
-                    f"漏洞类型：{vuln_type}\n"
-                    f"漏洞描述：{desc}\n\n"
-                    f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
-                    f"{session_text}"
-                )
-            else:
-                user_content = (
-                    f"前 {i} 个 session 的压缩摘要：\n{prev_summary}\n\n"
-                    f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
-                    f"{session_text}"
-                )
-
-            if is_last:
-                user_content += (
-                    "\n\n这是最后一个 session。请输出最终模式的结果，"
-                    "包含 summary、root_cause、fix_suggestion 和 l0_l7。"
-                )
-            else:
-                user_content += (
-                    "\n\n这是中间 session。请输出压缩模式的结果。"
-                )
+            user_content = (
+                f"漏洞类型：{vuln_type}\n"
+                f"漏洞描述：{desc}\n"
+                f"人工标注的误报原因：{fp_reason or '（未给出）'}\n\n"
+                f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
+                f"{session_text}"
+            )
 
             messages = [
                 {"role": "system", "content": _SYSTEM_PROMPT},
@@ -369,16 +382,11 @@ class RootCauseAnalyzer:
             except Exception as e:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                    f"LLM 调用失败: {str(e)[:200]}",
+                    f"LLM 压缩失败: {str(e)[:200]}",
                     eval_id=evaluation_id)
-                # 降级：用原始摘要
                 result = {
-                    "summary": prev_summary or session_text,
-                    "root_cause": {
-                        "category": "llm_error",
-                        "description": f"LLM 调用失败: {str(e)[:200]}",
-                    },
-                    "fix_suggestion": "",
+                    "summary": session_text[:3000] if session_text else "",
+                    "key_findings": [],
                     "l0_l7": [],
                 }
 
@@ -388,12 +396,9 @@ class RootCauseAnalyzer:
             compressed_summaries.append({
                 "session_id": sid,
                 "step": i + 1,
-                "is_last": is_last,
                 "summary": summary,
                 "key_findings": result.get("key_findings") or [],
                 "l0_l7": l0_l7,
-                "root_cause": result.get("root_cause"),
-                "fix_suggestion": result.get("fix_suggestion"),
             })
 
             # 收集断点
@@ -404,26 +409,166 @@ class RootCauseAnalyzer:
                         **kp,
                     })
 
-            prev_summary = summary
-
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                f"{'最终' if is_last else '压缩'}完成 "
-                f"(summary {len(summary)} 字, {len(l0_l7)} 条知识访问)",
+                f"独立压缩完成 (summary {len(summary)} 字, "
+                f"{len(l0_l7)} 条知识访问)",
                 eval_id=evaluation_id)
 
-        # 最终结果
-        final = compressed_summaries[-1] if compressed_summaries else {}
+        # ── 第二步：合并所有 session 摘要，输出最终根因 ──
+        merge_user_content = self._build_merge_prompt(
+            chain_type, vuln_type, desc, fp_reason,
+            compressed_summaries,
+        )
+
+        merge_messages = [
+            {"role": "system", "content": _MERGE_PROMPT},
+            {"role": "user", "content": merge_user_content},
+        ]
+
+        try:
+            merge_result = llm_mod.chat_json(
+                merge_messages,
+                temperature=0,
+                cancel_cb=cancel_cb,
+            )
+        except Exception as e:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
+                eval_id=evaluation_id)
+            merge_result = {
+                "summary": " | ".join(
+                    s.get("summary", "") for s in compressed_summaries),
+                "root_cause": {
+                    "category": "llm_error",
+                    "description": f"合并压缩 LLM 调用失败: {str(e)[:200]}",
+                },
+                "fix_suggestion": "",
+                "l0_l7": [],
+            }
+
+        merge_summary = merge_result.get("summary", "")
+        merge_root_cause = merge_result.get("root_cause", {
+            "category": "unknown",
+            "description": "无最终分析结果",
+        })
+        merge_fix = merge_result.get("fix_suggestion", "")
+        merge_l0_l7 = merge_result.get("l0_l7") or []
+
+        # 合并后的 L0-L7 断点也收集
+        for kp in merge_l0_l7:
+            if isinstance(kp, dict) and kp.get("breakpoint"):
+                all_breakpoints.append({
+                    "session_id": "merge",
+                    **kp,
+                })
+
+        log("ROOT_CAUSE",
+            f"case {case_id}: {chain_type} 合并压缩完成 "
+            f"(summary {len(merge_summary)} 字, "
+            f"root_cause={merge_root_cause.get('category', '?')})",
+            eval_id=evaluation_id)
+
+        # ── L4 独立验证 ──
+        l4_verification = self._verify_l4_independently(
+            case_id, chain_type, vuln_type, fp_reason,
+            all_breakpoints, project_id, cancel_cb,
+        )
+
         return {
             "session_chain": chain,
-            "root_cause": final.get("root_cause", {
-                "category": "unknown",
-                "description": "无最终分析结果",
-            }),
-            "fix_suggestion": final.get("fix_suggestion", ""),
+            "root_cause": merge_root_cause,
+            "fix_suggestion": merge_fix,
             "compressed_summaries": compressed_summaries,
+            "merge_summary": merge_summary,
             "l0_l7_breakpoints": all_breakpoints,
+            "l4_independent_verification": l4_verification,
         }
+
+    @staticmethod
+    def _build_merge_prompt(
+        chain_type: str,
+        vuln_type: str,
+        desc: str,
+        fp_reason: str,
+        compressed_summaries: list[dict],
+    ) -> str:
+        """构建合并压缩的用户消息。"""
+        parts = [
+            f"漏洞类型：{vuln_type}",
+            f"漏洞描述：{desc}",
+            f"人工标注的误报原因：{fp_reason or '（未给出）'}",
+            f"\n以下是 {chain_type} 链中 {len(compressed_summaries)} 个 session "
+            f"的独立压缩摘要：\n",
+        ]
+
+        for s in compressed_summaries:
+            parts.append(
+                f"--- Session {s['step']} (session_id={s['session_id']}) ---"
+            )
+            parts.append(s.get("summary", ""))
+            if s.get("key_findings"):
+                parts.append(
+                    f"关键发现: {'; '.join(s['key_findings'])}")
+            if s.get("l0_l7"):
+                parts.append(f"L0-L7 判定: {json.dumps(s['l0_l7'], ensure_ascii=False)}")
+            parts.append("")
+
+        parts.append(
+            "请基于以上所有 session 的独立压缩摘要，合并分析并输出最终结论。"
+        )
+        return "\n".join(parts)
+
+    def _verify_l4_independently(
+        self,
+        case_id: str,
+        chain_type: str,
+        vuln_type: str,
+        fp_reason: str,
+        all_breakpoints: list[dict],
+        project_id: str,
+        cancel_cb=None,
+    ) -> dict | None:
+        """L4 独立验证：当 L2 断点存在时，主动搜索知识库验证知识是否存在。
+
+        只在有 L2 断点（agent 该查没查）时触发。
+        """
+        has_l2_break = any(
+            bp.get("breakpoint") == "L2" for bp in all_breakpoints
+        )
+        if not has_l2_break:
+            return None
+
+        log("ROOT_CAUSE",
+            f"case {case_id}: {chain_type} 检测到 L2 断点，"
+            f"启动知识库主动验证 L4 (project_id={project_id})")
+
+        try:
+            from .knowledge_verifier import KnowledgeVerifier
+            verifier = KnowledgeVerifier()
+            result = verifier.verify(
+                vuln_type=vuln_type,
+                fp_reason=fp_reason,
+                project_id=project_id,
+                cancel_cb=cancel_cb,
+            )
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} L4 独立验证完成: "
+                f"l4={result.get('l4_knowledge_exists')}, "
+                f"candidates={result.get('candidate_files', 0)}")
+            return result
+        except Exception as e:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} L4 独立验证失败: {str(e)[:200]}")
+            return {
+                "l4_knowledge_exists": None,
+                "matched_files": [],
+                "summary": f"验证失败: {str(e)[:200]}",
+                "kb_searched": {"athena_api": bool(project_id),
+                                "wiki_nfs": True},
+                "candidate_files": 0,
+                "error": str(e)[:500],
+            }
 
     def _format_session_events(
         self, session_id: str, events: list[RawEvent],

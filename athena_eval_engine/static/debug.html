@@ -431,6 +431,7 @@ RENDERERS.root_cause = function(el, data) {
     "query_inaccurate": "查询不准",
     "knowledge_error": "知识错误",
     "reasoning_flaw": "推理缺陷",
+    "verification_dimension_missing": "验证维度遗漏",
     "verification_insufficient": "验证不足",
     "no_session": "无 session",
     "llm_error": "LLM 错误",
@@ -441,6 +442,7 @@ RENDERERS.root_cause = function(el, data) {
     "query_inaccurate": "#f39c12",
     "knowledge_error": "#e74c3c",
     "reasoning_flaw": "#e74c3c",
+    "verification_dimension_missing": "#e67e22",
     "verification_insufficient": "#9b59b6",
     "no_session": "#999",
     "llm_error": "#999",
@@ -452,9 +454,11 @@ RENDERERS.root_cause = function(el, data) {
     const mining = r.mining || {};
     const verification = r.verification || {};
 
+    const fpReason = r.human_confirmation_summary || "";
     html += `<details style="margin:16px 0 8px;" open>`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:15px;font-weight:600;">`
       + `${r.case_id} — ${r.vulnerability_type}`
+      + (fpReason ? ` <span style="color:#e74c3c;font-size:13px;">—— ${fpReason}</span>` : "")
       + `</summary>`;
 
     // 挖掘链
@@ -530,16 +534,60 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
     html += `</div>`;
   }
 
-  // 压缩摘要（可收起）
+  // L4 独立验证（知识库主动验证）
+  const l4v = chainData.l4_independent_verification;
+  if (l4v) {
+    const l4Exists = l4v.l4_knowledge_exists;
+    const l4Label = l4Exists === true ? "知识存在" :
+                    l4Exists === false ? "知识不存在" : "无法判定";
+    const l4Color = l4Exists === true ? "#27ae60" :
+                    l4Exists === false ? "#e74c3c" : "#999";
+    const kbSearched = l4v.kb_searched || {};
+    const sources = [];
+    if (kbSearched.athena_api) sources.push("知识库API");
+    if (kbSearched.wiki_nfs) sources.push("记忆Wiki");
+
+    html += `<div style="margin:8px 0;padding:8px;background:#f0f0ff;border-radius:4px;border-left:3px solid #4a90d9;">`;
+    html += `<div style="color:#4a90d9;font-weight:600;margin-bottom:4px;font-size:13px;">L4 独立验证 — 评测引擎主动搜索知识库</div>`;
+    html += `<div style="margin-bottom:6px;">`;
+    html += `<span style="font-size:12px;color:#888;">验证结果：</span>`;
+    html += `<span class="badge" style="background:${l4Color};color:#fff;">${l4Label}</span>`;
+    html += `<span style="font-size:12px;color:#888;margin-left:12px;">搜索来源：${sources.join(" + ") || "—"}</span>`;
+    html += `<span style="font-size:12px;color:#888;margin-left:12px;">候选文件：${l4v.candidate_files || 0}</span>`;
+    html += `</div>`;
+    if (l4v.summary) {
+      html += `<div style="color:#555;font-size:12px;line-height:1.6;margin-bottom:6px;">${l4v.summary}</div>`;
+    }
+    const matched = l4v.matched_files || [];
+    if (matched.length > 0) {
+      html += `<table><thead><tr><th>文件路径</th><th>标题</th><th>相关度</th><th>原因</th></tr></thead><tbody>`;
+      for (const mf of matched) {
+        const rel = mf.relevance || "—";
+        const relColor = rel === "high" ? "#27ae60" : rel === "medium" ? "#f39c12" : "#888";
+        html += `<tr>`;
+        html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.path || ""}">${mf.path || ""}</td>`;
+        html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${mf.title || ""}</td>`;
+        html += `<td><span class="badge" style="background:${relColor};color:#fff;">${rel}</span></td>`;
+        html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.reason || ""}">${mf.reason || "—"}</td>`;
+        html += `</tr>`;
+      }
+      html += `</tbody></table>`;
+    }
+    if (l4v.error) {
+      html += `<div style="color:#e74c3c;font-size:11px;margin-top:4px;">错误: ${l4v.error}</div>`;
+    }
+    html += `</div>`;
+  }
+
+  // 各 session 独立压缩结果
   const summaries = chainData.compressed_summaries || [];
   if (summaries.length > 0) {
-    html += `<details style="margin:8px 0;">`;
-    html += `<summary style="cursor:pointer;color:#888;font-size:12px;">压缩过程 (${summaries.length} 步)</summary>`;
+    html += `<div style="margin:8px 0;">`;
+    html += `<div style="color:${color};font-weight:600;margin-bottom:6px;font-size:13px;">各 Session 独立压缩 (${summaries.length})</div>`;
     for (const s of summaries) {
-      const stepLabel = s.is_last ? "最终" : `步骤 ${s.step}`;
-      html += `<div style="margin:6px 0;padding:8px;background:#f0f0f5;border-radius:4px;">`;
-      html += `<div style="color:${color};font-size:11px;margin-bottom:4px;">${stepLabel} — session ${s.session_id}</div>`;
-      html += `<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#666;">${s.summary || ""}</pre>`;
+      html += `<div style="margin:6px 0;padding:8px;background:#f0f0f5;border-radius:4px;border-left:2px solid ${color}40;">`;
+      html += `<div style="color:${color};font-size:12px;font-weight:600;margin-bottom:4px;font-family:monospace;">${s.session_id || ""}</div>`;
+      html += `<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#555;">${s.summary || ""}</pre>`;
       if (s.key_findings && s.key_findings.length > 0) {
         html += `<div style="color:#6c5ce7;font-size:11px;margin-top:4px;">关键发现: ${s.key_findings.join(" | ")}</div>`;
       }
@@ -550,13 +598,22 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
         for (const kp of l0l7) {
           const bp = kp.breakpoint || "—";
           const code = kp.cause_code || "—";
-          html += `<span style="margin-right:8px;">${bp}/${code}</span>`;
+          const bpColor = code !== "—" ? "#e74c3c" : "#888";
+          html += `<span style="margin-right:8px;color:${bpColor};">${bp}/${code}</span>`;
         }
         html += `</div>`;
       }
       html += `</div>`;
     }
-    html += `</details>`;
+    html += `</div>`;
+  }
+
+  // 合并压缩摘要
+  if (chainData.merge_summary) {
+    html += `<div style="margin:8px 0;padding:8px;background:#fff8e1;border-radius:4px;border-left:3px solid #f39c12;">`;
+    html += `<div style="color:#f39c12;font-weight:600;margin-bottom:4px;font-size:13px;">合并压缩摘要</div>`;
+    html += `<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#555;">${chainData.merge_summary}</pre>`;
+    html += `</div>`;
   }
 
   html += `</div>`;

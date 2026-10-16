@@ -533,14 +533,26 @@ class Orchestrator:
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
+            # 补充人工标注误报原因到 fp_cases，供根因分析使用
+            for fc in fp_cases:
+                cd = case_details.get(fc.get("case_id", ""), {})
+                fc["human_confirmation_summary"] = cd.get(
+                    "human_confirmation_summary", "")
             if fp_cases:
                 _set_progress(evaluation_id,
                               f"根因分析中... {len(fp_cases)} 个 FP case")
                 from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
                 rca = RootCauseAnalyzer()
+                # 从 manifest 取 project_id（知识库主动验证用）
+                project_ids = [
+                    e.get("project_id") for e in entries
+                    if e.get("project_id")
+                ]
+                root_cause_project_id = project_ids[0] if project_ids else ""
                 root_cause_results = rca.analyze(
                     evaluation_id, fp_cases, data_packs,
                     cancel_cb=_cancel_cb,
+                    project_id=root_cause_project_id,
                 )
 
                 # debug dump：ROOT_CAUSE 中间数据
