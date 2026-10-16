@@ -842,7 +842,7 @@ function renderDtsSection(evalId,issues,stats){
 async function renderDtsDetailPage(dtsId){
   document.title="问题单详情 — "+dtsId;
   var view=$("view");if(!view)return;
-  view.innerHTML='<div style="padding:20px;max-width:1200px;margin:0 auto;height:100%;overflow-y:auto"><div style="display:flex;align-items:center;gap:12px;margin-bottom:20px"><button class="btn" style="font-size:14px;padding:6px 16px" onclick="Router.navigate(\'/dts\')">← 返回列表</button><h2 style="font-size:20px">问题单详情</h2></div><div id="dts-detail-body" style="color:var(--sub)">加载中…</div></div>';
+  view.innerHTML='<div style="padding:20px;height:100%;overflow-y:auto"><div style="display:flex;align-items:center;gap:12px;margin-bottom:20px"><button class="btn" style="font-size:14px;padding:6px 16px" onclick="Router.navigate(\'/dts\')">← 返回列表</button><h2 style="font-size:20px">问题单详情</h2></div><div id="dts-detail-body" style="color:var(--sub)">加载中…</div></div>';
   try{
     var d=await jget(`/api/v2/dts/${dtsId}`);
 
