@@ -540,13 +540,15 @@ function renderV2Report(d){
   var mById={};
   metricResults.forEach(function(m){mById[m.metric_id]=m;});
   // 基础效果指标：误报率 + 召回率 + 准确率
-  // 误报率 FPR = FP / (FP + TN)，从 recall_precision 数据计算
+  // 误报率 FPR = FP / 基线总数，从 recall_precision 数据计算
   var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
   var fpCnt=rpData.fp_count||0;
+  var tpCnt=rpData.tp_count||0;
+  var fnCnt=rpData.fn_count||0;
   var tnCnt=rpData.tn_count||0;
-  var fprDenom=fpCnt+tnCnt;
-  var fprVal=fprDenom>0?(fpCnt/fprDenom):null;
-  var baseMetrics='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(FP+TN)</div></div>';
+  var baselineTotal=tpCnt+fnCnt+fpCnt+tnCnt;
+  var fprVal=baselineTotal>0?(fpCnt/baselineTotal):null;
+  var baseMetrics='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/基线总数 (FP='+fpCnt+', 基线='+baselineTotal+')</div></div>';
   // 召回率/准确率（从 base.recall_precision 或 lifecycle.recall_precision 取）
   if(rpData.recall_rate!=null||rpData.precision_rate!=null){
     baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(rpData.recall_rate!=null?(rpData.recall_rate*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN)</div></div>';
