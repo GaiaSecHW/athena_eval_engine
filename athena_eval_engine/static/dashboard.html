@@ -881,36 +881,78 @@ async function renderDtsDetailPage(dtsId){
       +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+(d.case_id||'-')+'</b></div>'
       +'<div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace;font-size:12px">'+(d.evaluation_id||'-')+'</b></div>'
       +'</div>';
-
-    if(d.breakpoint_desc){
-      var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
-      html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">'+bpTitle+'</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div></div>';
-    }
-    if(d.evidence_uri){
-      html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+String(d.evidence_uri).replace(/</g,'&lt;')+'</div></div>';
+    if(caseData){
+      html+='<div style="margin-top:8px;padding:8px 0;border-top:1px solid var(--bd)">'
+        +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞标题</div>'
+        +'<div style="font-size:15px;font-weight:600">'+(caseData.vuln_title||'-')+'</div>';
+      if(caseData.human_confirmation_summary){
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>'
+          +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+String(caseData.human_confirmation_summary).replace(/</g,'&lt;')+'</div>';
+      }
+      html+='</div>';
     }
     html+='</div>';
 
-    // ── 2. 原始问题信息（来自 DTS API analysis_data）──
+    // ── 2. 根因分析 + 修复建议（提取到最前面）──
     if(caseData){
+      var rootCauses=[];
+      var fixSuggestions=[];
+      var chainsForRC=[
+        {label:'挖掘',data:caseData.mining||{}},
+        {label:'验证',data:caseData.verification||{}}
+      ];
+      chainsForRC.forEach(function(ch){
+        var rc=ch.data.root_cause||{};
+        if(rc&&Object.keys(rc).length){
+          rootCauses.push({label:ch.label,category:rc.category||'',description:rc.description||''});
+        }
+        var fs=ch.data.fix_suggestion||'';
+        if(fs){fixSuggestions.push({label:ch.label,text:fs});}
+      });
+
+      if(rootCauses.length||fixSuggestions.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
+          +'<h3>根因分析与修复建议</h3>';
+        // 根因
+        rootCauses.forEach(function(rc){
+          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
+          if(rc.label){html+=' <span class="knd">'+rc.label+'</span>';}
+          if(rc.category){html+=' <span class="knd">'+rc.category+'</span>';}
+          html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rc.description||'(无)').replace(/</g,'&lt;')+'</div></div>';
+        });
+        // 修复建议
+        fixSuggestions.forEach(function(fs){
+          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">修复建议';
+          if(fs.label){html+=' <span class="knd">'+fs.label+'</span>';}
+          html+='</div><div style="font-size:14px;padding:10px 12px;background:rgba(22,163,74,.08);border-radius:8px;white-space:pre-wrap">'+String(fs.text).replace(/</g,'&lt;')+'</div></div>';
+        });
+        html+='</div>';
+      }
+    }
+
+    // ── 3. 原始问题信息 ──
+    if(caseData&&caseData.summary){
       html+='<div class="card" style="margin-bottom:16px">'
         +'<h3>原始问题</h3>'
-        +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
-        +'<div><span style="color:var(--gray)">漏洞标题：</span><b>'+(caseData.vuln_title||'-')+'</b></div>'
-        +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+(caseData.case_id||'-')+'</b></div>'
+        +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div>'
+        +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div>'
         +'</div>';
-      if(caseData.summary){
-        html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div></div>';
-      }
-      if(caseData.human_confirmation_summary){
-        html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div><div style="font-size:14px;padding:10px 12px;background:rgba(220,38,38,.08);border-radius:8px;white-space:pre-wrap">'+String(caseData.human_confirmation_summary).replace(/</g,'&lt;')+'</div></div>';
+    }
+
+    // ── 4. 误报原因分析（断点列表，可折叠）──
+    if(d.breakpoint_desc){
+      var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
+      html+='<div class="card" style="margin-bottom:16px">'
+        +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
+        +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div>'
+        +'</details>';
+      if(d.evidence_uri){
+        html+='<div style="margin-top:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+String(d.evidence_uri).replace(/</g,'&lt;')+'</div></div>';
       }
       html+='</div>';
     }
 
-    // ── 3. Session 调用链 + 根因/解决方案（挖掘 + 验证各自独立）──
-    // session 调用链信息从 DTS API 的 session_chains 字段获取
-    // （get_dts_issue 方法从 session_graph 表查出，含 parent_map、agent 等）
+    // ── 5. Session 调用链 + 压缩摘要（挖掘 + 验证各自独立）──
     var sessionChains=d.session_chains||{mining:[],verification:[],parent_map:{}};
     if(caseData){
       var chains=[
@@ -920,8 +962,6 @@ async function renderDtsDetailPage(dtsId){
       chains.forEach(function(ch){
         if(!ch.data||!Object.keys(ch.data).length){return;}
         var sessionChain=ch.data.session_chain||[];
-        var rootCause=ch.data.root_cause||{};
-        var fixSuggestion=ch.data.fix_suggestion||'';
         var agentType=ch.data.agent_type||'';
         var agentLbl=DTS_AGENT_LABELS[agentType]||agentType||'-';
         var summaries=ch.data.compressed_summaries||[];
@@ -935,10 +975,8 @@ async function renderDtsDetailPage(dtsId){
         if(chainSessions.length){
           html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">Session 调用链 ('+chainSessions.length+' 个)</div>';
           html+='<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;padding:10px 12px;background:var(--p2);border-radius:8px">';
-          // 构建 session_id → session_info map
           var smap={};
           chainSessions.forEach(function(s){smap[s.session_id]=s;});
-          // 找根节点：parent_id 为空或 parent 不在链中的
           var chainSet={};
           chainSessions.forEach(function(s){chainSet[s.session_id]=true;});
           var roots=chainSessions.filter(function(s){
@@ -956,7 +994,6 @@ async function renderDtsDetailPage(dtsId){
             var indent='  '.repeat(depth);
             var arrow=depth>0?'└─ ':'';
             var line=indent+arrow+'<span style="color:var(--acc)">'+agent+'</span>'+taskType+status+' <span style="color:var(--gray);font-size:11px">'+sid+'</span>\n';
-            // 找子节点
             var kids=chainSessions.filter(function(cs){return cs.parent_id===sid;});
             kids.forEach(function(kid){line+=renderNode(kid.session_id,depth+1);});
             return line;
@@ -966,7 +1003,6 @@ async function renderDtsDetailPage(dtsId){
               html+=renderNode(s.session_id,0);
             });
           }else{
-            // 没有树信息，按顺序展示
             chainSessions.forEach(function(s,idx){
               var agent=s.agent||s.session_type||'?';
               html+=(idx>0?'→ ':'')+agent+' <span style="color:var(--gray);font-size:11px">'+s.session_id+'</span>\n';
@@ -987,26 +1023,11 @@ async function renderDtsDetailPage(dtsId){
           html+='</details>';
         }
 
-        // 根因
-        if(rootCause&&Object.keys(rootCause).length){
-          var rcCat=rootCause.category||'';
-          var rcDesc=rootCause.description||'';
-          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
-          if(rcCat){html+=' <span class="knd">'+rcCat+'</span>';}
-          html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rcDesc||'(无)').replace(/</g,'&lt;')+'</div>';
-          html+='</div>';
-        }
-
-        // 修复建议
-        if(fixSuggestion){
-          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">修复建议</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(fixSuggestion).replace(/</g,'&lt;')+'</div></div>';
-        }
-
         html+='</div>';
       });
     }
 
-    // ── 4. 回归验证 ──
+    // ── 6. 回归验证 ──
     if(d.replay_result){
       var replayColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
       var replayLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
