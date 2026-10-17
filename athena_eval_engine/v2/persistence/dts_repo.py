@@ -356,7 +356,7 @@ def list_dts_issues(
         where_parts.append("d.evaluation_id = %s")
         params.append(evaluation_id)
     if agent_type:
-        where_parts.append("d.agent_type = %s")
+        where_parts.append("FIND_IN_SET(%s, d.agent_type) > 0")
         params.append(agent_type)
     if status:
         where_parts.append("d.status = %s")

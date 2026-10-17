@@ -743,7 +743,7 @@ function renderDtsTable(){
       +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
       +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="Router.navigate(\'/evaluations/\'+\''+(i.evaluation_id||'')+'\')">'+(i.evaluation_name||i.evaluation_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
-      +'<td style="font-size:14px">'+(DTS_AGENT_LABELS[i.agent_type]||i.agent_type||'-')+'</td>'
+      +'<td style="font-size:14px">'+dtsAgentLabel(i.agent_type)+'</td>'
       +'<td style="font-size:14px">'+(DTS_RESP_LABELS[dtsResponsibility(i.cause_code)]||'-')+'</td>'
       +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
@@ -777,6 +777,10 @@ const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dat
 const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
 const DTS_CAUSE_TO_RESP={'A':'agent','B':'agent','C':'knowledge_base','D':'knowledge_base','E':'agent','F':'agent','G':'knowledge_base','H':'agent'};
 function dtsResponsibility(causeCode){return DTS_CAUSE_TO_RESP[causeCode]||'';}
+function dtsAgentLabel(at){
+  if(!at)return '-';
+  return at.split(',').map(function(a){return DTS_AGENT_LABELS[a]||a;}).join(', ');
+}
 
 async function loadDtsSection(evalId){
   var container=$("dts-section");if(!container)return;
@@ -854,7 +858,7 @@ async function renderDtsDetailPage(dtsId){
     var caseTypeLabel=DTS_CASE_TYPE_LABELS[d.case_type]||d.case_type||'-';
     var statusLabel=DTS_STATUS_LABELS[d.status]||d.status||'-';
     var statusColor=DTS_STATUS_COLORS[d.status]||'var(--gray)';
-    var agentLabel=DTS_AGENT_LABELS[d.agent_type]||d.agent_type||'-';
+    var agentLabel=dtsAgentLabel(d.agent_type);
 
     var html='';
 

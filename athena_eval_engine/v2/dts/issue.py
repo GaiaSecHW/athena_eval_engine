@@ -70,8 +70,9 @@ def generate_dts_issues(
 ) -> list[dict]:
     """从因果链分析结果生成问题单。
 
-    按 (case_id, agent_type) 分组——同一个 case 在同一个 agent 内只提一条单，
-    所有断点全部列在 breakpoint_desc 中，供开发人员逐条排查。
+    按 case_id 分组——一个误报 case 只提一条单，
+    挖掘 agent 和验证 agent 的断点全部合并在同一条单里，
+    agent_type 字段收集所有涉及的 agent（逗号分隔）。
     cause_code 和 breakpoint_level 取最严重的断点（严重度 G>F>...>A）。
 
     完整根因分析数据（mining + verification 的 session_chain、
@@ -91,7 +92,7 @@ def generate_dts_issues(
 
     Returns:
         问题单 dict 列表，每条含 dts_id、evaluation_id、task_id、case_id、
-        agent_type、case_type、cause_code、breakpoint_level、
+        agent_type（逗号分隔多值）、case_type、cause_code、breakpoint_level、
         breakpoint_desc、evidence_uri、root_cause、fix_suggestion、
         analysis_data_path、status、responsibility。
     """
@@ -127,29 +128,31 @@ def generate_dts_issues(
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
-    # 按 (case_id, agent_type) 分组，所有断点合并到一条单
-    grouped: dict[tuple[str, str], list[dict]] = {}
+    # 按 case_id 分组，所有 agent 的断点合并到同一条单
+    grouped: dict[str, list[dict]] = {}
+    case_vuln_titles: dict[str, str] = {}
     for case_entry in per_case_breakpoints:
         case_id = case_entry.get("case_id", "")
         vuln_title = case_entry.get("vuln_title", "")
+        if not case_id:
+            continue
+        if vuln_title and case_id not in case_vuln_titles:
+            case_vuln_titles[case_id] = vuln_title
         breakpoints = case_entry.get("breakpoints", [])
 
         for bp in breakpoints:
             cause_code = bp.get("cause_code", "")
             if not cause_code:
                 continue
-            agent_type = bp.get("agent_type", "")
-            key = (case_id, agent_type)
-            bp["_vuln_title"] = vuln_title
-            grouped.setdefault(key, []).append(bp)
+            grouped.setdefault(case_id, []).append(bp)
 
     issues: list[dict] = []
     seq = 0
-    for (case_id, agent_type), bps in grouped.items():
+    for case_id, bps in grouped.items():
         # 按严重度排序，最严重的排前面
         bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
         primary = bps[0]
-        vuln_title = primary.get("_vuln_title", "")
+        vuln_title = case_vuln_titles.get(case_id, "")
         cause_code = primary.get("cause_code", "")
         break_level = primary.get("break_level", "")
 
@@ -166,6 +169,14 @@ def generate_dts_issues(
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
+
+        # agent_type：收集所有涉及的 agent，逗号分隔（如 "turing,webvuln_verify"）
+        agent_types = []
+        for bp in bps:
+            at = bp.get("agent_type", "")
+            if at and at not in agent_types:
+                agent_types.append(at)
+        agent_type = ",".join(agent_types)
 
         # 责任方：从所有断点的 cause_code 综合推导
         # 一个 case 可能同时有 agent 责任（如 L8）和知识库责任（如 L4）
