@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import os
+import uuid
 
 from ...infrastructure.log_util import log
 
@@ -160,7 +161,6 @@ def generate_dts_issues(
         grouped[case_id] = deduped
 
     issues: list[dict] = []
-    seq = 0
     for case_id, bps in grouped.items():
         # 按严重度排序，最严重的排前面
         bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
@@ -199,10 +199,8 @@ def generate_dts_issues(
         resp_order = {"agent": 0, "knowledge_base": 1}
         responsibility = ",".join(sorted(resp_set, key=lambda r: resp_order.get(r, 99)))
 
-        seq += 1
-        # DTS-{评测编号}-{序号}，评测编号取 evaluation_id 最后一段（7357）
-        eval_seq = evaluation_id.split("-")[-1] if "-" in evaluation_id else evaluation_id[-4:]
-        dts_id = f"DTS-{eval_seq}-{seq:02d}"
+        # DTS-{8位随机hex}，不可猜测、无规律
+        dts_id = f"DTS-{uuid.uuid4().hex[:8].upper()}"
 
         # 完整根因分析数据存文件（遵循 Large Payload File Storage Over DB 原则）
         analysis_data_path = None
