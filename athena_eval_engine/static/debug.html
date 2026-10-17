@@ -277,13 +277,8 @@ function renderSessionTree(sessions) {
     html += `<details style="margin-bottom:12px" open>`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:14px;">调用树（${treeRoots.length} 棵）</summary>`;
 
-    // 构建虚拟根节点，将多棵树挂到一个根下
-    const treeNodes = [{
-      id: "#root",
-      parent: "#",
-      text: `根 (${treeRoots.length} 棵树)`,
-      state: { opened: true },
-    }];
+    // 构建 jstree 节点数据（多棵树各自 parent: "#"）
+    const treeNodes = [];
 
     // 遍历所有 session 构建 jstree 节点
     const visited = new Set();
@@ -317,7 +312,7 @@ function renderSessionTree(sessions) {
     }
 
     for (const root of treeRoots) {
-      buildNode(root.session_id, "#root");
+      buildNode(root.session_id, "#");
     }
 
     html += `<div id="${containerId}" style="margin-top:8px;"></div>`;
