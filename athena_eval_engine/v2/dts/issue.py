@@ -146,6 +146,19 @@ def generate_dts_issues(
                 continue
             grouped.setdefault(case_id, []).append(bp)
 
+    # 跨 agent 去重：同一 case 内 cause_code + break_level + evidence 完全相同的断点只保留一条
+    # （mining 和 verification 可能各自产生相同的 L8 断点，内容一样无需重复展示）
+    for case_id, bps in grouped.items():
+        seen = set()
+        deduped = []
+        for bp in bps:
+            key = (bp.get("cause_code", ""), bp.get("break_level", ""), bp.get("evidence", ""))
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(bp)
+        grouped[case_id] = deduped
+
     issues: list[dict] = []
     seq = 0
     for case_id, bps in grouped.items():
