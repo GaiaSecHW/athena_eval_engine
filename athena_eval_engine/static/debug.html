@@ -301,11 +301,13 @@ function renderSessionTree(sessions) {
         + `${status} `
         + `<span style="color:#999;font-size:12px">${sid}</span>`;
 
+      const hasKids = (childrenMap[sid] || []).length > 0;
       treeNodes.push({
         id: sid,
         parent: parentId,
         text: text,
         state: { opened: true },
+        icon: hasKids ? "jstree-folder" : "jstree-file",
       });
 
       const kids = childrenMap[sid] || [];
