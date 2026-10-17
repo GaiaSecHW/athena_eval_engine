@@ -292,23 +292,23 @@ function renderTreeNode(sid, smap, childrenMap, depth, isLast, ancestors, visite
   if (!s) return "";
 
   const agent = s.agent || s.session_type || "?";
-  const phase = s.phase ? ` <span style="color:#6c5ce7">[${s.phase}]</span>` : "";
-  const status = s.status ? ` <span style="color:#aaa;font-size:12px">(${s.status})</span>` : "";
+  const phase = s.phase ? ` [${s.phase}]` : "";
+  const status = s.status ? ` (${s.status})` : "";
 
-  // 构建前缀连接线
+  // 构建前缀连接线（纯文本，用 pre 保证等宽对齐）
   let prefix = "";
   for (let i = 0; i < ancestors.length; i++) {
-    prefix += ancestors[i] ? "&nbsp;&nbsp;&nbsp;" : "│&nbsp;&nbsp;";
+    prefix += ancestors[i] ? "   " : "│  ";
   }
-  // 当前节点的连接符
   const connector = depth === 0 ? "" : (isLast ? "└─ " : "├─ ");
 
-  let html = `<div style="font-family:monospace;font-size:14px;line-height:2.0;white-space:nowrap;">`
+  let html = `<pre style="margin:0;font-family:'SF Mono',Consolas,monospace;font-size:14px;line-height:1.8;white-space:pre;">`
     + `<span style="color:#bbb;">${prefix}${connector}</span>`
     + `<span style="color:#6c5ce7;font-weight:600;">${agent}</span>`
-    + `${phase}${status} `
+    + `<span style="color:#6c5ce7">${phase}</span>`
+    + `<span style="color:#aaa;font-size:12px;">${status}</span> `
     + `<span style="color:#999;font-size:12px;">${sid}</span>`
-    + `</div>`;
+    + `</pre>`;
 
   const kids = childrenMap[sid] || [];
   const newAncestors = [...ancestors, isLast];

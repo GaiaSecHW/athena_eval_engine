@@ -1022,57 +1022,10 @@ async function renderDtsDetailPage(dtsId){
       html+='</div>';
     }
 
-    // ── 5. 编辑区 ──
-    if(d.status==='improving'||d.status==='confirmed'||d.status==='unlocated'){
-      html+='<div class="card" style="border-top:1px solid var(--bd);padding-top:12px">'
-        +'<h3>人工确认</h3>';
-
-      // 回归结果（如有）放在编辑区顶部供参考
-      if(d.replay_result){
-        var rpColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
-        var rpLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
-        html+='<div style="margin-bottom:12px;padding:10px 12px;background:var(--p2);border-radius:8px">'
-          +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">回归结果</div>'
-          +'<div><span class="bdg" style="background:rgba(107,114,128,.15);color:'+rpColor+'">'+rpLabel+'</span></div>';
-        if(d.replay_eval_id){
-          html+='<div style="margin-top:6px;font-size:13px;color:var(--gray)">回归评测 ID: <b style="font-family:monospace">'+d.replay_eval_id+'</b></div>';
-        }
-        html+='</div>';
-      }
-
-      html+='<label style="margin-bottom:4px">根因分析（手动补充）</label><textarea id="dts_root_cause" style="width:100%;min-height:60px;background:var(--p2);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:14px;color:var(--txt);font-family:inherit" placeholder="填写根因分析...">'+(d.root_cause||'')+'</textarea>'
-        +'<label style="margin:8px 0 4px">解决方案（手动补充）</label><textarea id="dts_solution" style="width:100%;min-height:60px;background:var(--p2);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:14px;color:var(--txt);font-family:inherit" placeholder="填写解决方案...">'+(d.solution||'')+'</textarea>'
-        +'</div>';
-    }
     $("dts-detail-body").innerHTML=html;
   }catch(e){
     $("dts-detail-body").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';
   }
-}
-
-async function saveDtsIssue(dtsId){
-  var rootCause=$("dts_root_cause")?$("dts_root_cause").value.trim():"";
-  var solution=$("dts_solution")?$("dts_solution").value.trim():"";
-  try{
-    await jput(`/api/v2/dts/${dtsId}`,{root_cause:rootCause,solution:solution});
-    renderDtsDetailPage(dtsId);
-  }catch(e){alert("保存失败: "+e);}
-}
-
-async function closeDtsIssue(dtsId){
-  try{
-    await jpost(`/api/v2/dts/${dtsId}/close`,{});
-    renderDtsDetailPage(dtsId);
-  }catch(e){alert("关闭失败: "+e);}
-}
-
-async function rejectDtsIssue(dtsId){
-  var reason=prompt("请输入驳回理由：");
-  if(!reason){return;}
-  try{
-    await jpost(`/api/v2/dts/${dtsId}/reject`,{reason:reason});
-    renderDtsDetailPage(dtsId);
-  }catch(e){alert("拒绝失败: "+e);}
 }
 
 // ===== ③ 新建评测 =====
