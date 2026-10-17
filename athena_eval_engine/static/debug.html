@@ -36,6 +36,28 @@ tr:hover { background: #f5f5ff; }
 <div class="step-bar" id="stepBar"></div>
 <div class="content" id="content"></div>
 <script>
+// 检测 /eval/ 前缀，构建静态资源基础路径
+const _P = location.pathname;
+const _INGRESS = (_P.indexOf('/eval/') === 0) ? '/eval' : '';
+const _LIB_BASE = _INGRESS + '/static/lib/';
+
+// 动态加载本地 JS/CSS（兼容 /eval/ 前缀）
+(function loadLibs() {
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = _LIB_BASE + 'style.min.css';
+  document.head.appendChild(css);
+
+  const jq = document.createElement('script');
+  jq.src = _LIB_BASE + 'jquery.min.js';
+  jq.onload = function() {
+    const js = document.createElement('script');
+    js.src = _LIB_BASE + 'jstree.min.js';
+    document.head.appendChild(js);
+  };
+  document.head.appendChild(jq);
+})();
+
 const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "reporting"];
 const STEP_LABELS = {
   "ingesting": "数据采集",
@@ -104,6 +126,8 @@ function render(step, data) {
   const renderer = RENDERERS[step];
   if (renderer) renderer(el, data);
   else el.innerHTML = `<pre>${JSON.stringify(data, null, 2)}</pre>`;
+  // innerHTML 设置后初始化 jstree 容器
+  flushJstreeInits();
 }
 
 // ── 步骤渲染器 ──
@@ -220,7 +244,10 @@ RENDERERS.parsing = function(el, data) {
   el.innerHTML = html;
 };
 
-// ── session 调用树（带连接线的树形视图）──
+// ── session 调用树（jstree 渲染）──
+let _jstreeSeq = 0;
+const _pendingJstreeInits = [];
+
 function renderSessionTree(sessions) {
   // 构建 sid -> session map 和 parent -> children map
   const smap = {};
@@ -236,8 +263,6 @@ function renderSessionTree(sessions) {
 
   // 根节点：无 parent 的 session
   const roots = sessions.filter(s => !s.parent_id);
-
-  // 统计
   const treeRoots = roots.filter(r => r.session_id in childrenMap);
   const isolated = roots.filter(r => !(r.session_id in childrenMap));
 
@@ -245,17 +270,67 @@ function renderSessionTree(sessions) {
     + `调用树: ${treeRoots.length} 棵, 孤立节点: ${isolated.length}`
     + `</div>`;
 
-  // 渲染有子节点的树
+  // 用 jstree 渲染有子节点的树
   if (treeRoots.length > 0) {
+    _jstreeSeq++;
+    const containerId = `jstree-${_jstreeSeq}`;
     html += `<details style="margin-bottom:12px" open>`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:14px;">调用树（${treeRoots.length} 棵）</summary>`;
-    html += `<div style="margin-top:8px;">`;
-    for (let i = 0; i < treeRoots.length; i++) {
-      const isLast = (i === treeRoots.length - 1);
-      html += renderTreeNode(treeRoots[i].session_id, smap, childrenMap, 0, isLast, [], new Set());
+
+    // 构建虚拟根节点，将多棵树挂到一个根下
+    const treeNodes = [{
+      id: "#root",
+      parent: "#",
+      text: `根 (${treeRoots.length} 棵树)`,
+      state: { opened: true },
+    }];
+
+    // 遍历所有 session 构建 jstree 节点
+    const visited = new Set();
+    function buildNode(sid, parentId) {
+      if (visited.has(sid)) return;
+      visited.add(sid);
+      const s = smap[sid];
+      if (!s) return;
+
+      const agent = s.agent || s.session_type || "?";
+      const phase = s.phase ? ` [${s.phase}]` : "";
+      const status = s.status ? ` <span style="color:#aaa;font-size:12px">(${s.status})</span>` : "";
+      const text = `<span style="color:#6c5ce7;font-weight:600">${agent}</span>`
+        + `<span style="color:#6c5ce7">${phase}</span>`
+        + `${status} `
+        + `<span style="color:#999;font-size:12px">${sid}</span>`;
+
+      treeNodes.push({
+        id: sid,
+        parent: parentId,
+        text: text,
+        state: { opened: true },
+      });
+
+      const kids = childrenMap[sid] || [];
+      for (const kid of kids) {
+        buildNode(kid.session_id, sid);
+      }
     }
-    html += `</div>`;
+
+    for (const root of treeRoots) {
+      buildNode(root.session_id, "#root");
+    }
+
+    html += `<div id="${containerId}" style="margin-top:8px;"></div>`;
     html += `</details>`;
+
+    // 注册 jstree 初始化（在 innerHTML 设置后执行）
+    _pendingJstreeInits.push(function() {
+      const $c = $("#" + containerId);
+      if ($c.length && typeof $.fn.jstree === "function") {
+        $c.jstree({
+          core: { data: treeNodes, themes: { name: "default", dots: true, icons: true } },
+          plugins: ["themes"],
+        });
+      }
+    });
   }
 
   // 孤立节点按 agent 分组（可收起）
@@ -283,40 +358,12 @@ function renderSessionTree(sessions) {
   return html;
 }
 
-// ancestors: [isLast, isLast, ...] — 每层祖先是否是最后一个子节点
-// 用于绘制垂直连接线：祖先不是最后一个 → 画 │，是最后一个 → 画 空格
-function renderTreeNode(sid, smap, childrenMap, depth, isLast, ancestors, visited) {
-  if (visited.has(sid)) return "";
-  visited.add(sid);
-  const s = smap[sid];
-  if (!s) return "";
-
-  const agent = s.agent || s.session_type || "?";
-  const phase = s.phase ? ` [${s.phase}]` : "";
-  const status = s.status ? ` (${s.status})` : "";
-
-  // 构建前缀连接线（纯文本，用 pre 保证等宽对齐）
-  let prefix = "";
-  for (let i = 0; i < ancestors.length; i++) {
-    prefix += ancestors[i] ? "   " : "│  ";
+// 在 innerHTML 设置后调用，初始化所有待渲染的 jstree 容器
+function flushJstreeInits() {
+  while (_pendingJstreeInits.length) {
+    const fn = _pendingJstreeInits.shift();
+    try { fn(); } catch(e) { console.error("jstree init error:", e); }
   }
-  const connector = depth === 0 ? "" : (isLast ? "└─ " : "├─ ");
-
-  let html = `<pre style="margin:0;font-family:'SF Mono',Consolas,monospace;font-size:14px;line-height:1.8;white-space:pre;">`
-    + `<span style="color:#bbb;">${prefix}${connector}</span>`
-    + `<span style="color:#6c5ce7;font-weight:600;">${agent}</span>`
-    + `<span style="color:#6c5ce7">${phase}</span>`
-    + `<span style="color:#aaa;font-size:12px;">${status}</span> `
-    + `<span style="color:#999;font-size:12px;">${sid}</span>`
-    + `</pre>`;
-
-  const kids = childrenMap[sid] || [];
-  const newAncestors = [...ancestors, isLast];
-  for (let i = 0; i < kids.length; i++) {
-    const kidIsLast = (i === kids.length - 1);
-    html += renderTreeNode(kids[i].session_id, smap, childrenMap, depth + 1, kidIsLast, newAncestors, visited);
-  }
-  return html;
 }
 
 // ── case_matching 渲染器（只显示误报 case）──
