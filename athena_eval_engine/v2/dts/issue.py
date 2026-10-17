@@ -45,13 +45,13 @@ def _build_breakpoint_desc(
     cause_code: str,
     break_level: str,
     evidence: str,
-    vuln_title: str,
 ) -> str:
-    """构建人类可读的断点描述。"""
+    """构建人类可读的断点描述。
+
+    漏洞标题已在问题单顶部展示，此处不再重复。
+    """
     cause_desc = CAUSE_DESCRIPTIONS.get(cause_code, f"未知成因({cause_code})")
     parts: list[str] = [f"[{break_level}] {cause_desc}"]
-    if vuln_title:
-        parts.append(f"漏洞标题: {vuln_title}")
     if evidence:
         parts.append(evidence)
     return "\n".join(parts)
@@ -163,7 +163,7 @@ def generate_dts_issues(
             bp_level = bp.get("break_level", "")
             bp_evidence = bp.get("evidence", "")
             bp_lines.append(
-                _build_breakpoint_desc(bp_cause, bp_level, bp_evidence, vuln_title)
+                _build_breakpoint_desc(bp_cause, bp_level, bp_evidence)
             )
         breakpoint_desc = "\n".join(bp_lines)
 
