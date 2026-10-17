@@ -18,7 +18,8 @@ _FIELD_ORDER = (
     "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
-    "root_cause", "solution", "replay_eval_id", "replay_result",
+    "root_cause", "solution", "analysis_data_path",
+    "replay_eval_id", "replay_result",
     "status", "responsibility",
 )
 
@@ -27,13 +28,15 @@ _INSERT_SQL = (
     "  dts_id, evaluation_id, task_id, case_id, vuln_title, agent_type,"
     "  case_type, cause_code, breakpoint_level,"
     "  breakpoint_desc, evidence_uri,"
-    "  root_cause, solution, replay_eval_id, replay_result,"
+    "  root_cause, solution, analysis_data_path,"
+    "  replay_eval_id, replay_result,"
     "  status, responsibility"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
+    "  analysis_data_path=VALUES(analysis_data_path),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
     "  replay_result=VALUES(replay_result)"
 )
@@ -43,7 +46,8 @@ _SELECT_COLUMNS = (
     "d.dts_id, d.evaluation_id, d.task_id, d.case_id, d.vuln_title, d.agent_type,"
     " d.case_type, d.cause_code, d.breakpoint_level,"
     " d.breakpoint_desc, d.evidence_uri,"
-    " d.root_cause, d.solution, d.replay_eval_id, d.replay_result,"
+    " d.root_cause, d.solution, d.analysis_data_path,"
+    " d.replay_eval_id, d.replay_result,"
     " d.status, d.responsibility,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
@@ -107,7 +111,8 @@ def _row_to_dict(row) -> dict:
         "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
         "case_type", "cause_code", "breakpoint_level",
         "breakpoint_desc", "evidence_uri",
-        "root_cause", "solution", "replay_eval_id", "replay_result",
+        "root_cause", "solution", "analysis_data_path",
+        "replay_eval_id", "replay_result",
         "status", "responsibility",
         "created_at", "updated_at", "closed_at",
         "evaluation_name",
@@ -147,6 +152,14 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
 def get_dts_issue(dts_id: str) -> dict | None:
     """获取单个问题单详情。
 
+    返回值包含：
+    - DTS issue 基本字段（dts_id、case_id、cause_code 等）
+    - analysis_data：完整根因分析数据（从 analysis_data_path 指向的文件读取，
+      含 session_chain、compressed_summaries、l0_l7_breakpoints、root_cause、
+      fix_suggestion 等）
+    - session_chains：session 调用链信息（从 session_graph 表查出，
+      含每个 session 的 agent、parent_id、task_type 等，供前端展示调用树）
+
     Args:
         dts_id: 问题单 ID。
 
@@ -160,7 +173,108 @@ def get_dts_issue(dts_id: str) -> dict | None:
     row = _db_query(_do_query)
     if row is None:
         return None
-    return _row_to_dict(row)
+    result = _row_to_dict(row)
+
+    # 读取完整根因分析数据文件
+    analysis_data_path = result.get("analysis_data_path")
+    if analysis_data_path:
+        import os
+        import json as _json
+        reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
+        file_path = os.path.join(reports_dir, analysis_data_path)
+        try:
+            with open(file_path, "r", encoding="utf-8") as f:
+                result["analysis_data"] = _json.loads(f.read())
+        except Exception as e:
+            log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {str(e)[:200]}")
+            result["analysis_data"] = None
+
+    # 从 session_graph 表查 session 调用链信息
+    # analysis_data 中的 mining.session_chain 和 verification.session_chain
+    # 是 session_id 列表，需要从 DB 补充每个 session 的调用关系（parent_id、agent 等）
+    result["session_chains"] = _query_session_chains(result)
+
+    return result
+
+
+def _query_session_chains(issue: dict) -> dict:
+    """从 session_graph 表查询 issue 关联的 session 调用链信息。
+
+    从 analysis_data 中提取 mining + verification 的 session_chain（session_id 列表），
+    从 session_graph 表查出这些 session 的调用关系（parent_id、agent、task_type 等）。
+
+    Returns:
+        {
+            "mining": [{"session_id":..., "agent":..., "parent_id":..., "task_type":...}, ...],
+            "verification": [...],
+            "parent_map": {"session_id": "parent_session_id", ...},
+        }
+    """
+    analysis_data = issue.get("analysis_data") or {}
+    evaluation_id = issue.get("evaluation_id", "")
+    if not evaluation_id:
+        return {"mining": [], "verification": [], "parent_map": {}}
+
+    # 收集需要查询的 session_id
+    target_ids: set[str] = set()
+    for chain_type in ("mining", "verification"):
+        chain_data = analysis_data.get(chain_type) or {}
+        for sid in chain_data.get("session_chain") or []:
+            if sid:
+                target_ids.add(sid)
+
+    if not target_ids:
+        return {"mining": [], "verification": [], "parent_map": {}}
+
+    import json as _json
+
+    def _do_query(cur):
+        cur.execute(
+            "SELECT task_run_id, graph_json FROM session_graph "
+            "WHERE evaluation_id = %s",
+            (evaluation_id,),
+        )
+        return cur.fetchall()
+
+    rows = _db_query(_do_query)
+
+    sessions: dict[str, dict] = {}
+    parent_map: dict[str, str] = {}
+
+    for task_run_id, graph_json in rows:
+        graph = _json.loads(graph_json) if isinstance(graph_json, str) else graph_json
+        graph_sessions = graph.get("sessions", {}) or {}
+        graph_parent_map = graph.get("parent_map", {}) or {}
+
+        for sid in target_ids:
+            if sid in graph_sessions and sid not in sessions:
+                info = graph_sessions[sid]
+                info_d = info if isinstance(info, dict) else {}
+                sessions[sid] = {
+                    "session_id": sid,
+                    "agent": info_d.get("agent", ""),
+                    "session_type": info_d.get("session_type", ""),
+                    "task_type": info_d.get("task_type", ""),
+                    "task_id": info_d.get("task_id", ""),
+                    "status": info_d.get("status", ""),
+                    "is_failed_task": info_d.get("is_failed_task", False),
+                    "parent_id": graph_parent_map.get(sid, ""),
+                    "task_run_id": task_run_id,
+                }
+            if sid in graph_parent_map and sid not in parent_map:
+                parent_map[sid] = graph_parent_map[sid]
+
+    # 按 mining / verification 分类返回
+    def _chain_for(chain_type: str) -> list[dict]:
+        chain_data = analysis_data.get(chain_type) or {}
+        chain_ids = chain_data.get("session_chain") or []
+        return [sessions[sid] for sid in chain_ids if sid in sessions]
+
+    return {
+        "mining": _chain_for("mining"),
+        "verification": _chain_for("verification"),
+        "parent_map": parent_map,
+    }
 
 
 def list_dts_issues(

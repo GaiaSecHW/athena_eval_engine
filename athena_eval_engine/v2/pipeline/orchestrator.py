@@ -1289,6 +1289,7 @@ class Orchestrator:
         dts_issues = generate_dts_issues(
             evaluation_id, result, root_cause_results,
             task_id=task_id,
+            reports_dir=reports_dir,
         )
         if dts_issues:
             upsert_dts_issues(dts_issues, evaluation_id, reports_dir)

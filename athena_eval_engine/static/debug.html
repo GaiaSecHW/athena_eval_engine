@@ -5,26 +5,26 @@
 <title>调试 — 评测</title>
 <style>
 * { margin: 0; padding: 0; box-sizing: border-box; }
-body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: #f5f6fa; color: #333; padding: 20px; }
-h1 { font-size: 18px; margin-bottom: 16px; color: #6c5ce7; word-break: break-all; }
+body { font-family: -apple-system, "Segoe UI", Roboto, sans-serif; background: #f5f6fa; color: #333; padding: 20px; font-size: 15px; }
+h1 { font-size: 20px; margin-bottom: 16px; color: #6c5ce7; word-break: break-all; }
 .step-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
 .step-btn { padding: 6px 14px; border: 1px solid #ccc; background: #fff; color: #666;
-  border-radius: 4px; cursor: pointer; font-size: 13px; }
+  border-radius: 4px; cursor: pointer; font-size: 14px; }
 .step-btn:hover { background: #ececff; color: #333; }
 .step-btn.active { background: #6c5ce7; color: #fff; border-color: #6c5ce7; }
 .content { background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px;
   max-height: 75vh; overflow: auto; }
-.content pre { font-size: 12px; line-height: 1.5; white-space: pre-wrap; word-break: break-all; }
+.content pre { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .empty { color: #999; padding: 40px; text-align: center; }
 .stats { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
-.stat { background: #f0f0f5; padding: 8px 14px; border-radius: 4px; font-size: 13px; }
-.stat .num { font-size: 20px; font-weight: bold; color: #6c5ce7; }
-.stat .label { color: #888; font-size: 11px; }
-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+.stat { background: #f0f0f5; padding: 8px 14px; border-radius: 4px; font-size: 14px; }
+.stat .num { font-size: 22px; font-weight: bold; color: #6c5ce7; }
+.stat .label { color: #888; font-size: 12px; }
+table { width: 100%; border-collapse: collapse; font-size: 14px; }
 th { text-align: left; padding: 6px 8px; border-bottom: 2px solid #e0e0e0; color: #666; position: sticky; top: 0; background: #f8f8fa; }
-td { padding: 4px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
+td { padding: 5px 8px; border-bottom: 1px solid #eee; vertical-align: top; }
 tr:hover { background: #f5f5ff; }
-.badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 11px; }
+.badge { display: inline-block; padding: 2px 7px; border-radius: 3px; font-size: 12px; }
 .badge-vulnerable, .badge-VULNERABLE { background: #e74c3c; color: #fff; }
 .badge-not_vulnerable, .badge-NON_VULNERABLE { background: #27ae60; color: #fff; }
 .badge-pending { background: #f39c12; color: #fff; }
@@ -203,8 +203,8 @@ RENDERERS.parsing = function(el, data) {
     const condLabel = p.condition || "";
     const sc = p.session_count || 0;
     const ec = p.edge_count || 0;
-    html += `<details style="margin:16px 0 8px;" open>`
-      + `<summary style="cursor:pointer;color:#6c5ce7;font-size:15px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} 会话, ${ec} 边</summary>`;
+    html += `<details style="margin:16px 0 8px;">`
+      + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} 会话, ${ec} 边</summary>`;
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
@@ -241,15 +241,15 @@ function renderSessionTree(sessions) {
   const treeRoots = roots.filter(r => r.session_id in childrenMap);
   const isolated = roots.filter(r => !(r.session_id in childrenMap));
 
-  let html = `<div style="margin-bottom:8px;color:#888;font-size:13px;">`
+  let html = `<div style="margin-bottom:8px;color:#888;font-size:14px;">`
     + `调用树: ${treeRoots.length} 棵, 孤立节点: ${isolated.length}`
     + `</div>`;
 
   // 渲染有子节点的树（可收起）
   if (treeRoots.length > 0) {
     html += `<details style="margin-bottom:12px" open>`;
-    html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:13px;">调用树（${treeRoots.length} 棵）</summary>`;
-    html += `<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;margin-top:8px;">`;
+    html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:14px;">调用树（${treeRoots.length} 棵）</summary>`;
+    html += `<div style="font-family:monospace;font-size:14px;line-height:1.8;white-space:pre-wrap;margin-top:8px;">`;
     for (const r of treeRoots) {
       html += renderTreeNode(r.session_id, smap, childrenMap, 0, new Set());
     }
@@ -266,10 +266,10 @@ function renderSessionTree(sessions) {
       byAgent[a].push(s);
     }
     html += `<details style="margin-bottom:12px">`;
-    html += `<summary style="cursor:pointer;color:#888;font-size:13px;">孤立节点（${isolated.length}）— 按 agent 分组</summary>`;
+    html += `<summary style="cursor:pointer;color:#888;font-size:14px;">孤立节点（${isolated.length}）— 按 agent 分组</summary>`;
     for (const [agent, sess] of Object.entries(byAgent).sort((a,b) => b[1].length - a[1].length)) {
-      html += `<div style="margin:8px 0 4px;color:#6c5ce7;font-size:13px;">${agent} (${sess.length})</div>`;
-      html += `<div style="font-family:monospace;font-size:12px;line-height:1.6;color:#888;white-space:pre-wrap;">`;
+      html += `<div style="margin:8px 0 4px;color:#6c5ce7;font-size:14px;">${agent} (${sess.length})</div>`;
+      html += `<div style="font-family:monospace;font-size:13px;line-height:1.6;color:#888;white-space:pre-wrap;">`;
       for (const s of sess) {
         const phase = s.phase ? ` <span style="color:#6c5ce7">[${s.phase}]</span>` : "";
         html += `${s.session_id}${phase}\n`;
@@ -293,7 +293,7 @@ function renderTreeNode(sid, smap, childrenMap, depth, visited) {
   const indent = "  ".repeat(depth);
   const arrow = depth > 0 ? "└─ " : "";
 
-  let html = `${indent}${arrow}<span style="color:#6c5ce7">${agent}</span>${phase} <span style="color:#999;font-size:11px">${sid}</span>\n`;
+  let html = `${indent}${arrow}<span style="color:#6c5ce7">${agent}</span>${phase} <span style="color:#999;font-size:12px">${sid}</span>\n`;
 
   const kids = childrenMap[sid] || [];
   for (const k of kids) {
@@ -355,13 +355,13 @@ RENDERERS.case_matching = function(el, data) {
     const detail = m.match_detail || '<span style="color:#999">—</span>';
 
     html += `<tr>`;
-    html += `<td style="font-family:monospace;font-size:11px">${m.case_id || ""}</td>`;
-    html += `<td style="font-family:monospace;font-size:11px">${m.ac_case_id || '<span style="color:#999">—</span>'}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px">${m.case_id || ""}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px">${m.ac_case_id || '<span style="color:#999">—</span>'}</td>`;
     html += `<td>${m.vuln_title || ""}</td>`;
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
-    html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
-    html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
     html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${detail}">${detail}</td>`;
     html += `</tr>`;
   }
@@ -403,7 +403,7 @@ RENDERERS.root_cause = function(el, data) {
     }
   }
   if (Object.keys(bpCounts).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:13px;">L0-L7 断点分布：</div>`;
+    html += `<div style="margin:8px 0;color:#888;font-size:14px;">L0-L7 断点分布：</div>`;
     html += `<div class="stats">`;
     const bpLabels = {
       "L2": "L2 发起访问", "L3": "L3 查询准确", "L4": "L4 知识存在",
@@ -415,7 +415,7 @@ RENDERERS.root_cause = function(el, data) {
     html += `</div>`;
   }
   if (Object.keys(causeCounts).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:13px;">成因分布：</div>`;
+    html += `<div style="margin:8px 0;color:#888;font-size:14px;">成因分布：</div>`;
     html += `<div class="stats">`;
     const causeLabels = {
       "A": "A 该查没查", "B": "B 查询太泛", "C": "C 查了没得",
@@ -456,10 +456,10 @@ RENDERERS.root_cause = function(el, data) {
     const verification = r.verification || {};
 
     const fpReason = r.human_confirmation_summary || "";
-    html += `<details style="margin:16px 0 8px;" open>`;
-    html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:15px;font-weight:600;">`
+    html += `<details style="margin:16px 0 8px;">`;
+    html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">`
       + `${r.case_id} — ${r.vuln_title}`
-      + (fpReason ? ` <span style="color:#e74c3c;font-size:13px;">—— ${fpReason}</span>` : "")
+      + (fpReason ? ` <span style="color:#e74c3c;font-size:14px;">—— ${fpReason}</span>` : "")
       + `</summary>`;
 
     // 挖掘链
@@ -481,44 +481,44 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   const cc = catColor[cat] || "#888";
 
   html += `<div style="margin:12px 0;padding:12px;background:#f8f8fa;border-radius:6px;border-left:3px solid ${color}">`;
-  html += `<div style="color:${color};font-weight:600;font-size:14px;margin-bottom:8px;">`
+  html += `<div style="color:${color};font-weight:600;font-size:15px;margin-bottom:8px;">`
     + `${label}链 (${chain.length} 会话) `
     + `<span class="badge" style="background:${cc};color:#fff">${catLabels[cat] || cat}</span>`
     + `</div>`;
 
   // session 链
   if (chain.length > 0) {
-    html += `<div style="margin:4px 0;color:#888;font-size:12px;font-family:monospace;">`
+    html += `<div style="margin:4px 0;color:#888;font-size:13px;font-family:monospace;">`
       + chain.join(" → ")
       + `</div>`;
   }
 
   // 根因
-  html += `<div style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
-  html += `<div style="color:#e74c3c;font-weight:600;margin-bottom:4px;font-size:13px;">根因</div>`;
-  html += `<div style="color:#555;font-size:12px;line-height:1.6;">${chainData.root_cause?.description || "—"}</div>`;
-  html += `</div>`;
+  html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
+  html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">根因</summary>`;
+  html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${chainData.root_cause?.description || "—"}</div>`;
+  html += `</details>`;
 
   // 修复建议
   if (chainData.fix_suggestion) {
-    html += `<div style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
-    html += `<div style="color:#27ae60;font-weight:600;margin-bottom:4px;font-size:13px;">修复建议</div>`;
-    html += `<div style="color:#555;font-size:12px;line-height:1.6;">${chainData.fix_suggestion}</div>`;
-    html += `</div>`;
+    html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
+    html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">修复建议</summary>`;
+    html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${chainData.fix_suggestion}</div>`;
+    html += `</details>`;
   }
 
   // L0-L7 断点
   const bps = chainData.l0_l7_breakpoints || [];
   if (bps.length > 0) {
-    html += `<div style="margin:8px 0;">`;
-    html += `<div style="color:#f39c12;font-weight:600;margin-bottom:4px;font-size:13px;">L0-L7 断点 (${bps.length})</div>`;
-    html += `<table><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th><th>返回内容</th></tr></thead><tbody>`;
+    html += `<details style="margin:8px 0;">`;
+    html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">L0-L7 断点 (${bps.length})</summary>`;
+    html += `<table style="margin-top:6px;"><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th><th>返回内容</th></tr></thead><tbody>`;
     for (const bp of bps) {
       const lvl = bp.breakpoint || "—";
       const code = bp.cause_code || "—";
       const bpColor = code !== "—" ? "#e74c3c" : "#888";
       html += `<tr>`;
-      html += `<td style="font-family:monospace;font-size:11px">${bp.session_id || ""}</td>`;
+      html += `<td style="font-family:monospace;font-size:12px">${bp.session_id || ""}</td>`;
       html += `<td style="color:${bpColor};font-weight:bold">${lvl}</td>`;
       html += `<td style="color:${bpColor};font-weight:bold">${code}</td>`;
       html += `<td>${bp.l1_need === true ? "✓" : bp.l1_need === false ? "✗" : "—"}</td>`;
@@ -533,7 +533,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `</tr>`;
     }
     html += `</tbody></table>`;
-    html += `</div>`;
+    html += `</details>`;
   }
 
   // L4 独立验证（知识库主动验证）
@@ -549,16 +549,16 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
     if (kbSearched.athena_api) sources.push("知识库API");
     if (kbSearched.wiki_nfs) sources.push("记忆Wiki");
 
-    html += `<div style="margin:8px 0;padding:8px;background:#f0f0ff;border-radius:4px;border-left:3px solid #4a90d9;">`;
-    html += `<div style="color:#4a90d9;font-weight:600;margin-bottom:4px;font-size:13px;">L4 独立验证 — 评测引擎主动搜索知识库</div>`;
-    html += `<div style="margin-bottom:6px;">`;
-    html += `<span style="font-size:12px;color:#888;">验证结果：</span>`;
+    html += `<details style="margin:8px 0;padding:8px;background:#f0f0ff;border-radius:4px;border-left:3px solid #4a90d9;">`;
+    html += `<summary style="color:#4a90d9;font-weight:600;font-size:14px;cursor:pointer;">L4 独立验证 — 评测引擎主动搜索知识库</summary>`;
+    html += `<div style="margin-top:6px;margin-bottom:6px;">`;
+    html += `<span style="font-size:13px;color:#888;">验证结果：</span>`;
     html += `<span class="badge" style="background:${l4Color};color:#fff;">${l4Label}</span>`;
-    html += `<span style="font-size:12px;color:#888;margin-left:12px;">搜索来源：${sources.join(" + ") || "—"}</span>`;
-    html += `<span style="font-size:12px;color:#888;margin-left:12px;">候选文件：${l4v.candidate_files || 0}</span>`;
+    html += `<span style="font-size:13px;color:#888;margin-left:12px;">搜索来源：${sources.join(" + ") || "—"}</span>`;
+    html += `<span style="font-size:13px;color:#888;margin-left:12px;">候选文件：${l4v.candidate_files || 0}</span>`;
     html += `</div>`;
     if (l4v.summary) {
-      html += `<div style="color:#555;font-size:12px;line-height:1.6;margin-bottom:6px;">${l4v.summary}</div>`;
+      html += `<div style="color:#555;font-size:13px;line-height:1.6;margin-bottom:6px;">${l4v.summary}</div>`;
     }
     const matched = l4v.matched_files || [];
     if (matched.length > 0) {
@@ -567,7 +567,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
         const rel = mf.relevance || "—";
         const relColor = rel === "high" ? "#27ae60" : rel === "medium" ? "#f39c12" : "#888";
         html += `<tr>`;
-        html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.path || ""}">${mf.path || ""}</td>`;
+        html += `<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.path || ""}">${mf.path || ""}</td>`;
         html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${mf.title || ""}</td>`;
         html += `<td><span class="badge" style="background:${relColor};color:#fff;">${rel}</span></td>`;
         html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.reason || ""}">${mf.reason || "—"}</td>`;
@@ -576,27 +576,27 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `</tbody></table>`;
     }
     if (l4v.error) {
-      html += `<div style="color:#e74c3c;font-size:11px;margin-top:4px;">错误: ${l4v.error}</div>`;
+      html += `<div style="color:#e74c3c;font-size:12px;margin-top:4px;">错误: ${l4v.error}</div>`;
     }
-    html += `</div>`;
+    html += `</details>`;
   }
 
   // 各 session 独立压缩结果
   const summaries = chainData.compressed_summaries || [];
   if (summaries.length > 0) {
-    html += `<div style="margin:8px 0;">`;
-    html += `<div style="color:${color};font-weight:600;margin-bottom:6px;font-size:13px;">各 Session 独立压缩 (${summaries.length})</div>`;
+    html += `<details style="margin:8px 0;">`;
+    html += `<summary style="color:${color};font-weight:600;font-size:14px;cursor:pointer;">各 Session 独立压缩 (${summaries.length})</summary>`;
     for (const s of summaries) {
       html += `<div style="margin:6px 0;padding:8px;background:#f0f0f5;border-radius:4px;border-left:2px solid ${color}40;">`;
-      html += `<div style="color:${color};font-size:12px;font-weight:600;margin-bottom:4px;font-family:monospace;">${s.session_id || ""}</div>`;
-      html += `<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#555;">${s.summary || ""}</pre>`;
+      html += `<div style="color:${color};font-size:13px;font-weight:600;margin-bottom:4px;font-family:monospace;">${s.session_id || ""}</div>`;
+      html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;">${s.summary || ""}</pre>`;
       if (s.key_findings && s.key_findings.length > 0) {
-        html += `<div style="color:#6c5ce7;font-size:11px;margin-top:4px;">关键发现: ${s.key_findings.join(" | ")}</div>`;
+        html += `<div style="color:#6c5ce7;font-size:12px;margin-top:4px;">关键发现: ${s.key_findings.join(" | ")}</div>`;
       }
       // session 级 L0-L7
       const l0l7 = s.l0_l7 || [];
       if (l0l7.length > 0) {
-        html += `<div style="margin-top:4px;color:#888;font-size:11px;">`;
+        html += `<div style="margin-top:4px;color:#888;font-size:12px;">`;
         for (const kp of l0l7) {
           const bp = kp.breakpoint || "—";
           const code = kp.cause_code || "—";
@@ -607,15 +607,15 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       }
       html += `</div>`;
     }
-    html += `</div>`;
+    html += `</details>`;
   }
 
   // 合并压缩摘要
   if (chainData.merge_summary) {
-    html += `<div style="margin:8px 0;padding:8px;background:#fff8e1;border-radius:4px;border-left:3px solid #f39c12;">`;
-    html += `<div style="color:#f39c12;font-weight:600;margin-bottom:4px;font-size:13px;">合并压缩摘要</div>`;
-    html += `<pre style="font-size:11px;line-height:1.5;white-space:pre-wrap;word-break:break-all;color:#555;">${chainData.merge_summary}</pre>`;
-    html += `</div>`;
+    html += `<details style="margin:8px 0;padding:8px;background:#fff8e1;border-radius:4px;border-left:3px solid #f39c12;">`;
+    html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">合并压缩摘要</summary>`;
+    html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;margin-top:4px;">${chainData.merge_summary}</pre>`;
+    html += `</details>`;
   }
 
   html += `</div>`;
@@ -641,7 +641,7 @@ RENDERERS.resolving = function(el, data) {
   // 成因分布
   const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判"};
   if (Object.keys(causeSummary).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:13px;">成因分布：</div>`;
+    html += `<div style="margin:8px 0;color:#888;font-size:14px;">成因分布：</div>`;
     html += `<div class="stats">`;
     for (const [code, cnt] of Object.entries(causeSummary).sort()) {
       html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
@@ -651,7 +651,7 @@ RENDERERS.resolving = function(el, data) {
 
   // 效果标签分布
   if (Object.keys(effectDist).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:13px;">效果标签分布：</div>`;
+    html += `<div style="margin:8px 0;color:#888;font-size:14px;">效果标签分布：</div>`;
     html += `<div class="stats">`;
     for (const [label, cnt] of Object.entries(effectDist)) {
       html += `<div class="stat"><div class="num">${cnt}</div><div class="label">${label}</div></div>`;
@@ -670,8 +670,8 @@ RENDERERS.resolving = function(el, data) {
     const bps = c.breakpoints || [];
     const hasBp = bps.length > 0;
     const titleColor = hasBp ? "#e74c3c" : "#27ae60";
-    html += `<details style="margin:16px 0 8px;" open>`;
-    html += `<summary style="cursor:pointer;color:${titleColor};font-size:15px;font-weight:600;">`;
+    html += `<details style="margin:16px 0 8px;">`;
+    html += `<summary style="cursor:pointer;color:${titleColor};font-size:16px;font-weight:600;">`;
     html += `${c.case_id || ""} — ${c.vuln_title || ""} (${bps.length} 断点)`;
     html += `</summary>`;
     html += `<div style="margin-top:8px;">`;
@@ -679,20 +679,20 @@ RENDERERS.resolving = function(el, data) {
     // 根因
     const rc = c.root_cause || {};
     if (Object.keys(rc).length > 0) {
-      html += `<div style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
-      html += `<div style="color:#e74c3c;font-weight:600;margin-bottom:4px;font-size:13px;">根因</div>`;
+      html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
+      html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">根因</summary>`;
       for (const [cat, desc] of Object.entries(rc)) {
-        html += `<div style="color:#555;font-size:12px;line-height:1.6;"><b>${cat}:</b> ${desc}</div>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;"><b>${cat}:</b> ${desc}</div>`;
       }
-      html += `</div>`;
+      html += `</details>`;
     }
 
     // 修复建议
     if (c.fix_suggestion) {
-      html += `<div style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
-      html += `<div style="color:#27ae60;font-weight:600;margin-bottom:4px;font-size:13px;">修复建议</div>`;
-      html += `<div style="color:#555;font-size:12px;line-height:1.6;">${c.fix_suggestion}</div>`;
-      html += `</div>`;
+      html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
+      html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">修复建议</summary>`;
+      html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${c.fix_suggestion}</div>`;
+      html += `</details>`;
     }
 
     // 断点表

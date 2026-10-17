@@ -846,15 +846,8 @@ async function renderDtsDetailPage(dtsId){
   try{
     var d=await jget(`/api/v2/dts/${dtsId}`);
 
-    // 尝试从 root_cause debug API 获取 case 级别数据
-    var caseData=null;
-    try{
-      var rcDebug=await jget(`/api/v2/evaluations/${d.evaluation_id}/debug/root_cause`);
-      var rcResults=rcDebug.results||[];
-      for(var i=0;i<rcResults.length;i++){
-        if(rcResults[i].case_id===d.case_id){caseData=rcResults[i];break;}
-      }
-    }catch(e){/* debug 数据可能不存在 */}
+    // 完整根因分析数据由 DTS API 直接返回（analysis_data 字段）
+    var caseData=d.analysis_data||null;
 
     var causeLabel=DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
     var respLabel=DTS_RESP_LABELS[dtsResponsibility(d.cause_code)]||'-';
@@ -890,7 +883,7 @@ async function renderDtsDetailPage(dtsId){
     }
     html+='</div>';
 
-    // ── 2. 原始问题信息（来自 root_cause debug）──
+    // ── 2. 原始问题信息（来自 DTS API analysis_data）──
     if(caseData){
       html+='<div class="card" style="margin-bottom:16px">'
         +'<h3>原始问题</h3>'
@@ -907,11 +900,14 @@ async function renderDtsDetailPage(dtsId){
       html+='</div>';
     }
 
-    // ── 3. Session 链 + 根因/解决方案（挖掘 + 验证各自独立）──
+    // ── 3. Session 调用链 + 根因/解决方案（挖掘 + 验证各自独立）──
+    // session 调用链信息从 DTS API 的 session_chains 字段获取
+    // （get_dts_issue 方法从 session_graph 表查出，含 parent_map、agent 等）
+    var sessionChains=d.session_chains||{mining:[],verification:[],parent_map:{}};
     if(caseData){
       var chains=[
-        {type:'mining',label:'挖掘链',data:caseData.mining||{}},
-        {type:'verification',label:'验证链',data:caseData.verification||{}}
+        {type:'mining',label:'挖掘链',data:caseData.mining||{},sessions:sessionChains.mining||[]},
+        {type:'verification',label:'验证链',data:caseData.verification||{},sessions:sessionChains.verification||[]}
       ];
       chains.forEach(function(ch){
         if(!ch.data||!Object.keys(ch.data).length){return;}
@@ -921,17 +917,53 @@ async function renderDtsDetailPage(dtsId){
         var agentType=ch.data.agent_type||'';
         var agentLbl=DTS_AGENT_LABELS[agentType]||agentType||'-';
         var summaries=ch.data.compressed_summaries||[];
+        var chainSessions=ch.sessions||[];
+        var parentMap=sessionChains.parent_map||{};
 
         html+='<div class="card" style="margin-bottom:16px">'
           +'<h3>'+ch.label+' ('+agentLbl+')</h3>';
 
-        // Session 链
-        if(sessionChain.length){
-          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">Session 链 ('+sessionChain.length+' 个)</div>';
-          html+='<div style="display:flex;flex-wrap:wrap;gap:4px">';
-          sessionChain.forEach(function(sid,idx){
-            html+='<span style="font-size:12px;font-family:monospace;padding:3px 8px;background:var(--p2);border-radius:6px">'+String(sid).replace(/</g,'&lt;')+'</span>';
+        // Session 调用链树（用 parent_map 构建树）
+        if(chainSessions.length){
+          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">Session 调用链 ('+chainSessions.length+' 个)</div>';
+          html+='<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;padding:10px 12px;background:var(--p2);border-radius:8px">';
+          // 构建 session_id → session_info map
+          var smap={};
+          chainSessions.forEach(function(s){smap[s.session_id]=s;});
+          // 找根节点：parent_id 为空或 parent 不在链中的
+          var chainSet={};
+          chainSessions.forEach(function(s){chainSet[s.session_id]=true;});
+          var roots=chainSessions.filter(function(s){
+            var pid=s.parent_id||'';
+            return !pid||!chainSet[pid];
           });
+          var visited={};
+          function renderNode(sid,depth){
+            if(visited[sid]){return'';}
+            visited[sid]=true;
+            var s=smap[sid]||{};
+            var agent=s.agent||s.session_type||'?';
+            var taskType=s.task_type?' ['+s.task_type+']':'';
+            var status=s.status?' ('+s.status+')':'';
+            var indent='  '.repeat(depth);
+            var arrow=depth>0?'└─ ':'';
+            var line=indent+arrow+'<span style="color:var(--acc)">'+agent+'</span>'+taskType+status+' <span style="color:var(--gray);font-size:11px">'+sid+'</span>\n';
+            // 找子节点
+            var kids=chainSessions.filter(function(cs){return cs.parent_id===sid;});
+            kids.forEach(function(kid){line+=renderNode(kid.session_id,depth+1);});
+            return line;
+          }
+          if(roots.length){
+            roots.forEach(function(s){
+              html+=renderNode(s.session_id,0);
+            });
+          }else{
+            // 没有树信息，按顺序展示
+            chainSessions.forEach(function(s,idx){
+              var agent=s.agent||s.session_type||'?';
+              html+=(idx>0?'→ ':'')+agent+' <span style="color:var(--gray);font-size:11px">'+s.session_id+'</span>\n';
+            });
+          }
           html+='</div></div>';
         }
 

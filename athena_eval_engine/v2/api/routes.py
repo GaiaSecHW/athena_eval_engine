@@ -160,11 +160,17 @@ _DEBUG_STEPS = ["ingesting", "parsing", "case_matching", "root_cause",
 
 # debug.html 所在目录
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "static")
+# 可覆盖的静态文件目录（k8s 下 /data 可写，便于热更新 HTML 而无需重建镜像）
+_STATIC_OVERRIDE_DIR = os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static")
 
 
 @router.get("/{evaluation_id}/debug")
 def get_debug_page(evaluation_id: str):
     """调试页面：展示各步骤中间数据。返回静态 HTML，前端通过 API 获取数据。"""
+    # 优先从可覆盖目录读取（热更新），回退到打包目录
+    override_path = os.path.join(_STATIC_OVERRIDE_DIR, "debug.html")
+    if os.path.isfile(override_path):
+        return FileResponse(override_path, media_type="text/html")
     path = os.path.join(_STATIC_DIR, "debug.html")
     if not os.path.isfile(path):
         raise HTTPException(status_code=404, detail="debug.html not found")

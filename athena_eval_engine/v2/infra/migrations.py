@@ -333,6 +333,13 @@ MIGRATIONS = [
             "CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H'))",
         ],
     },
+    {
+        "id": "018_dts_issue_add_analysis_data_path",
+        "desc": "dts_issue 表新增 analysis_data_path 字段（完整根因分析数据文件路径）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN analysis_data_path VARCHAR(256) AFTER solution",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

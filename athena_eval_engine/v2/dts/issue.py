@@ -2,10 +2,13 @@
 
 从因果链分析结果的 per_case_breakpoints 生成问题单。
 每个断点生成一条记录，映射到对应的责任方（Agent 或 knowledge_base）。
+完整根因分析数据（session_chain、compressed_summaries、l0_l7_breakpoints 等）
+存到 {eid}_dts_{case_id}.json 文件，DTS issue 表只存路径。
 """
 from __future__ import annotations
 
 import json
+import os
 
 from ...infrastructure.log_util import log
 
@@ -63,12 +66,19 @@ def generate_dts_issues(
     causal_chain_result: dict,
     root_cause_results: list[dict],
     task_id: str = "",
+    reports_dir: str = "",
 ) -> list[dict]:
     """从因果链分析结果生成问题单。
 
     按 (case_id, agent_type) 分组——同一个 case 在同一个 agent 内只提一条单，
     所有断点全部列在 breakpoint_desc 中，供开发人员逐条排查。
     cause_code 和 breakpoint_level 取最严重的断点（严重度 G>F>...>A）。
+
+    完整根因分析数据（mining + verification 的 session_chain、
+    compressed_summaries、l0_l7_breakpoints、root_cause、fix_suggestion、
+    merge_summary、l4_independent_verification、agent_type、vuln_title、
+    summary、human_confirmation_summary、description）存到
+    {eid}_dts_{case_id}.json 文件，DTS issue 表只存路径。
 
     Args:
         evaluation_id: 评测 ID。
@@ -77,24 +87,28 @@ def generate_dts_issues(
         root_cause_results: RootCauseAnalyzer.analyze() 的输出，
             用于查找 case_id、vuln_title 等补充信息。
         task_id: 原始数据任务 ID（manifest 中的 task_id）。
+        reports_dir: 报告目录，用于存储完整分析数据文件。
 
     Returns:
         问题单 dict 列表，每条含 dts_id、evaluation_id、task_id、case_id、
         agent_type、case_type、cause_code、breakpoint_level、
         breakpoint_desc、evidence_uri、root_cause、fix_suggestion、
-        status、responsibility。
+        analysis_data_path、status、responsibility。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
         return []
 
-    # 从 root_cause_results 构建 case_id → root_cause/fix_suggestion 索引
+    # 从 root_cause_results 构建 case_id → 完整根因分析数据 索引
+    case_full_data: dict[str, dict] = {}
     case_root_cause: dict[str, dict] = {}
     case_fix: dict[str, str] = {}
     for case in root_cause_results:
         cid = case.get("case_id", "")
         if not cid:
             continue
+        # 保存完整根因分析数据（供 DTS 详情页展示）
+        case_full_data[cid] = case
         mining = case.get("mining", {}) or {}
         verify = case.get("verification", {}) or {}
         root_causes = {}
@@ -159,6 +173,19 @@ def generate_dts_issues(
         eval_seq = evaluation_id.split("-")[-1] if "-" in evaluation_id else evaluation_id[-4:]
         dts_id = f"DTS-{eval_seq}-{seq:02d}"
 
+        # 完整根因分析数据存文件（遵循 Large Payload File Storage Over DB 原则）
+        analysis_data_path = None
+        full_data = case_full_data.get(case_id)
+        if full_data and reports_dir:
+            file_name = f"{evaluation_id}_dts_{case_id}.json"
+            file_path = os.path.join(reports_dir, file_name)
+            try:
+                with open(file_path, "w", encoding="utf-8") as f:
+                    json.dump(full_data, f, ensure_ascii=False, indent=2)
+                analysis_data_path = file_name
+            except Exception as e:
+                log("DTS", f"写入完整分析数据失败 case={case_id}: {str(e)[:200]}")
+
         issues.append({
             "dts_id": dts_id,
             "evaluation_id": evaluation_id,
@@ -173,6 +200,7 @@ def generate_dts_issues(
             "evidence_uri": None,
             "root_cause": json.dumps(root_cause, ensure_ascii=False) if root_cause else None,
             "solution": fix_suggestion or None,
+            "analysis_data_path": analysis_data_path,
             "replay_eval_id": None,
             "replay_result": None,
             "status": "unlocated",
