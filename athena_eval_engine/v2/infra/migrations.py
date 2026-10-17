@@ -340,6 +340,13 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN analysis_data_path VARCHAR(256) AFTER solution",
         ],
     },
+    {
+        "id": "019_dts_issue_add_replay_data",
+        "desc": "dts_issue 表新增 replay_data 字段（回归验证提交的完整数据 JSON）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN replay_data TEXT AFTER replay_result",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

@@ -166,7 +166,14 @@ def generate_dts_issues(
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
-        responsibility = CAUSE_TO_RESPONSIBILITY.get(cause_code, "agent")
+
+        # 责任方：从所有断点的 cause_code 综合推导
+        # 一个 case 可能同时有 agent 责任（如 L8）和知识库责任（如 L4）
+        all_cause_codes = {bp.get("cause_code", "") for bp in bps if bp.get("cause_code")}
+        resp_set = {CAUSE_TO_RESPONSIBILITY.get(cc, "agent") for cc in all_cause_codes}
+        # 排序保证 agent 在前（agent 是主要责任方）
+        resp_order = {"agent": 0, "knowledge_base": 1}
+        responsibility = ",".join(sorted(resp_set, key=lambda r: resp_order.get(r, 99)))
 
         seq += 1
         # DTS-{评测编号}-{序号}，评测编号取 evaluation_id 最后一段（7357）

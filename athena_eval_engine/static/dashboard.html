@@ -983,13 +983,9 @@ async function renderDtsDetailPage(dtsId){
         if(rootCause&&Object.keys(rootCause).length){
           var rcCat=rootCause.category||'';
           var rcDesc=rootCause.description||'';
-          var rcHuman=rootCause.human_confirmation_reason||'';
           html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
           if(rcCat){html+=' <span class="knd">'+rcCat+'</span>';}
           html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rcDesc||'(无)').replace(/</g,'&lt;')+'</div>';
-          if(rcHuman){
-            html+='<div style="margin-top:6px;font-size:13px;color:var(--red)">人工标注原因: '+String(rcHuman).replace(/</g,'&lt;')+'</div>';
-          }
           html+='</div>';
         }
 
@@ -1002,14 +998,26 @@ async function renderDtsDetailPage(dtsId){
       });
     }
 
-    // ── 4. 回归结果 ──
+    // ── 4. 回归验证 ──
     if(d.replay_result){
       var replayColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
       var replayLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
       html+='<div class="card" style="margin-bottom:16px"><h3>回归验证</h3>'
         +'<div style="font-size:14px"><span style="color:var(--gray)">回归结果：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+replayColor+'">'+replayLabel+'</span></div>';
       if(d.replay_eval_id){
-        html+='<div style="margin-top:8px;font-size:14px"><span style="color:var(--gray)">回归评测 ID：</span><b style="font-family:monospace;font-size:12px">'+d.replay_eval_id+'</b></div>';
+        html+='<div style="margin-top:8px;font-size:14px"><span style="color:var(--gray)">回归任务 ID：</span><b style="font-family:monospace;font-size:12px">'+d.replay_eval_id+'</b></div>';
+      }
+      // 回归提交的完整数据
+      if(d.replay_data){
+        try{
+          var rd=JSON.parse(d.replay_data);
+          html+='<div style="margin-top:12px;font-size:14px">';
+          if(rd.vuln_title){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+String(rd.vuln_title).replace(/</g,'&lt;')+'</div>';}
+          if(rd.vuln_description){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span><div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+String(rd.vuln_description).replace(/</g,'&lt;')+'</div></div>';}
+          if(rd.is_vulnerable!==undefined){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">是否仍有漏洞：</span><b>'+(rd.is_vulnerable?'是':'否')+'</b></div>';}
+          if(rd.message){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">结论：</span>'+String(rd.message).replace(/</g,'&lt;')+'</div>';}
+          html+='</div>';
+        }catch(e){/* replay_data 解析失败 */}
       }
       html+='</div>';
     }
@@ -1017,13 +1025,24 @@ async function renderDtsDetailPage(dtsId){
     // ── 5. 编辑区 ──
     if(d.status==='improving'||d.status==='confirmed'||d.status==='unlocated'){
       html+='<div class="card" style="border-top:1px solid var(--bd);padding-top:12px">'
-        +'<label style="margin-bottom:4px">根因分析（手动补充）</label><textarea id="dts_root_cause" style="width:100%;min-height:60px;background:var(--p2);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:14px;color:var(--txt);font-family:inherit" placeholder="填写根因分析...">'+(d.root_cause||'')+'</textarea>'
+        +'<h3>人工确认</h3>';
+
+      // 回归结果（如有）放在编辑区顶部供参考
+      if(d.replay_result){
+        var rpColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
+        var rpLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
+        html+='<div style="margin-bottom:12px;padding:10px 12px;background:var(--p2);border-radius:8px">'
+          +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">回归结果</div>'
+          +'<div><span class="bdg" style="background:rgba(107,114,128,.15);color:'+rpColor+'">'+rpLabel+'</span></div>';
+        if(d.replay_eval_id){
+          html+='<div style="margin-top:6px;font-size:13px;color:var(--gray)">回归评测 ID: <b style="font-family:monospace">'+d.replay_eval_id+'</b></div>';
+        }
+        html+='</div>';
+      }
+
+      html+='<label style="margin-bottom:4px">根因分析（手动补充）</label><textarea id="dts_root_cause" style="width:100%;min-height:60px;background:var(--p2);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:14px;color:var(--txt);font-family:inherit" placeholder="填写根因分析...">'+(d.root_cause||'')+'</textarea>'
         +'<label style="margin:8px 0 4px">解决方案（手动补充）</label><textarea id="dts_solution" style="width:100%;min-height:60px;background:var(--p2);border:1px solid var(--bd);border-radius:8px;padding:8px;font-size:14px;color:var(--txt);font-family:inherit" placeholder="填写解决方案...">'+(d.solution||'')+'</textarea>'
-        +'<div style="display:flex;gap:8px;margin-top:12px">'
-        +'<button class="btn" style="font-size:14px;padding:6px 16px" onclick="saveDtsIssue(\''+d.dts_id+'\')">保存</button>'
-        +'<button class="btn g" style="font-size:14px;padding:6px 16px;background:var(--green);color:#fff" onclick="closeDtsIssue(\''+d.dts_id+'\')">关闭</button>'
-        +'<button class="btn g" style="font-size:14px;padding:6px 16px;background:var(--gray);color:#fff" onclick="rejectDtsIssue(\''+d.dts_id+'\')">拒绝</button>'
-        +'</div></div>';
+        +'</div>';
     }
     $("dts-detail-body").innerHTML=html;
   }catch(e){

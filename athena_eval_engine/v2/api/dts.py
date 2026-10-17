@@ -176,10 +176,22 @@ def regression_verify(req: RegressionVerifyRequest):
         replay_result = "false_positive_resolved"
         message = "漏洞已消除，误报已修复"
 
+    # 回归验证提交的完整数据存入 replay_data
+    import json as _json
+    replay_data = _json.dumps({
+        "task_id": req.task_id,
+        "vuln_title": req.vuln_title,
+        "vuln_description": req.vuln_description,
+        "is_vulnerable": req.is_vulnerable,
+        "result": replay_result,
+        "message": message,
+    }, ensure_ascii=False)
+
     success = update_dts_issue(req.dts_id, {
         "status": new_status,
         "replay_eval_id": req.task_id,
         "replay_result": replay_result,
+        "replay_data": replay_data,
     })
     if not success:
         raise HTTPException(

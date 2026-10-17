@@ -19,7 +19,7 @@ _FIELD_ORDER = (
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
     "root_cause", "solution", "analysis_data_path",
-    "replay_eval_id", "replay_result",
+    "replay_eval_id", "replay_result", "replay_data",
     "status", "responsibility",
 )
 
@@ -29,16 +29,17 @@ _INSERT_SQL = (
     "  case_type, cause_code, breakpoint_level,"
     "  breakpoint_desc, evidence_uri,"
     "  root_cause, solution, analysis_data_path,"
-    "  replay_eval_id, replay_result,"
+    "  replay_eval_id, replay_result, replay_data,"
     "  status, responsibility"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
     "  analysis_data_path=VALUES(analysis_data_path),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
-    "  replay_result=VALUES(replay_result)"
+    "  replay_result=VALUES(replay_result),"
+    "  replay_data=VALUES(replay_data)"
 )
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
@@ -47,7 +48,7 @@ _SELECT_COLUMNS = (
     " d.case_type, d.cause_code, d.breakpoint_level,"
     " d.breakpoint_desc, d.evidence_uri,"
     " d.root_cause, d.solution, d.analysis_data_path,"
-    " d.replay_eval_id, d.replay_result,"
+    " d.replay_eval_id, d.replay_result, d.replay_data,"
     " d.status, d.responsibility,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
@@ -112,7 +113,7 @@ def _row_to_dict(row) -> dict:
         "case_type", "cause_code", "breakpoint_level",
         "breakpoint_desc", "evidence_uri",
         "root_cause", "solution", "analysis_data_path",
-        "replay_eval_id", "replay_result",
+        "replay_eval_id", "replay_result", "replay_data",
         "status", "responsibility",
         "created_at", "updated_at", "closed_at",
         "evaluation_name",
@@ -198,10 +199,13 @@ def get_dts_issue(dts_id: str) -> dict | None:
 
 
 def _query_session_chains(issue: dict) -> dict:
-    """从 session_graph 表查询 issue 关联的 session 调用链信息。
+    """从 session_graph 表查询 issue 关联的完整 session 调用链。
 
-    从 analysis_data 中提取 mining + verification 的 session_chain（session_id 列表），
-    从 session_graph 表查出这些 session 的调用关系（parent_id、agent、task_type 等）。
+    从 analysis_data 中提取 mining + verification 的 session_chain（命中的 session_id），
+    然后从 session_graph 表的 parent_map 展开完整调用链：
+    - 向上：沿 parent_map 找所有祖先 session
+    - 向下：找所有子孙 session（parent 指向当前 session 的）
+    最终返回从根到命中 session 的完整调用链。
 
     Returns:
         {
@@ -215,15 +219,16 @@ def _query_session_chains(issue: dict) -> dict:
     if not evaluation_id:
         return {"mining": [], "verification": [], "parent_map": {}}
 
-    # 收集需要查询的 session_id
-    target_ids: set[str] = set()
+    # 收集命中的 session_id（调用链的种子节点）
+    seed_ids: dict[str, set[str]] = {"mining": set(), "verification": set()}
     for chain_type in ("mining", "verification"):
         chain_data = analysis_data.get(chain_type) or {}
         for sid in chain_data.get("session_chain") or []:
             if sid:
-                target_ids.add(sid)
+                seed_ids[chain_type].add(sid)
 
-    if not target_ids:
+    all_seeds = seed_ids["mining"] | seed_ids["verification"]
+    if not all_seeds:
         return {"mining": [], "verification": [], "parent_map": {}}
 
     import json as _json
@@ -238,19 +243,20 @@ def _query_session_chains(issue: dict) -> dict:
 
     rows = _db_query(_do_query)
 
-    sessions: dict[str, dict] = {}
-    parent_map: dict[str, str] = {}
+    # 合并所有 graph 的 sessions 和 parent_map
+    all_sessions: dict[str, dict] = {}
+    all_parent_map: dict[str, str] = {}
+    all_children_map: dict[str, list[str]] = {}
 
     for task_run_id, graph_json in rows:
         graph = _json.loads(graph_json) if isinstance(graph_json, str) else graph_json
         graph_sessions = graph.get("sessions", {}) or {}
         graph_parent_map = graph.get("parent_map", {}) or {}
 
-        for sid in target_ids:
-            if sid in graph_sessions and sid not in sessions:
-                info = graph_sessions[sid]
+        for sid, info in graph_sessions.items():
+            if sid not in all_sessions:
                 info_d = info if isinstance(info, dict) else {}
-                sessions[sid] = {
+                all_sessions[sid] = {
                     "session_id": sid,
                     "agent": info_d.get("agent", ""),
                     "session_type": info_d.get("session_type", ""),
@@ -261,19 +267,71 @@ def _query_session_chains(issue: dict) -> dict:
                     "parent_id": graph_parent_map.get(sid, ""),
                     "task_run_id": task_run_id,
                 }
-            if sid in graph_parent_map and sid not in parent_map:
-                parent_map[sid] = graph_parent_map[sid]
 
-    # 按 mining / verification 分类返回
-    def _chain_for(chain_type: str) -> list[dict]:
-        chain_data = analysis_data.get(chain_type) or {}
-        chain_ids = chain_data.get("session_chain") or []
-        return [sessions[sid] for sid in chain_ids if sid in sessions]
+        for sid, pid in graph_parent_map.items():
+            if sid not in all_parent_map:
+                all_parent_map[sid] = pid
+            if pid not in all_children_map:
+                all_children_map[pid] = []
+            if sid not in all_children_map[pid]:
+                all_children_map[pid].append(sid)
+
+    # 从种子节点展开完整调用链（祖先 + 子孙）
+    def _expand_chain(seeds: set[str]) -> list[str]:
+        """从种子 session 出发，向上找祖先、向下找子孙，返回完整调用链（根→叶子顺序）。"""
+        chain_ids: set[str] = set()
+
+        # 向上找祖先
+        for sid in seeds:
+            cur = sid
+            while cur and cur in all_parent_map and cur not in chain_ids:
+                chain_ids.add(cur)
+                cur = all_parent_map[cur]
+            if cur and cur not in chain_ids:
+                chain_ids.add(cur)  # 根节点
+
+        # 向下找子孙
+        queue = list(seeds)
+        while queue:
+            sid = queue.pop(0)
+            for child in all_children_map.get(sid, []):
+                if child not in chain_ids:
+                    chain_ids.add(child)
+                    queue.append(child)
+
+        # 按从根到叶子排序：找根节点（parent 不在链中的），BFS 往下
+        roots = [sid for sid in chain_ids
+                 if all_parent_map.get(sid, "") not in chain_ids]
+        ordered: list[str] = []
+        visited: set[str] = set()
+        queue = sorted(roots)
+        while queue:
+            sid = queue.pop(0)
+            if sid in visited:
+                continue
+            visited.add(sid)
+            ordered.append(sid)
+            children = [c for c in all_children_map.get(sid, []) if c in chain_ids]
+            queue = sorted(children) + queue
+
+        return ordered
+
+    mining_chain_ids = _expand_chain(seed_ids["mining"])
+    verify_chain_ids = _expand_chain(seed_ids["verification"])
+
+    # 只返回链中 session 的信息
+    def _sessions_for(ids: list[str]) -> list[dict]:
+        return [all_sessions[sid] for sid in ids if sid in all_sessions]
+
+    # parent_map 只包含链中的 session
+    chain_all = set(mining_chain_ids) | set(verify_chain_ids)
+    chain_parent_map = {sid: all_parent_map[sid]
+                        for sid in chain_all if sid in all_parent_map}
 
     return {
-        "mining": _chain_for("mining"),
-        "verification": _chain_for("verification"),
-        "parent_map": parent_map,
+        "mining": _sessions_for(mining_chain_ids),
+        "verification": _sessions_for(verify_chain_ids),
+        "parent_map": chain_parent_map,
     }
 
 
@@ -342,7 +400,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     """
     allowed = {
         "root_cause", "solution", "status",
-        "replay_eval_id", "replay_result",
+        "replay_eval_id", "replay_result", "replay_data",
     }
     update_fields = {k: v for k, v in updates.items() if k in allowed}
     if not update_fields:

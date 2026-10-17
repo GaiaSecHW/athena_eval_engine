@@ -220,7 +220,7 @@ RENDERERS.parsing = function(el, data) {
   el.innerHTML = html;
 };
 
-// ── session 调用树（文本缩进格式）──
+// ── session 调用树（带连接线的树形视图）──
 function renderSessionTree(sessions) {
   // 构建 sid -> session map 和 parent -> children map
   const smap = {};
@@ -245,13 +245,14 @@ function renderSessionTree(sessions) {
     + `调用树: ${treeRoots.length} 棵, 孤立节点: ${isolated.length}`
     + `</div>`;
 
-  // 渲染有子节点的树（可收起）
+  // 渲染有子节点的树
   if (treeRoots.length > 0) {
     html += `<details style="margin-bottom:12px" open>`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:14px;">调用树（${treeRoots.length} 棵）</summary>`;
-    html += `<div style="font-family:monospace;font-size:14px;line-height:1.8;white-space:pre-wrap;margin-top:8px;">`;
-    for (const r of treeRoots) {
-      html += renderTreeNode(r.session_id, smap, childrenMap, 0, new Set());
+    html += `<div style="margin-top:8px;">`;
+    for (let i = 0; i < treeRoots.length; i++) {
+      const isLast = (i === treeRoots.length - 1);
+      html += renderTreeNode(treeRoots[i].session_id, smap, childrenMap, 0, isLast, [], new Set());
     }
     html += `</div>`;
     html += `</details>`;
@@ -282,7 +283,9 @@ function renderSessionTree(sessions) {
   return html;
 }
 
-function renderTreeNode(sid, smap, childrenMap, depth, visited) {
+// ancestors: [isLast, isLast, ...] — 每层祖先是否是最后一个子节点
+// 用于绘制垂直连接线：祖先不是最后一个 → 画 │，是最后一个 → 画 空格
+function renderTreeNode(sid, smap, childrenMap, depth, isLast, ancestors, visited) {
   if (visited.has(sid)) return "";
   visited.add(sid);
   const s = smap[sid];
@@ -290,14 +293,28 @@ function renderTreeNode(sid, smap, childrenMap, depth, visited) {
 
   const agent = s.agent || s.session_type || "?";
   const phase = s.phase ? ` <span style="color:#6c5ce7">[${s.phase}]</span>` : "";
-  const indent = "  ".repeat(depth);
-  const arrow = depth > 0 ? "└─ " : "";
+  const status = s.status ? ` <span style="color:#aaa;font-size:12px">(${s.status})</span>` : "";
 
-  let html = `${indent}${arrow}<span style="color:#6c5ce7">${agent}</span>${phase} <span style="color:#999;font-size:12px">${sid}</span>\n`;
+  // 构建前缀连接线
+  let prefix = "";
+  for (let i = 0; i < ancestors.length; i++) {
+    prefix += ancestors[i] ? "&nbsp;&nbsp;&nbsp;" : "│&nbsp;&nbsp;";
+  }
+  // 当前节点的连接符
+  const connector = depth === 0 ? "" : (isLast ? "└─ " : "├─ ");
+
+  let html = `<div style="font-family:monospace;font-size:14px;line-height:2.0;white-space:nowrap;">`
+    + `<span style="color:#bbb;">${prefix}${connector}</span>`
+    + `<span style="color:#6c5ce7;font-weight:600;">${agent}</span>`
+    + `${phase}${status} `
+    + `<span style="color:#999;font-size:12px;">${sid}</span>`
+    + `</div>`;
 
   const kids = childrenMap[sid] || [];
-  for (const k of kids) {
-    html += renderTreeNode(k.session_id, smap, childrenMap, depth + 1, visited);
+  const newAncestors = [...ancestors, isLast];
+  for (let i = 0; i < kids.length; i++) {
+    const kidIsLast = (i === kids.length - 1);
+    html += renderTreeNode(kids[i].session_id, smap, childrenMap, depth + 1, kidIsLast, newAncestors, visited);
   }
   return html;
 }
