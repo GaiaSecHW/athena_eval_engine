@@ -728,7 +728,7 @@ function renderDtsTable(){
   if(!_dtsData){return;}
   // 客户端过滤（responsibility + 搜索）
   var filtered=_dtsData.filter(function(i){
-    if(_dtsFilter.responsibility&&dtsResponsibility(i.cause_code)!==_dtsFilter.responsibility)return false;
+    if(_dtsFilter.responsibility&&!dtsRespMatches(i.responsibility,_dtsFilter.responsibility))return false;
     if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_name||'')+' '+(i.evaluation_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
@@ -744,7 +744,7 @@ function renderDtsTable(){
       +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="Router.navigate(\'/evaluations/\'+\''+(i.evaluation_id||'')+'\')">'+(i.evaluation_name||i.evaluation_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+dtsAgentLabel(i.agent_type)+'</td>'
-      +'<td style="font-size:14px">'+(DTS_RESP_LABELS[dtsResponsibility(i.cause_code)]||'-')+'</td>'
+      +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
       +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
       +'<td style="font-size:13px;color:var(--sub)">'+fmtDate(i.created_at)+'</td>'
@@ -775,12 +775,16 @@ const DTS_RESP_LABELS={'agent':'Agent','knowledge_base':'知识库'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
 const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
 const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
-const DTS_CAUSE_TO_RESP={'A':'agent','B':'agent','C':'knowledge_base','D':'knowledge_base','E':'agent','F':'agent','G':'knowledge_base','H':'agent'};
-function dtsResponsibility(causeCode){return DTS_CAUSE_TO_RESP[causeCode]||'';}
 function dtsAgentLabel(at){
   if(!at)return '-';
   return at.split(',').map(function(a){return DTS_AGENT_LABELS[a]||a;}).join(', ');
 }
+function dtsRespLabel(resp){
+  if(!resp)return '-';
+  return resp.split(',').map(function(r){return DTS_RESP_LABELS[r]||r;}).join(', ');
+}
+// 责任方过滤：多值 responsibility 中包含选中值即匹配
+function dtsRespMatches(resp,filter){return resp&&resp.split(',').indexOf(filter)>=0;}
 
 async function loadDtsSection(evalId){
   var container=$("dts-section");if(!container)return;
@@ -802,7 +806,7 @@ function renderDtsSection(evalId,issues,stats){
   var byStatus={};
   issues.forEach(function(i){byStatus[i.status]=(byStatus[i.status]||0)+1;});
   var byResp={agent:0,knowledge_base:0};
-  issues.forEach(function(i){var r=dtsResponsibility(i.cause_code);if(byResp.hasOwnProperty(r))byResp[r]++;});
+  issues.forEach(function(i){(i.responsibility||'').split(',').forEach(function(r){if(byResp.hasOwnProperty(r))byResp[r]++;});});
   var byCaseType={FP:0,FN:0};
   issues.forEach(function(i){var t=i.case_type||'';if(byCaseType.hasOwnProperty(t))byCaseType[t]++;});
 
@@ -831,7 +835,7 @@ function renderDtsSection(evalId,issues,stats){
         +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
         +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
-        +'<td style="font-size:14px">'+(DTS_RESP_LABELS[dtsResponsibility(i.cause_code)]||'-')+'</td>'
+        +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
         +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+DTS_STATUS_COLORS[i.status]+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
         +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="Router.navigate(\'/dts/\'+\''+i.dts_id+'\')">详情</button></td>'
@@ -854,7 +858,7 @@ async function renderDtsDetailPage(dtsId){
     var caseData=d.analysis_data||null;
 
     var causeLabel=DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
-    var respLabel=DTS_RESP_LABELS[dtsResponsibility(d.cause_code)]||'-';
+    var respLabel=dtsRespLabel(d.responsibility);
     var caseTypeLabel=DTS_CASE_TYPE_LABELS[d.case_type]||d.case_type||'-';
     var statusLabel=DTS_STATUS_LABELS[d.status]||d.status||'-';
     var statusColor=DTS_STATUS_COLORS[d.status]||'var(--gray)';
