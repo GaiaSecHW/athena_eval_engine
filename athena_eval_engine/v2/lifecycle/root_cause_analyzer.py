@@ -170,7 +170,21 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
      防护机制实践有效性、部署环境约束等代码层面看不到的因素）
    - 验证逻辑不充分：验证条件错误 / 验证覆盖不足
 
-2. 修复建议：针对根因，给出可执行的修复方案
+2. 修复建议：针对根因，给出可执行的修复方案。
+   修复建议必须结构化，指明开发人员具体该改哪里。
+   每条修复建议必须包含：
+   - target：修复责任方，取值：
+     * agent_prompt — 修改 agent 的提示词（如挖掘 agent 或验证 agent 的 system/user prompt 中某段指令）
+     * agent_code — 修改 agent 的代码逻辑（如工具调用判断、验证条件代码）
+     * knowledge_base — 修改知识库内容（如补充缺失知识、修正错误知识）
+     * memory — 修改记忆模块数据
+   - location：具体修改位置。必须指明：
+     * 如果是 agent_prompt：哪个 agent（挖掘/验证）的哪个环节（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
+     * 如果是 agent_code：哪个 agent 的哪个函数/逻辑分支（如"验证 agent 的 sink 点匹配逻辑"）
+     * 如果是 knowledge_base：需要补充/修正哪类知识（如"SQL注入的 sink 点判定知识"）
+     * 如果是 memory：需要补充/修正什么记忆
+   - action：具体修改内容（如"在 prompt 中增加'检查接口是否对外暴露'的指令"）
+   - expected_effect：修改后预期效果（如"agent 在验证时会先检查接口可达性，避免对内网接口误报为可利用漏洞"）
 
 3. L0-L8 断点判定：
    - 如果知识访问链路有断点（L2-L7），照常输出
@@ -198,7 +212,14 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
     "description": "根因描述，500字以内。必须引用 session 中的具体事实，不要推测",
     "human_confirmation_reason": "人工标注的误报原因（从用户消息中提取）"
   },
-  "fix_suggestion": "修复建议，300字以内",
+  "fix_suggestion": [
+    {
+      "target": "agent_prompt|agent_code|knowledge_base|memory",
+      "location": "具体修改位置（哪个 agent 的哪个环节/函数/知识类别）",
+      "action": "具体修改内容",
+      "expected_effect": "修改后预期效果"
+    }
+  ],
   "l0_l7": [
     {
       "l0_source": "来源标记",
@@ -368,7 +389,7 @@ class RootCauseAnalyzer:
                     "category": "no_session",
                     "description": f"无 {chain_type} session",
                 },
-                "fix_suggestion": "",
+                "fix_suggestion": [],
                 "compressed_summaries": [],
                 "l0_l7_breakpoints": [],
             }
@@ -492,7 +513,7 @@ class RootCauseAnalyzer:
                     "category": "llm_error",
                     "description": f"合并压缩 LLM 调用失败: {str(e)[:200]}",
                 },
-                "fix_suggestion": "",
+                "fix_suggestion": [],
                 "l0_l7": [],
             }
 
@@ -501,7 +522,7 @@ class RootCauseAnalyzer:
             "category": "unknown",
             "description": "无最终分析结果",
         })
-        merge_fix = merge_result.get("fix_suggestion", "")
+        merge_fix = merge_result.get("fix_suggestion") or []
         merge_l0_l7 = merge_result.get("l0_l7") or []
 
         # 合并后的 L0-L7 断点也收集

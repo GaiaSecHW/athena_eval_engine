@@ -899,13 +899,19 @@ async function renderDtsDetailPage(dtsId){
         {label:'挖掘',data:caseData.mining||{}},
         {label:'验证',data:caseData.verification||{}}
       ];
+      var TARGET_LABELS={agent_prompt:'Agent提示词',agent_code:'Agent代码',knowledge_base:'知识库',memory:'记忆模块'};
       chainsForRC.forEach(function(ch){
         var rc=ch.data.root_cause||{};
         if(rc&&Object.keys(rc).length){
           rootCauses.push({label:ch.label,category:rc.category||'',description:rc.description||''});
         }
-        var fs=ch.data.fix_suggestion||'';
-        if(fs){fixSuggestions.push({label:ch.label,text:fs});}
+        var fsList=ch.data.fix_suggestion||[];
+        if(typeof fsList==='string'){fsList=[{action:fsList}];}
+        if(Array.isArray(fsList)){
+          fsList.forEach(function(fs){
+            if(fs&&typeof fs==='object'){fixSuggestions.push({label:ch.label,items:fs});}
+          });
+        }
       });
 
       if(rootCauses.length||fixSuggestions.length){
@@ -918,11 +924,23 @@ async function renderDtsDetailPage(dtsId){
           if(rc.category){html+=' <span class="knd">'+rc.category+'</span>';}
           html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rc.description||'(无)').replace(/</g,'&lt;')+'</div></div>';
         });
-        // 修复建议
+        // 修复建议（结构化卡片）
         fixSuggestions.forEach(function(fs){
-          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">修复建议';
+          var fi=fs.items||{};
+          var target=TARGET_LABELS[fi.target]||fi.target||'';
+          var location=fi.location||'';
+          var action=fi.action||'';
+          var expected=fi.expected_effect||'';
+          html+='<div style="margin-bottom:12px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+            +'<div style="font-size:14px;color:var(--sub);padding:8px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+            +'修复建议';
           if(fs.label){html+=' <span class="knd">'+fs.label+'</span>';}
-          html+='</div><div style="font-size:14px;padding:10px 12px;background:rgba(22,163,74,.08);border-radius:8px;white-space:pre-wrap">'+String(fs.text).replace(/</g,'&lt;')+'</div></div>';
+          if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
+          html+='</div>';
+          if(location){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
+          if(action){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
+          if(expected){html+='<div style="padding:8px 12px;font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+          html+='</div>';
         });
         html+='</div>';
       }

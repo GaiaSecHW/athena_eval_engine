@@ -41,6 +41,15 @@ CAUSE_TO_RESPONSIBILITY = {
     "H": "agent",
 }
 
+# ── fix_suggestion.target → 中文标签 ──
+
+_TARGET_LABELS = {
+    "agent_prompt": "Agent提示词",
+    "agent_code": "Agent代码",
+    "knowledge_base": "知识库",
+    "memory": "记忆模块",
+}
+
 
 def _build_breakpoint_desc(
     cause_code: str,
@@ -115,7 +124,7 @@ def generate_dts_issues(
         verify = case.get("verification", {}) or {}
         root_causes = {}
         fix_parts = []
-        for chain_data in (mining, verify):
+        for chain_type, chain_data in (("挖掘", mining), ("验证", verify)):
             rc = chain_data.get("root_cause", {})
             if rc:
                 cat = rc.get("category", "")
@@ -123,9 +132,27 @@ def generate_dts_issues(
                 # 跳过无意义的占位根因
                 if cat and cat not in ("no_session", "llm_error", "unknown"):
                     root_causes[cat] = desc
-            fs = chain_data.get("fix_suggestion", "")
-            if fs:
-                fix_parts.append(fs)
+            fs_list = chain_data.get("fix_suggestion") or []
+            if isinstance(fs_list, list) and fs_list:
+                for fs in fs_list:
+                    if not isinstance(fs, dict):
+                        continue
+                    target = fs.get("target", "")
+                    location = fs.get("location", "")
+                    action = fs.get("action", "")
+                    expected = fs.get("expected_effect", "")
+                    if not (target or location or action):
+                        continue
+                    parts = [f"[{chain_type}链]"]
+                    if target:
+                        parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
+                    if location:
+                        parts.append(f"位置: {location}")
+                    if action:
+                        parts.append(f"修改: {action}")
+                    if expected:
+                        parts.append(f"预期: {expected}")
+                    fix_parts.append(" | ".join(parts))
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
