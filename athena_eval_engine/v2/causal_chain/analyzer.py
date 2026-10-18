@@ -175,7 +175,7 @@ class CausalChainAnalyzer:
                         "returned_content": bp.get("returned_content", ""),
                         "l7_influenced": bp.get("l7_influenced"),
                         "root_cause": chain_data.get("root_cause", {}),
-                        "fix_suggestion": chain_data.get("fix_suggestion", ""),
+                        "fix_suggestion": chain_data.get("fix_suggestion") or [],
                     })
 
         return flat
@@ -293,9 +293,19 @@ class CausalChainAnalyzer:
                     desc = rc.get("description", "")
                     if cat:
                         root_causes[cat] = desc
-                fs = chain_data.get("fix_suggestion", "")
-                if fs:
-                    fix_parts.append(fs)
+                fs_list = chain_data.get("fix_suggestion") or []
+                if isinstance(fs_list, list):
+                    for fs in fs_list:
+                        if isinstance(fs, dict):
+                            parts = []
+                            if fs.get("target"): parts.append(fs["target"])
+                            if fs.get("location"): parts.append(fs["location"])
+                            if fs.get("action"): parts.append(fs["action"])
+                            if fs.get("expected_effect"): parts.append(fs["expected_effect"])
+                            if parts:
+                                fix_parts.append(" | ".join(parts))
+                elif isinstance(fs_list, str) and fs_list:
+                    fix_parts.append(fs_list)
             case_root_cause[cid] = root_causes
             case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
