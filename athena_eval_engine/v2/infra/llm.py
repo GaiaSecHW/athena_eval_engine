@@ -443,12 +443,12 @@ def get_model() -> str:
 
 def set_model(model: str):
     """运行时切换 LLM 模型。"""
+    global DEFAULT_MODEL
     old = _runtime_cfg.get("model", DEFAULT_MODEL)
     _runtime_cfg["model"] = model
     # DEFAULT_MODEL 被 _chat_once 的 `model or DEFAULT_MODEL` 引用，
     # 但 _chat_once 传 model 参数时优先用传入值，不传时用 DEFAULT_MODEL。
     # 更新 DEFAULT_MODEL 使不传 model 参数的调用也生效。
-    global DEFAULT_MODEL
     DEFAULT_MODEL = model
     log("LLM", f"set_model: {old} → {model}")
 
