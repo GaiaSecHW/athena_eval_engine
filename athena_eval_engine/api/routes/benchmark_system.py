@@ -49,6 +49,10 @@ def _apply_config(key: str, value: str):
         set_max_concurrent_evals(int(value))
     elif key == "reasoning_effort":
         llm.set_runtime_config(reasoning_effort=value)
+    elif key == "llm_model":
+        from ...v2.infra import llm as _v2_llm
+        _v2_llm.set_model(value)
+        llm.DEFAULT_MODEL = value
     elif key in _CONFIG_KEYS:
         _conc_set(key, int(value))
 
@@ -63,7 +67,7 @@ def load_system_config():
             cur.execute("SELECT config_key, config_value FROM system_config")
             rows = cur.fetchall()
             for key, value in rows:
-                if key in _CONFIG_KEYS or key == "reasoning_effort":
+                if key in _CONFIG_KEYS or key in ("reasoning_effort", "llm_model"):
                     _apply_config(key, value)
                     log("SYS_CFG", f"loaded {key}={value}")
             if rows:
@@ -109,7 +113,7 @@ def _start_config_watcher():
                     if db_ts is not None and db_ts != _config_version:
                         with _config_version_lock:
                             _config_version = db_ts
-                        _reload_keys = tuple(_CONFIG_KEYS) + ("reasoning_effort",)
+                        _reload_keys = tuple(_CONFIG_KEYS) + ("reasoning_effort", "llm_model")
                         cur.execute(
                             "SELECT config_key, config_value FROM system_config "
                             "WHERE config_key IN (%s)" % ",".join(["%s"] * len(_reload_keys)),
@@ -256,7 +260,7 @@ def _load_config_from_db() -> dict:
             cur = conn.cursor()
             cur.execute("SELECT config_key, config_value FROM system_config")
             for key, value in cur.fetchall():
-                if key in _CONFIG_KEYS:
+                if key in _CONFIG_KEYS or key in ("llm_model", "reasoning_effort"):
                     result[key] = value
         finally:
             conn.close()
@@ -289,6 +293,13 @@ async def get_system_config():
     # llm_max_concurrency 单独走 llm 模块（dict 管理线程）
     result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
     result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
+    # LLM 模型（DB 可配，运行时可切换）
+    _v2_model = ""
+    try:
+        _v2_model = _v2_llm.get_model()
+    except Exception:
+        pass
+    result["llm_model"] = db_cfg.get("llm_model", _v2_model)
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
@@ -344,6 +355,69 @@ def update_system_config(params: SystemConfigUpdate):
     except Exception:
         pass
     return {"updated": updated}
+
+
+@sys_r.get("/llm/status")
+async def get_llm_status():
+    """获取 LLM 网关配置（base_url、model、api_key 脱敏）。"""
+    from ...v2.infra import llm as _v2_llm
+    from ...config_loader import LLM_BASE_URL, LLM_API_KEY
+    base_url = LLM_BASE_URL
+    api_key = LLM_API_KEY
+    # 脱敏：只显示前 8 位 + 后 4 位
+    masked_key = ""
+    if api_key:
+        if len(api_key) <= 12:
+            masked_key = api_key[:4] + "***"
+        else:
+            masked_key = api_key[:8] + "..." + api_key[-4:]
+    # 从 DB 读取运行时覆盖的 model
+    db_model = ""
+    try:
+        db_cfg = await asyncio.to_thread(_load_config_from_db)
+        db_model = db_cfg.get("llm_model", "")
+    except Exception:
+        pass
+    model = db_model or _v2_llm.get_model()
+    return {
+        "base_url": base_url,
+        "model": model,
+        "api_key_masked": masked_key,
+        "api_key_set": bool(api_key),
+    }
+
+
+@sys_r.post("/llm/test")
+async def test_llm_connection(body: dict = {}):
+    """测试 LLM 网关联通性。
+
+    发送一个极简请求检查网关是否可用。
+    可选传入 model 覆盖当前模型测试。
+    """
+    from ...v2.infra import llm as _v2_llm
+    model = body.get("model", "") if body else ""
+    result = await asyncio.to_thread(_v2_llm.test_connection, "", "", model)
+    return result
+
+
+@sys_r.put("/llm/model")
+def update_llm_model(body: dict = {}):
+    """切换 LLM 模型（运行时生效，持久化到 DB）。
+
+    body: {"model": "pro"}
+    """
+    from ...v2.infra import llm as _v2_llm
+    model = body.get("model", "").strip()
+    if not model:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="model 不能为空")
+    _v2_llm.set_model(model)
+    _save_config("llm_model", model)
+    # 同步 v1 模块
+    from ...infrastructure import llm as _v1_llm
+    _v1_llm.DEFAULT_MODEL = model
+    log("SYS_CFG", f"LLM 模型切换: {model}")
+    return {"model": model}
 
 
 @vb.get("/projects")

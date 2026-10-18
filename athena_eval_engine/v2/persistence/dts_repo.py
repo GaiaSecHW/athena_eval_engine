@@ -429,7 +429,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
 
     Returns:
         {
-            "by_status": {"unlocated": N, "improving": N, ...},
+            "by_status": {"open": N, "passed": N, "failed": N},
             "by_agent_type": {"turing": N, "argo": N, ...},
             "by_cause_code": {"A": N, "B": N, ...},
             "total": N,
@@ -535,27 +535,53 @@ def list_dts_by_task(task_id: str) -> list[dict]:
     return result
 
 
-def get_closing_issues_by_case(case_id: str) -> list[dict]:
-    """列出某个 case 中处于 'closing' 状态的问题单。
+def get_post_regression_fpr(evaluation_id: str) -> dict:
+    """计算回归后误报率。
 
-    用于回归验证触发检查：当 case 的所有问题单都进入 closing 状态时，
-    触发回归测试。
+    回归验证后，passed 表示误报已消除，failed 表示误报未消除。
+    回归后误报率 = failed 数 / (passed + failed 数)。
+    open 状态的问题单未参与回归验证，不计入分母。
 
     Args:
-        case_id: case ID。
+        evaluation_id: 评测 ID。
 
     Returns:
-        closing 状态的问题单 dict 列表。
+        {
+            "post_regression_fpr": float | None,  # 0.0-1.0，无回归数据时 None
+            "passed_count": int,
+            "failed_count": int,
+            "verified_total": int,  # passed + failed
+            "open_count": int,       # 未参与回归验证
+            "total": int,            # 全部问题单
+        }
     """
-    sql = (
-        f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}"
-        f" WHERE d.case_id = %s AND d.status = 'closing'"
-        f" ORDER BY d.created_at ASC"
-    )
+    where_clause = " WHERE d.evaluation_id = %s"
+    params = (evaluation_id,)
 
     def _do_query(cur):
-        cur.execute(sql, (case_id,))
+        cur.execute(
+            f"SELECT d.status, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.status",
+            params,
+        )
         return cur.fetchall()
 
     rows = _db_query(_do_query)
-    return [_row_to_dict(r) for r in rows]
+    by_status = {row[0]: row[1] for row in rows} if rows else {}
+
+    passed_count = by_status.get("passed", 0)
+    failed_count = by_status.get("failed", 0)
+    open_count = by_status.get("open", 0)
+    total = passed_count + failed_count + open_count
+    verified_total = passed_count + failed_count
+
+    post_fpr = (failed_count / verified_total) if verified_total > 0 else None
+
+    return {
+        "post_regression_fpr": round(post_fpr, 4) if post_fpr is not None else None,
+        "passed_count": passed_count,
+        "failed_count": failed_count,
+        "verified_total": verified_total,
+        "open_count": open_count,
+        "total": total,
+    }

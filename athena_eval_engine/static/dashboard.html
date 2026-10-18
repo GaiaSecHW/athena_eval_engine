@@ -195,8 +195,7 @@ async function renderHome(){
 
   var dtsTotal=dtsStats.total||0;
   var dtsByStatus=dtsStats.by_status||{};
-  var dtsUnlocated=dtsByStatus.unlocated||0;
-  var dtsImproving=dtsByStatus.improving||0;
+  var dtsOpen=dtsByStatus.open||0;
   var dtsPassed=dtsByStatus.passed||0;
   var dtsFailed=dtsByStatus.failed||0;
 
@@ -220,9 +219,9 @@ async function renderHome(){
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">运行中</div><div class="mc-val" style="color:var(--amber)">'+running+'</div></div>'
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">失败</div><div class="mc-val" style="color:var(--red)">'+failed+'</div></div>'
     +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">问题单</div><div class="mc-val" style="color:var(--acc)">'+dtsTotal+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">已通过</div><div class="mc-val" style="color:var(--green)">'+dtsPassed+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">未定位</div><div class="mc-val" style="color:var(--gray)">'+dtsUnlocated+'</div></div>'
-    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">未通过</div><div class="mc-val" style="color:var(--red)">'+dtsFailed+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">回归通过</div><div class="mc-val" style="color:var(--green)">'+dtsPassed+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">未关闭</div><div class="mc-val" style="color:var(--gray)">'+dtsOpen+'</div></div>'
+    +'<div class="mcard" style="text-align:left;padding:20px"><div class="mc-label">回归不通过</div><div class="mc-val" style="color:var(--red)">'+dtsFailed+'</div></div>'
     +'</div>'
 
     // 问题单状态流水线
@@ -426,6 +425,8 @@ async function loadV2Report(id,st,rs){
   if(!d.lifecycle){
     jget(`/api/v2/evaluations/${id}/report/lifecycle`).then(lc=>{if(lc&&!lc.error){d.lifecycle=lc;renderV2Report(d);}}).catch(()=>{});
   }
+  // 异步加载回归后误报率
+  jget(`/api/v2/dts/post-regression-fpr/${id}`).then(f=>{if(f&&!f.error){d.postRegressionFpr=f;renderV2Report(d);}}).catch(()=>{});
 }
 
 // 指标定义
@@ -549,11 +550,12 @@ function renderV2Report(d){
   var tpCnt=rpData.tp_count||0;
   var fnCnt=rpData.fn_count||0;
   var tnCnt=rpData.tn_count||0;
-  var postFpr=base.post_regression_fpr;
+  var postFprData=d.postRegressionFpr||{};
+  var postFpr=postFprData.post_regression_fpr;
   var baseMetrics='';
   if(evalMode==='runtime'){
     // 运行态：基线=Agent 上报的 case，只显示回归后误报率
-    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">回归验证后重新计算</div></div>';
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFprData.verified_total>0?('未消除 '+postFprData.failed_count+'/'+postFprData.verified_total):'暂无回归验证数据')+'</div></div>';
   }else{
     // 开发态：基线=外部 ground truth，完整 TP/FN/FP/TN
     var baselineTotal=tpCnt+fnCnt+fpCnt+tnCnt;
@@ -569,7 +571,7 @@ function renderV2Report(d){
     if(tpCnt+fpCnt>0){
       baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
     }
-    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">回归验证后重新计算</div></div>';
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFprData.verified_total>0?('未消除 '+postFprData.failed_count+'/'+postFprData.verified_total):'暂无回归验证数据')+'</div></div>';
   }
 
   // 因果链汇总
@@ -656,13 +658,9 @@ async function renderDtsList(){
         <input id="dts-search" placeholder="搜索问题单 ID / 任务 ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
         <select id="dts-f-status" onchange="_dtsFilter.status=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部状态</option>
-          <option value="unlocated">未定位</option>
-          <option value="improving">改进中</option>
-          <option value="confirmed">已确认</option>
-          <option value="closing">关闭中</option>
-          <option value="passed">已通过</option>
-          <option value="failed">未通过</option>
-          <option value="not_issue">非问题</option>
+          <option value="open">未关闭</option>
+          <option value="passed">回归通过</option>
+          <option value="failed">回归不通过</option>
         </select>
         <select id="dts-f-agent" onchange="_dtsFilter.agent_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部 Agent</option>
@@ -769,8 +767,8 @@ function renderDtsStats(stats){
 }
 
 // ===== 问题单（报告内嵌段）=====
-const DTS_STATUS_LABELS={'unlocated':'未定位','improving':'改进中','confirmed':'已确认','closing':'关闭中','passed':'已通过','failed':'未通过','not_issue':'非问题'};
-const DTS_STATUS_COLORS={'unlocated':'var(--gray)','improving':'var(--acc)','confirmed':'var(--amber)','closing':'var(--amber)','passed':'var(--green)','failed':'var(--red)','not_issue':'var(--gray)'};
+const DTS_STATUS_LABELS={'open':'未关闭','passed':'回归通过','failed':'回归不通过'};
+const DTS_STATUS_COLORS={'open':'var(--gray)','passed':'var(--green)','failed':'var(--red)'};
 const DTS_RESP_LABELS={'agent':'Agent','knowledge_base':'知识库'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
 const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
@@ -1310,9 +1308,18 @@ async function renderSystem(){
     <div style="margin-top:20px;display:flex;gap:12px"><button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button><button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button></div>
     <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
     </div>
+    <div class="card" style="margin-top:20px"><h3>LLM 网关配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">LLM 网关地址、模型配置与连通性测试。模型修改后立即生效，Pod 重启后保留。</div>
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div><label style="font-weight:600;font-size:14px">网关地址</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 网关 Base URL（只读，通过环境变量 EVAL_LLM_BASE_URL 配置）</div><input id="cfg_llm_base_url" value="加载中..." readonly style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--sub);font-family:monospace;font-size:13px"></div>
+      <div><label style="font-weight:600;font-size:14px">API Key</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 网关 API Key（只读，通过环境变量 EVAL_LLM_API_KEY 配置）</div><input id="cfg_llm_api_key" value="加载中..." readonly style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--sub);font-family:monospace;font-size:13px"></div>
+      <div><label style="font-weight:600;font-size:14px">模型</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 模型名（如 pro、glm-5.2 等，修改后立即生效）</div><div style="display:flex;gap:8px;align-items:center"><input id="cfg_llm_model" value="${c.llm_model||''}" placeholder="如 pro" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"><button class="btn" style="font-size:13px;padding:6px 16px;white-space:nowrap" onclick="saveLlmModel()">切换模型</button></div></div>
+      <div style="border-top:1px solid var(--bd);padding-top:16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button class="btn g" style="font-size:13px;padding:8px 20px" onclick="testLlmConnection()">测试连通性</button><span id="llm_test_status" style="font-size:13px;color:var(--sub)"></span></div><div id="llm_test_result" style="font-size:13px"></div></div>
+    </div>
+    </div>
     <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div></div>`;
   $("view").innerHTML=h;
   loadDatasources();
+  loadLlmStatus();
 }
 function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
 async function saveSystemConfig(){
@@ -1322,6 +1329,49 @@ async function saveSystemConfig(){
   $("cfg_msg").innerHTML='⏳ 保存中…';
   try{await jput("/api/v1/system/config",body);$("cfg_msg").innerHTML='<span style="color:var(--green)">✓ 已保存并生效</span>';}
   catch(e){$("cfg_msg").innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
+}
+// ===== LLM 网关配置 =====
+async function loadLlmStatus(){
+  try{
+    var s=await jget("/api/v1/system/llm/status");
+    if($("cfg_llm_base_url"))$("cfg_llm_base_url").value=s.base_url||'-';
+    if($("cfg_llm_api_key"))$("cfg_llm_api_key").value=s.api_key_masked||'-';
+    if($("cfg_llm_model"))$("cfg_llm_model").value=s.model||'';
+  }catch(e){}
+}
+async function testLlmConnection(){
+  var st=$("llm_test_status"),rs=$("llm_test_result");
+  if(st)st.innerHTML='⏳ 测试中…';
+  if(rs)rs.innerHTML='';
+  var model='';
+  var mEl=$("cfg_llm_model");
+  if(mEl)model=mEl.value.trim();
+  try{
+    var body={};
+    if(model)body.model=model;
+    var r=await jpost("/api/v1/system/llm/test",body);
+    if(st)st.innerHTML='';
+    if(r.success){
+      if(rs)rs.innerHTML='<div style="padding:10px 14px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green)">✓ 连通正常 — 模型: '+r.model+'，延迟: '+r.latency_ms+'ms，响应: '+(r.response||'').substring(0,50)+'</div>';
+    }else{
+      if(rs)rs.innerHTML='<div style="padding:10px 14px;border-radius:6px;background:rgba(220,38,38,.1);color:var(--red)">✗ 连接失败 — '+r.error+'</div>';
+    }
+  }catch(e){
+    if(st)st.innerHTML='';
+    if(rs)rs.innerHTML='<div style="color:var(--red)">✗ '+e+'</div>';
+  }
+}
+async function saveLlmModel(){
+  var mEl=$("cfg_llm_model");
+  if(!mEl)return;
+  var model=mEl.value.trim();
+  if(!model){alert('请输入模型名');return;}
+  try{
+    await jput("/api/v1/system/llm/model",{model:model});
+    if($("llm_test_result"))$("llm_test_result").innerHTML='<div style="padding:8px 14px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green);font-size:13px">✓ 模型已切换为 '+model+'</div>';
+  }catch(e){
+    if($("llm_test_result"))$("llm_test_result").innerHTML='<div style="color:var(--red)">✗ '+e+'</div>';
+  }
 }
 
 // ===== Agent 数据源配置 =====

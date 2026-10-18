@@ -347,6 +347,15 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN replay_data TEXT AFTER replay_result",
         ],
     },
+    {
+        "id": "020_dts_issue_status_simplify",
+        "desc": "dts_issue 状态精简为 open/passed/failed，移除 improving/confirmed/closing/not_issue",
+        "sql": [
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_chk_1",
+            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_status_chk CHECK (status IN ('open','passed','failed'))",
+            "UPDATE dts_issue SET status='open' WHERE status IN ('unlocated','improving','confirmed','closing','not_issue')",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

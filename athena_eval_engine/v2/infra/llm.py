@@ -422,6 +422,7 @@ def get_active_concurrency() -> int:
 _runtime_cfg = {
     "llm_enabled": LLM_ENABLED,
     "reasoning_effort": "none",  # "none" | "low" | "high" | "max"
+    "model": DEFAULT_MODEL,
 }
 
 
@@ -433,6 +434,113 @@ def set_runtime_config(**kwargs):
     for k, v in kwargs.items():
         if k in _runtime_cfg:
             _runtime_cfg[k] = v
+
+
+def get_model() -> str:
+    """返回当前使用的 LLM 模型名。"""
+    return _runtime_cfg.get("model", DEFAULT_MODEL)
+
+
+def set_model(model: str):
+    """运行时切换 LLM 模型。"""
+    old = _runtime_cfg.get("model", DEFAULT_MODEL)
+    _runtime_cfg["model"] = model
+    # DEFAULT_MODEL 被 _chat_once 的 `model or DEFAULT_MODEL` 引用，
+    # 但 _chat_once 传 model 参数时优先用传入值，不传时用 DEFAULT_MODEL。
+    # 更新 DEFAULT_MODEL 使不传 model 参数的调用也生效。
+    global DEFAULT_MODEL
+    DEFAULT_MODEL = model
+    log("LLM", f"set_model: {old} → {model}")
+
+
+def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> dict:
+    """测试 LLM 网关联通性。
+
+    发送一个极简请求（max_tokens=5），检查是否能正常返回。
+    不占用 gate，不创建线程，直接同步调用。
+
+    Args:
+        api_base: 可选，覆盖默认 base_url。空则用当前配置。
+        api_key: 可选，覆盖默认 api_key。空则用当前配置。
+        model: 可选，覆盖默认 model。空则用当前配置。
+
+    Returns:
+        {"success": bool, "latency_ms": int, "model": str, "error": str}
+    """
+    base = api_base or DEFAULT_API_BASE
+    key = api_key or DEFAULT_API_KEY
+    mdl = model or get_model()
+
+    parsed = urlparse(base)
+    host = parsed.hostname
+    port = parsed.port or (443 if parsed.scheme == "https" else 80)
+    path = parsed.path.rstrip("/") + "/chat/completions"
+
+    payload = json.dumps({
+        "model": mdl,
+        "messages": [{"role": "user", "content": "hi"}],
+        "max_tokens": 5,
+        "stream": False,
+    }).encode("utf-8")
+
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {key}",
+        "Content-Length": str(len(payload)),
+    }
+
+    t0 = time.time()
+    try:
+        conn = http.client.HTTPConnection(host, port, timeout=30)
+        conn.request("POST", path, body=payload, headers=headers)
+        resp = conn.getresponse()
+        resp_body = resp.read().decode("utf-8", errors="replace")
+        conn.close()
+
+        latency_ms = int((time.time() - t0) * 1000)
+
+        if resp.status == 200:
+            try:
+                result = json.loads(resp_body)
+                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                return {
+                    "success": True,
+                    "latency_ms": latency_ms,
+                    "model": mdl,
+                    "response": content[:100],
+                    "error": "",
+                }
+            except Exception:
+                return {
+                    "success": True,
+                    "latency_ms": latency_ms,
+                    "model": mdl,
+                    "response": resp_body[:100],
+                    "error": "",
+                }
+        else:
+            err_msg = resp_body[:300]
+            try:
+                err_json = json.loads(resp_body)
+                err_msg = err_json.get("error", {}).get("message", err_msg)
+            except Exception:
+                pass
+            return {
+                "success": False,
+                "latency_ms": latency_ms,
+                "model": mdl,
+                "response": "",
+                "error": f"HTTP {resp.status}: {err_msg}",
+            }
+    except Exception as e:
+        latency_ms = int((time.time() - t0) * 1000)
+        return {
+            "success": False,
+            "latency_ms": latency_ms,
+            "model": mdl,
+            "response": "",
+            "error": str(e)[:300],
+        }
 
 
 def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,

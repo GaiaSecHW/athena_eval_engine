@@ -232,7 +232,7 @@ def generate_dts_issues(
             "analysis_data_path": analysis_data_path,
             "replay_eval_id": None,
             "replay_result": None,
-            "status": "unlocated",
+            "status": "open",
             "responsibility": responsibility,
         })
 

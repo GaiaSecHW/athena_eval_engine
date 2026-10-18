@@ -4,9 +4,8 @@
 - GET    /api/v2/dts                        — 列出问题单（支持过滤）
 - GET    /api/v2/dts/{dts_id}               — 获取单个问题单详情
 - PUT    /api/v2/dts/{dts_id}               — 更新问题单（root_cause/solution/status）
-- POST   /api/v2/dts/{dts_id}/close         — 关闭问题单（status→closing）
-- POST   /api/v2/dts/{dts_id}/reject        — 驳回问题单（status→not_issue）
 - GET    /api/v2/dts/stats                   — 获取统计
+- GET    /api/v2/dts/post-regression-fpr/{evaluation_id} — 获取回归后误报率
 - GET    /api/v2/dts/by-case/{case_id}       — 按 case 列出问题单
 - GET    /api/v2/dts/by-task/{task_id}       — 按原始数据任务 ID 列出问题单
 - POST   /api/v2/dts/regression-verify      — 回归验证：判断误报是否消除
@@ -23,6 +22,7 @@ from ..persistence.dts_repo import (
     get_dts_stats,
     list_dts_by_case,
     list_dts_by_task,
+    get_post_regression_fpr,
 )
 
 router = APIRouter(prefix="/api/v2/dts", tags=["dts"])
@@ -39,11 +39,6 @@ class DTSUpdate(BaseModel):
     status: str | None = None
     replay_eval_id: str | None = None
     replay_result: str | None = None
-
-
-class DTSReject(BaseModel):
-    """驳回请求体。"""
-    reason: str
 
 
 class RegressionVerifyRequest(BaseModel):
@@ -104,6 +99,33 @@ def get_stats(evaluation_id: str | None = None):
     return stats
 
 
+@router.get("/post-regression-fpr/{evaluation_id}")
+def get_post_fpr(evaluation_id: str):
+    """获取回归后误报率。
+
+    根据问题单的回归验证状态计算：
+    - passed：误报已消除（回归验证后漏洞不存在）
+    - failed：误报未消除（回归验证后漏洞仍存在）
+    - open：未参与回归验证
+
+    回归后误报率 = failed / (passed + failed)。
+    无回归验证数据时返回 None。
+    """
+    try:
+        return get_post_regression_fpr(evaluation_id)
+    except Exception as e:
+        from ...infrastructure.log_util import log
+        log("DTS_API", f"get_post_fpr 查询失败: {str(e)[:200]}")
+        return {
+            "post_regression_fpr": None,
+            "passed_count": 0,
+            "failed_count": 0,
+            "verified_total": 0,
+            "open_count": 0,
+            "total": 0,
+        }
+
+
 @router.get("/by-case/{case_id}")
 def list_by_case(case_id: str):
     """按 case 列出问题单。表不存在时返回空列表。"""
@@ -144,8 +166,8 @@ def regression_verify(req: RegressionVerifyRequest):
 
     输入原始数据的任务 ID、问题单 ID，以及对应漏洞的标题、描述和是否漏洞判定。
     系统根据提交的 is_vulnerable 判断该问题单对应的误报是否已消除：
-    - is_vulnerable=false：漏洞已被消除（误报已修复）→ 问题单状态设为 passed
-    - is_vulnerable=true：漏洞仍然存在（误报未修复）→ 问题单状态设为 failed
+    - is_vulnerable=false：漏洞已被消除（误报已修复）→ 问题单状态设为 passed（关闭）
+    - is_vulnerable=true：漏洞仍然存在（误报未修复）→ 问题单状态设为 failed（未关闭，可再次回归）
 
     同时更新问题单的 replay_eval_id 和 replay_result 字段。
     """
@@ -244,42 +266,3 @@ def update_issue(dts_id: str, update: DTSUpdate):
         raise HTTPException(status_code=500, detail=f"更新问题单 '{dts_id}' 失败")
 
     return get_dts_issue(dts_id)
-
-
-@router.post("/{dts_id}/close")
-def close_issue(dts_id: str):
-    """关闭问题单（status→closing，设置 closed_at）。"""
-    existing = get_dts_issue(dts_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
-
-    if existing["status"] in ("passed", "failed", "not_issue"):
-        raise HTTPException(
-            status_code=400,
-            detail=f"问题单 '{dts_id}' 已在终态: {existing['status']}",
-        )
-
-    success = update_dts_issue(dts_id, {
-        "status": "closing",
-    })
-    if not success:
-        raise HTTPException(status_code=500, detail=f"关闭问题单 '{dts_id}' 失败")
-
-    return {"dts_id": dts_id, "status": "closing"}
-
-
-@router.post("/{dts_id}/reject")
-def reject_issue(dts_id: str, body: DTSReject):
-    """驳回问题单（status→not_issue，需要理由）。"""
-    existing = get_dts_issue(dts_id)
-    if existing is None:
-        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
-
-    success = update_dts_issue(dts_id, {
-        "status": "not_issue",
-        "root_cause": f"[驳回] {body.reason}",
-    })
-    if not success:
-        raise HTTPException(status_code=500, detail=f"驳回问题单 '{dts_id}' 失败")
-
-    return {"dts_id": dts_id, "status": "not_issue", "reason": body.reason}
