@@ -123,9 +123,11 @@ class CaseSessionMatcher:
                 if cid and title:
                     ac_title_map[cid] = title
 
-        # 只对误报（NON_VULNERABLE）case 进行匹配
+        # 误报 case（NON_VULNERABLE）：finding 命中 = FP，未命中 = TN
+        # 漏报 case（VULNERABLE）：finding 命中 = TP，未命中 = FN
+        # FN case 用基线 sink 点 source_file 扫描 trace 找 session
         target_cases = [(cid, cd) for cid, cd in case_details.items()
-                        if cd.get("expected_label") == "NON_VULNERABLE"]
+                        if cd.get("expected_label") in ("NON_VULNERABLE", "VULNERABLE")]
 
         log("MATCH",
             f"{eval_mode} 匹配: {len(target_cases)} 个 case, "
@@ -201,6 +203,7 @@ class CaseSessionMatcher:
             # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id），
             # 但 vulnerability_analyze/verify 的 result 文本标题与告警中心 title 不一致，
             # 导致 title 精确匹配失败。用 case_id 直接从 vuln_id_to_sessions 查找。
+            verify_match_detail = ""
             if not verify_sessions:
                 for dp in verify_packs:
                     v2s = (dp.session_graph or {}).get("vuln_id_to_sessions", {})
@@ -224,15 +227,58 @@ class CaseSessionMatcher:
                             match_method_used += "+vuln_id_map"
                         break
 
-            # 判定 outcome：误报 case，finding 命中 = FP，未命中 = TN
+            # ── 验证 session 缺失诊断 ──
+            # 有挖掘 session 但无验证 session 时，扫描验证 agent 全部 events
+            # 查找 case_id 的任何出现，明确报告数据断链位置：
+            #   - 验证 agent trace 中根本不存在此 case_id（挖掘→验证之间数据断链）
+            #   - 存在但匹配逻辑未命中（匹配逻辑需改进）
+            if mining_sessions and not verify_sessions:
+                verify_match_detail = self._diagnose_verify_gap(
+                    cid, ac_case_id, verify_packs)
+
+            # 判定 outcome：
+            # - 误报 case（NON_VULNERABLE）：finding 命中 = FP，未命中 = TN
+            # - 漏报 case（VULNERABLE）：finding 命中 = TP，未命中 = FN
+            #   FN case 用基线 sink 点 source_file 扫描 trace 找 session
             all_sessions = mining_sessions + verify_sessions
-            outcome = "FP" if all_sessions else "TN"
+            if expected_label == "NON_VULNERABLE":
+                outcome = "FP" if all_sessions else "TN"
+            else:  # VULNERABLE
+                if all_sessions:
+                    outcome = "TP"
+                else:
+                    # FN case：用 source_file 扫描 trace 找 session
+                    source_file = cd.get("source_file", "")
+                    if source_file:
+                        from .sink_search_scanner import SinkSearchScanner
+                        scanner = SinkSearchScanner()
+                        sink_hits = scanner.scan(source_file, data_packs)
+                        for at, sids in sink_hits.items():
+                            for sid in sids:
+                                self._classify_session(
+                                    sid, at,
+                                    mining_sessions, verify_sessions)
+                        if sink_hits:
+                            match_method_used = (match_method_used +
+                                "+sink_scan" if match_method_used
+                                else "sink_scan")
+                    all_sessions = mining_sessions + verify_sessions
+                    outcome = "FN" if not all_sessions else "TP"
 
             matched = bool(all_sessions)
             method = "matched" if matched else "unmatched"
-            detail = (f"{len(mining_sessions)} × mining, "
-                      f"{len(verify_sessions)} × verify ({match_method_used})"
-                      if all_sessions else "未匹配")
+            detail_parts = []
+            if all_sessions:
+                detail_parts.append(
+                    f"{len(mining_sessions)} × mining, "
+                    f"{len(verify_sessions)} × verify ({match_method_used})")
+                if verify_match_detail:
+                    detail_parts.append(verify_match_detail)
+            else:
+                detail_parts.append("未匹配")
+                if verify_match_detail:
+                    detail_parts.append(verify_match_detail)
+            detail = " | ".join(detail_parts)
 
             results.append({
                 "case_id": cid,
@@ -251,12 +297,19 @@ class CaseSessionMatcher:
             log("MATCH",
                 f"case {cid}: outcome={outcome}, method={method}, "
                 f"mining={len(mining_sessions)}, verify={len(verify_sessions)} "
-                f"sessions ({match_method_used})",
+                f"sessions ({match_method_used})"
+                + (f" | {verify_match_detail}" if verify_match_detail else ""),
                 eval_id=evaluation_id)
 
         matched_count = sum(1 for r in results if r["match_method"] != "unmatched")
+        outcome_counts = {
+            o: sum(1 for r in results if r["outcome"] == o)
+            for o in ("FP", "TN", "TP", "FN")
+        }
         log("MATCH",
-            f"匹配完成: {matched_count}/{len(target_cases)} case 命中",
+            f"匹配完成: {matched_count}/{len(target_cases)} case 命中, "
+            f"FP={outcome_counts['FP']}, TN={outcome_counts['TN']}, "
+            f"TP={outcome_counts['TP']}, FN={outcome_counts['FN']}",
             eval_id=evaluation_id)
 
         return results
@@ -275,6 +328,116 @@ class CaseSessionMatcher:
         else:
             if sid not in mining_sessions:
                 mining_sessions.append(sid)
+
+    def _diagnose_verify_gap(
+        self,
+        case_id: str,
+        ac_case_id: str,
+        verify_packs: list[DataPack],
+    ) -> str:
+        """诊断验证 session 缺失原因。
+
+        有挖掘 session 但无验证 session 时，扫描验证 agent 全部 events，
+        查找 case_id 的任何出现，明确报告数据断链位置：
+
+        - case_id 出现在验证 agent events 中但未命中匹配逻辑
+          → 匹配逻辑有 bug，需改进
+        - case_id 完全不出现在验证 agent events 中
+          → 挖掘 agent 上报的漏洞未传递给验证 agent（数据断链在挖掘→验证之间）
+
+        Returns:
+            诊断描述字符串。空字符串表示无法诊断（无验证 agent data pack）。
+        """
+        if not verify_packs:
+            return "无验证 agent trace（挖掘→验证之间数据断链）"
+
+        # 收集验证 agent trace 中所有出现过的 case_id
+        # 搜索范围：input_json/output_json 的所有值 + session_graph 的 vuln_id_to_sessions keys
+        found_case_ids: set[str] = set()
+        found_locations: list[str] = []  # 记录 case_id 出现的位置（供调试）
+
+        search_ids = {case_id}
+        if ac_case_id and ac_case_id != case_id:
+            search_ids.add(ac_case_id)
+
+        for dp in verify_packs:
+            # 1. 从 vuln_id_to_sessions 收集所有已知 vuln_id
+            v2s = (dp.session_graph or {}).get("vuln_id_to_sessions", {})
+            if v2s:
+                found_case_ids.update(str(k) for k in v2s.keys())
+
+            # 2. 扫描 events 的 input_json / output_json
+            for ev in (dp.events or []):
+                for search_id in search_ids:
+                    if self._event_contains(ev, search_id):
+                        loc = (f"{dp.agent_type}/{ev.session_id or '?'}"
+                               f"/{ev.tool_name or ev.event_type}")
+                        if loc not in found_locations:
+                            found_locations.append(loc)
+                        found_case_ids.add(search_id)
+
+            # 3. 扫描 session_graph.sessions 的 metadata
+            sessions = (dp.session_graph or {}).get("sessions", {})
+            for sid, sdata in sessions.items():
+                sdata_d = sdata if isinstance(sdata, dict) else {}
+                # session metadata 可能含 chimera_vuln_id / vulnerability_id
+                for meta_key in ("chimera_vuln_id", "vulnerability_id",
+                                 "vuln_id", "case_id"):
+                    meta_val = str(sdata_d.get(meta_key, "") or "")
+                    if meta_val:
+                        found_case_ids.add(meta_val)
+                        if meta_val in search_ids:
+                            loc = f"{dp.agent_type}/{sid}/metadata.{meta_key}"
+                            if loc not in found_locations:
+                                found_locations.append(loc)
+
+        # 生成诊断
+        if found_locations:
+            # case_id 出现在验证 agent trace 中但匹配逻辑未命中
+            return (f"验证 agent trace 中存在 case_id 但匹配逻辑未命中"
+                    f"（出现在: {', '.join(found_locations[:3])}"
+                    f"{'...' if len(found_locations) > 3 else ''}）")
+
+        # case_id 完全不出现在验证 agent trace 中
+        # 报告验证 agent trace 中实际有哪些 vuln_id（供对比）
+        known_vuln_ids = sorted(found_case_ids)[:10]
+        if known_vuln_ids:
+            return (f"验证 agent trace 中不存在此 case_id"
+                    f"（挖掘→验证之间数据断链；"
+                    f"验证 agent 共有 {len(found_case_ids)} 个 vuln_id: "
+                    f"{', '.join(known_vuln_ids)}"
+                    f"{'...' if len(found_case_ids) > 10 else ''}）")
+        return ("验证 agent trace 中不存在此 case_id"
+                "（挖掘→验证之间数据断链；验证 agent 无 vuln_id 记录）")
+
+    @staticmethod
+    def _event_contains(ev, search_id: str) -> bool:
+        """检查 RawEvent 的 input_json / output_json 中是否包含 search_id。"""
+        if not search_id:
+            return False
+
+        def _search_in_obj(obj) -> bool:
+            if obj is None:
+                return False
+            if isinstance(obj, str):
+                return search_id in obj
+            if isinstance(obj, dict):
+                for v in obj.values():
+                    if _search_in_obj(v):
+                        return True
+                return False
+            if isinstance(obj, list):
+                for item in obj:
+                    if _search_in_obj(item):
+                        return True
+                return False
+            return False
+
+        if _search_in_obj(ev.input_json):
+            return True
+        if _search_in_obj(ev.output_json):
+            return True
+        return False
 
     def _build_baseline_ac_map(
         self,

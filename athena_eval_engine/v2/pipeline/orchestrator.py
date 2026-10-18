@@ -471,6 +471,8 @@ class Orchestrator:
                 "outcomes": {
                     "FP": sum(1 for r in case_session_matches if r["outcome"] == "FP"),
                     "TN": sum(1 for r in case_session_matches if r["outcome"] == "TN"),
+                    "TP": sum(1 for r in case_session_matches if r["outcome"] == "TP"),
+                    "FN": sum(1 for r in case_session_matches if r["outcome"] == "FN"),
                 },
                 "matches": case_session_matches,
             })
@@ -483,20 +485,23 @@ class Orchestrator:
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
                 return
 
-            # ── ROOT_CAUSE_ANALYSIS（FP case 独立压缩 + 合并输出根因分析）──
+            # ── ROOT_CAUSE_ANALYSIS（FP + FN case 独立压缩 + 合并输出根因分析）──
             _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
-            # 补充人工标注误报原因到 fp_cases，供根因分析使用
-            for fc in fp_cases:
+            fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
+            # 补充人工标注误报原因到 fp_cases/fn_cases，供根因分析使用
+            for fc in fp_cases + fn_cases:
                 cd = case_details.get(fc.get("case_id", ""), {})
                 fc["human_confirmation_summary"] = cd.get(
                     "human_confirmation_summary", "")
                 fc["summary"] = cd.get("summary", "")
-            if fp_cases:
+            root_cause_cases = fp_cases + fn_cases
+            if root_cause_cases:
                 _set_progress(evaluation_id,
-                              f"根因分析中... {len(fp_cases)} 个 FP case")
+                              f"根因分析中... {len(fp_cases)} FP + "
+                              f"{len(fn_cases)} FN case")
                 from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
                 rca = RootCauseAnalyzer()
                 # 从 manifest 取 project_id（知识库主动验证用）
@@ -506,7 +511,7 @@ class Orchestrator:
                 ]
                 root_cause_project_id = project_ids[0] if project_ids else ""
                 root_cause_results = rca.analyze(
-                    evaluation_id, fp_cases, data_packs,
+                    evaluation_id, root_cause_cases, data_packs,
                     cancel_cb=_cancel_cb,
                     project_id=root_cause_project_id,
                 )
@@ -514,6 +519,7 @@ class Orchestrator:
                 # debug dump：ROOT_CAUSE 中间数据
                 self._dump_debug(reports_dir, evaluation_id, "root_cause", {
                     "total_fp": len(fp_cases),
+                    "total_fn": len(fn_cases),
                     "analyzed": len(root_cause_results),
                     "results": root_cause_results,
                 })
@@ -527,7 +533,7 @@ class Orchestrator:
                     return
             else:
                 root_cause_results = []
-                log("ORCH", "无 FP case，跳过根因分析")
+                log("ORCH", "无 FP/FN case，跳过根因分析")
 
             # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
             try:
@@ -1316,27 +1322,9 @@ class Orchestrator:
         TP/FN 从告警中心数据与基线对比获取。
         FP/TN 从 case_session_matches 获取（case_session_matcher 已计算）。
         """
-        # TP/FN: 从告警中心数据计算
-        tp_count = 0
-        fn_count = 0
-
-        # 告警中心有匹配的基线 VULNERABLE case → TP
-        ac_cases = alert_center_data.get("cases", [])
-        ac_case_ids = set()
-        for ac in ac_cases:
-            ac_id = ac.get("case_id") or ac.get("id") or ""
-            if ac_id:
-                ac_case_ids.add(ac_id)
-
-        for cid, cd in case_details.items():
-            expected = cd.get("expected_label", "VULNERABLE").upper()
-            if expected == "VULNERABLE":
-                if cid in ac_case_ids:
-                    tp_count += 1
-                else:
-                    fn_count += 1
-
-        # FP/TN: 从 case_session_matches 获取
+        # TP/FN/FP/TN: 从 case_session_matches 获取（case_session_matcher 已判定）
+        tp_count = sum(1 for r in case_session_matches if r.get("outcome") == "TP")
+        fn_count = sum(1 for r in case_session_matches if r.get("outcome") == "FN")
         fp_count = sum(1 for r in case_session_matches if r.get("outcome") == "FP")
         tn_count = sum(1 for r in case_session_matches if r.get("outcome") == "TN")
 
@@ -1348,9 +1336,14 @@ class Orchestrator:
         precision_denom = tp_count + fp_count
         precision_rate = (tp_count / precision_denom) if precision_denom > 0 else None
 
+        # 误报率 = FP / (FP + TN)
+        fpr_denom = fp_count + tn_count
+        fpr_rate = (fp_count / fpr_denom) if fpr_denom > 0 else None
+
         result = {
             "recall_rate": round(recall_rate, 4) if recall_rate is not None else None,
             "precision_rate": round(precision_rate, 4) if precision_rate is not None else None,
+            "fpr_rate": round(fpr_rate, 4) if fpr_rate is not None else None,
             "tp_count": tp_count,
             "fn_count": fn_count,
             "fp_count": fp_count,
@@ -1358,6 +1351,7 @@ class Orchestrator:
         }
         log("REPORT", f"召回率={result['recall_rate']}, "
               f"准确率={result['precision_rate']}, "
+              f"误报率={result['fpr_rate']}, "
               f"TP={tp_count}, FN={fn_count}, FP={fp_count}, TN={tn_count}")
         return result
 
@@ -1392,9 +1386,11 @@ class Orchestrator:
             "recall_precision": {
                 "recall_rate": recall_precision.get("recall_rate"),
                 "precision_rate": recall_precision.get("precision_rate"),
+                "fpr_rate": recall_precision.get("fpr_rate"),
                 "tp_count": recall_precision.get("tp_count", 0),
                 "fn_count": recall_precision.get("fn_count", 0),
                 "fp_count": recall_precision.get("fp_count", 0),
+                "tn_count": recall_precision.get("tn_count", 0),
             },
             "causal_chain_summary": {
                 "cause_summary": causal_chain.get("cause_summary", {}),
@@ -1559,6 +1555,10 @@ class Orchestrator:
             "db_columns": db_columns,
             "sessions": session_list,
             "edges": edge_list,
+            "vuln_id_to_sessions": {
+                str(k): sorted(list(v)) if isinstance(v, (set, list)) else list(v)
+                for k, v in (sg.get("vuln_id_to_sessions", {}) or {}).items()
+            },
         }
 
     def _fix_check_constraint(self, evaluation_id: str, status: str):

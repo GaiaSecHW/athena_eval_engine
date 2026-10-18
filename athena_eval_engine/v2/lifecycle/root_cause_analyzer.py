@@ -34,7 +34,12 @@ from ...infrastructure.log_util import log
 
 # ── 系统 prompt（固定）──
 
-_SYSTEM_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的误报原因。
+_SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的原因。
+
+该漏洞可能是误报（FP，agent 报了但实际不是漏洞）或漏报（FN，agent 漏报了真实漏洞）。
+用户消息中会标明 outcome=FP 或 outcome=FN。
+- FP：分析 agent 为什么误报——知识访问问题、推理错误、验证维度遗漏等
+- FN：分析 agent 为什么漏报——挖掘链没找到 sink 点、验证链误判为非漏洞、知识缺失导致没查到等
 
 # 任务
 
@@ -110,10 +115,16 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
 判定规则：
 - 逐级判定，不通过的级别即为断点，后续级别填 null
 - L7 三种结果：positive（正确+一致=正向）、negative（错误+一致=负向，知识方向对但内容有误/过时）、null（不一致=中性，知识未影响结论）
-- 如果 session 中没有知识访问行为，L1-L7 全部填 null
+- **session 中没有知识访问行为时的判定（关键）**：
+  - 仍要判 L1：推理任务是否需要外部知识支撑？判断标准：agent 面对的推理任务（如验证网络可达性、判断接口暴露面、评估防护机制有效性等）是否需要知识库/记忆中已有的方法、模式、经验来支撑
+  - 如果 L1=true（需要知识）但 L2=false（agent 没发起访问）→ 断点 L2，cause_code 填 "A"（该查没查）
+    - 在 l0_l7 数组中新增一条记录，l0_source 填空，l1_need=true，l2_initiated=false，L3-L7 填 null
+    - query_content 填"agent 未发起知识/记忆访问，但推理任务需要知识支撑（具体说明需要什么知识）"
+    - returned_content 填空
+  - 如果 L1=false（不需要知识），L2-L7 全部填 null，不产生知识访问断点
 - 如果 L1-L7 全部通过（L7=positive），但 agent 仍误报，执行 L8 判定：
   - L8 断点表示知识访问链路无问题，但存在其他导致误报的原因
-  - 常见场景：验证维度遗漏（如未验证接口网络可达性、部署环境约束等）、推理逻辑错误、验证条件不充分等
+  - 常见场景：推理逻辑错误、验证条件不充分等（注意：验证维度遗漏不一定是 L8——如果遗漏的维度需要知识支撑，应是 L2 断点）
   - cause_code 填 "H"，breakpoint 填 "L8"
   - 在 l0_l7 数组中新增一条记录，l0_source 填空，query_content 填问题总结，returned_content 填空
 - 如果 L1=false（不需要知识），后续级别全部 null，不产生断点
@@ -145,7 +156,11 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
 只返回 JSON，不要任何额外文字。"""
 
 
-_MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误报漏洞的多个 session 的独立压缩摘要，以及人工标注的误报原因。
+_MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的多个 session 的独立压缩摘要，以及人工标注的原因。
+
+该漏洞可能是误报（FP）或漏报（FN）。用户消息中会标明 outcome=FP 或 outcome=FN。
+- FP：分析 agent 为什么误报——知识访问问题、推理错误、验证维度遗漏等
+- FN：分析 agent 为什么漏报——挖掘链没找到 sink 点、验证链误判为非漏洞、知识缺失导致没查到等
 
 # 事实依据要求
 
@@ -161,14 +176,15 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
 ## 合并模式
 将多个 session 的压缩摘要合并为最终结论。你需要：
 
-1. 误报根因：为什么 agent 会误报这个漏洞？你已知人工标注的误报原因（在用户消息中给出），
-   需要分析 agent 在 session 链中的哪个环节出了问题，导致没有发现人工标注的误报原因。
+1. 根因分析：为什么 agent 会误报（FP）或漏报（FN）这个漏洞？
+   你已知人工标注的原因（在用户消息中给出），需要分析 agent 在 session 链中的哪个环节出了问题。
    从以下维度分析：
    - 知识访问问题：该查没查 / 查了但查询不准 / 知识错误 / 查到没用
    - 推理问题：逻辑跳跃 / 忽略关键证据 / 错误关联
    - 验证维度遗漏：agent 验证了哪些维度，遗漏了哪些维度（如接口实际网络可达性、
      防护机制实践有效性、部署环境约束等代码层面看不到的因素）
    - 验证逻辑不充分：验证条件错误 / 验证覆盖不足
+   - FN 漏报特有：挖掘链未覆盖 sink 点 / 验证链误判为非漏洞 / 知识缺失导致未识别漏洞模式
 
 2. 修复建议：针对根因，给出可执行的修复方案。
    修复建议必须结构化，指明开发人员具体该改哪里。
@@ -188,19 +204,24 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
 
 3. L0-L8 断点判定：
    - 如果知识访问链路有断点（L2-L7），照常输出
+   - **如果 session 中没有知识访问行为**：
+     - 判 L1：推理任务是否需要知识支撑（如验证网络可达性、判断接口暴露面、评估防护机制等需要知识库中的方法/经验）
+     - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
+     - L1=false → 不产生知识访问断点
    - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
      - cause_code 填 "H"
      - breakpoint 填 "L8"
-     - query_content 填问题总结（如"验证维度遗漏：未验证接口网络可达性"）
+     - query_content 填问题总结（如"验证逻辑不充分：验证条件错误"）
      - l0_source 填空字符串
-   - L8 覆盖知识访问之外的所有误报原因：推理逻辑错误、验证维度遗漏、验证不充分等
+   - L8 仅覆盖知识访问链路确实无问题的场景（L7=positive 或 L1=false）
+   - **注意：验证维度遗漏不一定是 L8**——如果遗漏的验证维度需要知识支撑（如不知道怎么查网络可达性），应判 L2 断点（该查没查），不是 L8
 
 ## 断点归属规则
 
 断点应反映导致误报的**主要原因**，不是所有 L6=false 的知识访问都是误报根因。
-- 如果 agent 读了知识但没用（L6=false），但这与人工标注的误报原因无关（如误报原因是"接口非对外暴露"），则该知识访问的 L6=false 只是记录，不是主要断点
-- 此时主要断点应为 L8（其他问题），在 query_content 中填写人工标注的误报原因
-- 只有人工标注的误报原因与知识访问直接相关时（如"该查没查"、"查了错误的知识"），才将知识访问断点作为主要断点
+- 如果 agent 读了知识但没用（L6=false），但这与人工标注的误报原因无关，则该知识访问的 L6=false 只是记录，不是主要断点
+- 如果 agent 没查知识（L2=false），但推理任务需要知识支撑（L1=true），这是 L2 断点（该查没查），不是 L8
+- 只有人工标注的误报原因与知识访问无关（L1=false）或知识访问链路全程通过（L7=positive）时，才判 L8
 
 # 输出格式
 
@@ -208,7 +229,7 @@ _MERGE_PROMPT = """你是漏洞误报根因分析专家。你将收到一条误�
 {
   "summary": "合并后的最终摘要，3000字以内",
   "root_cause": {
-    "category": "knowledge_gap|query_inaccurate|knowledge_error|reasoning_flaw|verification_dimension_missing|verification_insufficient",
+    "category": "knowledge_gap|query_inaccurate|knowledge_error|reasoning_flaw|verification_dimension_missing|verification_insufficient|mining_coverage_gap|verification_misjudge",
     "description": "根因描述，500字以内。必须引用 session 中的具体事实，不要推测",
     "human_confirmation_reason": "人工标注的误报原因（从用户消息中提取）"
   },
@@ -252,20 +273,20 @@ class RootCauseAnalyzer:
         cancel_cb=None,
         project_id: str = "",
     ) -> list[dict]:
-        """对每个 FP case 的挖掘 agent session 和验证 agent session 各自做独立压缩 + 合并输出根因分析。
+        """对每个 FP/FN case 的挖掘 agent session 和验证 agent session 各自做独立压缩 + 合并输出根因分析。
 
         Args:
             evaluation_id: 评测 ID
-            fp_cases: case_matching 结果中 outcome=FP 的 case 列表，
+            fp_cases: case_matching 结果中 outcome=FP 或 FN 的 case 列表，
                       每项含 case_id, mining_sessions, verify_sessions,
-                      vuln_title, description
+                      vuln_title, description, outcome
             data_packs: DataPack 列表
             cancel_cb: 取消回调
             project_id: 项目 ID（知识库主动验证用，空则跳过 Athena API 查询）
 
         Returns:
             分析结果列表，每项含：
-            - case_id, vuln_title, description
+            - case_id, vuln_title, description, outcome
             - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
             - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
         """
@@ -295,24 +316,26 @@ class RootCauseAnalyzer:
             vuln_title = case.get("vuln_title", "")
             desc = case.get("description", "")
             summary = case.get("summary", "")
+            outcome = case.get("outcome", "FP")
             mining_chain = list(case.get("mining_sessions", []))
             verify_chain = list(case.get("verify_sessions", []))
             fp_reason = case.get("human_confirmation_summary", "")
 
             log("ROOT_CAUSE",
-                f"case {case_id}: 开始分析 (vuln_title={vuln_title})",
+                f"case {case_id}: 开始分析 (outcome={outcome}, "
+                f"vuln_title={vuln_title})",
                 eval_id=evaluation_id)
 
             mining_result = self._analyze_chain(
                 evaluation_id, case_id, "mining",
                 mining_chain, session_events,
-                vuln_title, desc, fp_reason, cancel_cb,
+                vuln_title, desc, fp_reason, outcome, cancel_cb,
                 project_id=project_id,
             )
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
                 verify_chain, session_events,
-                vuln_title, desc, fp_reason, cancel_cb,
+                vuln_title, desc, fp_reason, outcome, cancel_cb,
                 project_id=project_id,
             )
 
@@ -335,6 +358,7 @@ class RootCauseAnalyzer:
                 "vuln_title": vuln_title,
                 "description": desc,
                 "summary": summary,
+                "outcome": case.get("outcome", ""),
                 "human_confirmation_summary": fp_reason,
                 "mining": {**mining_result, "agent_type": mining_agent_type},
                 "verification": {**verification_result, "agent_type": verify_agent_type},
@@ -366,6 +390,7 @@ class RootCauseAnalyzer:
         vuln_title: str,
         desc: str,
         fp_reason: str = "",
+        outcome: str = "",
         cancel_cb=None,
         project_id: str = "",
     ) -> dict:
@@ -376,7 +401,8 @@ class RootCauseAnalyzer:
 
         chain: 已排好序的 session_id 列表（根→叶子）。
         chain_type: "mining" 或 "verification"，仅用于日志。
-        fp_reason: 人工标注的误报原因，传给 LLM 做根因分析。
+        fp_reason: 人工标注的原因，传给 LLM 做根因分析。
+        outcome: "FP" 或 "FN"，传给 LLM 区分误报/漏报分析方向。
         project_id: 项目 ID，用于知识库主动验证 L4。
         """
         if not chain:
@@ -414,7 +440,8 @@ class RootCauseAnalyzer:
             user_content = (
                 f"漏洞标题：{vuln_title}\n"
                 f"漏洞描述：{desc}\n"
-                f"人工标注的误报原因：{fp_reason or '（未给出）'}\n\n"
+                f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
+                f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
                 f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
                 f"{session_text}"
             )
@@ -487,7 +514,7 @@ class RootCauseAnalyzer:
 
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
-            chain_type, vuln_title, desc, fp_reason,
+            chain_type, vuln_title, desc, fp_reason, outcome,
             compressed_summaries,
         )
 
@@ -542,7 +569,7 @@ class RootCauseAnalyzer:
 
         # ── L4 独立验证 ──
         l4_verification = self._verify_l4_independently(
-            case_id, chain_type, vuln_title, fp_reason,
+            case_id, chain_type, vuln_title, fp_reason, outcome,
             all_breakpoints, project_id, cancel_cb,
         )
 
@@ -562,13 +589,15 @@ class RootCauseAnalyzer:
         vuln_title: str,
         desc: str,
         fp_reason: str,
+        outcome: str,
         compressed_summaries: list[dict],
     ) -> str:
         """构建合并压缩的用户消息。"""
         parts = [
             f"漏洞标题：{vuln_title}",
             f"漏洞描述：{desc}",
-            f"人工标注的误报原因：{fp_reason or '（未给出）'}",
+            f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）",
+            f"人工标注的原因：{fp_reason or '（未给出）'}",
             f"\n以下是 {chain_type} 链中 {len(compressed_summaries)} 个 session "
             f"的独立压缩摘要：\n",
         ]
@@ -596,6 +625,7 @@ class RootCauseAnalyzer:
         chain_type: str,
         vuln_title: str,
         fp_reason: str,
+        outcome: str,
         all_breakpoints: list[dict],
         project_id: str,
         cancel_cb=None,
@@ -603,6 +633,12 @@ class RootCauseAnalyzer:
         """L4 独立验证：当 L2 断点存在时，主动搜索知识库验证知识是否存在。
 
         只在有 L2 断点（agent 该查没查）时触发。
+
+        闭环逻辑：
+        - L2 断点（cause_code A，该查没查）→ 主动查知识库
+        - 知识库有知识（l4=true）→ 责任在 agent（该查没查），cause_code 保持 A
+        - 知识库没有知识（l4=false）→ 责任在知识库（覆盖度缺口），
+          cause_code 改为 C（查了没得），breakpoint 改为 L4
         """
         has_l2_break = any(
             bp.get("breakpoint") == "L2" for bp in all_breakpoints
@@ -627,6 +663,39 @@ class RootCauseAnalyzer:
                 f"case {case_id}: {chain_type} L4 独立验证完成: "
                 f"l4={result.get('l4_knowledge_exists')}, "
                 f"candidates={result.get('candidate_files', 0)}")
+
+            # ── 闭环反馈：根据 L4 验证结果修正断点 ──
+            l4_exists = result.get("l4_knowledge_exists")
+            if l4_exists is False:
+                # 知识库没有相关知识 → 责任在知识库（覆盖度缺口）
+                # L2 断点（该查没查，cause_code A）→ L4 断点（查了没得，cause_code C）
+                changed = 0
+                for bp in all_breakpoints:
+                    if bp.get("breakpoint") == "L2" \
+                            and bp.get("cause_code") == "A":
+                        bp["breakpoint"] = "L4"
+                        bp["cause_code"] = "C"
+                        bp["l4_exists"] = False
+                        # 补充 query_content 说明知识库覆盖度缺口
+                        old_qc = bp.get("query_content", "")
+                        bp["query_content"] = (
+                            f"{old_qc} | L4 独立验证：知识库中未找到"
+                            f"能消减此误报的知识"
+                            f"（{result.get('summary', '')}）"
+                        )
+                        changed += 1
+                if changed:
+                    log("ROOT_CAUSE",
+                        f"case {case_id}: {chain_type} L4 验证反馈："
+                        f"知识库无相关知识，{changed} 个 L2 断点"
+                        f"修正为 L4/cause_code C（知识库覆盖度缺口）")
+            elif l4_exists is True:
+                # 知识库有知识 → 责任在 agent（该查没查），cause_code 保持 A
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 验证反馈："
+                    f"知识库有相关知识，L2 断点保持 cause_code A"
+                    f"（agent 该查没查，责任在 agent）")
+
             return result
         except Exception as e:
             log("ROOT_CAUSE",

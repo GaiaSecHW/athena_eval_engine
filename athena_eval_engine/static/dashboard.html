@@ -543,7 +543,7 @@ function renderV2Report(d){
   metricResults.forEach(function(m){mById[m.metric_id]=m;});
   // 基础效果指标：按评测模式动态显示
   // 开发态：基线=外部 ground truth，有完整 TP/FN/FP/TN → 显示 误报率+召回率+准确率
-  // 运行态：基线=Agent 自身上报的 case，TP+FP=基线总数，无 FN/TN → 只显示 误报率+准确率（互补）
+  // 运行态：基线从告警中心取，有 FP/TN（NON_VULNERABLE case）→ 显示 误报率+准确率
   var evalMode=d.eval_mode||(base.eval_mode||'dev');
   var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
   var fpCnt=rpData.fp_count||0;
@@ -554,7 +554,13 @@ function renderV2Report(d){
   var postFpr=postFprData.post_regression_fpr;
   var baseMetrics='';
   if(evalMode==='runtime'){
-    // 运行态：基线=Agent 上报的 case，只显示回归后误报率
+    // 运行态：显示误报率 + 回归后误报率
+    var fprVal=(fpCnt+tnCnt)>0?(fpCnt/(fpCnt+tnCnt)):null;
+    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(FP+TN) = '+fpCnt+'/'+(fpCnt+tnCnt)+'</div></div>';
+    if(tpCnt+fpCnt>0){
+      var precisionVal=tpCnt/(tpCnt+fpCnt);
+      baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    }
     baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFprData.verified_total>0?('未消除 '+postFprData.failed_count+'/'+postFprData.verified_total):'暂无回归验证数据')+'</div></div>';
   }else{
     // 开发态：基线=外部 ground truth，完整 TP/FN/FP/TN
