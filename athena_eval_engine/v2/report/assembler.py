@@ -197,43 +197,92 @@ class ReportAssembler:
 
         从 causal_chain_result.per_case_breakpoints 构建，为每个 case 附加：
         - vuln_title
-        - root_cause
+        - root_cause（兼容旧格式，最高概率假设）
+        - hypotheses（多假设列表，新格式）
+        - label_quality（人工标注质量评估，新格式）
         - fix_suggestion
         - breakpoints（含 evidence，大字段写文件）
         """
         per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
 
-        # 从 root_cause_results 获取每条 case 的根因和修复建议
+        # 从 root_cause_results 获取每条 case 的根因、假设和修复建议
         case_root_cause: dict[str, dict] = {}
         case_fix: dict[str, str] = {}
+        case_hypotheses: dict[str, list] = {}
+        case_label_quality: dict[str, dict] = {}
         for case in root_cause_results:
             cid = case.get("case_id", "")
             mining = case.get("mining", {}) or {}
             verify = case.get("verification", {}) or {}
             root_causes = {}
             fix_parts = []
-            for chain_data in (mining, verify):
-                rc = chain_data.get("root_cause", {})
-                if rc:
-                    cat = rc.get("category", "")
-                    desc = rc.get("description", "")
-                    if cat:
-                        root_causes[cat] = desc
-                fs_list = chain_data.get("fix_suggestion") or []
-                if isinstance(fs_list, list):
-                    for fs in fs_list:
+            all_hypotheses: list = []
+            label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
+            for chain_type, chain_data in (("mining", mining), ("verification", verify)):
+                # 优先从 hypotheses 提取
+                chain_hypotheses = chain_data.get("hypotheses") or []
+                if chain_hypotheses:
+                    all_hypotheses.extend(chain_hypotheses)
+                    for h in chain_hypotheses:
+                        if not isinstance(h, dict):
+                            continue
+                        fs = h.get("fix_suggestion")
                         if isinstance(fs, dict):
-                            parts = []
-                            if fs.get("target"): parts.append(fs["target"])
-                            if fs.get("location"): parts.append(fs["location"])
-                            if fs.get("action"): parts.append(fs["action"])
-                            if fs.get("expected_effect"): parts.append(fs["expected_effect"])
-                            if parts:
+                            parts = [f"[{chain_type}链]"]
+                            if fs.get("target"):
+                                parts.append(f"修复方: {fs['target']}")
+                            if fs.get("location"):
+                                parts.append(f"位置: {fs['location']}")
+                            if fs.get("action"):
+                                parts.append(f"修改: {fs['action']}")
+                            if fs.get("expected_effect"):
+                                parts.append(f"预期: {fs['expected_effect']}")
+                            hyp_desc = h.get("hypothesis", "")
+                            prob = h.get("probability", 0)
+                            resp = h.get("responsibility", "")
+                            if hyp_desc:
+                                parts.append(f"假设(P={prob}, {resp}): {hyp_desc}")
+                            if len(parts) > 1:
                                 fix_parts.append(" | ".join(parts))
-                elif isinstance(fs_list, str) and fs_list:
-                    fix_parts.append(fs_list)
+                else:
+                    # 兼容旧格式：从 root_cause + fix_suggestion 构建
+                    rc = chain_data.get("root_cause", {})
+                    if rc:
+                        cat = rc.get("category", "")
+                        desc = rc.get("description", "")
+                        if cat:
+                            root_causes[cat] = desc
+                    fs_list = chain_data.get("fix_suggestion") or []
+                    if isinstance(fs_list, list):
+                        for fs in fs_list:
+                            if isinstance(fs, dict):
+                                parts = []
+                                if fs.get("target"): parts.append(fs["target"])
+                                if fs.get("location"): parts.append(fs["location"])
+                                if fs.get("action"): parts.append(fs["action"])
+                                if fs.get("expected_effect"): parts.append(fs["expected_effect"])
+                                if parts:
+                                    fix_parts.append(" | ".join(parts))
+                    elif isinstance(fs_list, str) and fs_list:
+                        fix_parts.append(fs_list)
+                # 合并 label_quality（取 imprecise 优先）
+                lq = chain_data.get("label_quality") or {}
+                if lq.get("precision") == "imprecise":
+                    label_quality = lq
+            case_hypotheses[cid] = all_hypotheses
+            case_label_quality[cid] = label_quality
+            # 兼容旧格式：无假设时保留 root_causes
+            if all_hypotheses:
+                top = max(all_hypotheses, key=lambda h: h.get("probability", 0)) if all_hypotheses else None
+                if top and isinstance(top, dict):
+                    root_causes = {
+                        "hypothesis": top.get("hypothesis", ""),
+                        "probability": top.get("probability", 0),
+                        "responsibility": top.get("responsibility", ""),
+                        "evidence": top.get("evidence", ""),
+                    }
             case_root_cause[cid] = root_causes
-            case_fix[cid] = " | ".join(fix_parts) if fix_parts else ""
+            case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
         result: list[dict] = []
         for case_data in per_case_breakpoints:
@@ -256,13 +305,21 @@ class ReportAssembler:
                 }
                 processed_breakpoints.append(bp_processed)
 
-            result.append({
+            case_detail = {
                 "case_id": case_id,
                 "vuln_title": vuln_title,
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": processed_breakpoints,
-            })
+            }
+            # 多假设字段（新格式）
+            hypotheses = case_hypotheses.get(case_id, [])
+            if hypotheses:
+                case_detail["hypotheses"] = hypotheses
+            label_quality = case_label_quality.get(case_id, {})
+            if label_quality and label_quality.get("precision") != "precise":
+                case_detail["label_quality"] = label_quality
+            result.append(case_detail)
 
         return result
 

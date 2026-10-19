@@ -685,7 +685,9 @@ async function renderDtsList(){
         <select id="dts-f-resp" onchange="_dtsFilter.responsibility=this.value;renderDtsTable()" style="width:auto;max-width:140px">
           <option value="">全部责任方</option>
           <option value="agent">Agent</option>
-          <option value="knowledge_base">知识库</option>
+          <option value="knowledge">知识/记忆</option>
+          <option value="external_data_source">外部数据源</option>
+          <option value="eval_process">评测流程</option>
         </select>
         <button class="btn g" style="font-size:14px;padding:6px 14px" onclick="loadDtsPage()">🔄 刷新</button>
       </div>
@@ -775,7 +777,7 @@ function renderDtsStats(stats){
 // ===== 问题单（报告内嵌段）=====
 const DTS_STATUS_LABELS={'open':'未关闭','passed':'回归通过','failed':'回归不通过'};
 const DTS_STATUS_COLORS={'open':'var(--gray)','passed':'var(--green)','failed':'var(--red)'};
-const DTS_RESP_LABELS={'agent':'Agent','knowledge_base':'知识库'};
+const DTS_RESP_LABELS={'agent':'Agent','knowledge':'知识/记忆','knowledge_base':'知识库','memory':'记忆','external_data_source':'外部数据源','eval_process':'评测流程'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
 const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
 const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
@@ -809,7 +811,7 @@ function renderDtsSection(evalId,issues,stats){
   var total=issues.length;
   var byStatus={};
   issues.forEach(function(i){byStatus[i.status]=(byStatus[i.status]||0)+1;});
-  var byResp={agent:0,knowledge_base:0};
+  var byResp={agent:0,knowledge:0,external_data_source:0,eval_process:0};
   issues.forEach(function(i){(i.responsibility||'').split(',').forEach(function(r){if(byResp.hasOwnProperty(r))byResp[r]++;});});
   var byCaseType={FP:0,FN:0};
   issues.forEach(function(i){var t=i.case_type||'';if(byCaseType.hasOwnProperty(t))byCaseType[t]++;});
@@ -825,7 +827,9 @@ function renderDtsSection(evalId,issues,stats){
     +'<div class="mcard"><div class="mc-label">误报(FP)</div><div class="mc-val" style="color:var(--red)">'+byCaseType.FP+'</div></div>'
     +'<div class="mcard"><div class="mc-label">漏报(FN)</div><div class="mc-val" style="color:var(--amber)">'+byCaseType.FN+'</div></div>'
     +'<div class="mcard"><div class="mc-label">Agent 责任</div><div class="mc-val" style="color:var(--acc)">'+byResp.agent+'</div></div>'
-    +'<div class="mcard"><div class="mc-label">知识库责任</div><div class="mc-val" style="color:var(--amber)">'+byResp.knowledge_base+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">知识/记忆责任</div><div class="mc-val" style="color:var(--amber)">'+byResp.knowledge+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">外部数据源</div><div class="mc-val" style="color:var(--amber)">'+byResp.external_data_source+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">评测流程</div><div class="mc-val" style="color:var(--amber)">'+byResp.eval_process+'</div></div>'
     +'</div>'
     +'<h4 style="font-size:16px;margin-bottom:8px">状态流水线</h4>'+statusBars
     +'</div>';
@@ -897,41 +901,138 @@ async function renderDtsDetailPage(dtsId){
     }
     html+='</div>';
 
-    // ── 2. 根因分析 + 修复建议（提取到最前面）──
+    // ── 2. 多假设根因分析 + 修复建议 ──
     if(caseData){
-      var rootCauses=[];
-      var fixSuggestions=[];
       var chainsForRC=[
         {label:'挖掘',data:caseData.mining||{}},
         {label:'验证',data:caseData.verification||{}}
       ];
-      var TARGET_LABELS={agent_prompt:'Agent提示词',agent_code:'Agent代码',knowledge_base:'知识库',memory:'记忆模块'};
+      var TARGET_LABELS={agent_prompt:'Agent提示词',agent_code:'Agent代码',knowledge:'知识/记忆',knowledge_base:'知识库',memory:'记忆模块',external_data_source:'外部数据源',eval_process:'评测流程'};
+      var allHypotheses=[];
+      var allLabelQuality=[];
+      var legacyRootCauses=[];
+      var legacyFixSuggestions=[];
       chainsForRC.forEach(function(ch){
-        var rc=ch.data.root_cause||{};
-        if(rc&&Object.keys(rc).length){
-          rootCauses.push({label:ch.label,category:rc.category||'',description:rc.description||''});
-        }
-        var fsList=ch.data.fix_suggestion||[];
-        if(typeof fsList==='string'){fsList=[{action:fsList}];}
-        if(Array.isArray(fsList)){
-          fsList.forEach(function(fs){
-            if(fs&&typeof fs==='object'){fixSuggestions.push({label:ch.label,items:fs});}
+        var hypList=ch.data.hypotheses||[];
+        if(Array.isArray(hypList)&&hypList.length){
+          hypList.forEach(function(h){
+            if(h&&typeof h==='object'){
+              allHypotheses.push({label:ch.label,data:h});
+            }
           });
+        }else{
+          // 兼容旧格式：从 root_cause + fix_suggestion 构建
+          var rc=ch.data.root_cause||{};
+          if(rc&&Object.keys(rc).length){
+            legacyRootCauses.push({label:ch.label,category:rc.category||'',description:rc.description||''});
+          }
+          var fsList=ch.data.fix_suggestion||[];
+          if(typeof fsList==='string'){fsList=[{action:fsList}];}
+          if(Array.isArray(fsList)){
+            fsList.forEach(function(fs){
+              if(fs&&typeof fs==='object'){legacyFixSuggestions.push({label:ch.label,items:fs});}
+            });
+          }
         }
+        var lq=ch.data.label_quality||{};
+        if(lq&&Object.keys(lq).length){allLabelQuality.push({label:ch.label,data:lq});}
       });
 
-      if(rootCauses.length||fixSuggestions.length){
+      // 2a. 人工标注质量评估（如 imprecise 显示追问）
+      var impreciseItems=allLabelQuality.filter(function(lq){return lq.data.precision==='imprecise';});
+      if(impreciseItems.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)">'
+          +'<h3>人工标注质量评估</h3>';
+        impreciseItems.forEach(function(lq){
+          var d=lq.data||{};
+          html+='<div style="margin-bottom:12px;padding:10px 12px;background:rgba(251,191,36,.08);border-radius:8px">'
+            +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">标注不精确';
+          if(lq.label){html+=' <span class="knd">'+lq.label+'</span>';}
+          html+='</div>';
+          if(d.reason){html+='<div style="font-size:14px;margin-bottom:6px"><b style="color:var(--sub)">理由：</b>'+String(d.reason).replace(/</g,'&lt;')+'</div>';}
+          if(d.follow_up_questions&&d.follow_up_questions.length){
+            html+='<div style="font-size:14px"><b style="color:var(--sub)">需追问：</b><ul style="margin:4px 0 0 18px">';
+            d.follow_up_questions.forEach(function(q){html+='<li>'+String(q).replace(/</g,'&lt;')+'</li>';});
+            html+='</ul></div>';
+          }
+          html+='</div>';
+        });
+        html+='</div>';
+      }
+
+      if(allHypotheses.length){
+        // 2b. 多假设根因卡片
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
+          +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>';
+        // 按概率降序
+        allHypotheses.sort(function(a,b){return (b.data.probability||0)-(a.data.probability||0);});
+        allHypotheses.forEach(function(h,idx){
+          var hdata=h.data||{};
+          var prob=hdata.probability||0;
+          var resp=hdata.responsibility||'';
+          var causeCode=hdata.cause_code||'';
+          var hypDesc=hdata.hypothesis||'';
+          var evidence=hdata.evidence||'';
+          var canResolve=hdata.agent_can_resolve;
+          var blockedBy=hdata.blocked_by||'';
+          var neededData=hdata.needed_external_data||[];
+          var fs=hdata.fix_suggestion||{};
+          var target=TARGET_LABELS[fs.target]||fs.target||'';
+          var location=fs.location||'';
+          var action=fs.action||'';
+          var expected=fs.expected_effect||'';
+          var causeLabel=DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
+          var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
+          var probColor=prob>=0.6?'var(--red)':prob>=0.3?'var(--amber)':'var(--gray)';
+          html+='<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+            +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+            +'<span style="font-weight:600;font-size:14px">假设 '+(idx+1)+'</span>';
+          if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
+          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">P='+prob+'</span>'
+            +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
+            +' <span class="knd">'+causeLabel+'</span>';
+          if(canResolve===false){
+            html+=' <span class="knd" style="background:rgba(251,191,36,.18);color:var(--amber)">Agent无法自行解决</span>';
+          }else if(canResolve===true){
+            html+=' <span class="knd" style="background:rgba(34,197,94,.15);color:var(--green)">Agent可解决</span>';
+          }
+          html+='</div>';
+          if(hypDesc){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">假设：</b>'+String(hypDesc).replace(/</g,'&lt;')+'</div>';
+          }
+          if(evidence){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+String(evidence).replace(/</g,'&lt;')+'</div>';
+          }
+          if(canResolve===false){
+            if(blockedBy){html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">阻塞：</b>'+String(blockedBy).replace(/</g,'&lt;')+'</div>';}
+            if(neededData&&neededData.length){
+              html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">需外部数据：</b>'+neededData.map(function(x){return String(x).replace(/</g,'&lt;');}).join('、')+'</div>';
+            }
+          }
+          // 修复建议（嵌入假设卡片内）
+          if(target||location||action||expected){
+            html+='<div style="padding:10px 12px;background:rgba(37,99,235,.04);border-top:1px solid var(--bd)"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">修复建议';
+            if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
+            html+='</div>';
+            if(location){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
+            if(action){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
+            if(expected){html+='<div style="font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+            html+='</div>';
+          }
+          html+='</div>';
+        });
+        html+='</div>';
+      }else if(legacyRootCauses.length||legacyFixSuggestions.length){
+        // 兼容旧格式
         html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
           +'<h3>根因分析与修复建议</h3>';
-        // 根因
-        rootCauses.forEach(function(rc){
+        legacyRootCauses.forEach(function(rc){
           html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
           if(rc.label){html+=' <span class="knd">'+rc.label+'</span>';}
           if(rc.category){html+=' <span class="knd">'+rc.category+'</span>';}
           html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rc.description||'(无)').replace(/</g,'&lt;')+'</div></div>';
         });
-        // 修复建议（结构化卡片）
-        fixSuggestions.forEach(function(fs){
+        legacyFixSuggestions.forEach(function(fs){
           var fi=fs.items||{};
           var target=TARGET_LABELS[fi.target]||fi.target||'';
           var location=fi.location||'';

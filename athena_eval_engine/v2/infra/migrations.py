@@ -357,6 +357,21 @@ MIGRATIONS = [
             "UPDATE dts_issue SET status='open' WHERE status IN ('unlocated','improving','confirmed','closing','not_issue')",
         ],
     },
+    {
+        "id": "021_dts_issue_responsibility_widen",
+        "desc": "dts_issue.responsibility VARCHAR(16)→VARCHAR(32)，容纳逗号分隔多值如 'agent,knowledge_base'(23 字符)",
+        "sql": [
+            "ALTER TABLE dts_issue MODIFY COLUMN responsibility VARCHAR(32)",
+        ],
+    },
+    {
+        "id": "022_dts_issue_hypotheses",
+        "desc": "dts_issue 新增 hypotheses + label_quality 列（多假设根因分析）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN hypotheses TEXT AFTER solution",
+            "ALTER TABLE dts_issue ADD COLUMN label_quality TEXT AFTER hypotheses",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

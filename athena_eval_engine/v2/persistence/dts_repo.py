@@ -18,7 +18,7 @@ _FIELD_ORDER = (
     "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
-    "root_cause", "solution", "analysis_data_path",
+    "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
     "replay_eval_id", "replay_result", "replay_data",
     "status", "responsibility",
 )
@@ -28,14 +28,15 @@ _INSERT_SQL = (
     "  dts_id, evaluation_id, task_id, case_id, vuln_title, agent_type,"
     "  case_type, cause_code, breakpoint_level,"
     "  breakpoint_desc, evidence_uri,"
-    "  root_cause, solution, analysis_data_path,"
+    "  root_cause, solution, hypotheses, label_quality, analysis_data_path,"
     "  replay_eval_id, replay_result, replay_data,"
     "  status, responsibility"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
+    "  hypotheses=VALUES(hypotheses), label_quality=VALUES(label_quality),"
     "  analysis_data_path=VALUES(analysis_data_path),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
     "  replay_result=VALUES(replay_result),"
@@ -47,7 +48,7 @@ _SELECT_COLUMNS = (
     "d.dts_id, d.evaluation_id, d.task_id, d.case_id, d.vuln_title, d.agent_type,"
     " d.case_type, d.cause_code, d.breakpoint_level,"
     " d.breakpoint_desc, d.evidence_uri,"
-    " d.root_cause, d.solution, d.analysis_data_path,"
+    " d.root_cause, d.solution, d.hypotheses, d.label_quality, d.analysis_data_path,"
     " d.replay_eval_id, d.replay_result, d.replay_data,"
     " d.status, d.responsibility,"
     " d.created_at, d.updated_at, d.closed_at,"
@@ -112,7 +113,7 @@ def _row_to_dict(row) -> dict:
         "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
         "case_type", "cause_code", "breakpoint_level",
         "breakpoint_desc", "evidence_uri",
-        "root_cause", "solution", "analysis_data_path",
+        "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
         "replay_eval_id", "replay_result", "replay_data",
         "status", "responsibility",
         "created_at", "updated_at", "closed_at",
@@ -401,6 +402,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     allowed = {
         "root_cause", "solution", "status",
         "replay_eval_id", "replay_result", "replay_data",
+        "hypotheses", "label_quality",
     }
     update_fields = {k: v for k, v in updates.items() if k in allowed}
     if not update_fields:

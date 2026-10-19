@@ -6,9 +6,11 @@ L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不
 输入：RootCauseAnalyzer.analyze() 的输出（root_cause_results）
 输出：
   - 交叉归因矩阵：Agent 类型（行）× L2-L7 级别（列）
-  - 成因汇总（cause_code A-G 计数）
+  - 成因汇总（cause_code A-H 计数，断点维度）
+  - 假设维度统计（hypothesis_summary，按 responsibility 分组）
+  - 人工标注质量分布（label_quality_summary，precise/imprecise）
   - 效果标签分布（POSITIVE/NEGATIVE/NEUTRAL/NULL）
-  - 每 case 的断点清单
+  - 每 case 的断点清单（含多假设）
 """
 from __future__ import annotations
 
@@ -43,6 +45,9 @@ _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H"]
 
 # 所有 effect_label（含 NULL——无 effect 时表示证据不足）
 _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
+
+# 所有 responsibility（假设维度）
+_ALL_RESPONSIBILITIES = ["agent", "knowledge", "external_data_source", "eval_process"]
 
 # ── 链类型→默认 agent_type 映射（回退用，优先从 chain_data.agent_type 取）──
 _CHAIN_DEFAULT_AGENT_TYPE = {
@@ -91,6 +96,10 @@ class CausalChainAnalyzer:
         cause_summary = self._build_cause_summary(flat_breakpoints)
         effect_label_distribution = self._build_effect_label_distribution(
             flat_breakpoints)
+        hypothesis_summary = self._build_hypothesis_summary(
+            root_cause_results)
+        label_quality_summary = self._build_label_quality_summary(
+            root_cause_results)
         per_case_breakpoints = self._build_per_case_breakpoints(
             root_cause_results, flat_breakpoints)
 
@@ -99,13 +108,16 @@ class CausalChainAnalyzer:
             "cross_attribution_matrix": cross_attribution_matrix,
             "cause_summary": cause_summary,
             "effect_label_distribution": effect_label_distribution,
+            "hypothesis_summary": hypothesis_summary,
+            "label_quality_summary": label_quality_summary,
             "per_case_breakpoints": per_case_breakpoints,
         }
 
         log("CAUSAL_CHAIN",
             f"analyze done: {len(per_case_breakpoints)} cases with breakpoints, "
             f"{len(flat_breakpoints)} total breakpoints, "
-            f"cause_summary={cause_summary}",
+            f"cause_summary={cause_summary}, "
+            f"hypothesis_summary={hypothesis_summary}",
             eval_id=evaluation_id)
 
         return result
@@ -255,6 +267,96 @@ class CausalChainAnalyzer:
 
         return {label: counter.get(label, 0) for label in _ALL_EFFECTS}
 
+    # ── 假设维度统计 ──
+
+    def _build_hypothesis_summary(
+        self, root_cause_results: list[dict],
+    ) -> dict:
+        """统计多假设维度的分布。
+
+        从 root_cause_results 的 mining/verification.hypotheses 中聚合：
+        - by_responsibility: 按 responsibility 分组计数
+        - by_cause_code: 按 cause_code 分组计数（假设维度）
+        - by_agent_can_resolve: true/false 计数（agent 能否自行解决）
+        - total: 假设总数
+
+        Returns:
+            {
+                "by_responsibility": {"agent": N, "knowledge": N, ...},
+                "by_cause_code": {"A": N, "B": N, ...},
+                "by_agent_can_resolve": {"true": N, "false": N},
+                "total": N,
+            }
+        """
+        resp_counter: Counter = Counter()
+        cause_counter: Counter = Counter()
+        resolve_counter: Counter = Counter()
+        total = 0
+
+        for case in root_cause_results:
+            for chain_type in ("mining", "verification"):
+                chain_data = case.get(chain_type, {})
+                if not chain_data or not isinstance(chain_data, dict):
+                    continue
+                for h in chain_data.get("hypotheses") or []:
+                    if not isinstance(h, dict):
+                        continue
+                    total += 1
+                    resp = h.get("responsibility", "")
+                    if resp:
+                        resp_counter[resp] += 1
+                    cc = h.get("cause_code", "")
+                    if cc:
+                        cause_counter[cc] += 1
+                    can_resolve = h.get("agent_can_resolve")
+                    resolve_counter["true" if can_resolve else "false"] += 1
+
+        return {
+            "by_responsibility": {r: resp_counter.get(r, 0) for r in _ALL_RESPONSIBILITIES},
+            "by_cause_code": {c: cause_counter.get(c, 0) for c in _ALL_CAUSES},
+            "by_agent_can_resolve": {
+                "true": resolve_counter.get("true", 0),
+                "false": resolve_counter.get("false", 0),
+            },
+            "total": total,
+        }
+
+    # ── 人工标注质量分布 ──
+
+    def _build_label_quality_summary(
+        self, root_cause_results: list[dict],
+    ) -> dict:
+        """统计人工标注质量分布（precise/imprecise）。
+
+        从 mining/verification.label_quality 中取 imprecise 优先合并。
+        """
+        precise_count = 0
+        imprecise_count = 0
+        imprecise_cases: list[str] = []
+
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            merged = {"precision": "precise"}
+            for chain_type in ("mining", "verification"):
+                chain_data = case.get(chain_type, {})
+                if not chain_data or not isinstance(chain_data, dict):
+                    continue
+                lq = chain_data.get("label_quality") or {}
+                if lq.get("precision") == "imprecise":
+                    merged = lq
+            if merged.get("precision") == "imprecise":
+                imprecise_count += 1
+                imprecise_cases.append(cid)
+            else:
+                precise_count += 1
+
+        return {
+            "precise": precise_count,
+            "imprecise": imprecise_count,
+            "imprecise_case_ids": imprecise_cases,
+            "total": precise_count + imprecise_count,
+        }
+
     # ── 每 case 断点清单 ──
 
     def _build_per_case_breakpoints(
@@ -276,36 +378,79 @@ class CausalChainAnalyzer:
             case_id = rec.get("case_id", "")
             case_map[case_id].append(rec)
 
-        # 从 root_cause_results 获取每条 case 的根因和修复建议
+        # 从 root_cause_results 获取每条 case 的根因、修复建议、假设和标注质量
         case_root_cause: dict[str, dict] = {}
         case_fix: dict[str, str] = {}
+        case_hypotheses: dict[str, list] = {}
+        case_label_quality: dict[str, dict] = {}
         for case in root_cause_results:
             cid = case.get("case_id", "")
             mining = case.get("mining", {}) or {}
             verify = case.get("verification", {}) or {}
-            # 合并 mining 和 verification 的根因
             root_causes = {}
             fix_parts = []
-            for chain_data in (mining, verify):
-                rc = chain_data.get("root_cause", {})
-                if rc:
-                    cat = rc.get("category", "")
-                    desc = rc.get("description", "")
-                    if cat:
-                        root_causes[cat] = desc
-                fs_list = chain_data.get("fix_suggestion") or []
-                if isinstance(fs_list, list):
-                    for fs in fs_list:
+            all_hypotheses: list = []
+            label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
+            for chain_type, chain_data in (("mining", mining), ("verification", verify)):
+                chain_hypotheses = chain_data.get("hypotheses") or []
+                if chain_hypotheses:
+                    all_hypotheses.extend(chain_hypotheses)
+                    for h in chain_hypotheses:
+                        if not isinstance(h, dict):
+                            continue
+                        fs = h.get("fix_suggestion")
                         if isinstance(fs, dict):
-                            parts = []
-                            if fs.get("target"): parts.append(fs["target"])
-                            if fs.get("location"): parts.append(fs["location"])
-                            if fs.get("action"): parts.append(fs["action"])
-                            if fs.get("expected_effect"): parts.append(fs["expected_effect"])
-                            if parts:
+                            parts = [f"[{chain_type}链]"]
+                            if fs.get("target"):
+                                parts.append(f"修复方: {fs['target']}")
+                            if fs.get("location"):
+                                parts.append(f"位置: {fs['location']}")
+                            if fs.get("action"):
+                                parts.append(f"修改: {fs['action']}")
+                            if fs.get("expected_effect"):
+                                parts.append(f"预期: {fs['expected_effect']}")
+                            hyp_desc = h.get("hypothesis", "")
+                            prob = h.get("probability", 0)
+                            resp = h.get("responsibility", "")
+                            if hyp_desc:
+                                parts.append(f"假设(P={prob}, {resp}): {hyp_desc}")
+                            if len(parts) > 1:
                                 fix_parts.append(" | ".join(parts))
-                elif isinstance(fs_list, str) and fs_list:
-                    fix_parts.append(fs_list)
+                else:
+                    # 兼容旧格式
+                    rc = chain_data.get("root_cause", {})
+                    if rc:
+                        cat = rc.get("category", "")
+                        desc = rc.get("description", "")
+                        if cat:
+                            root_causes[cat] = desc
+                    fs_list = chain_data.get("fix_suggestion") or []
+                    if isinstance(fs_list, list):
+                        for fs in fs_list:
+                            if isinstance(fs, dict):
+                                parts = []
+                                if fs.get("target"): parts.append(fs["target"])
+                                if fs.get("location"): parts.append(fs["location"])
+                                if fs.get("action"): parts.append(fs["action"])
+                                if fs.get("expected_effect"): parts.append(fs["expected_effect"])
+                                if parts:
+                                    fix_parts.append(" | ".join(parts))
+                    elif isinstance(fs_list, str) and fs_list:
+                        fix_parts.append(fs_list)
+                lq = chain_data.get("label_quality") or {}
+                if lq.get("precision") == "imprecise":
+                    label_quality = lq
+            case_hypotheses[cid] = all_hypotheses
+            case_label_quality[cid] = label_quality
+            if all_hypotheses:
+                top = max(all_hypotheses, key=lambda h: h.get("probability", 0)) if all_hypotheses else None
+                if top and isinstance(top, dict):
+                    root_causes = {
+                        "hypothesis": top.get("hypothesis", ""),
+                        "probability": top.get("probability", 0),
+                        "responsibility": top.get("responsibility", ""),
+                        "evidence": top.get("evidence", ""),
+                    }
             case_root_cause[cid] = root_causes
             case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
@@ -331,13 +476,20 @@ class CausalChainAnalyzer:
                     "evidence": evidence,
                 })
 
-            result.append({
+            case_entry = {
                 "case_id": case_id,
                 "vuln_title": vuln_title,
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": breakpoints,
-            })
+            }
+            hypotheses = case_hypotheses.get(case_id, [])
+            if hypotheses:
+                case_entry["hypotheses"] = hypotheses
+            label_quality = case_label_quality.get(case_id, {})
+            if label_quality and label_quality.get("precision") != "precise":
+                case_entry["label_quality"] = label_quality
+            result.append(case_entry)
 
         return result
 
@@ -393,5 +545,17 @@ class CausalChainAnalyzer:
             },
             "cause_summary": {code: 0 for code in _ALL_CAUSES},
             "effect_label_distribution": {label: 0 for label in _ALL_EFFECTS},
+            "hypothesis_summary": {
+                "by_responsibility": {r: 0 for r in _ALL_RESPONSIBILITIES},
+                "by_cause_code": {c: 0 for c in _ALL_CAUSES},
+                "by_agent_can_resolve": {"true": 0, "false": 0},
+                "total": 0,
+            },
+            "label_quality_summary": {
+                "precise": 0,
+                "imprecise": 0,
+                "imprecise_case_ids": [],
+                "total": 0,
+            },
             "per_case_breakpoints": [],
         }

@@ -74,8 +74,16 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 这些标记是评测引擎预处理的结果，代表 agent 实际发生了知识/记忆访问行为。
 没有标记的工具调用不是知识访问（如代码搜索、文件读写、shell 命令等）。
 
-**知识库**：Athena 知识库，存储漏洞挖掘模式、误报判别方法等结构化知识，agent 通过 athena_ask 查询。
-**记忆**：Wiki/记忆模块，存储经验总结、最佳实践等 .md 文件，agent 通过 mem.sh 或 cat 读取。
+**知识库**：Athena 知识库，存储以下类型的知识，agent 通过 athena_ask 查询：
+- 漏洞挖掘模式知识（如 SQL 注入 sink 点判定）
+- 误报判别方法知识（如"如何验证接口可达性"）
+- 业务环境知识（如"哪些接口部署在内网、非对外暴露"）
+- 部署架构约束知识（如"该系统通过 OLC 网关隔离"）
+**记忆**：Wiki/记忆模块，存储以下类型的文档，agent 通过 mem.sh 或 cat 读取：
+- 经验总结、最佳实践 .md
+- 接口暴露面清单（哪些接口对外暴露、哪些内网隔离）
+- 不可调用文档（哪些路由/接口不可从公网触达）
+- 部署环境约束文档（网关/防火墙/认证门槛说明）
 
 在 L0-L7 判定中：
 - L0 来源：从标记判断是"知识库"还是"记忆"
@@ -116,7 +124,11 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
 - 逐级判定，不通过的级别即为断点，后续级别填 null
 - L7 三种结果：positive（正确+一致=正向）、negative（错误+一致=负向，知识方向对但内容有误/过时）、null（不一致=中性，知识未影响结论）
 - **session 中没有知识访问行为时的判定（关键）**：
-  - 仍要判 L1：推理任务是否需要外部知识支撑？判断标准：agent 面对的推理任务（如验证网络可达性、判断接口暴露面、评估防护机制有效性等）是否需要知识库/记忆中已有的方法、模式、经验来支撑
+  - 仍要判 L1：推理任务是否需要外部知识支撑？判断标准：agent 面对的推理任务是否需要知识库/记忆中已有的方法、模式、经验来支撑。包括：
+    * 验证网络可达性 → 需要接口暴露面知识（业务环境知识）
+    * 判断接口暴露面 → 需要不可调用文档（记忆）
+    * 评估防护机制有效性 → 需要部署架构约束知识
+    * 识别漏洞模式 → 需要漏洞挖掘模式知识
   - 如果 L1=true（需要知识）但 L2=false（agent 没发起访问）→ 断点 L2，cause_code 填 "A"（该查没查）
     - 在 l0_l7 数组中新增一条记录，l0_source 填空，l1_need=true，l2_initiated=false，L3-L7 填 null
     - query_content 填"agent 未发起知识/记忆访问，但推理任务需要知识支撑（具体说明需要什么知识）"
@@ -165,58 +177,93 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 # 事实依据要求
 
 **所有分析必须基于 session 摘要中的实际内容，禁止推测。**
-- root_cause.description 中的每一句话都必须能在 session 摘要中找到对应的事实依据
+- 每个假设的 evidence 必须引用 session 摘要中的具体事实
 - 如果 session 摘要中没有相关信息，直接说明"session 中未涉及此方面"，不要猜测
-- returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
 - query_content 字段：必须填写 agent 实际执行的查询命令，不要概括为通用描述
+- returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
 - 禁止使用"可能"、"或许"、"推测"等不确定语言描述事实
+- 但对"假设"本身可以用概率描述不确定性（如"概率 0.3"），这是分析的不确定性，不是事实的不确定性
 
 # 任务
 
-## 合并模式
-将多个 session 的压缩摘要合并为最终结论。你需要：
+## 合并模式 — 多假设分析
 
-1. 根因分析：为什么 agent 会误报（FP）或漏报（FN）这个漏洞？
-   你已知人工标注的原因（在用户消息中给出），需要分析 agent 在 session 链中的哪个环节出了问题。
-   从以下维度分析：
-   - 知识访问问题：该查没查 / 查了但查询不准 / 知识错误 / 查到没用
-   - 推理问题：逻辑跳跃 / 忽略关键证据 / 错误关联
-   - 验证维度遗漏：agent 验证了哪些维度，遗漏了哪些维度（如接口实际网络可达性、
-     防护机制实践有效性、部署环境约束等代码层面看不到的因素）
-   - 验证逻辑不充分：验证条件错误 / 验证覆盖不足
-   - FN 漏报特有：挖掘链未覆盖 sink 点 / 验证链误判为非漏洞 / 知识缺失导致未识别漏洞模式
+将多个 session 的压缩摘要合并为最终结论。**不要只给一个根因，要列出多个可能的根因假设。**
 
-2. 修复建议：针对根因，给出可执行的修复方案。
-   修复建议必须结构化，指明开发人员具体该改哪里。
-   每条修复建议必须包含：
-   - target：修复责任方，取值：
-     * agent_prompt — 修改 agent 的提示词（如挖掘 agent 或验证 agent 的 system/user prompt 中某段指令）
-     * agent_code — 修改 agent 的代码逻辑（如工具调用判断、验证条件代码）
-     * knowledge_base — 修改知识库内容（如补充缺失知识、修正错误知识）
-     * memory — 修改记忆模块数据
-   - location：具体修改位置。必须指明：
-     * 如果是 agent_prompt：哪个 agent（挖掘/验证）的哪个环节（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
-     * 如果是 agent_code：哪个 agent 的哪个函数/逻辑分支（如"验证 agent 的 sink 点匹配逻辑"）
-     * 如果是 knowledge_base：需要补充/修正哪类知识（如"SQL注入的 sink 点判定知识"）
-     * 如果是 memory：需要补充/修正什么记忆
-   - action：具体修改内容（如"在 prompt 中增加'检查接口是否对外暴露'的指令"）
-   - expected_effect：修改后预期效果（如"agent 在验证时会先检查接口可达性，避免对内网接口误报为可利用漏洞"）
+误报/漏报往往是多因素叠加的结果，单一归因会遗漏修复点。你需要从多个角度分析，列出至少 2 个、最多 5 个根因假设，每个假设给出概率估计和对应的修复方案。
 
-3. L0-L8 断点判定：
-   - 如果知识访问链路有断点（L2-L7），照常输出
-   - **如果 session 中没有知识访问行为**：
-     - 判 L1：推理任务是否需要知识支撑（如验证网络可达性、判断接口暴露面、评估防护机制等需要知识库中的方法/经验）
-     - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
-     - L1=false → 不产生知识访问断点
-   - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
-     - cause_code 填 "H"
-     - breakpoint 填 "L8"
-     - query_content 填问题总结（如"验证逻辑不充分：验证条件错误"）
-     - l0_source 填空字符串
-   - L8 仅覆盖知识访问链路确实无问题的场景（L7=positive 或 L1=false）
-   - **注意：验证维度遗漏不一定是 L8**——如果遗漏的验证维度需要知识支撑（如不知道怎么查网络可达性），应判 L2 断点（该查没查），不是 L8
+### 分析维度
 
-## 断点归属规则
+从以下维度交叉分析，每个维度都可能产生独立的根因假设：
+
+- **知识访问问题**：该查没查 / 查了但查询不准 / 知识错误 / 查到没用
+- **知识/记忆缺失**：agent 需要某类知识支撑但知识库中不存在
+  * 业务环境知识缺失：知识库没有"该接口部署在内网"的业务环境知识
+  * 暴露面文档缺失：记忆中没有"哪些接口对外暴露/不可达"的清单
+  * 部署约束知识缺失：知识库没有"该系统的网关/防火墙配置"知识
+  * 误报判别方法缺失：知识库没有"如何验证接口可达性"的方法知识
+- **推理问题**：逻辑跳跃 / 忽略关键证据 / 错误关联
+- **验证维度遗漏**：agent 验证了哪些维度，遗漏了哪些维度（如接口实际网络可达性、
+  防护机制有效性、部署环境约束等代码层面看不到的因素）
+- **验证逻辑不充分**：验证条件错误 / 验证覆盖不足
+- **外部信息缺失**：agent 需要的信息不在代码仓库中，且当前无数据源可获取
+  （如网关配置、Ingress 路由、运行时状态、部署架构等）
+- **FN 漏报特有**：挖掘链未覆盖 sink 点 / 验证链误判为非漏洞 / 知识缺失导致未识别漏洞模式
+
+### 责任边界判定
+
+对每个假设，必须判定 agent 是否有能力自行解决：
+- agent_can_resolve=true：Agent 通过改 prompt/code 可以解决（如加验证维度指令、改推理逻辑）
+- agent_can_resolve=false：Agent 无法自行解决，需要外部数据源或知识补充
+  （如网关配置无法从代码获取、业务环境知识需要知识方补充）
+- 如果 false，必须说明 blocked_by（Agent 缺少什么信息/能力）和 needed_external_data（需要什么外部数据）
+
+### 人工标注质量评估
+
+评估人工标注原因的精确度：
+- precise：标注精确，可直接定位根因
+- imprecise：标注笼统，需追问细化（如"网络不可达"未说明具体是防火墙/网关/内网隔离/认证门槛）
+- 如果 imprecise，列出需要追问的具体问题（follow_up_questions）
+
+## 修复建议
+
+针对**所有假设**的修复点，合并输出修复建议列表。一个 case 可能需要多个修复点同时执行才能解决。
+
+每条修复建议必须包含：
+- target：修复责任方，取值：
+  * agent_prompt — 修改 agent 的提示词（如挖掘 agent 或验证 agent 的 system/user prompt 中某段指令）
+  * agent_code — 修改 agent 的代码逻辑（如工具调用判断、验证条件代码）
+  * knowledge — 补充/修改知识库内容（不区分结构化知识还是文档型记忆，统一归为此类）。
+    包括：漏洞挖掘模式知识、误报判别方法、业务环境知识（如接口暴露面、部署架构约束）、
+    不可调用文档（哪些路由/接口不可从公网触达）等
+  * external_data_source — 提供 Agent 当前无法获取的外部数据
+    （如网关/Ingress 配置查询接口、运行时状态接口、部署架构数据源等）
+  * eval_process — 评测流程改进（如人工标注需追问细化、评测指标需新增维度）
+- location：具体修改位置。必须指明：
+  * 如果是 agent_prompt：哪个 agent（挖掘/验证）的哪个环节（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
+  * 如果是 agent_code：哪个 agent 的哪个函数/逻辑分支（如"验证 agent 的 sink 点匹配逻辑"）
+  * 如果是 knowledge：需要补充/修正哪类知识（如"GitCode Actions 接口暴露面知识"）
+  * 如果是 external_data_source：需要提供什么数据源（如"网关配置查询接口"）
+  * 如果是 eval_process：需要改评测流程的什么环节（如"人工标注增加追问字段"）
+- action：具体修改内容（如"在 prompt 中增加'检查接口是否对外暴露'的指令"）
+- expected_effect：修改后预期效果（如"agent 在验证时会先检查接口可达性，避免对内网接口误报为可利用漏洞"）
+
+## L0-L8 断点判定
+
+- 如果知识访问链路有断点（L2-L7），照常输出
+- **如果 session 中没有知识访问行为**：
+  - 判 L1：推理任务是否需要知识支撑（如验证网络可达性、判断接口暴露面、评估防护机制等需要知识库中的方法/经验）
+  - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
+  - L1=false → 不产生知识访问断点
+- 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
+  - cause_code 填 "H"
+  - breakpoint 填 "L8"
+  - query_content 填问题总结（如"验证逻辑不充分：验证条件错误"）
+  - l0_source 填空字符串
+- L8 仅覆盖知识访问链路确实无问题的场景（L7=positive 或 L1=false）
+- **注意：验证维度遗漏不一定是 L8**——如果遗漏的验证维度需要知识支撑（如不知道怎么查网络可达性），应判 L2 断点（该查没查），不是 L8
+
+### 断点归属规则
 
 断点应反映导致误报的**主要原因**，不是所有 L6=false 的知识访问都是误报根因。
 - 如果 agent 读了知识但没用（L6=false），但这与人工标注的误报原因无关，则该知识访问的 L6=false 只是记录，不是主要断点
@@ -228,19 +275,29 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 合并模式返回 JSON：
 {
   "summary": "合并后的最终摘要，3000字以内",
-  "root_cause": {
-    "category": "knowledge_gap|query_inaccurate|knowledge_error|reasoning_flaw|verification_dimension_missing|verification_insufficient|mining_coverage_gap|verification_misjudge",
-    "description": "根因描述，500字以内。必须引用 session 中的具体事实，不要推测",
-    "human_confirmation_reason": "人工标注的误报原因（从用户消息中提取）"
-  },
-  "fix_suggestion": [
+  "hypotheses": [
     {
-      "target": "agent_prompt|agent_code|knowledge_base|memory",
-      "location": "具体修改位置（哪个 agent 的哪个环节/函数/知识类别）",
-      "action": "具体修改内容",
-      "expected_effect": "修改后预期效果"
+      "hypothesis": "假设描述（如'Agent 将路由定义等同于公网可达'）",
+      "probability": 0.4,
+      "responsibility": "agent|knowledge|external_data_source|eval_process",
+      "cause_code": "A/B/C/D/E/F/G/H",
+      "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
+      "agent_can_resolve": true/false,
+      "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
+      "needed_external_data": ["如果 agent_can_resolve=false，列出需要的外部数据（如'网关配置'、'Ingress 路由'）；如果 true 则填空数组"],
+      "fix_suggestion": {
+        "target": "agent_prompt|agent_code|knowledge|external_data_source|eval_process",
+        "location": "具体修改位置",
+        "action": "具体修改内容",
+        "expected_effect": "修改后预期效果"
+      }
     }
   ],
+  "label_quality": {
+    "precision": "precise|imprecise",
+    "reason": "评估理由（如'网络不可达未说明具体是防火墙/网关/内网隔离/认证门槛'）",
+    "follow_up_questions": ["追问问题1", "追问问题2"]
+  },
   "l0_l7": [
     {
       "l0_source": "来源标记",
@@ -536,20 +593,37 @@ class RootCauseAnalyzer:
             merge_result = {
                 "summary": " | ".join(
                     s.get("summary", "") for s in compressed_summaries),
-                "root_cause": {
-                    "category": "llm_error",
-                    "description": f"合并压缩 LLM 调用失败: {str(e)[:200]}",
+                "hypotheses": [{
+                    "hypothesis": f"合并压缩 LLM 调用失败: {str(e)[:200]}",
+                    "probability": 1.0,
+                    "responsibility": "agent",
+                    "cause_code": "H",
+                    "evidence": "",
+                    "agent_can_resolve": False,
+                    "blocked_by": "LLM 调用失败",
+                    "needed_external_data": [],
+                    "fix_suggestion": {
+                        "target": "agent_prompt",
+                        "location": "",
+                        "action": "",
+                        "expected_effect": "",
+                    },
+                }],
+                "label_quality": {
+                    "precision": "precise",
+                    "reason": "",
+                    "follow_up_questions": [],
                 },
-                "fix_suggestion": [],
                 "l0_l7": [],
             }
 
         merge_summary = merge_result.get("summary", "")
-        merge_root_cause = merge_result.get("root_cause", {
-            "category": "unknown",
-            "description": "无最终分析结果",
+        merge_hypotheses = merge_result.get("hypotheses") or []
+        merge_label_quality = merge_result.get("label_quality", {
+            "precision": "precise",
+            "reason": "",
+            "follow_up_questions": [],
         })
-        merge_fix = merge_result.get("fix_suggestion") or []
         merge_l0_l7 = merge_result.get("l0_l7") or []
 
         # 合并后的 L0-L7 断点也收集
@@ -561,27 +635,85 @@ class RootCauseAnalyzer:
                     **kp,
                 })
 
+        # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
+        # 取最高概率假设作为 root_cause（向后兼容）
+        top_hypothesis = max(merge_hypotheses, key=lambda h: h.get("probability", 0)) \
+            if merge_hypotheses else None
+        merge_root_cause = {
+            "category": self._hypothesis_to_category(top_hypothesis) if top_hypothesis else "unknown",
+            "description": top_hypothesis.get("hypothesis", "无最终分析结果") if top_hypothesis else "无最终分析结果",
+            "human_confirmation_reason": fp_reason,
+        } if top_hypothesis else {
+            "category": "unknown",
+            "description": "无最终分析结果",
+        }
+
+        # fix_suggestion 合并所有假设的修复点
+        merge_fix = []
+        for h in merge_hypotheses:
+            fs = h.get("fix_suggestion")
+            if isinstance(fs, dict):
+                merge_fix.append(fs)
+
+        # hypotheses 中每个假设的 cause_code 同步到断点列表
+        # （用于因果链统计按假设维度聚合）
+        for h in merge_hypotheses:
+            cc = h.get("cause_code", "")
+            if cc:
+                all_breakpoints.append({
+                    "session_id": "hypothesis",
+                    "breakpoint": "L8",
+                    "cause_code": cc,
+                    "query_content": h.get("hypothesis", ""),
+                    "returned_content": "",
+                    "responsibility": h.get("responsibility", ""),
+                    "probability": h.get("probability", 0),
+                })
+
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 合并压缩完成 "
             f"(summary {len(merge_summary)} 字, "
-            f"root_cause={merge_root_cause.get('category', '?')})",
+            f"{len(merge_hypotheses)} 个假设, "
+            f"top={merge_root_cause.get('category', '?')})",
             eval_id=evaluation_id)
 
-        # ── L4 独立验证 ──
+        # ── L4 独立验证（扩展：知识缺失假设也触发）──
         l4_verification = self._verify_l4_independently(
             case_id, chain_type, vuln_title, fp_reason, outcome,
             all_breakpoints, project_id, cancel_cb,
+            hypotheses=merge_hypotheses,
         )
 
         return {
             "session_chain": chain,
             "root_cause": merge_root_cause,
+            "hypotheses": merge_hypotheses,
+            "label_quality": merge_label_quality,
             "fix_suggestion": merge_fix,
             "compressed_summaries": compressed_summaries,
             "merge_summary": merge_summary,
             "l0_l7_breakpoints": all_breakpoints,
             "l4_independent_verification": l4_verification,
         }
+
+    @staticmethod
+    def _hypothesis_to_category(hypothesis: dict) -> str:
+        """从假设的 responsibility 映射到 root_cause.category（兼容旧字段）。"""
+        resp = hypothesis.get("responsibility", "")
+        cause = hypothesis.get("cause_code", "")
+        # cause_code A/B/E/F/H → agent 侧问题
+        # cause_code C/D/G → knowledge 侧问题
+        category_map = {
+            "A": "knowledge_gap",  # 该查没查
+            "B": "query_inaccurate",  # 查询太泛
+            "C": "knowledge_gap",  # 查了没得（知识缺失）
+            "D": "knowledge_error",  # 链路问题
+            "E": "knowledge_gap",  # 查到没用
+            "F": "reasoning_flaw",  # 用了没推动
+            "G": "knowledge_error",  # 导致误判
+            "H": "verification_dimension_missing",  # 其他
+        }
+        return category_map.get(cause, "reasoning_flaw")
 
     @staticmethod
     def _build_merge_prompt(
@@ -629,25 +761,36 @@ class RootCauseAnalyzer:
         all_breakpoints: list[dict],
         project_id: str,
         cancel_cb=None,
+        hypotheses: list[dict] | None = None,
     ) -> dict | None:
-        """L4 独立验证：当 L2 断点存在时，主动搜索知识库验证知识是否存在。
+        """L4 独立验证：当 L2 断点或 knowledge 责任假设存在时，主动搜索知识库验证。
 
-        只在有 L2 断点（agent 该查没查）时触发。
+        触发条件（任一满足即触发）：
+        - L2 断点（cause_code A，agent 该查没查）
+        - 假设 responsibility=knowledge（知识方责任，知识缺失）
 
         闭环逻辑：
-        - L2 断点（cause_code A，该查没查）→ 主动查知识库
-        - 知识库有知识（l4=true）→ 责任在 agent（该查没查），cause_code 保持 A
-        - 知识库没有知识（l4=false）→ 责任在知识库（覆盖度缺口），
-          cause_code 改为 C（查了没得），breakpoint 改为 L4
+        - L2 断点（cause_code A）→ 主动查知识库
+          - 知识库有知识（l4=true）→ 责任在 agent，cause_code 保持 A
+          - 知识库没有知识（l4=false）→ 责任在知识库，cause_code 改为 C
+        - 假设 responsibility=knowledge → 主动查知识库
+          - 知识库有知识 → 假设不成立（知识存在但 agent 没查到），修正 responsibility=agent
+          - 知识库没有知识 → 假设成立（知识确实缺失），保持 responsibility=knowledge
         """
         has_l2_break = any(
             bp.get("breakpoint") == "L2" for bp in all_breakpoints
         )
-        if not has_l2_break:
+        has_knowledge_hypothesis = any(
+            h.get("responsibility") == "knowledge" for h in (hypotheses or [])
+        )
+        if not has_l2_break and not has_knowledge_hypothesis:
             return None
 
         log("ROOT_CAUSE",
-            f"case {case_id}: {chain_type} 检测到 L2 断点，"
+            f"case {case_id}: {chain_type} 检测到"
+            f"{'L2 断点' if has_l2_break else ''}"
+            f"{'+' if has_l2_break and has_knowledge_hypothesis else ''}"
+            f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
             f"启动知识库主动验证 L4 (project_id={project_id})")
 
         try:
@@ -689,12 +832,37 @@ class RootCauseAnalyzer:
                         f"case {case_id}: {chain_type} L4 验证反馈："
                         f"知识库无相关知识，{changed} 个 L2 断点"
                         f"修正为 L4/cause_code C（知识库覆盖度缺口）")
+                # knowledge 责任假设：知识确实缺失，假设成立
+                # （responsibility 保持 knowledge，无需修正）
             elif l4_exists is True:
                 # 知识库有知识 → 责任在 agent（该查没查），cause_code 保持 A
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} L4 验证反馈："
                     f"知识库有相关知识，L2 断点保持 cause_code A"
                     f"（agent 该查没查，责任在 agent）")
+                # knowledge 责任假设：知识存在但 agent 没查到 → 责任在 agent
+                for h in (hypotheses or []):
+                    if h.get("responsibility") == "knowledge":
+                        h["responsibility"] = "agent"
+                        h["cause_code"] = "A"
+                        old_evid = h.get("evidence", "")
+                        h["evidence"] = (
+                            f"{old_evid} | L4 独立验证：知识库中存在"
+                            f"相关知识（{result.get('summary', '')}），"
+                            f"责任在 agent（该查没查）"
+                        )
+                        # 修正 fix_suggestion target
+                        fs = h.get("fix_suggestion")
+                        if isinstance(fs, dict) and fs.get("target") == "knowledge":
+                            fs["target"] = "agent_prompt"
+                            fs["action"] = (
+                                f"原建议补充知识，但 L4 验证发现知识库已有相关知识。"
+                                f"改为：{fs.get('action', '')}"
+                            )
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 验证反馈："
+                    f"knowledge 责任假设修正为 agent"
+                    f"（知识库有知识，agent 该查没查）")
 
             return result
         except Exception as e:

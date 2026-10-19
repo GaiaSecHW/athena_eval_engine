@@ -28,16 +28,16 @@ CAUSE_DESCRIPTIONS = {
 
 # ── 成因码→责任方映射 ──
 # A/B/E/F/H → Agent 责任（召回意识、查询聚焦、推理引用、结论推动、其他）
-# C/D/G     → knowledge_base 责任（知识覆盖度、工具链路、知识内容准确性）
+# C/D/G     → knowledge 责任（知识覆盖度、工具链路、知识内容准确性）
 
 CAUSE_TO_RESPONSIBILITY = {
     "A": "agent",
     "B": "agent",
-    "C": "knowledge_base",
-    "D": "knowledge_base",
+    "C": "knowledge",
+    "D": "knowledge",
     "E": "agent",
     "F": "agent",
-    "G": "knowledge_base",
+    "G": "knowledge",
     "H": "agent",
 }
 
@@ -46,8 +46,9 @@ CAUSE_TO_RESPONSIBILITY = {
 _TARGET_LABELS = {
     "agent_prompt": "Agent提示词",
     "agent_code": "Agent代码",
-    "knowledge_base": "知识库",
-    "memory": "记忆模块",
+    "knowledge": "知识库",
+    "external_data_source": "外部数据源",
+    "eval_process": "评测流程",
 }
 
 
@@ -114,6 +115,8 @@ def generate_dts_issues(
     case_full_data: dict[str, dict] = {}
     case_root_cause: dict[str, dict] = {}
     case_fix: dict[str, str] = {}
+    case_hypotheses: dict[str, list] = {}
+    case_label_quality: dict[str, dict] = {}
     for case in root_cause_results:
         cid = case.get("case_id", "")
         if not cid:
@@ -122,37 +125,90 @@ def generate_dts_issues(
         case_full_data[cid] = case
         mining = case.get("mining", {}) or {}
         verify = case.get("verification", {}) or {}
+
+        # ── 从多假设提取根因和修复建议 ──
+        all_hypotheses = []
         root_causes = {}
         fix_parts = []
+        label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
         for chain_type, chain_data in (("挖掘", mining), ("验证", verify)):
-            rc = chain_data.get("root_cause", {})
-            if rc:
-                cat = rc.get("category", "")
-                desc = rc.get("description", "")
-                # 跳过无意义的占位根因
-                if cat and cat not in ("no_session", "llm_error", "unknown"):
-                    root_causes[cat] = desc
-            fs_list = chain_data.get("fix_suggestion") or []
-            if isinstance(fs_list, list) and fs_list:
-                for fs in fs_list:
-                    if not isinstance(fs, dict):
-                        continue
-                    target = fs.get("target", "")
-                    location = fs.get("location", "")
-                    action = fs.get("action", "")
-                    expected = fs.get("expected_effect", "")
-                    if not (target or location or action):
-                        continue
-                    parts = [f"[{chain_type}链]"]
-                    if target:
-                        parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
-                    if location:
-                        parts.append(f"位置: {location}")
-                    if action:
-                        parts.append(f"修改: {action}")
-                    if expected:
-                        parts.append(f"预期: {expected}")
-                    fix_parts.append(" | ".join(parts))
+            # 兼容旧格式：如果没有 hypotheses，从 root_cause 构建
+            chain_hypotheses = chain_data.get("hypotheses") or []
+            if chain_hypotheses:
+                all_hypotheses.extend(chain_hypotheses)
+                # 从假设提取 fix_suggestion
+                for h in chain_hypotheses:
+                    fs = h.get("fix_suggestion")
+                    if isinstance(fs, dict):
+                        target = fs.get("target", "")
+                        location = fs.get("location", "")
+                        action = fs.get("action", "")
+                        expected = fs.get("expected_effect", "")
+                        if not (target or location or action):
+                            continue
+                        parts = [f"[{chain_type}链]"]
+                        if target:
+                            parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
+                        if location:
+                            parts.append(f"位置: {location}")
+                        if action:
+                            parts.append(f"修改: {action}")
+                        if expected:
+                            parts.append(f"预期: {expected}")
+                        # 附加假设信息
+                        hyp_desc = h.get("hypothesis", "")
+                        prob = h.get("probability", 0)
+                        resp = h.get("responsibility", "")
+                        if hyp_desc:
+                            parts.append(f"假设(P={prob}, {resp}): {hyp_desc}")
+                        fix_parts.append(" | ".join(parts))
+            else:
+                # 兼容旧格式：从 root_cause + fix_suggestion 构建
+                rc = chain_data.get("root_cause", {})
+                if rc:
+                    cat = rc.get("category", "")
+                    desc = rc.get("description", "")
+                    if cat and cat not in ("no_session", "llm_error", "unknown"):
+                        root_causes[cat] = desc
+                fs_list = chain_data.get("fix_suggestion") or []
+                if isinstance(fs_list, list) and fs_list:
+                    for fs in fs_list:
+                        if not isinstance(fs, dict):
+                            continue
+                        target = fs.get("target", "")
+                        location = fs.get("location", "")
+                        action = fs.get("action", "")
+                        expected = fs.get("expected_effect", "")
+                        if not (target or location or action):
+                            continue
+                        parts = [f"[{chain_type}链]"]
+                        if target:
+                            parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
+                        if location:
+                            parts.append(f"位置: {location}")
+                        if action:
+                            parts.append(f"修改: {action}")
+                        if expected:
+                            parts.append(f"预期: {expected}")
+                        fix_parts.append(" | ".join(parts))
+            # 合并 label_quality（取 imprecise 优先）
+            lq = chain_data.get("label_quality") or {}
+            if lq.get("precision") == "imprecise":
+                label_quality = lq
+
+        case_hypotheses[cid] = all_hypotheses
+        case_label_quality[cid] = label_quality
+        # 兼容旧格式：如果没有假设但有 root_causes
+        if all_hypotheses:
+            # 从最高概率假设提取 root_cause
+            top = max(all_hypotheses, key=lambda h: h.get("probability", 0)) if all_hypotheses else None
+            if top:
+                root_causes = {
+                    "hypothesis": top.get("hypothesis", ""),
+                    "probability": top.get("probability", 0),
+                    "responsibility": top.get("responsibility", ""),
+                    "evidence": top.get("evidence", ""),
+                }
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
@@ -193,12 +249,22 @@ def generate_dts_issues(
         bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
         primary = bps[0]
         vuln_title = case_vuln_titles.get(case_id, "")
-        cause_code = primary.get("cause_code", "")
+        primary_cause_code = primary.get("cause_code", "")
         break_level = primary.get("break_level", "")
+
+        # 多假设：优先取最高概率假设的 cause_code 作为主 cause_code
+        # 若无假设（旧格式），回退到断点的 primary cause_code
+        hypotheses = case_hypotheses.get(case_id, [])
+        label_quality = case_label_quality.get(case_id, {})
+        if hypotheses:
+            top_hyp = max(hypotheses, key=lambda h: h.get("probability", 0))
+            cause_code = top_hyp.get("cause_code", "") or primary_cause_code
+        else:
+            cause_code = primary_cause_code
 
         # 所有断点逐条列出，供开发人员排查
         bp_lines = []
-        for i, bp in enumerate(bps, 1):
+        for bp in bps:
             bp_cause = bp.get("cause_code", "")
             bp_level = bp.get("break_level", "")
             bp_evidence = bp.get("evidence", "")
@@ -206,6 +272,28 @@ def generate_dts_issues(
                 _build_breakpoint_desc(bp_cause, bp_level, bp_evidence)
             )
         breakpoint_desc = "\n".join(bp_lines)
+
+        # 多假设描述追加到 breakpoint_desc 末尾
+        # 让开发人员看到所有可能的根因假设及其概率、责任方
+        if hypotheses:
+            hyp_lines = ["", "─" * 40, "多假设根因分析："]
+            for i, h in enumerate(hypotheses, 1):
+                hyp_desc = h.get("hypothesis", "")
+                prob = h.get("probability", 0)
+                resp = h.get("responsibility", "")
+                can_resolve = h.get("agent_can_resolve", True)
+                hyp_lines.append(
+                    f"  假设{i} (P={prob}, 责任={resp}, "
+                    f"agent可解决={'是' if can_resolve else '否'}): {hyp_desc}"
+                )
+                if not can_resolve:
+                    blocked = h.get("blocked_by", "")
+                    needed = h.get("needed_external_data", [])
+                    if blocked:
+                        hyp_lines.append(f"    阻塞: {blocked}")
+                    if needed:
+                        hyp_lines.append(f"    需外部数据: {', '.join(needed)}")
+            breakpoint_desc = "\n".join(hyp_lines)
 
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
@@ -218,12 +306,19 @@ def generate_dts_issues(
                 agent_types.append(at)
         agent_type = ",".join(agent_types)
 
-        # 责任方：从所有断点的 cause_code 综合推导
+        # 责任方：优先从假设的 responsibility 推导（多值逗号分隔）
         # 一个 case 可能同时有 agent 责任（如 L8）和知识库责任（如 L4）
-        all_cause_codes = {bp.get("cause_code", "") for bp in bps if bp.get("cause_code")}
-        resp_set = {CAUSE_TO_RESPONSIBILITY.get(cc, "agent") for cc in all_cause_codes}
+        # 无假设时回退到从断点 cause_code 推导
+        if hypotheses:
+            resp_set = {h.get("responsibility", "") for h in hypotheses if h.get("responsibility")}
+            # 假设的 responsibility 可能是 agent/knowledge/external_data_source/eval_process
+            # 归一化：external_data_source 和 eval_process 保留原值
+            resp_set = {r for r in resp_set if r}
+        else:
+            all_cause_codes = {bp.get("cause_code", "") for bp in bps if bp.get("cause_code")}
+            resp_set = {CAUSE_TO_RESPONSIBILITY.get(cc, "agent") for cc in all_cause_codes}
         # 排序保证 agent 在前（agent 是主要责任方）
-        resp_order = {"agent": 0, "knowledge_base": 1}
+        resp_order = {"agent": 0, "knowledge": 1, "external_data_source": 2, "eval_process": 3}
         responsibility = ",".join(sorted(resp_set, key=lambda r: resp_order.get(r, 99)))
 
         # DTS-{8位随机hex}，不可猜测、无规律
@@ -256,6 +351,8 @@ def generate_dts_issues(
             "evidence_uri": None,
             "root_cause": json.dumps(root_cause, ensure_ascii=False) if root_cause else None,
             "solution": fix_suggestion or None,
+            "hypotheses": json.dumps(hypotheses, ensure_ascii=False) if hypotheses else None,
+            "label_quality": json.dumps(label_quality, ensure_ascii=False) if label_quality else None,
             "analysis_data_path": analysis_data_path,
             "replay_eval_id": None,
             "replay_result": None,
