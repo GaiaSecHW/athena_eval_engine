@@ -146,9 +146,11 @@ def list_by_task(task_id: str):
     获取问题单 ID 后提交回归验证。
 
     返回 dts_id、vuln_title（漏洞标题）、case_type（FP=误报单 / FN=漏报单）、
-    raw_report（基线对应原始漏洞报告，Markdown 格式，从漏洞中心拉取）。
+    raw_report（基线对应原始漏洞报告，Markdown 格式，从 analysis_data_path
+    指向的 JSON 文件中的 description 字段读取）。
     """
-    from ...infrastructure.vuln_center_client import get_case_raw_report
+    import os
+    import json as _json
     from ...infrastructure.log_util import log
 
     try:
@@ -157,19 +159,29 @@ def list_by_task(task_id: str):
         log("DTS_API", f"list_by_task 查询失败（表可能不存在）: {str(e)[:200]}")
         return {"issues": [], "count": 0}
 
-    # 按 case_id 去重，避免同 case 多条问题单重复拉取原始报告
+    reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
+
+    # 按 case_id 去重缓存，避免同 case 多条问题单重复读文件
     raw_report_cache: dict[str, str] = {}
     simplified = []
     for i in issues:
         case_id = i.get("case_id", "")
-        if case_id and case_id not in raw_report_cache:
-            try:
-                raw_report_cache[case_id] = get_case_raw_report(case_id)
-            except Exception as e:
-                log("DTS_API",
-                    f"list_by_task 拉取原始报告失败 case={case_id}: "
-                    f"{str(e)[:200]}")
-                raw_report_cache[case_id] = ""
+        if case_id not in raw_report_cache:
+            raw_report = ""
+            # 优先从 analysis_data_path 指向的 JSON 文件读 description 字段
+            path = i.get("analysis_data_path") or ""
+            if path:
+                try:
+                    file_path = os.path.join(reports_dir, path)
+                    if os.path.exists(file_path):
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = _json.loads(f.read())
+                        raw_report = str(data.get("description") or "")
+                except Exception as e:
+                    log("DTS_API",
+                        f"list_by_task 读取原始报告失败 case={case_id} "
+                        f"path={path}: {str(e)[:200]}")
+            raw_report_cache[case_id] = raw_report
         simplified.append({
             "dts_id": i.get("dts_id", ""),
             "vuln_title": i.get("vuln_title", ""),
