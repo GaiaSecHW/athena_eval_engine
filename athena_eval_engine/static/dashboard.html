@@ -855,6 +855,62 @@ function renderDtsSection(evalId,issues,stats){
   container.innerHTML=summaryHtml+listHtml;
 }
 
+// 知识/记忆使用情况卡片渲染
+function renderKMSummary(km,title){
+  if(!km||typeof km!=='object'){return '';}
+  var accessCount=km.access_count||0;
+  var overall=km.overall_effect||'none';
+  var impact=km.impact_on_conclusion||'';
+  var accesses=km.accesses||[];
+  // 无访问且无影响描述：不渲染
+  if(accessCount===0&&overall==='none'&&!impact){return '';}
+  var overallLabels={
+    positive:{t:'正向（知识正确推动结论）',c:'var(--green)',bg:'rgba(34,197,94,.12)'},
+    negative:{t:'负向（知识误导结论）',c:'var(--red)',bg:'rgba(220,38,38,.12)'},
+    neutral:{t:'中性（访问但未影响结论）',c:'var(--amber)',bg:'rgba(251,191,36,.12)'},
+    none:{t:'无知识/记忆访问',c:'var(--gray)',bg:'rgba(107,114,128,.12)'}
+  };
+  var ov=overallLabels[overall]||overallLabels.none;
+  var sourceLabels={knowledge_base:'知识库',memory:'记忆',unknown:'未知'};
+  var effectLabels={positive:'正向',negative:'负向',neutral:'中性',none:'无'};
+  var html='<div style="margin-top:8px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+    +'<div style="padding:8px 12px;background:'+ov.bg+';border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:13px;font-weight:600;color:'+ov.c+'">'+(title||'知识/记忆使用情况')+'</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">访问 '+accessCount+' 次</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">'+ov.t+'</span>'
+    +'</div>';
+  if(accesses&&accesses.length){
+    html+='<div style="padding:8px 12px">';
+    accesses.forEach(function(a,idx){
+      var src=sourceLabels[a.source]||a.source||'-';
+      var eff=a.effect||'none';
+      var effInfo=overallLabels[eff]||overallLabels.none;
+      var used=a.used_in_reasoning;
+      var usedLabel=used===true?'推理引用':used===false?'推理未引用':'-';
+      var usedColor=used===true?'var(--green)':used===false?'var(--red)':'var(--gray)';
+      html+='<div style="margin-bottom:8px;padding:8px 10px;background:var(--p2);border-radius:8px;font-size:13px">'
+        +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px">'
+        +'<span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+src+'</span>'
+        +'<span class="knd" style="background:'+effInfo.bg+';color:'+effInfo.c+'">'+effInfo.t+'</span>'
+        +'<span class="knd" style="background:'+ov.bg+';color:'+usedColor+'">'+usedLabel+'</span>';
+      if(a.session_id){html+='<span style="font-size:11px;color:var(--gray);font-family:monospace">from '+String(a.session_id).replace(/</g,'&lt;')+'</span>';}
+      html+='</div>';
+      if(a.query){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">查询：</b>'+String(a.query).replace(/</g,'&lt;')+'</div>';}
+      if(a.returned){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">返回：</b>'+String(a.returned).replace(/</g,'&lt;')+'</div>';}
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  if(impact){
+    html+='<div style="padding:8px 12px;border-top:1px solid var(--bd);font-size:13px">'
+      +'<div style="color:var(--sub);margin-bottom:4px">对结论的影响</div>'
+      +'<div style="white-space:pre-wrap">'+String(impact).replace(/</g,'&lt;')+'</div>'
+      +'</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
 async function renderDtsDetailPage(dtsId){
   document.title="问题单详情 — "+dtsId;
   var view=$("view");if(!view)return;
@@ -1142,8 +1198,19 @@ async function renderDtsDetailPage(dtsId){
             if(sumText){
               html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px;white-space:pre-wrap">'+String(sumText).replace(/</g,'&lt;')+'</div>';
             }
+            // 单 session 的知识/记忆使用情况
+            var km=s.knowledge_memory_summary;
+            if(km&&(km.access_count>0||km.overall_effect)){
+              html+=renderKMSummary(km,'Session '+(idx+1));
+            }
           });
           html+='</details>';
+        }
+
+        // 合并后的知识/记忆使用总结
+        var mergeKM=ch.data.knowledge_memory_summary;
+        if(mergeKM&&(mergeKM.access_count>0||mergeKM.overall_effect||mergeKM.impact_on_conclusion)){
+          html+=renderKMSummary(mergeKM,ch.label+' 综合');
         }
 
         html+='</div>';

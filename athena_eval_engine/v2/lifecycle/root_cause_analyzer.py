@@ -147,6 +147,20 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
 {
   "summary": "结构化摘要，3000字以内。必须包含知识与记忆访问的总结与影响",
   "key_findings": ["关键发现1", "关键发现2"],
+  "knowledge_memory_summary": {
+    "access_count": "知识/记忆访问次数（整数，0 表示无访问）",
+    "accesses": [
+      {
+        "source": "knowledge_base|memory|unknown",
+        "query": "agent 实际查询的内容概括（无访问时填空字符串）",
+        "returned": "返回内容概括（基于 [知识库返回]/[记忆返回] 原文，无访问时填空字符串）",
+        "used_in_reasoning": true/false,
+        "effect": "positive|negative|neutral|none"
+      }
+    ],
+    "overall_effect": "positive|negative|neutral|none",
+    "impact_on_conclusion": "知识/记忆对 agent 最终判定结论的具体影响描述（200字以内）。positive=知识正确推动结论；negative=知识误导结论；neutral=知识被访问但未影响结论；none=无知识访问"
+  },
   "l0_l7": [
     {
       "l0_source": "来源标记（如无则空字符串）",
@@ -164,6 +178,31 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
     }
   ]
 }
+
+## knowledge_memory_summary 字段说明
+
+这是对 session 中知识与记忆访问的整体总结，与 l0_l7 数组互补：
+- l0_l7 是逐次访问的断点判定（细粒度）
+- knowledge_memory_summary 是整体影响总结（粗粒度，便于前端展示和下游分析）
+
+**字段含义**：
+- access_count：session 中知识库访问 + 记忆访问的总次数。无访问时填 0，accesses 为空数组
+- accesses：每次访问的简要记录
+  * source：knowledge_base（Athena 知识库）/ memory（Wiki/记忆模块）/ unknown（无法判断来源）
+  * query：agent 查询了什么（概括，不要原文照搬）
+  * returned：返回了什么（概括，基于 [知识库返回]/[记忆返回] 标记后的原文）
+  * used_in_reasoning：agent 推理文本是否引用了返回内容（对应 L6 判定）
+  * effect：positive（正确推动结论）/ negative（误导结论）/ neutral（访问了但未影响）/ none（无访问或无效访问）
+- overall_effect：综合所有访问的整体影响
+  * positive：知识/记忆正确推动了 agent 的判定结论
+  * negative：知识/记忆内容有误/过时/不适用，误导了 agent 的判定
+  * neutral：知识/记忆被访问但未影响 agent 的最终结论
+  * none：session 中无知识/记忆访问
+- impact_on_conclusion：具体描述知识/记忆如何影响了 agent 的判定结论
+  * 必须基于 session 中的实际事实，禁止推测
+  * 如"agent 查询了接口暴露面知识，知识库返回了'CTS 服务部署在内网'，agent 据此判定接口不可达，正确推翻了漏洞假设"（positive）
+  * 如"agent 读取了 noise 文件但内容与本次漏洞类型不相关，未影响判定"（neutral）
+  * 如"session 中无知识/记忆访问，agent 完全依赖源码独立判定"（none）
 
 只返回 JSON，不要任何额外文字。"""
 
@@ -275,6 +314,21 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 合并模式返回 JSON：
 {
   "summary": "合并后的最终摘要，3000字以内",
+  "knowledge_memory_summary": {
+    "access_count": "整条链的知识/记忆访问总次数（所有 session 累加）",
+    "accesses": [
+      {
+        "source": "knowledge_base|memory|unknown",
+        "query": "agent 查询内容概括",
+        "returned": "返回内容概括",
+        "used_in_reasoning": true/false,
+        "effect": "positive|negative|neutral|none",
+        "session_id": "来自哪个 session（如能判断）"
+      }
+    ],
+    "overall_effect": "positive|negative|neutral|none",
+    "impact_on_conclusion": "知识/记忆对 agent 最终判定结论的综合影响描述（200字以内）。综合整条链所有 session 的知识访问，说明知识/记忆是否正确推动了结论、误导了结论、还是未影响结论"
+  },
   "hypotheses": [
     {
       "hypothesis": "假设描述（如'Agent 将路由定义等同于公网可达'）",
@@ -315,6 +369,14 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
     }
   ]
 }
+
+## knowledge_memory_summary 字段说明
+
+合并模式的 knowledge_memory_summary 是对整条链（所有 session）的知识/记忆访问综合总结：
+- 汇总所有 session 的知识/记忆访问次数
+- accesses 数组列出每次访问的简要记录（含 session_id 标识来源）
+- overall_effect 是综合判断：positive（知识正确推动结论）/ negative（知识误导）/ neutral（访问了但未影响）/ none（无访问）
+- impact_on_conclusion 必须基于 session 摘要中的实际事实，说明知识/记忆如何影响了 agent 的最终判定
 
 只返回 JSON，不要任何额外文字。"""
 
@@ -530,6 +592,12 @@ class RootCauseAnalyzer:
                 "step": i + 1,
                 "summary": result.get("summary", ""),
                 "key_findings": result.get("key_findings") or [],
+                "knowledge_memory_summary": result.get("knowledge_memory_summary") or {
+                    "access_count": 0,
+                    "accesses": [],
+                    "overall_effect": "none",
+                    "impact_on_conclusion": "",
+                },
                 "l0_l7": result.get("l0_l7") or [],
             }
 
@@ -625,6 +693,12 @@ class RootCauseAnalyzer:
             "follow_up_questions": [],
         })
         merge_l0_l7 = merge_result.get("l0_l7") or []
+        merge_km_summary = merge_result.get("knowledge_memory_summary") or {
+            "access_count": 0,
+            "accesses": [],
+            "overall_effect": "none",
+            "impact_on_conclusion": "",
+        }
 
         # 合并后的 L0-L7 断点也收集
         for kp in merge_l0_l7:
@@ -692,6 +766,7 @@ class RootCauseAnalyzer:
             "fix_suggestion": merge_fix,
             "compressed_summaries": compressed_summaries,
             "merge_summary": merge_summary,
+            "knowledge_memory_summary": merge_km_summary,
             "l0_l7_breakpoints": all_breakpoints,
             "l4_independent_verification": l4_verification,
         }
