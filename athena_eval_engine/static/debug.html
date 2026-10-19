@@ -363,18 +363,17 @@ function flushJstreeInits() {
   }
 }
 
-// ── case_matching 渲染器（误报 + 漏报 case）──
+// ── case_matching 渲染器（仅误报 FP + 漏报 FN case）──
 RENDERERS.case_matching = function(el, data) {
   let html = "";
 
-  // 统计：FP/TN（误报维度）+ TP/FN（漏报维度）
+  // 统计：FP（误报）+ FN（漏报）
+  // TP（真阳性）和 TN（真阴性）不需要根因分析/问题单，不在 case_matching 中展示
   const total = data.total_cases || 0;
   const matched = data.matched || 0;
   const unmatched = data.unmatched || 0;
   const outcomes = data.outcomes || {};
   const fp = outcomes.FP || 0;
-  const tn = outcomes.TN || 0;
-  const tp = outcomes.TP || 0;
   const fn = outcomes.FN || 0;
 
   html += `<div class="stats">`;
@@ -382,8 +381,6 @@ RENDERERS.case_matching = function(el, data) {
   html += `<div class="stat"><div class="num" style="color:#27ae60">${matched}</div><div class="label">已匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${unmatched}</div><div class="label">未匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报 (FP)</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">真阴性 (TN)</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#27ae60">${tp}</div><div class="label">真阳性 (TP)</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e67e22">${fn}</div><div class="label">漏报 (FN)</div></div>`;
   html += `</div>`;
 
@@ -402,12 +399,10 @@ RENDERERS.case_matching = function(el, data) {
   for (const m of matches) {
     const outcome = m.outcome || "?";
     const outcomeColor = {
-      "FP": "#e74c3c", "TN": "#95a5a6",
-      "TP": "#27ae60", "FN": "#e67e22",
+      "FP": "#e74c3c", "FN": "#e67e22",
     }[outcome] || "#888";
     const outcomeLabel = {
-      "FP": "误报", "TN": "真阴性",
-      "TP": "真阳性", "FN": "漏报",
+      "FP": "误报", "FN": "漏报",
     }[outcome] || outcome;
 
     const method = m.match_method || "unmatched";
@@ -541,6 +536,37 @@ RENDERERS.root_cause = function(el, data) {
   el.innerHTML = html;
 };
 
+// 渲染修复建议（fix_suggestion 可能是 dict、list[dict] 或 string）
+// dict 字段: target（修复方）、location（位置）、action（修改）、expected_effect（预期效果）
+function _renderFixSuggestion(fs) {
+  if (!fs) return '<span style="color:#999">—</span>';
+  // 字符串直接返回
+  if (typeof fs === "string") {
+    return `<div style="color:#555;font-size:14px;line-height:1.6;">${fs}</div>`;
+  }
+  // 单个 dict
+  if (!Array.isArray(fs)) fs = [fs];
+  if (!fs.length) return '<span style="color:#999">—</span>';
+  let out = "";
+  for (let i = 0; i < fs.length; i++) {
+    const item = fs[i];
+    if (typeof item === "string") {
+      out += `<div style="color:#555;font-size:14px;line-height:1.6;margin-bottom:6px;">${item}</div>`;
+      continue;
+    }
+    if (!item || typeof item !== "object") continue;
+    const parts = [];
+    if (item.target) parts.push(`<b>修复方:</b> ${item.target}`);
+    if (item.location) parts.push(`<b>位置:</b> ${item.location}`);
+    if (item.action) parts.push(`<b>修改:</b> ${item.action}`);
+    if (item.expected_effect) parts.push(`<b>预期:</b> ${item.expected_effect}`);
+    out += `<div style="color:#555;font-size:14px;line-height:1.6;margin-bottom:6px;padding:6px;background:#fff;border-radius:3px;">`
+      + (parts.length ? parts.join(" · ") : JSON.stringify(item))
+      + `</div>`;
+  }
+  return out || '<span style="color:#999">—</span>';
+}
+
 function _renderChain(chainData, label, color, catLabels, catColor) {
   let html = "";
   const chain = chainData.session_chain || [];
@@ -570,7 +596,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   if (chainData.fix_suggestion) {
     html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
     html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">修复建议</summary>`;
-    html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${chainData.fix_suggestion}</div>`;
+    html += `<div style="margin-top:4px;">${_renderFixSuggestion(chainData.fix_suggestion)}</div>`;
     html += `</details>`;
   }
 
@@ -758,7 +784,7 @@ RENDERERS.resolving = function(el, data) {
     if (c.fix_suggestion) {
       html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
       html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">修复建议</summary>`;
-      html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${c.fix_suggestion}</div>`;
+      html += `<div style="margin-top:4px;">${_renderFixSuggestion(c.fix_suggestion)}</div>`;
       html += `</details>`;
     }
 

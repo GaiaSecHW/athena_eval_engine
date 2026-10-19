@@ -460,21 +460,24 @@ class Orchestrator:
                 alert_center_data=alert_center_data,
             )
 
-            # debug dump：CASE_MATCHING 中间数据
+            # case_matching 只处理 FP（误报）和 FN（漏报）case
+            # TP（真阳性，正确报了）和 TN（真阴性，正确没报）不需要根因分析/问题单
+            fp_fn_matches = [r for r in case_session_matches
+                             if r["outcome"] in ("FP", "FN")]
+
+            # debug dump：CASE_MATCHING 中间数据（仅 FP/FN）
             self._dump_debug(reports_dir, evaluation_id, "case_matching", {
                 "eval_mode": eval_mode,
-                "total_cases": len(case_session_matches),
-                "matched": sum(1 for r in case_session_matches
+                "total_cases": len(fp_fn_matches),
+                "matched": sum(1 for r in fp_fn_matches
                                if r["match_method"] != "unmatched"),
-                "unmatched": sum(1 for r in case_session_matches
+                "unmatched": sum(1 for r in fp_fn_matches
                                  if r["match_method"] == "unmatched"),
                 "outcomes": {
-                    "FP": sum(1 for r in case_session_matches if r["outcome"] == "FP"),
-                    "TN": sum(1 for r in case_session_matches if r["outcome"] == "TN"),
-                    "TP": sum(1 for r in case_session_matches if r["outcome"] == "TP"),
-                    "FN": sum(1 for r in case_session_matches if r["outcome"] == "FN"),
+                    "FP": sum(1 for r in fp_fn_matches if r["outcome"] == "FP"),
+                    "FN": sum(1 for r in fp_fn_matches if r["outcome"] == "FN"),
                 },
-                "matches": case_session_matches,
+                "matches": fp_fn_matches,
             })
 
             # debug 断点
