@@ -227,6 +227,32 @@ class CaseSessionMatcher:
                             match_method_used += "+vuln_id_map"
                         break
 
+            # ── 挖掘 session 回退：验证 session 有但挖掘 session 无时，反推挖掘 session ──
+            # 用户洞察：验证 agent 的数据来源于挖掘 agent，验证能找到 session
+            # 说明挖掘链一定存在。以下策略按可信度从高到低尝试：
+            # 1. 跨 agent parent_map：验证 session 的 parent_id 指向挖掘 session
+            #    （WebVulnVerify session 由 Turing session 调起时 parent_id 指向 Turing）
+            # 2. 模糊标题匹配：精确标题不匹配但子串包含或关键词高度重叠
+            mining_match_detail = ""
+            if verify_sessions and not mining_sessions:
+                mining_match_detail = self._find_mining_via_parent_map(
+                    verify_sessions, verify_packs,
+                    mining_packs, mining_sessions)
+                if mining_match_detail:
+                    match_method_used = (match_method_used +
+                        "+mining_parent_map" if match_method_used
+                        else "mining_parent_map")
+                if not mining_sessions:
+                    fuzzy_detail = self._fuzzy_match_mining(
+                        finding_index, raw_title, vuln_title,
+                        baseline_summary, baseline_desc,
+                        mining_sessions)
+                    if fuzzy_detail:
+                        mining_match_detail = fuzzy_detail
+                        match_method_used = (match_method_used +
+                            "+mining_fuzzy" if match_method_used
+                            else "mining_fuzzy")
+
             # ── 验证 session 缺失诊断 ──
             # 有挖掘 session 但无验证 session 时，扫描验证 agent 全部 events
             # 查找 case_id 的任何出现，明确报告数据断链位置：
@@ -274,10 +300,14 @@ class CaseSessionMatcher:
                     f"{len(verify_sessions)} × verify ({match_method_used})")
                 if verify_match_detail:
                     detail_parts.append(verify_match_detail)
+                if mining_match_detail:
+                    detail_parts.append(mining_match_detail)
             else:
                 detail_parts.append("未匹配")
                 if verify_match_detail:
                     detail_parts.append(verify_match_detail)
+                if mining_match_detail:
+                    detail_parts.append(mining_match_detail)
             detail = " | ".join(detail_parts)
 
             results.append({
@@ -298,7 +328,8 @@ class CaseSessionMatcher:
                 f"case {cid}: outcome={outcome}, method={method}, "
                 f"mining={len(mining_sessions)}, verify={len(verify_sessions)} "
                 f"sessions ({match_method_used})"
-                + (f" | {verify_match_detail}" if verify_match_detail else ""),
+                + (f" | {verify_match_detail}" if verify_match_detail else "")
+                + (f" | {mining_match_detail}" if mining_match_detail else ""),
                 eval_id=evaluation_id)
 
         matched_count = sum(1 for r in results if r["match_method"] != "unmatched")
@@ -438,6 +469,189 @@ class CaseSessionMatcher:
         if _search_in_obj(ev.output_json):
             return True
         return False
+
+    def _find_mining_via_parent_map(
+        self,
+        verify_sessions: list[str],
+        verify_packs: list[DataPack],
+        mining_packs: list[DataPack],
+        mining_sessions: list[str],
+    ) -> str:
+        """通过跨 agent parent_map 反推挖掘 agent session。
+
+        验证 agent session 的 parent_id 可能指向挖掘 agent session
+        （WebVulnVerify/CVulnVerify session 由 Turing session 调起时，
+        parent_id 会指向 Turing session）。
+
+        策略：
+        1. 在验证 agent DataPack 的 parent_map 中沿 verify_session 向上追溯
+        2. 如果追溯到的祖先 session_id 出现在挖掘 agent DataPack 的 sessions 中，
+           则将其归类为挖掘 agent session
+
+        Returns:
+            诊断描述字符串。空字符串表示未找到。
+        """
+        # 构建挖掘 agent session_id 集合（跨所有 mining_packs）
+        mining_session_set: set[str] = set()
+        mining_session_to_agent: dict[str, str] = {}
+        for dp in mining_packs:
+            sg = dp.session_graph or {}
+            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
+            for sid in sessions:
+                mining_session_set.add(sid)
+                mining_session_to_agent[sid] = dp.agent_type
+
+        if not mining_session_set:
+            return ""
+
+        # 沿 verify_session 的 parent_map 向上追溯
+        found_mining: list[str] = []
+        for dp in verify_packs:
+            sg = dp.session_graph or {}
+            parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
+
+            for vsid in verify_sessions:
+                cur = vsid
+                visited: set[str] = set()
+                # 向上追溯最多 10 层，防止环
+                while cur and cur not in visited and len(visited) < 10:
+                    visited.add(cur)
+                    # 当前 session 在挖掘 agent DataPack 中 → 找到了
+                    if cur in mining_session_set:
+                        if cur not in found_mining:
+                            found_mining.append(cur)
+                        break
+                    # 继续向上
+                    cur = parent_map.get(cur, "")
+
+        if not found_mining:
+            return ""
+
+        for sid in found_mining:
+            agent_type = mining_session_to_agent.get(sid, "turing")
+            self._classify_session(sid, agent_type,
+                                   mining_sessions, verify_sessions)
+
+        return (f"挖掘 session 反推成功（parent_map 追溯: "
+                f"{','.join(found_mining[:3])}"
+                f"{'...' if len(found_mining) > 3 else ''}）")
+
+    def _fuzzy_match_mining(
+        self,
+        finding_index: dict[str, list[tuple[str, str, str]]],
+        raw_title: str,
+        vuln_title: str,
+        baseline_summary: str,
+        baseline_desc: str,
+        mining_sessions: list[str],
+    ) -> str:
+        """模糊标题匹配挖掘 agent session。
+
+        精确标题不匹配但子串包含或关键词高度重叠时使用。
+        只匹配挖掘 agent 的 finding（agent_type 在 _MINING_AGENT_TYPES 中）。
+
+        策略：
+        1. 子串包含：raw_title 或 vuln_title 是 finding title 的子串，或反之
+        2. 关键词重叠：从标题提取关键词（去停用词），Jaccard ≥ 0.5
+
+        Returns:
+            诊断描述字符串。空字符串表示未找到。
+        """
+        # 收集所有挖掘 agent 的 finding 条目
+        mining_entries: list[tuple[str, str, str]] = []  # (sid, desc, agent_type)
+        for title, entries in finding_index.items():
+            for sid, desc, agent_type in entries:
+                if agent_type in self._MINING_AGENT_TYPES:
+                    mining_entries.append((title, sid, desc, agent_type))
+
+        if not mining_entries:
+            return ""
+
+        # 候选标题列表
+        query_titles = [t for t in (raw_title, vuln_title) if t]
+        if not query_titles:
+            return ""
+
+        # 摘要也作为关键词来源（不直接做子串匹配，避免过短摘要误匹配）
+        extra_keyword_sources = [baseline_summary, baseline_desc]
+
+        # 策略 1：子串包含
+        for ftitle, sid, desc, agent_type in mining_entries:
+            for qt in query_titles:
+                if not ftitle or not qt:
+                    continue
+                # 避免过短标题误匹配（< 6 字符的子串包含不可靠）
+                if len(qt) < 6 or len(ftitle) < 6:
+                    continue
+                if qt in ftitle or ftitle in qt:
+                    self._classify_session(sid, agent_type,
+                                           mining_sessions, [])
+                    return (f"挖掘 session 模糊匹配成功（子串包含: "
+                            f"'{ftitle[:40]}' ↔ '{qt[:40]}'）")
+
+        # 策略 2：关键词 Jaccard 重叠
+        _STOP_WORDS = {"的", "了", "和", "与", "或", "在", "为", "是", "及",
+                       "the", "a", "an", "of", "in", "on", "to", "for",
+                       "and", "or", "with", "by", "is", "be", "as", "at",
+                       "from", "that", "this", "it", "an"}
+
+        def _tokenize(text: str) -> set[str]:
+            """简易分词：中文按字、英文按空格+标点。"""
+            if not text:
+                return set()
+            tokens: set[str] = set()
+            # 英文单词（≥3 字符）
+            for m in re.finditer(r'[A-Za-z_][A-Za-z0-9_]{2,}', text):
+                w = m.group(0).lower()
+                if w not in _STOP_WORDS:
+                    tokens.add(w)
+            # 中文字符（单字，去停用词）
+            for ch in text:
+                if '\u4e00' <= ch <= '\u9fff' and ch not in _STOP_WORDS:
+                    tokens.add(ch)
+            # 过滤过短 token
+            return {t for t in tokens if len(t) >= 2 or
+                    (len(t) == 1 and '\u4e00' <= t <= '\u9fff')}
+
+        query_tokens: set[str] = set()
+        for qt in query_titles:
+            query_tokens |= _tokenize(qt)
+        # 摘要/描述的关键词也加入候选（增加召回率）
+        for src in extra_keyword_sources:
+            if src and isinstance(src, str):
+                query_tokens |= _tokenize(src)
+
+        if not query_tokens:
+            return ""
+
+        best_matches: list[tuple[float, str, str, str]] = []  # (jaccard, sid, ftitle, agent_type)
+        for ftitle, sid, desc, agent_type in mining_entries:
+            if not ftitle:
+                continue
+            ftokens = _tokenize(ftitle)
+            if not ftokens:
+                continue
+            inter = len(query_tokens & ftokens)
+            union = len(query_tokens | ftokens)
+            if union == 0:
+                continue
+            jaccard = inter / union
+            if jaccard >= 0.5:
+                best_matches.append((jaccard, sid, ftitle, agent_type))
+
+        if not best_matches:
+            return ""
+
+        # 按 Jaccard 降序，取前 3
+        best_matches.sort(key=lambda x: x[0], reverse=True)
+        added: list[str] = []
+        for jaccard, sid, ftitle, agent_type in best_matches[:3]:
+            self._classify_session(sid, agent_type,
+                                   mining_sessions, [])
+            added.append(f"{sid}(J={jaccard:.2f})")
+
+        return (f"挖掘 session 模糊匹配成功（关键词 Jaccard: "
+                f"{', '.join(added)}）")
 
     def _build_baseline_ac_map(
         self,
