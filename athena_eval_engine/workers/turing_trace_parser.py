@@ -249,11 +249,23 @@ class TuringTraceParser(TraceParser):
     # ==================================================================
 
     def build_session_graph(self, events):
-        """Turing (opencode) session 关系图：parent_id 父子边 + agent 角色。
+        """Turing (opencode) session 关系图：parent_id 父子边 + agent 角色 + files。
 
         只建 parent_id 父子边（SQLite session 表的真实调用关系）。
         不建共享文件/fact 边——共享文件不是调用关系，会导致 BFS 误连。
+
+        files 字段从 tool_call input 提取 basename，供 sink_search_scanner
+        和 file_to_sessions 索引使用。Turing 的文件操作工具：
+        - read: filePath
+        - grep/glob: path
+        - bash: command 里含文件路径
+        - vuln_hunt_insert_detection: file
+        - vuln_hunt_endpoint_scan_probe: path
+        - vuln_hunt_decompile_jar: input_path
+        - vuln_hunt_inspect_jar_summary: jar_path
         """
+        import os
+        import re
         import sqlite3
         import time
         from collections import defaultdict
@@ -265,13 +277,55 @@ class TuringTraceParser(TraceParser):
             'parent_map': {},
         }
 
-        # 收集 session 元数据
+        # 收集 session 元数据 + files（从 tool_call input 提取 basename）
+        # basename 提取规则：len < 80，有扩展名，不是隐藏文件
+        _FILE_RE = re.compile(r'[\w\-./]+\.[a-zA-Z]{1,6}')
+
+        def _add_file(sg, sid, fp_str):
+            """从路径字符串提取 basename，加入 session files 和 file_to_sessions 索引。"""
+            if not fp_str or not isinstance(fp_str, str):
+                return
+            basename = os.path.basename(fp_str)
+            if not basename or len(basename) >= 80 or basename.startswith('.'):
+                return
+            if '.' not in basename:
+                return
+            sg['files'].add(basename)
+            graph['file_to_sessions'][basename].add(sid)
+
         for ev in events:
             sid = ev.session_id
             if not sid:
                 continue
             if sid not in graph['sessions']:
                 graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': []}
+            sg = graph['sessions'][sid]
+
+            # 从 tool_call input 提取文件路径
+            if not ev.is_tool_call():
+                continue
+            tool = ev.tool_name or ""
+            inp = ev.input_json or {}
+            if not isinstance(inp, dict):
+                continue
+
+            if tool == "read":
+                _add_file(sg, sid, str(inp.get("filePath") or inp.get("file_path") or ""))
+            elif tool in ("grep", "glob"):
+                _add_file(sg, sid, str(inp.get("path") or ""))
+            elif tool == "bash":
+                cmd = str(inp.get("command") or "")
+                if cmd:
+                    for fm in _FILE_RE.findall(cmd):
+                        _add_file(sg, sid, fm)
+            elif tool == "vuln_hunt_insert_detection":
+                _add_file(sg, sid, str(inp.get("file") or ""))
+            elif tool == "vuln_hunt_endpoint_scan_probe":
+                _add_file(sg, sid, str(inp.get("path") or ""))
+            elif tool == "vuln_hunt_decompile_jar":
+                _add_file(sg, sid, str(inp.get("input_path") or ""))
+            elif tool == "vuln_hunt_inspect_jar_summary":
+                _add_file(sg, sid, str(inp.get("jar_path") or ""))
 
         # parent_id 父子边 + agent 角色（从 SQLite session 表）
         uri = getattr(self, '_source_uri', None)
