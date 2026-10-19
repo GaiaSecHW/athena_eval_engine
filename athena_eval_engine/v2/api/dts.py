@@ -145,7 +145,7 @@ def list_by_task(task_id: str):
     用于回归验证流程的第一步：查询某个挖掘任务下产生了哪些问题单，
     获取问题单 ID 后提交回归验证。
 
-    只返回 dts_id 和 vuln_title（漏洞标题）。
+    返回 dts_id、vuln_title（漏洞标题）、case_type（FP=误报单 / FN=漏报单）。
     """
     try:
         issues = list_dts_by_task(task_id)
@@ -154,7 +154,11 @@ def list_by_task(task_id: str):
         log("DTS_API", f"list_by_task 查询失败（表可能不存在）: {str(e)[:200]}")
         return {"issues": [], "count": 0}
     simplified = [
-        {"dts_id": i.get("dts_id", ""), "vuln_title": i.get("vuln_title", "")}
+        {
+            "dts_id": i.get("dts_id", ""),
+            "vuln_title": i.get("vuln_title", ""),
+            "case_type": i.get("case_type", ""),
+        }
         for i in issues
     ]
     return {"issues": simplified, "count": len(simplified)}
