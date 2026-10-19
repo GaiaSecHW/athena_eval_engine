@@ -621,6 +621,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                 raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s，含 {_429_count} 次 429 + {_500_count} 次 500 重试）")
             # socket.timeout 是 per-recv 的，TCP keepalive 会导致永不超时
             # 用 first_token_timeout 作为 socket timeout，Phase 1 应用层总超时检查作为安全网
+            _conn_ts = time.time()
             conn = http.client.HTTPConnection(host, port, timeout=first_token_timeout)
             try:
                 conn.request("POST", path, body=body, headers=headers)
@@ -628,13 +629,17 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             except (socket.timeout, TimeoutError) as e:
                 conn.close()
                 conn = None
+                _conn_elapsed = time.time() - _conn_ts
                 _phase1_elapsed = time.time() - _req_ts
                 if _phase1_elapsed > first_token_timeout:
                     log("LLM", f"Phase 1 总超时（{first_token_timeout}s）: {e}")
                     raise RuntimeError(f"LLM Phase 1 总超时（{first_token_timeout}s）") from e
-                # 未超总时间，可能是 per-recv 超时或 OS 层 connect 超时，重试连接
-                log("LLM", f"连接超时（{first_token_timeout}s），总已用 {_phase1_elapsed:.1f}s/{first_token_timeout}s，"
-                    f"429={_429_count} 500={_500_count}，异常={type(e).__name__}: {e}，重试连接")
+                # 本次连接耗时 vs Phase 1 累计耗时
+                # 本次连接耗时 ≈ socket timeout → recv 卡住
+                # 本次连接耗时远小于 socket timeout → OS 层 connect 超时（SYN 重传耗尽）
+                log("LLM", f"连接超时：本次连接 {_conn_elapsed:.1f}s（socket_timeout={first_token_timeout}s），"
+                    f"Phase 1 累计 {_phase1_elapsed:.1f}s/{first_token_timeout}s，"
+                    f"异常={type(e).__name__}: {e}，重试连接")
                 continue
             status = resp.status
             if status == 429:
