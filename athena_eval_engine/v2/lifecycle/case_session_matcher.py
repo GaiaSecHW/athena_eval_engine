@@ -218,6 +218,12 @@ class CaseSessionMatcher:
                                 sids = vid_sids
                                 break
                     if sids:
+                        # 去重父子关系：同一 vuln_id 可能关联多个 session，
+                        # 其中存在父子关系（如 analyze + verify session）。
+                        # 只保留根 session（parent_id 为空或不在集合中的），
+                        # 与挖掘链处理方式一致——_analyze_chain 只压缩命中的
+                        # 根 session，不展开子 session。
+                        sids = self._filter_root_sessions(sids, dp)
                         for sid in sids:
                             self._classify_session(sid, dp.agent_type,
                                                    mining_sessions, verify_sessions)
@@ -359,6 +365,47 @@ class CaseSessionMatcher:
         else:
             if sid not in mining_sessions:
                 mining_sessions.append(sid)
+
+    @staticmethod
+    def _filter_root_sessions(
+        sids, dp: "DataPack",
+    ) -> list[str]:
+        """从 session 集合中只保留根 session（去除父子关系中的子 session）。
+
+        同一 vuln_id 可能关联多个 session，其中存在父子关系
+        （如 WebVulnVerify 的 analyze + verify session，verify 的
+        parent_id 指向 analyze）。只保留根 session——parent_id 为空
+        或 parent_id 不在集合中的 session——与挖掘链处理方式一致：
+        _analyze_chain 只压缩命中的根 session，不展开子 session。
+
+        Args:
+            sids: vuln_id_to_sessions 返回的 session 集合（set 或 list）。
+            dp: 所属 DataPack，用于取 parent_map。
+
+        Returns:
+            根 session_id 列表（保留原顺序，如 sids 是 list）。
+        """
+        sid_list = list(sids) if not isinstance(sids, (list, tuple)) else list(sids)
+        sid_set = set(sid_list)
+        if len(sid_set) <= 1:
+            return sid_list
+
+        sg = dp.session_graph or {}
+        parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
+
+        roots: list[str] = []
+        for sid in sid_list:
+            pid = parent_map.get(sid, "")
+            # parent_id 为空，或 parent_id 不在集合中（父 session 不属于此 vuln）→ 根
+            if not pid or pid not in sid_set:
+                if sid not in roots:
+                    roots.append(sid)
+
+        # 极端情况：所有 session 都有父子关系形成环（不应发生），回退返回原列表
+        if not roots:
+            return sid_list
+
+        return roots
 
     def _diagnose_verify_gap(
         self,
