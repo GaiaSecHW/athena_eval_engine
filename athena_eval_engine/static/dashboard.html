@@ -742,8 +742,19 @@ function renderDtsTable(){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
+    // 解析 label_quality（JSON 字符串 → precision badge）
+    var lqPrecision='',lqColor='var(--gray)',lqLabel='-';
+    try{
+      var lqObj=typeof i.label_quality==='string'?JSON.parse(i.label_quality):i.label_quality;
+      if(lqObj&&lqObj.precision){
+        lqPrecision=lqObj.precision;
+        if(lqPrecision==='precise'){lqColor='var(--green)';lqLabel='精确';}
+        else if(lqPrecision==='imprecise'){lqColor='var(--amber)';lqLabel='不精确';}
+        else{lqLabel=lqPrecision;}
+      }
+    }catch(e){}
     html+='<tr>'
       +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
       +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
@@ -753,6 +764,7 @@ function renderDtsTable(){
       +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
       +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
+      +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+lqLabel+'</span>':'-')+'</td>'
       +'<td style="font-size:13px;color:var(--sub)">'+fmtDate(i.created_at)+'</td>'
       +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="Router.navigate(\'/dts/\'+\''+i.dts_id+'\')">详情</button></td>'
       +'</tr>';
@@ -949,6 +961,11 @@ async function renderDtsDetailPage(dtsId){
       html+='<div style="margin-top:8px;padding:8px 0;border-top:1px solid var(--bd)">'
         +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞标题</div>'
         +'<div style="font-size:15px;font-weight:600">'+(caseData.vuln_title||'-')+'</div>';
+      // 漏洞摘要紧跟漏洞标题
+      if(caseData.summary){
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div>'
+          +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div>';
+      }
       if(caseData.human_confirmation_summary){
         html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>'
           +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+String(caseData.human_confirmation_summary).replace(/</g,'&lt;')+'</div>';
@@ -1109,17 +1126,10 @@ async function renderDtsDetailPage(dtsId){
       }
     }
 
-    // ── 3. 原始问题信息 ──
-    if(caseData&&caseData.summary){
-      html+='<div class="card" style="margin-bottom:16px">'
-        +'<h3>原始问题</h3>'
-        +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div>'
-        +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div>'
-        +'</div>';
-    }
-
-    // ── 4. 误报原因分析（断点列表，可折叠）──
-    if(d.breakpoint_desc){
+    // ── 3. 误报原因分析（断点列表，可折叠）──
+    // 多假设根因分析已包含 cause_code + evidence + 修复建议，此处仅在无多假设时显示
+    var _hasHypotheses=typeof allHypotheses!=='undefined'&&allHypotheses&&allHypotheses.length>0;
+    if(d.breakpoint_desc&&!_hasHypotheses){
       var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
       html+='<div class="card" style="margin-bottom:16px">'
         +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
