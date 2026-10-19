@@ -54,10 +54,12 @@ _MEMORY_CLI_RE = _re.compile(
     r"|mem\s+(recall|get|search|list|query|find|suggestions)",  # memengine: mem recall/get/search/suggestions
     _re.IGNORECASE,
 )
-# 记忆读取（路径引用）：memengine 或 /app/memory/ 目录
+# 记忆读取（路径引用）：memengine、/app/memory/、wiki/compiled_knowledge 目录
 _MEMORY_PATH_RE = _re.compile(
     r"[\\/]memengine(?:-[^\\/\s]+)?[\\/](?:seeddir)?"  # memengine 目录路径（含 seeddir 子目录和根目录）
-    r"|[\\/]app[\\/]memory[\\/]",  # /app/memory/ 目录
+    r"|[\\/]app[\\/]memory[\\/]"  # /app/memory/ 目录
+    r"|[\\/]wiki[\\/]"  # ~/wiki/ 目录（Turing agent 通过 cat 读 wiki .md 文件访问记忆）
+    r"|compiled_knowledge[\\/]",  # compiled_knowledge 目录（wiki 知识文件 NFS 路径）
     _re.IGNORECASE,
 )
 # 内容读取命令（cat/head/tail/grep/rg 等；不含 ls/find/wc/stat 等纯列文件命令）
