@@ -280,28 +280,6 @@ def generate_dts_issues(
             )
         breakpoint_desc = "\n".join(bp_lines)
 
-        # 多假设描述追加到 breakpoint_desc 末尾
-        # 让开发人员看到所有可能的根因假设及其概率、责任方
-        if hypotheses:
-            hyp_lines = ["", "─" * 40, "多假设根因分析："]
-            for i, h in enumerate(hypotheses, 1):
-                hyp_desc = h.get("hypothesis", "")
-                prob = h.get("probability", 0)
-                resp = h.get("responsibility", "")
-                can_resolve = h.get("agent_can_resolve", True)
-                hyp_lines.append(
-                    f"  假设{i} (P={prob}, 责任={resp}, "
-                    f"agent可解决={'是' if can_resolve else '否'}): {hyp_desc}"
-                )
-                if not can_resolve:
-                    blocked = h.get("blocked_by", "")
-                    needed = h.get("needed_external_data", [])
-                    if blocked:
-                        hyp_lines.append(f"    阻塞: {blocked}")
-                    if needed:
-                        hyp_lines.append(f"    需外部数据: {', '.join(needed)}")
-            breakpoint_desc = "\n".join(hyp_lines)
-
         root_cause = case_root_cause.get(case_id, {})
         fix_suggestion = case_fix.get(case_id, "")
 
