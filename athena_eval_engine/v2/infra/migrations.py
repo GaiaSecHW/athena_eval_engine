@@ -324,12 +324,18 @@ MIGRATIONS = [
     {
         "id": "017_cause_code_h",
         "desc": "dts_issue + knowledge_access_detail 的 cause_code CHECK 增加 H（L8 其他原因）",
+        # 注意：MySQL 不支持 ALTER TABLE ... DROP CHECK IF EXISTS（报 1064 语法错误），
+        # 只能用 DROP CHECK。删不存在的约束会报 3821 "... is not found"，
+        # 命中 _IDEMPOTENT_KEYWORDS 的 "is not found" 被当幂等跳过，故安全。
+        # 约束名是建表时匿名 CHECK 由 MySQL 按出现顺序自动生成的
+        # （knowledge_access_detail: chk_1=source_system, chk_2=effect_label,
+        #   chk_3=cause_code），不是手写名，改错会删掉无关约束。
         "sql": [
-            "ALTER TABLE dts_issue DROP CHECK IF EXISTS dts_issue_chk_2",
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_chk_2",
             "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_chk_2 "
             "CHECK (cause_code IN ('A','B','C','D','E','F','G','H'))",
-            "ALTER TABLE knowledge_access_detail DROP CHECK IF EXISTS knowledge_access_detail_chk_2",
-            "ALTER TABLE knowledge_access_detail ADD CONSTRAINT knowledge_access_detail_chk_2 "
+            "ALTER TABLE knowledge_access_detail DROP CHECK knowledge_access_detail_chk_3",
+            "ALTER TABLE knowledge_access_detail ADD CONSTRAINT knowledge_access_detail_chk_3 "
             "CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H'))",
         ],
     },
@@ -350,9 +356,10 @@ MIGRATIONS = [
     {
         "id": "020_dts_issue_status_simplify",
         "desc": "dts_issue 状态精简为 open/passed/failed，移除 improving/confirmed/closing/not_issue",
+        # 同 017：DROP CHECK 不支持 IF EXISTS（见该处注释）。
         "sql": [
-            "ALTER TABLE dts_issue DROP CHECK IF EXISTS dts_issue_chk_3",
-            "ALTER TABLE dts_issue DROP CHECK IF EXISTS dts_issue_status_chk",
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_chk_3",
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_status_chk",
             "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_status_chk CHECK (status IN ('open','passed','failed'))",
             "UPDATE dts_issue SET status='open' WHERE status IN ('unlocated','improving','confirmed','closing','not_issue')",
         ],

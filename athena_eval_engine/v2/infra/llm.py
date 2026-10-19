@@ -30,6 +30,10 @@ FIRST_TOKEN_TIMEOUT = 350   # 首 token 超时：5 分 50 秒
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
 MAX_RATE_LIMIT_RETRIES = 100
 
+# 连通性测试超时（秒）。网关排队/推理模型 thinking 时，一个 max_tokens=5 的请求
+# 也可能耗时 60s 以上（实测 gaiasec-llm-gateway 约 60~80s），30s 会误报超时。
+TEST_TIMEOUT = 300
+
 # LLM 线程按需创建，用 dict 管理（tid→Thread），map 最大 1000
 # 实际并发由 _llm_gate 控制（DB 配 llm_max_concurrency）
 # 线程执行完自动从 dict 移除；watchdog 定期清理卡死的线程
@@ -491,7 +495,7 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
 
     t0 = time.time()
     try:
-        conn = http.client.HTTPConnection(host, port, timeout=30)
+        conn = http.client.HTTPConnection(host, port, timeout=TEST_TIMEOUT)
         conn.request("POST", path, body=payload, headers=headers)
         resp = conn.getresponse()
         resp_body = resp.read().decode("utf-8", errors="replace")
@@ -502,7 +506,10 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
         if resp.status == 200:
             try:
                 result = json.loads(resp_body)
-                content = result.get("choices", [{}])[0].get("message", {}).get("content", "")
+                msg = (result.get("choices") or [{}])[0].get("message") or {}
+                # 推理模型（如 deepseek_v4_flash_0731）正文可能全在 reasoning 里、
+                # content 为 null；两者都取，避免测试成功却显示空响应或原始 JSON。
+                content = msg.get("content") or msg.get("reasoning") or ""
                 return {
                     "success": True,
                     "latency_ms": latency_ms,
