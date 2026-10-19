@@ -363,24 +363,28 @@ function flushJstreeInits() {
   }
 }
 
-// ── case_matching 渲染器（只显示误报 case）──
+// ── case_matching 渲染器（误报 + 漏报 case）──
 RENDERERS.case_matching = function(el, data) {
   let html = "";
 
-  // 统计：只显示 FP/TN
+  // 统计：FP/TN（误报维度）+ TP/FN（漏报维度）
   const total = data.total_cases || 0;
   const matched = data.matched || 0;
   const unmatched = data.unmatched || 0;
   const outcomes = data.outcomes || {};
   const fp = outcomes.FP || 0;
   const tn = outcomes.TN || 0;
+  const tp = outcomes.TP || 0;
+  const fn = outcomes.FN || 0;
 
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${total}</div><div class="label">误报 case 总数 (${data.eval_mode || ""})</div></div>`;
+  html += `<div class="stat"><div class="num">${total}</div><div class="label">case 总数 (${data.eval_mode || ""})</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#27ae60">${matched}</div><div class="label">已匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${unmatched}</div><div class="label">未匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报 (FP)</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#95a5a6">${tn}</div><div class="label">真阴性 (TN)</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#27ae60">${tp}</div><div class="label">真阳性 (TP)</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#e67e22">${fn}</div><div class="label">漏报 (FN)</div></div>`;
   html += `</div>`;
 
   const matches = data.matches || [];
@@ -399,9 +403,11 @@ RENDERERS.case_matching = function(el, data) {
     const outcome = m.outcome || "?";
     const outcomeColor = {
       "FP": "#e74c3c", "TN": "#95a5a6",
+      "TP": "#27ae60", "FN": "#e67e22",
     }[outcome] || "#888";
     const outcomeLabel = {
       "FP": "误报", "TN": "真阴性",
+      "TP": "真阳性", "FN": "漏报",
     }[outcome] || outcome;
 
     const method = m.match_method || "unmatched";
