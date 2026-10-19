@@ -454,6 +454,14 @@ class CausalChainAnalyzer:
             case_root_cause[cid] = root_causes
             case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
+        # 从 root_cause_results 提取每条 case 的 outcome（FP/FN）
+        case_outcomes: dict[str, str] = {}
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            outcome = case.get("outcome", "")
+            if cid and outcome:
+                case_outcomes[cid] = outcome
+
         result: list[dict] = []
         for case_id, records in case_map.items():
             vuln_title = ""
@@ -479,6 +487,7 @@ class CausalChainAnalyzer:
             case_entry = {
                 "case_id": case_id,
                 "vuln_title": vuln_title,
+                "outcome": case_outcomes.get(case_id, "FP"),
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": breakpoints,

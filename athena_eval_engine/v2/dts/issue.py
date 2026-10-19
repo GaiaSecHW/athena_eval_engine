@@ -215,6 +215,7 @@ def generate_dts_issues(
     # 按 case_id 分组，所有 agent 的断点合并到同一条单
     grouped: dict[str, list[dict]] = {}
     case_vuln_titles: dict[str, str] = {}
+    case_outcomes: dict[str, str] = {}
     for case_entry in per_case_breakpoints:
         case_id = case_entry.get("case_id", "")
         vuln_title = case_entry.get("vuln_title", "")
@@ -222,6 +223,12 @@ def generate_dts_issues(
             continue
         if vuln_title and case_id not in case_vuln_titles:
             case_vuln_titles[case_id] = vuln_title
+        # outcome 决定 case_type：FP=误报，FN=漏报
+        outcome = case_entry.get("outcome", "")
+        if outcome == "FN":
+            case_outcomes[case_id] = "FN"
+        elif case_id not in case_outcomes:
+            case_outcomes[case_id] = "FP"
         breakpoints = case_entry.get("breakpoints", [])
 
         for bp in breakpoints:
@@ -344,7 +351,7 @@ def generate_dts_issues(
             "case_id": case_id,
             "vuln_title": vuln_title,
             "agent_type": agent_type,
-            "case_type": "FP",
+            "case_type": case_outcomes.get(case_id, "FP"),
             "cause_code": cause_code,
             "breakpoint_level": break_level,
             "breakpoint_desc": breakpoint_desc,
