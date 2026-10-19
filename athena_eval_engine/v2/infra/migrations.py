@@ -372,6 +372,13 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN label_quality TEXT AFTER hypotheses",
         ],
     },
+    {
+        "id": "023_dts_issue_responsibility_widen_64",
+        "desc": "dts_issue.responsibility VARCHAR(32)→VARCHAR(64)，容纳四值逗号分隔 'agent,knowledge,external_data_source,eval_process'(41 字符)",
+        "sql": [
+            "ALTER TABLE dts_issue MODIFY COLUMN responsibility VARCHAR(64)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
