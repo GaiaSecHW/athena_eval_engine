@@ -467,20 +467,70 @@ class Orchestrator:
             fp_fn_matches = [r for r in case_session_matches
                              if r["outcome"] in ("FP", "FN")]
 
-            # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定，不含漏报原因——
-            # 漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段做）
+            # ── FN 漏报匹配结果（开发态）──
+            # LLM 未匹配的 VULNERABLE 基线在 case_session_matches 里被 sink
+            # 文件扫描判为 TP，但 agent 实际未上报漏洞——评测上是漏报。
+            # 这里的漏报匹配结果指：哪些 case 是漏报 + 匹配到的 session
+            # （sink 文件扫描命中）。漏报原因分析（sink 精确命中 vs 未命中）
+            # 在 ROOT_CAUSE_ANALYSIS 阶段做，这里只出匹配判定。
+            fn_miss_match_cases: list[dict] = []
+            if eval_mode == "dev":
+                from ..lifecycle.sink_search_scanner import SinkSearchScanner
+                matched_baseline_ids: set[str] = set()
+                for m in case_matches:
+                    bid = m.get("matched_baseline_case_id") or ""
+                    if bid:
+                        matched_baseline_ids.add(bid)
+                miss_scanner = SinkSearchScanner()
+                for cid, cd in case_details.items():
+                    if cd.get("expected_label") != "VULNERABLE":
+                        continue
+                    if cid in matched_baseline_ids:
+                        continue
+                    # LLM 未匹配 → 漏报。用 sink 文件扫描 trace 定位匹配到的
+                    # session（文件级命中即可——session 归属是匹配结果，
+                    # 精确命中判定留给根因分析）。
+                    source_file = cd.get("source_file", "")
+                    sink_hits = miss_scanner.scan(source_file, data_packs)
+                    mining_sessions: list[str] = []
+                    for at, sids in sink_hits.items():
+                        for sid in sids:
+                            if sid not in mining_sessions:
+                                mining_sessions.append(sid)
+                    fn_miss_match_cases.append({
+                        "case_id": cid,
+                        "ac_case_id": "",
+                        "vuln_title": cd.get("vuln_title", ""),
+                        "summary": cd.get("summary", ""),
+                        "description": cd.get("description", ""),
+                        "expected_label": "VULNERABLE",
+                        "mining_sessions": mining_sessions,
+                        "verify_sessions": [],
+                        "outcome": "FN",
+                        "match_method": "unmatched" if not mining_sessions
+                        else "matched",
+                        "match_detail": (
+                            f"{len(mining_sessions)} 个 session 命中 sink 文件，"
+                            f"LLM 未匹配原始数据，漏报"
+                            if mining_sessions else
+                            "LLM 未匹配原始数据且 trace 未命中 sink 文件，漏报"),
+                    })
+
+            # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定 + 漏报匹配结果，
+            # 不含漏报原因——漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段做）
+            fn_match_cases = fp_fn_matches + fn_miss_match_cases
             case_matching_debug: dict = {
                 "eval_mode": eval_mode,
-                "total_cases": len(fp_fn_matches),
-                "matched": sum(1 for r in fp_fn_matches
+                "total_cases": len(fn_match_cases),
+                "matched": sum(1 for r in fn_match_cases
                                if r["match_method"] != "unmatched"),
-                "unmatched": sum(1 for r in fp_fn_matches
+                "unmatched": sum(1 for r in fn_match_cases
                                  if r["match_method"] == "unmatched"),
                 "outcomes": {
-                    "FP": sum(1 for r in fp_fn_matches if r["outcome"] == "FP"),
-                    "FN": sum(1 for r in fp_fn_matches if r["outcome"] == "FN"),
+                    "FP": sum(1 for r in fn_match_cases if r["outcome"] == "FP"),
+                    "FN": sum(1 for r in fn_match_cases if r["outcome"] == "FN"),
                 },
-                "matches": fp_fn_matches,
+                "matches": fn_match_cases,
             }
             self._dump_debug(reports_dir, evaluation_id, "case_matching",
                              case_matching_debug)
