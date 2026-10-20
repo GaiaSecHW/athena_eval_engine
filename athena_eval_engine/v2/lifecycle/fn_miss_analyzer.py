@@ -3,12 +3,14 @@
 对每个 LLM 未匹配上的 VULNERABLE 基线 case：
 1. 用 LLM 从 case description 中提取结构化 sink 信息（文件、函数、行号）
 2. 用结构化 sink 信息在 trace 中做精确匹配
-   - 函数级命中：trace event 中同时出现 sink 文件和 sink 函数名
-   - 文件级命中：trace event 中只出现 sink 文件，没出现 sink 函数名
+   - 精确命中：trace event 中同时出现 sink 文件 + sink 函数名，或
+     sink 文件 + sink 行号在范围内 → agent 真正接触了 sink 点
+   - 文件级命中：trace event 中只出现 sink 文件，没出现 sink 函数/行号
+     → agent 可能只是搜索时在结果列表里碰到路径，未真正读到 sink 点
 3. 分类漏报原因：
-   - sink_found_no_report: sink 找到（函数级或文件级命中）但 agent 未上报漏洞
+   - sink_found_no_report: sink 点精确命中但 agent 未上报漏洞
      → 漏洞识别能力问题
-   - sink_not_found: sink 没找到（没有任何命中）→ 漏洞挖掘方向问题
+   - sink_not_found: 无精确命中（可能仅有文件级命中）→ 漏洞挖掘方向问题
 
 数据保存到 debug 的 case_matching 步骤下新增子段展示。
 """
@@ -117,15 +119,18 @@ class FnMissAnalyzer:
 
             # 用结构化 sink 信息扫描 trace
             scan_result = scanner.scan_with_sink_info(sink_info, data_packs)
-            sink_found = scan_result.get("found", False)
             found_precise = scan_result.get("found_precise", False)
             hit_sessions = scan_result.get("hit_sessions", {})
             precise_sessions = scan_result.get("precise_sessions", {})
             file_level_sessions = scan_result.get("file_level_sessions", {})
             hits_by_agent = scan_result.get("hits_by_agent", {})
 
-            # 分类漏报原因
-            if sink_found:
+            # 分类漏报原因：
+            # sink 找到 = 有精确命中（函数或行号级）——agent 真正接触了 sink 点
+            # 仅文件级命中不算 sink 找到——grep/glob 输出列表碰巧含路径，
+            #   agent 可能根本没读到 sink 函数/行号 → 归为挖掘方向问题
+            if found_precise:
+                sink_found = True
                 miss_category = "sink_found_no_report"
                 # 收集命中的 event 上下文（按 agent_type 分组）
                 hit_events: list[dict] = []
@@ -141,25 +146,28 @@ class FnMissAnalyzer:
                     len(sids) for sids in precise_sessions.values())
                 total_file = sum(
                     len(sids) for sids in file_level_sessions.values())
-                if found_precise:
-                    miss_reason = (
-                        f"trace 中找到 sink 点（{total_sessions} 个 session "
-                        f"命中，其中 {total_precise} 个精确命中"
-                        f"（函数或行号）、{total_file} 个仅文件级命中），"
-                        f"但 agent 未上报漏洞——"
-                        f"属于漏洞识别能力问题")
-                else:
-                    miss_reason = (
-                        f"trace 中找到 sink 文件（{total_sessions} 个 session "
-                        f"仅文件级命中，无函数或行号级命中——agent 读了文件"
-                        f"但可能未碰到 sink 点），但 agent 未上报漏洞——"
-                        f"属于漏洞识别能力问题")
+                miss_reason = (
+                    f"trace 中找到 sink 点（{total_sessions} 个 session "
+                    f"命中，其中 {total_precise} 个精确命中"
+                    f"（函数或行号）、{total_file} 个仅文件级命中），"
+                    f"但 agent 未上报漏洞——"
+                    f"属于漏洞识别能力问题")
             else:
+                sink_found = False
                 miss_category = "sink_not_found"
                 hit_events = []
-                miss_reason = (
-                    "trace 中没有任何 session 搜索过 sink 文件——"
-                    "漏洞挖掘方向都没有，属于挖掘范围/路径覆盖问题")
+                # 统计文件级命中（agent 至少搜到了文件，方向接近但未触及 sink 点）
+                total_file = sum(
+                    len(sids) for sids in file_level_sessions.values())
+                if total_file > 0:
+                    miss_reason = (
+                        f"trace 中未找到 sink 点（{total_file} 个 session "
+                        f"仅文件级命中——agent 搜索到 sink 文件但从未读到 "
+                        f"sink 函数/行号），属于挖掘范围/路径覆盖问题")
+                else:
+                    miss_reason = (
+                        "trace 中没有任何 session 搜索过 sink 文件——"
+                        "漏洞挖掘方向都没有，属于挖掘范围/路径覆盖问题")
 
             results.append({
                 "case_id": cid,

@@ -462,17 +462,20 @@ RENDERERS.case_matching = function(el, data) {
   // ── FN 漏报分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
   const fnMiss = data.fn_miss_analysis;
   if (fnMiss && fnMiss.total > 0) {
+    // 统计：精确命中才算 sink 找到
+    const sinkFoundCount = (fnMiss.results || []).filter(r => r.sink_found).length;
     const preciseCount = (fnMiss.results || []).filter(r => r.sink_found_precise).length;
+    const fileOnlyCount = (fnMiss.results || []).filter(r => !r.sink_found && r.file_level_sessions && Object.keys(r.file_level_sessions).length).length;
     html += `<details style="margin:16px 0 8px;">`
       + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
 
     // 统计
     html += `<div class="stats" style="margin:8px 0;">`;
     html += `<div class="stat"><div class="num" style="color:#e67e22">${fnMiss.total}</div><div class="label">未匹配 VULNERABLE 基线</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#f39c12">${fnMiss.sink_found || 0}</div><div class="label">sink 找到</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#27ae60">${preciseCount}</div><div class="label">精确命中（函数/行号）</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#f39c12">${(fnMiss.sink_found || 0) - preciseCount}</div><div class="label">仅文件级命中</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#27ae60">${sinkFoundCount}</div><div class="label">sink 找到（识别能力）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#f39c12">${preciseCount}</div><div class="label">精确命中（函数/行号）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到（挖掘方向）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#888">${fileOnlyCount}</div><div class="label">其中仅文件级</div></div>`;
     html += `</div>`;
 
     html += `<table><thead><tr>`;
@@ -481,7 +484,6 @@ RENDERERS.case_matching = function(el, data) {
     html += `</tr></thead><tbody>`;
 
     for (const r of (fnMiss.results || [])) {
-      const sinkFound = r.sink_found;
       const foundPrecise = r.sink_found_precise;
       const category = r.miss_category || "";
       const catLabel = {
@@ -543,8 +545,8 @@ RENDERERS.case_matching = function(el, data) {
       html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
       html += `</tr>`;
 
-      // sink 找到时，展示命中 event 上下文（可展开）
-      if (sinkFound && r.hit_events && r.hit_events.length > 0) {
+      // 有命中 event 时，展示上下文（可展开）——精确命中（sink 找到）或仅文件级命中都展示
+      if (r.hit_events && r.hit_events.length > 0) {
         html += `<tr><td colspan="6" style="padding:0;">`;
         html += `<details style="margin:4px 0 8px 20px;">`;
         html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
