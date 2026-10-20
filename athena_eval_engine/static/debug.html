@@ -146,7 +146,7 @@ RENDERERS.ingesting = function(el, data) {
 
   // 原始数据明细
   const raw = data.raw_data || {};
-  html += `<details style="margin:16px 0 8px;" open>`
+  html += `<details style="margin:16px 0 8px;">`
     + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">原始数据（告警中心） — ${raw.total ?? 0} 条</summary>`;
   if (raw.cases?.length) {
     html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报分组</th><th>人工确认原因</th><th>项目编号</th></tr></thead><tbody>`;
@@ -165,7 +165,7 @@ RENDERERS.ingesting = function(el, data) {
 
   // 基线数据明细
   const bl = data.baseline || {};
-  html += `<details style="margin:16px 0 8px;" open>`
+  html += `<details style="margin:16px 0 8px;">`
     + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">基线数据 — ${bl.total ?? 0} 条</summary>`;
   if (bl.cases?.length) {
     html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报分组</th><th>人工确认原因</th></tr></thead><tbody>`;
@@ -185,7 +185,8 @@ RENDERERS.ingesting = function(el, data) {
   const matches = data.case_matches;
   if (matches && matches.length) {
     const matched = matches.filter(m => m.matched_baseline_case_id).length;
-    html += `<h3 style="margin:16px 0 8px;color:#6c5ce7;">LLM 匹配结果 — ${matched}/${matches.length} 条匹配成功</h3>`;
+    html += `<details style="margin:16px 0 8px;">`
+      + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">LLM 匹配结果 — ${matched}/${matches.length} 条匹配成功</summary>`;
     html += `<table><thead><tr><th>告警中心编号</th><th>告警中心标题</th><th>匹配基线编号</th><th>匹配基线标题</th><th>置信度</th><th>原因</th></tr></thead><tbody>`;
     for (const m of matches) {
       const conf = m.confidence ?? 0;
@@ -201,6 +202,7 @@ RENDERERS.ingesting = function(el, data) {
         + `</tr>`;
     }
     html += `</tbody></table>`;
+    html += `</details>`;
   }
 
   el.innerHTML = html;
