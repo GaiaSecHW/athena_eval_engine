@@ -467,23 +467,8 @@ class Orchestrator:
             fp_fn_matches = [r for r in case_session_matches
                              if r["outcome"] in ("FP", "FN")]
 
-            # ── FN 漏报分析（开发态）──
-            # 对 LLM 未匹配上的 VULNERABLE 基线 case，用 source_file 与
-            # trace 一个个匹配，查找漏报原因。两种结果：
-            # 1. sink 找到 → 定位为什么没上报漏洞（漏洞识别能力问题）
-            # 2. sink 没找到 → 漏洞挖掘方向都没有（挖掘范围/路径覆盖问题）
-            fn_miss_results = []
-            if eval_mode == "dev":
-                _set_progress(evaluation_id, "FN 漏报分析...")
-                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
-                fn_analyzer = FnMissAnalyzer()
-                fn_miss_results = fn_analyzer.analyze(
-                    evaluation_id, case_details, case_matches,
-                    data_packs, eval_mode=eval_mode,
-                    cancel_cb=_cancel_cb,
-                )
-
-            # debug dump：CASE_MATCHING 中间数据（FP/FN + FN 漏报分析）
+            # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定，不含漏报原因——
+            # 漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段做）
             case_matching_debug: dict = {
                 "eval_mode": eval_mode,
                 "total_cases": len(fp_fn_matches),
@@ -497,15 +482,6 @@ class Orchestrator:
                 },
                 "matches": fp_fn_matches,
             }
-            if fn_miss_results:
-                case_matching_debug["fn_miss_analysis"] = {
-                    "total": len(fn_miss_results),
-                    "sink_found": sum(1 for r in fn_miss_results
-                                      if r.get("sink_found")),
-                    "sink_not_found": sum(1 for r in fn_miss_results
-                                          if not r.get("sink_found")),
-                    "results": fn_miss_results,
-                }
             self._dump_debug(reports_dir, evaluation_id, "case_matching",
                              case_matching_debug)
 
@@ -518,22 +494,82 @@ class Orchestrator:
                 return
 
             # ── ROOT_CAUSE_ANALYSIS（FP + FN case 独立压缩 + 合并输出根因分析）──
+            # 漏报原因分析（sink 精确命中）在此阶段做，不在 CASE_MATCHING——
+            # case 匹配只做匹配判定，漏报原因属于根因分析范畴
             _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
             fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
+
+            # ── FN 漏报原因分析（开发态）──
+            # 对 LLM 未匹配上的 VULNERABLE 基线 case（真漏报——agent 实际
+            # 没上报漏洞），用 LLM 提取的 sink 信息与 trace 精确匹配，
+            # 判定漏报原因：sink 精确命中（识别能力问题）或 sink 未命中
+            # （挖掘方向问题）。结果附加到根因分析 case 的 fn_miss 字段。
+            fn_miss_results: list[dict] = []
+            if eval_mode == "dev":
+                _set_progress(evaluation_id, "FN 漏报原因分析...")
+                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
+                fn_analyzer = FnMissAnalyzer()
+                fn_miss_results = fn_analyzer.analyze(
+                    evaluation_id, case_details, case_matches,
+                    data_packs, eval_mode=eval_mode,
+                    cancel_cb=_cancel_cb,
+                )
+
             # 补充人工标注误报原因到 fp_cases/fn_cases，供根因分析使用
             for fc in fp_cases + fn_cases:
                 cd = case_details.get(fc.get("case_id", ""), {})
                 fc["human_confirmation_summary"] = cd.get(
                     "human_confirmation_summary", "")
                 fc["summary"] = cd.get("summary", "")
+            # FN 漏报原因分析结果按 case_id 附加到对应 case 上
+            fn_miss_by_case: dict[str, dict] = {
+                r["case_id"]: r for r in fn_miss_results
+            }
+            for fc in fn_cases:
+                fc["fn_miss"] = fn_miss_by_case.get(fc.get("case_id", ""))
+
+            # LLM 未匹配的 VULNERABLE 基线（agent 实际未上报的真漏洞）——
+            # 不在 case_session_matches 里（sink 文件扫描使其判为 TP），
+            # 但作为评测漏报必须进入根因分析。从 fn_miss_results 构建
+            # 根因分析 case：outcome=FN，session 用精确命中的 session，
+            # fn_miss 字段带 sink 漏报原因分析结果。
+            existing_fn_ids = {fc.get("case_id", "") for fc in fn_cases}
+            for r in fn_miss_results:
+                cid = r.get("case_id", "")
+                if cid in existing_fn_ids:
+                    continue
+                # 漏报原因分析的精确命中 session（函数/行号级）作为根因分析链
+                all_precise_sids: list[str] = []
+                for at, sids in (r.get("precise_sessions", {}) or {}).items():
+                    for sid in sids:
+                        if sid not in all_precise_sids:
+                            all_precise_sids.append(sid)
+                fn_cases.append({
+                    "case_id": cid,
+                    "ac_case_id": "",
+                    "vuln_title": r.get("vuln_title", ""),
+                    "summary": r.get("summary", ""),
+                    "description": r.get("description", ""),
+                    "expected_label": "VULNERABLE",
+                    "mining_sessions": all_precise_sids,
+                    "verify_sessions": [],
+                    "outcome": "FN",
+                    "match_method": "unmatched",
+                    "match_detail": "LLM 未匹配原始数据，按漏报进入根因分析",
+                    "fn_miss": r,
+                })
+                existing_fn_ids.add(cid)
+
             root_cause_cases = fp_cases + fn_cases
-            if root_cause_cases:
+            if root_cause_cases or fn_miss_results:
                 _set_progress(evaluation_id,
                               f"根因分析中... {len(fp_cases)} FP + "
-                              f"{len(fn_cases)} FN case")
+                              f"{len(fn_cases)} FN case"
+                              + (f" + {len(fn_miss_results)} 漏报原因分析"
+                                 if fn_miss_results else ""))
                 from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
                 rca = RootCauseAnalyzer()
                 # 从 manifest 取 project_id（知识库主动验证用）
@@ -548,11 +584,19 @@ class Orchestrator:
                     project_id=root_cause_project_id,
                 )
 
-                # debug dump：ROOT_CAUSE 中间数据
+                # debug dump：ROOT_CAUSE 中间数据（含 FN 漏报原因分析）
                 self._dump_debug(reports_dir, evaluation_id, "root_cause", {
                     "total_fp": len(fp_cases),
                     "total_fn": len(fn_cases),
                     "analyzed": len(root_cause_results),
+                    "fn_miss_analysis": {
+                        "total": len(fn_miss_results),
+                        "sink_found": sum(1 for r in fn_miss_results
+                                          if r.get("sink_found")),
+                        "sink_not_found": sum(1 for r in fn_miss_results
+                                              if not r.get("sink_found")),
+                        "results": fn_miss_results,
+                    } if fn_miss_results else None,
                     "results": root_cause_results,
                 })
 

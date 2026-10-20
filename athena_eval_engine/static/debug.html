@@ -459,15 +459,27 @@ RENDERERS.case_matching = function(el, data) {
   }
   html += `</tbody></table>`;
 
-  // ── FN 漏报分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
+  el.innerHTML = html;
+};
+
+// ── root_cause 渲染器 ──
+RENDERERS.root_cause = function(el, data) {
+  let html = "";
+
+  const total = data.total_fp || 0;
+  const analyzed = data.analyzed || 0;
+  html += `<div class="stats">`;
+  html += `<div class="stat"><div class="num">${total}</div><div class="label">误报 case 数</div></div>`;
+  html += `<div class="stat"><div class="num" style="color:#27ae60">${analyzed}</div><div class="label">已分析</div></div>`;
+  html += `</div>`;
+
+  // ── FN 漏报原因分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
   const fnMiss = data.fn_miss_analysis;
   if (fnMiss && fnMiss.total > 0) {
-    // 统计：精确命中才算 sink 找到
     const sinkFoundCount = (fnMiss.results || []).filter(r => r.sink_found).length;
     const preciseCount = (fnMiss.results || []).filter(r => r.sink_found_precise).length;
-    const fileOnlyCount = (fnMiss.results || []).filter(r => !r.sink_found && r.file_level_sessions && Object.keys(r.file_level_sessions).length).length;
     html += `<details style="margin:16px 0 8px;">`
-      + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
+      + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报原因分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
 
     // 统计
     html += `<div class="stats" style="margin:8px 0;">`;
@@ -475,7 +487,6 @@ RENDERERS.case_matching = function(el, data) {
     html += `<div class="stat"><div class="num" style="color:#27ae60">${sinkFoundCount}</div><div class="label">sink 找到（识别能力）</div></div>`;
     html += `<div class="stat"><div class="num" style="color:#f39c12">${preciseCount}</div><div class="label">精确命中（函数/行号）</div></div>`;
     html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到（挖掘方向）</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#888">${fileOnlyCount}</div><div class="label">其中仅文件级</div></div>`;
     html += `</div>`;
 
     html += `<table><thead><tr>`;
@@ -484,7 +495,6 @@ RENDERERS.case_matching = function(el, data) {
     html += `</tr></thead><tbody>`;
 
     for (const r of (fnMiss.results || [])) {
-      const foundPrecise = r.sink_found_precise;
       const category = r.miss_category || "";
       const catLabel = {
         "sink_not_found": "挖掘方向问题",
@@ -508,25 +518,13 @@ RENDERERS.case_matching = function(el, data) {
       }
       const sinkShort = sinkSummary.length > 100 ? sinkSummary.substring(0, 100) + "..." : sinkSummary;
 
-      // 命中 session 摘要（区分精确和文件级）
-      const hitSessions = r.hit_sessions || {};
+      // 命中 session 摘要（精确命中）
       const preciseSessions = r.precise_sessions || {};
-      const fileLevelSessions = r.file_level_sessions || {};
       let sessionSummary = "";
-      if (Object.keys(hitSessions).length) {
-        const parts = [];
-        for (const [at, sids] of Object.entries(hitSessions)) {
-          const preciseCount = (preciseSessions[at] || []).length;
-          const fileCount = (fileLevelSessions[at] || []).length;
-          if (preciseCount > 0 && fileCount > 0) {
-            parts.push(`${at}: ${sids.length} (精确${preciseCount}+文件${fileCount})`);
-          } else if (preciseCount > 0) {
-            parts.push(`${at}: ${sids.length} (全精确)`);
-          } else {
-            parts.push(`${at}: ${sids.length} (仅文件级)`);
-          }
-        }
-        sessionSummary = parts.join(", ");
+      if (Object.keys(preciseSessions).length) {
+        sessionSummary = Object.entries(preciseSessions)
+          .map(([at, sids]) => `${at}: ${sids.length}`)
+          .join(", ");
       } else {
         sessionSummary = '<span style="color:#999">—</span>';
       }
@@ -545,7 +543,7 @@ RENDERERS.case_matching = function(el, data) {
       html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
       html += `</tr>`;
 
-      // 有命中 event 时，展示上下文（可展开）——精确命中（sink 找到）或仅文件级命中都展示
+      // 有精确命中 event 时，展示上下文（可展开）
       if (r.hit_events && r.hit_events.length > 0) {
         html += `<tr><td colspan="6" style="padding:0;">`;
         html += `<details style="margin:4px 0 8px 20px;">`;
@@ -579,20 +577,6 @@ RENDERERS.case_matching = function(el, data) {
     html += `</tbody></table>`;
     html += `</details>`;
   }
-
-  el.innerHTML = html;
-};
-
-// ── root_cause 渲染器 ──
-RENDERERS.root_cause = function(el, data) {
-  let html = "";
-
-  const total = data.total_fp || 0;
-  const analyzed = data.analyzed || 0;
-  html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${total}</div><div class="label">误报 case 数</div></div>`;
-  html += `<div class="stat"><div class="num" style="color:#27ae60">${analyzed}</div><div class="label">已分析</div></div>`;
-  html += `</div>`;
 
   const results = data.results || [];
   if (!results.length) {

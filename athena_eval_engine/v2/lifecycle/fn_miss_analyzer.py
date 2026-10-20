@@ -107,6 +107,8 @@ class FnMissAnalyzer:
             eval_id=evaluation_id)
 
         # Step 2: 用结构化 sink 信息在 trace 中做精确匹配
+        # 文件级命中（仅文件名，无函数/行号级）直接忽略——
+        # 只有 agent 确实读到过疑似 sink 点（函数或行号级命中）才算找到过
         scanner = SinkSearchScanner()
         results: list[dict] = []
 
@@ -122,52 +124,39 @@ class FnMissAnalyzer:
             found_precise = scan_result.get("found_precise", False)
             hit_sessions = scan_result.get("hit_sessions", {})
             precise_sessions = scan_result.get("precise_sessions", {})
-            file_level_sessions = scan_result.get("file_level_sessions", {})
             hits_by_agent = scan_result.get("hits_by_agent", {})
 
             # 分类漏报原因：
-            # sink 找到 = 有精确命中（函数或行号级）——agent 真正接触了 sink 点
-            # 仅文件级命中不算 sink 找到——grep/glob 输出列表碰巧含路径，
-            #   agent 可能根本没读到 sink 函数/行号 → 归为挖掘方向问题
+            # sink 找到 = 有精确命中（函数或行号级）——agent 确实读到过疑似 sink 点
+            # 文件级命中直接忽略——grep/glob 输出列表碰巧含路径不算找到
             if found_precise:
                 sink_found = True
                 miss_category = "sink_found_no_report"
-                # 收集命中的 event 上下文（按 agent_type 分组）
+                # 只收集精确命中的 event 上下文（文件级命中忽略）
                 hit_events: list[dict] = []
                 for agent_type, events in hits_by_agent.items():
                     for ev_info in events:
+                        if ev_info.get("match_precision") != "precise":
+                            continue
                         hit_events.append({
                             "agent_type": agent_type,
                             **ev_info,
                         })
-                total_sessions = sum(
-                    len(sids) for sids in hit_sessions.values())
                 total_precise = sum(
                     len(sids) for sids in precise_sessions.values())
-                total_file = sum(
-                    len(sids) for sids in file_level_sessions.values())
                 miss_reason = (
-                    f"trace 中找到 sink 点（{total_sessions} 个 session "
-                    f"命中，其中 {total_precise} 个精确命中"
-                    f"（函数或行号）、{total_file} 个仅文件级命中），"
+                    f"trace 中找到疑似 sink 点（{total_precise} 个 session "
+                    f"精确命中——agent 确实读到过 sink 函数/行号），"
                     f"但 agent 未上报漏洞——"
                     f"属于漏洞识别能力问题")
             else:
                 sink_found = False
                 miss_category = "sink_not_found"
                 hit_events = []
-                # 统计文件级命中（agent 至少搜到了文件，方向接近但未触及 sink 点）
-                total_file = sum(
-                    len(sids) for sids in file_level_sessions.values())
-                if total_file > 0:
-                    miss_reason = (
-                        f"trace 中未找到 sink 点（{total_file} 个 session "
-                        f"仅文件级命中——agent 搜索到 sink 文件但从未读到 "
-                        f"sink 函数/行号），属于挖掘范围/路径覆盖问题")
-                else:
-                    miss_reason = (
-                        "trace 中没有任何 session 搜索过 sink 文件——"
-                        "漏洞挖掘方向都没有，属于挖掘范围/路径覆盖问题")
+                miss_reason = (
+                    "trace 中未找到疑似 sink 点——agent 从未读到过 "
+                    "sink 函数/行号，漏洞挖掘方向都没有，"
+                    "属于挖掘范围/路径覆盖问题")
 
             results.append({
                 "case_id": cid,
@@ -181,9 +170,8 @@ class FnMissAnalyzer:
                 "sink_found_precise": found_precise,
                 "miss_category": miss_category,
                 "sink_info": sink_info,
-                "hit_sessions": hit_sessions,
+                "hit_sessions": precise_sessions,
                 "precise_sessions": precise_sessions,
-                "file_level_sessions": file_level_sessions,
                 "hit_events": hit_events,
                 "miss_reason": miss_reason,
             })
@@ -192,7 +180,7 @@ class FnMissAnalyzer:
                 f"case {cid}: sink_found={sink_found}, "
                 f"precise={found_precise}, "
                 f"category={miss_category}, "
-                f"hit_sessions={sum(len(s) for s in hit_sessions.values())}",
+                f"hit_sessions={sum(len(s) for s in precise_sessions.values())}",
                 eval_id=evaluation_id)
 
         # 统计
