@@ -9,7 +9,7 @@
      → agent 可能只是搜索时在结果列表里碰到路径，未真正读到 sink 点
 3. 分类漏报原因：
    - sink_found_no_report: sink 点精确命中但 agent 未上报漏洞
-     → 漏洞识别能力问题
+     → 用 LLM 细分漏报成因（调用链中断/知识误导/幻觉/验证遗漏等）
    - sink_not_found: 无精确命中（可能仅有文件级命中）→ 漏洞挖掘方向问题
 
 数据保存到 debug 的 case_matching 步骤下新增子段展示。
@@ -20,6 +20,7 @@ from ..core.data_pack import DataPack
 from ...infrastructure.log_util import log
 from .sink_search_scanner import SinkSearchScanner
 from .sink_info_extractor import SinkInfoExtractor
+from .miss_detail_analyzer import MissDetailAnalyzer, MISS_SUB_CATEGORIES
 
 
 class FnMissAnalyzer:
@@ -112,6 +113,16 @@ class FnMissAnalyzer:
         scanner = SinkSearchScanner()
         results: list[dict] = []
 
+        # 预建 session_id → events 索引（供 MissDetailAnalyzer 取精确命中
+        # session 的完整事件上下文）
+        session_events: dict[str, list] = {}
+        for dp in data_packs:
+            for ev in (dp.events or []):
+                sid = ev.session_id or ""
+                if sid:
+                    session_events.setdefault(sid, []).append(ev)
+        miss_detail_analyzer = MissDetailAnalyzer()
+
         for cid, cd in unmatched_vuln_cases:
             vuln_title = cd.get("vuln_title", "")
             source_file = cd.get("source_file", "")
@@ -129,6 +140,7 @@ class FnMissAnalyzer:
             # 分类漏报原因：
             # sink 找到 = 有精确命中（函数或行号级）——agent 确实读到过疑似 sink 点
             # 文件级命中直接忽略——grep/glob 输出列表碰巧含路径不算找到
+            miss_detail: dict = {}
             if found_precise:
                 sink_found = True
                 miss_category = "sink_found_no_report"
@@ -147,8 +159,29 @@ class FnMissAnalyzer:
                 miss_reason = (
                     f"trace 中找到疑似 sink 点（{total_precise} 个 session "
                     f"精确命中——agent 确实读到过 sink 函数/行号），"
-                    f"但 agent 未上报漏洞——"
-                    f"属于漏洞识别能力问题")
+                    f"但 agent 未上报漏洞")
+
+                # ── 细分漏报成因（LLM 分析精确命中 session 上下文）──
+                # sink_found_no_report 内部成因多样：调用链中断、知识误导、
+                # 幻觉、验证遗漏等。用 LLM 判定最可能的细分成因。
+                miss_detail = miss_detail_analyzer.analyze(
+                    evaluation_id,
+                    {
+                        "case_id": cid,
+                        "vuln_title": vuln_title,
+                        "description": description,
+                        "sink_info": sink_info,
+                        "precise_sessions": precise_sessions,
+                    },
+                    session_events,
+                    cancel_cb=cancel_cb,
+                )
+                sub_label = miss_detail.get(
+                    "miss_sub_category_label", "其他")
+                miss_reason = (
+                    f"{miss_reason}——细分漏报成因：{sub_label}"
+                    f"（{miss_detail.get('reason', '')[:150]}）"
+                    if miss_detail.get("reason") else miss_reason)
             else:
                 sink_found = False
                 miss_category = "sink_not_found"
@@ -169,6 +202,7 @@ class FnMissAnalyzer:
                 "sink_found": sink_found,
                 "sink_found_precise": found_precise,
                 "miss_category": miss_category,
+                "miss_detail": miss_detail,
                 "sink_info": sink_info,
                 "hit_sessions": precise_sessions,
                 "precise_sessions": precise_sessions,
@@ -179,8 +213,9 @@ class FnMissAnalyzer:
             log("FN_MISS",
                 f"case {cid}: sink_found={sink_found}, "
                 f"precise={found_precise}, "
-                f"category={miss_category}, "
-                f"hit_sessions={sum(len(s) for s in precise_sessions.values())}",
+                f"category={miss_category}"
+                + (f", sub={miss_detail.get('miss_sub_category', '')}"
+                   if miss_detail else ""),
                 eval_id=evaluation_id)
 
         # 统计

@@ -153,12 +153,19 @@ class CausalChainAnalyzer:
             # ── FN 漏报原因（sink 精确命中分析）→ 合成断点 ──
             # 漏报与误报走同一流程：FN case 的 fn_miss（sink 漏报原因）
             # 映射为合成断点进入因果链/问题单。
-            #   sink_found_no_report（sink 精确命中但未上报）→ 识别能力问题
-            #   sink_not_found（sink 未命中）→ 挖掘方向问题
+            #   sink_found_no_report（sink 精确命中但未上报）→ 细分漏报成因
+            #     （LLM 判定：调用链中断/知识误导/幻觉/验证遗漏等）
+            #   sink_not_found（sink 未命中）→ 挖掘方向问题（程序直接给结论）
             fn_miss = case.get("fn_miss") or {}
             if fn_miss:
                 fn_category = fn_miss.get("miss_category", "")
                 fn_reason = fn_miss.get("miss_reason", "")
+                # 细分漏报成因（sink_found_no_report 时由 MissDetailAnalyzer
+                # 判定；sink_not_found 直接给结论）
+                fn_sub = (fn_miss.get("miss_detail") or {}).get(
+                    "miss_sub_category", "")
+                fn_sub_label = (fn_miss.get("miss_detail") or {}).get(
+                    "miss_sub_category_label", "")
                 fn_agent_type = ""
                 for chain_type in ("mining", "verification"):
                     at = (case.get(chain_type) or {}).get("agent_type", "")
@@ -168,6 +175,10 @@ class CausalChainAnalyzer:
                 if not fn_agent_type:
                     fn_agent_type = _CHAIN_DEFAULT_AGENT_TYPE["mining"]
                 if fn_category:
+                    # query_content 带细分漏报成因（如有）
+                    fn_query = fn_category
+                    if fn_sub:
+                        fn_query = f"{fn_category}:{fn_sub}"
                     fn_bp = {
                         "case_id": case_id,
                         "vuln_title": vuln_title,
@@ -176,17 +187,19 @@ class CausalChainAnalyzer:
                         "cause_code": "H",
                         "breakpoint": "L8",
                         "l0_source": "",
-                        "query_content": fn_category,
+                        "query_content": fn_query,
                         "returned_content": "",
                         "l7_influenced": None,
                         "root_cause": {
                             "category": fn_category,
                             "description": fn_reason,
+                            "miss_sub_category": fn_sub,
+                            "miss_sub_category_label": fn_sub_label,
                         },
                         "fix_suggestion": [],
                         "_fn_miss": True,
                     }
-                    dedup_key = (case_id, "mining", "H", "L8", fn_category)
+                    dedup_key = (case_id, "mining", "H", "L8", fn_query)
                     if dedup_key not in seen_keys:
                         seen_keys.add(dedup_key)
                         flat.append(fn_bp)
@@ -558,6 +571,12 @@ class CausalChainAnalyzer:
             query = rec.get("query_content", "")
             root_cause = rec.get("root_cause") or {}
             desc = root_cause.get("description", "")
+            # 细分漏报成因（sink_found_no_report 由 LLM 判定）
+            sub_label = root_cause.get("miss_sub_category_label", "")
+            sub_reason = root_cause.get("miss_sub_category", "")
+            parts.append(f"漏报类型: {query.split(':')[0]}")
+            if sub_label:
+                parts.append(f"细分成因: {sub_label}")
             if desc:
                 parts.append(f"漏报原因: {desc}")
             elif query:

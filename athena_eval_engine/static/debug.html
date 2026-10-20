@@ -490,7 +490,7 @@ RENDERERS.root_cause = function(el, data) {
     html += `</div>`;
 
     html += `<table><thead><tr>`;
-    html += `<th>基线编号</th><th>漏洞标题</th><th>LLM 提取 sink</th><th>漏报类型</th>`;
+    html += `<th>基线编号</th><th>漏洞标题</th><th>LLM 提取 sink</th><th>漏报类型</th><th>细分成因</th>`;
     html += `<th>命中 session</th><th>漏报原因</th>`;
     html += `</tr></thead><tbody>`;
 
@@ -501,6 +501,15 @@ RENDERERS.root_cause = function(el, data) {
         "sink_found_no_report": "识别能力问题",
       }[category] || category;
       const catColor = category === "sink_not_found" ? "#e74c3c" : "#f39c12";
+
+      // 细分漏报成因（sink_found_no_report 由 LLM 判定，sink_not_found 直接结论）
+      const md = r.miss_detail || {};
+      const subLabel = md.miss_sub_category_label || "";
+      const subColor = {
+        "chain_break": "#6c5ce7",
+        "knowledge_mislead": "#e74c3c",
+        "hallucination": "#e74c3c",
+      }[md.miss_sub_category] || "#f39c12";
 
       // LLM 提取的 sink 信息摘要
       const si = r.sink_info || {};
@@ -533,19 +542,22 @@ RENDERERS.root_cause = function(el, data) {
       const vtShort = vt.length > 60 ? vt.substring(0, 60) + "..." : vt;
       const reason = r.miss_reason || "";
       const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
+      const subReason = md.reason || "";
+      const subReasonShort = subReason.length > 60 ? subReason.substring(0, 60) + "..." : subReason;
 
       html += `<tr>`;
       html += `<td style="font-family:monospace;font-size:12px">${r.case_id || ""}</td>`;
       html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`;
       html += `<td style="font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sinkSummary.replace(/"/g, '&quot;')}">${sinkShort || '<span style="color:#999">—</span>'}</td>`;
       html += `<td><span class="badge" style="background:${catColor};color:#fff">${catLabel}</span></td>`;
+      html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${subReason.replace(/"/g, '&quot;')}">${subLabel ? '<span class="badge" style="background:' + subColor + ';color:#fff">' + subLabel + '</span>' : '<span style="color:#999">—</span>'}</td>`;
       html += `<td style="font-family:monospace;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sessionSummary}">${sessionSummary}</td>`;
       html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
       html += `</tr>`;
 
       // 有精确命中 event 时，展示上下文（可展开）
       if (r.hit_events && r.hit_events.length > 0) {
-        html += `<tr><td colspan="6" style="padding:0;">`;
+        html += `<tr><td colspan="7" style="padding:0;">`;
         html += `<details style="margin:4px 0 8px 20px;">`;
         html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
         html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>命中行号</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
