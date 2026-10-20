@@ -1208,11 +1208,7 @@ async function renderDtsDetailPage(dtsId){
             if(sumText){
               html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px;white-space:pre-wrap">'+String(sumText).replace(/</g,'&lt;')+'</div>';
             }
-            // 单 session 的知识/记忆使用情况
-            var km=s.knowledge_memory_summary;
-            if(km&&(km.access_count>0||km.overall_effect)){
-              html+=renderKMSummary(km,'Session '+(idx+1));
-            }
+            // 单 session 的知识/记忆使用情况已移至合并层统一生成，单 session 压缩不再产出此字段
           });
           html+='</details>';
         }
