@@ -243,7 +243,21 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 
 ### 责任边界判定
 
-对每个假设，必须标注 responsibility（与 cause_code 责任方一致），用于派单：
+**cause_code 与 responsibility 必须一致（强制约束，防止矛盾）**：
+
+| cause_code | 对应 responsibility |
+|------------|-------------------|
+| A/B/E/F/H/I/J/K | agent |
+| C/D/G | knowledge |
+| external_data_source | 仅外部信息缺失场景 |
+
+- 该查没查（A）→ responsibility 必须是 agent，修复是改 prompt 增加查询意识
+- 查了没得（C）→ responsibility 必须是 knowledge，修复是补知识库
+- 不允许出现 "cause_code=A 但 responsibility=knowledge" 的矛盾组合
+- 当"agent 没查知识（A）"且"知识库可能也没有该知识"时，触发 L4 独立验证
+  由评测引擎主动查知识库判定：知识存在→A（agent 责任）；知识不存在→C（knowledge 责任）
+
+对每个假设，必须标注 responsibility（与 cause_code 对应表一致），用于派单：
 - agent：Agent 改 prompt/code 可解决
 - knowledge：知识方补充/修正知识库内容
 - external_data_source：提供外部数据源（网关配置/部署架构等）
@@ -930,7 +944,29 @@ class RootCauseAnalyzer:
                         f"知识库无相关知识，{changed} 个 L2 断点"
                         f"修正为 L4/cause_code C（知识库覆盖度缺口）")
                 # knowledge 责任假设：知识确实缺失，假设成立
-                # （responsibility 保持 knowledge，无需修正）
+                # 同步修正 hypotheses：cause_code A→C（该查没查→查了没得），
+                # responsibility 保持 knowledge，fix_suggestion.target 保持 knowledge
+                for h in (hypotheses or []):
+                    if h.get("cause_code") == "A":
+                        h["cause_code"] = "C"
+                        old_evid = h.get("evidence", "")
+                        h["evidence"] = (
+                            f"{old_evid} | L4 独立验证：知识库中未找到"
+                            f"能消减此误报的知识"
+                            f"（{result.get('summary', '')}），"
+                            f"知识确实缺失，责任在知识库（查了没得）"
+                        )
+                        # 修正 fix_suggestion：若 target=agent_prompt（改 prompt 增加
+                        # 查询意识），但知识确实缺失，应改为补知识
+                        fs = h.get("fix_suggestion")
+                        if isinstance(fs, dict) and fs.get("target") in (
+                                "agent_prompt", "agent_code"):
+                            fs["target"] = "knowledge"
+                            fs["action"] = (
+                                f"原建议修改 agent，但 L4 验证发现知识库中"
+                                f"无相关知识。改为：补充知识库内容"
+                                f"（{fs.get('location', '')}）"
+                            )
             elif l4_exists is True:
                 # 知识库有知识 → 责任在 agent（该查没查），cause_code 保持 A
                 log("ROOT_CAUSE",
