@@ -16,19 +16,25 @@ from ...infrastructure.log_util import log
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
 
 CAUSE_DESCRIPTIONS = {
-    "A": "该查没查（召回意识不足）",
+    # A-G: 知识访问链路成因（L0-L7 断点）
+    "A": "该查没查（召回意识不足，含不知道要查什么）",
     "B": "查询太泛（查询不聚焦）",
     "C": "查了没得（知识覆盖度不足）",
     "D": "链路问题（工具失败/超时）",
     "E": "查到没用（死知识，推理未引用）",
     "F": "用了没推动（未影响结论）",
-    "G": "导致误判（知识内容有误/过时/不适用）",
-    "H": "其他（知识访问链路无问题，其他原因导致误报/漏报）",
+    "G": "知识误导（知识内容有误/过时/不适用）",
+    # H-L: 非知识访问链路成因（挖掘/验证/推理/流程问题）
+    "H": "挖掘方向偏差（范围/路径未覆盖 sink 点）",
+    "I": "调用链中断（找到 sink 未追踪到 source 入口）",
+    "J": "模型幻觉（虚构不存在的防护措施/漏洞逻辑）",
+    "K": "验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定）",
 }
 
 # ── 成因码→责任方映射 ──
-# A/B/E/F/H → Agent 责任（召回意识、查询聚焦、推理引用、结论推动、其他）
-# C/D/G     → knowledge 责任（知识覆盖度、工具链路、知识内容准确性）
+# A/B/E/F → agent 责任（召回意识、查询聚焦、推理引用、结论推动）
+# C/D/G   → knowledge 责任（知识覆盖度、工具链路、知识内容准确性）
+# H/I/J/K/L → agent 责任（挖掘方向、调用链追踪、推理幻觉、验证判定、数据传递）
 
 CAUSE_TO_RESPONSIBILITY = {
     "A": "agent",
@@ -39,6 +45,9 @@ CAUSE_TO_RESPONSIBILITY = {
     "F": "agent",
     "G": "knowledge",
     "H": "agent",
+    "I": "agent",
+    "J": "agent",
+    "K": "agent",
 }
 
 # ── fix_suggestion.target → 中文标签 ──
@@ -69,7 +78,10 @@ def _build_breakpoint_desc(
 
 
 # ── cause_code 严重度排序（G 最严重，A 最轻）──
-_CAUSE_SEVERITY = {"G": 7, "H": 6, "F": 5, "E": 4, "D": 3, "C": 2, "B": 1, "A": 0}
+_CAUSE_SEVERITY = {
+    "G": 11, "K": 10, "J": 9, "F": 8,
+    "E": 7, "I": 6, "H": 5, "D": 4, "C": 3, "B": 2, "A": 1,
+}
 
 
 def generate_dts_issues(
