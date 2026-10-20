@@ -380,12 +380,14 @@ class Orchestrator:
                         {
                             "case_id": c.get("id"),
                             "title": c.get("title"),
+                            "summary": c.get("summary") or "",
                             "validation_result": c.get("validation_result"),
                             "current_stage": c.get("current_stage"),
                             "false_positive_reason": c.get("false_positive_reason"),
                             "false_positive_group": c.get("false_positive_group"),
                             "human_confirmation_summary": (c.get("human_confirmation") or {}).get("summary") or "",
                             "project_id": c.get("project_id"),
+                            "source_file": (c.get("subject") or {}).get("locator") or "",
                         }
                         for c in alert_center_data.get("cases", [])
                     ],
@@ -804,17 +806,45 @@ class Orchestrator:
                       f"≠ 基线 project={baseline_project}，启动 LLM 匹配")
                 _set_progress(evaluation_id, "LLM 语义匹配原始数据与基线...")
                 from ..lifecycle.case_matcher import match_cases
-                raw_cases_for_match = alert_center_data.get("cases", [])
-                baseline_cases_for_match = [
-                    {
-                        "case_id": cid,
-                        "title": detail.get("vuln_title") or "",
-                        "description": detail.get("description") or "",
-                        "vuln_title": detail.get(
-                            "vuln_title") or "",
-                    }
-                    for cid, detail in case_details.items()
+                # 原始数据 case 归一化：和基线走同一个 _case_to_benchmark 路径，
+                # 产出 title/description/vuln_title/source_file/locator 等同构字段。
+                # 修复：之前直接用 alert_center_data["cases"] 原始 42 字段结构，
+                # 没有 description 字段（API 返回 summary），LLM 只看到 91 字符 title，
+                # 与基线 5730 字符 description 严重不对称，导致匹配率低。
+                from ...infrastructure.vuln_center_client import _case_to_benchmark
+                raw_cases_for_match = [
+                    _case_to_benchmark(c, expected_label="")
+                    for c in alert_center_data.get("cases", [])
                 ]
+                # 基线与原始数据取相同字段（基线来源为漏洞中心时）。
+                # case_details 的 description 是 get_case_raw_report 增强版（4207字符），
+                # 但两边字段必须对称，基线也用 _case_to_benchmark 的 description
+                # （_normalize_case_description 拼的 title+summary+display_summary，约1400字符）。
+                # raw_report 在下游根因分析等环节仍可用，匹配阶段用 summary 级别足够。
+                if bm_source == "vuln_center":
+                    # 基线 case 用与 case_details 相同的过滤条件
+                    # （current_stage=finished + validation_result + 排除 non_fp）
+                    baseline_cases_for_match = [
+                        _case_to_benchmark(c, expected_label="")
+                        for c in baseline_cases
+                        if c.get("current_stage") == "finished"
+                        and c.get("validation_result") in (
+                            "vulnerable", "not_vulnerable")
+                        and c.get("false_positive_group") != "non_fp"
+                    ]
+                else:
+                    baseline_cases_for_match = [
+                        {
+                            "case_id": cid,
+                            "title": detail.get("vuln_title") or "",
+                            "description": detail.get("description") or "",
+                            "vuln_title": detail.get(
+                                "vuln_title") or "",
+                            "source_file": detail.get("source_file") or "",
+                            "locator": detail.get("locator") or "",
+                        }
+                        for cid, detail in case_details.items()
+                    ]
 
                 def _match_progress(done, total, matched):
                     _set_progress(evaluation_id,

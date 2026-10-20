@@ -149,14 +149,18 @@ RENDERERS.ingesting = function(el, data) {
   html += `<details style="margin:16px 0 8px;">`
     + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">原始数据（告警中心） — ${raw.total ?? 0} 条</summary>`;
   if (raw.cases?.length) {
-    html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报分组</th><th>人工确认原因</th><th>项目编号</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>摘要</th><th>验证结果</th><th>阶段</th><th>误报分组</th><th>人工确认原因</th><th>源文件</th><th>项目编号</th></tr></thead><tbody>`;
     for (const c of raw.cases) {
       const vr = c.validation_result || "pending";
+      const summary = c.summary ?? "";
+      const summaryShort = summary.length > 80 ? summary.substring(0, 80) + "..." : summary;
       html += `<tr><td>${c.case_id ?? ""}</td><td>${c.title ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${summary.replace(/"/g, '&quot;')}">${summaryShort}</td>`
         + `<td><span class="badge badge-${vr}">${vr}</span></td>`
         + `<td>${c.current_stage ?? ""}</td>`
         + `<td>${c.false_positive_group ?? ""}</td>`
         + `<td>${c.human_confirmation_summary ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.source_file ?? ""}</td>`
         + `<td>${c.project_id ?? ""}</td></tr>`;
     }
     html += `</tbody></table>`;

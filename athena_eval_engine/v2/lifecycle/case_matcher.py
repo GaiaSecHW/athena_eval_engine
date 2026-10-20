@@ -51,8 +51,15 @@ def _case_to_text(c: dict) -> str:
     """将 case 转为 LLM 可读的文本。"""
     title = c.get("title") or c.get("vuln_title") or ""
     desc = c.get("description") or ""
-    vt = c.get("vuln_title") or c.get("vuln_type") or ""
-    return f"标题: {title}\n类型: {vt}\n描述: {desc}"
+    vt = c.get("vuln_type") or ""
+    sf = c.get("source_file") or ""
+    parts = [f"标题: {title}"]
+    if vt:
+        parts.append(f"类型: {vt}")
+    if sf:
+        parts.append(f"源文件: {sf}")
+    parts.append(f"描述: {desc}")
+    return "\n".join(parts)
 
 
 def match_cases(
