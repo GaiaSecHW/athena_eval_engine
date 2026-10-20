@@ -150,6 +150,47 @@ class CausalChainAnalyzer:
             case_id = case.get("case_id", "")
             vuln_title = case.get("vuln_title", "")
 
+            # ── FN 漏报原因（sink 精确命中分析）→ 合成断点 ──
+            # 漏报与误报走同一流程：FN case 的 fn_miss（sink 漏报原因）
+            # 映射为合成断点进入因果链/问题单。
+            #   sink_found_no_report（sink 精确命中但未上报）→ 识别能力问题
+            #   sink_not_found（sink 未命中）→ 挖掘方向问题
+            fn_miss = case.get("fn_miss") or {}
+            if fn_miss:
+                fn_category = fn_miss.get("miss_category", "")
+                fn_reason = fn_miss.get("miss_reason", "")
+                fn_agent_type = ""
+                for chain_type in ("mining", "verification"):
+                    at = (case.get(chain_type) or {}).get("agent_type", "")
+                    if at:
+                        fn_agent_type = at
+                        break
+                if not fn_agent_type:
+                    fn_agent_type = _CHAIN_DEFAULT_AGENT_TYPE["mining"]
+                if fn_category:
+                    fn_bp = {
+                        "case_id": case_id,
+                        "vuln_title": vuln_title,
+                        "chain_type": "mining",
+                        "agent_type": fn_agent_type,
+                        "cause_code": "H",
+                        "breakpoint": "L8",
+                        "l0_source": "",
+                        "query_content": fn_category,
+                        "returned_content": "",
+                        "l7_influenced": None,
+                        "root_cause": {
+                            "category": fn_category,
+                            "description": fn_reason,
+                        },
+                        "fix_suggestion": [],
+                        "_fn_miss": True,
+                    }
+                    dedup_key = (case_id, "mining", "H", "L8", fn_category)
+                    if dedup_key not in seen_keys:
+                        seen_keys.add(dedup_key)
+                        flat.append(fn_bp)
+
             for chain_type in ("mining", "verification"):
                 chain_data = case.get(chain_type, {})
                 if not chain_data or not isinstance(chain_data, dict):
@@ -508,8 +549,20 @@ class CausalChainAnalyzer:
         """从断点记录构建证据摘要。
 
         组合 query_content + returned_content + breakpoint 信息。
+        FN 漏报合成断点（_fn_miss=True）输出漏报原因描述。
         """
         parts: list[str] = []
+
+        # FN 漏报合成断点：query_content 即漏报原因分类，直接展示
+        if rec.get("_fn_miss"):
+            query = rec.get("query_content", "")
+            root_cause = rec.get("root_cause") or {}
+            desc = root_cause.get("description", "")
+            if desc:
+                parts.append(f"漏报原因: {desc}")
+            elif query:
+                parts.append(f"漏报原因: {query}")
+            return "\n".join(parts) if parts else "漏报（FN）"
 
         cause_code = rec.get("cause_code", "")
         cause_desc = self._cause_description(cause_code)
@@ -540,7 +593,7 @@ class CausalChainAnalyzer:
             "E": "查到没用（死知识，推理未引用）",
             "F": "用了没推动（未影响结论）",
             "G": "导致误判（知识推动但方向错）",
-            "H": "其他（知识访问链路无问题，其他原因导致误报）",
+            "H": "其他（知识访问链路无问题，其他原因导致误报/漏报）",
         }
         return descriptions.get(cause_code, "")
 

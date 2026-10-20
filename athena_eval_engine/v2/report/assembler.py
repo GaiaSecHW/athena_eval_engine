@@ -218,6 +218,25 @@ class ReportAssembler:
             fix_parts = []
             all_hypotheses: list = []
             label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
+
+            # ── FN 漏报原因（sink 精确命中分析）──
+            # 漏报 case 的根因优先取 fn_miss（sink 漏报原因），与误报走同一流程
+            fn_miss = case.get("fn_miss") or {}
+            if fn_miss:
+                fn_category = fn_miss.get("miss_category", "")
+                fn_reason = fn_miss.get("miss_reason", "")
+                if fn_category:
+                    root_causes = {
+                        "category": fn_category,
+                        "description": fn_reason,
+                        "sink_found": fn_miss.get("sink_found", False),
+                        "sink_found_precise": fn_miss.get(
+                            "sink_found_precise", False),
+                        "sink_info": fn_miss.get("sink_info", {}),
+                        "precise_sessions": fn_miss.get(
+                            "precise_sessions", {}),
+                    }
+
             for chain_type, chain_data in (("mining", mining), ("verification", verify)):
                 # 优先从 hypotheses 提取
                 chain_hypotheses = chain_data.get("hypotheses") or []
@@ -246,6 +265,9 @@ class ReportAssembler:
                                 fix_parts.append(" | ".join(parts))
                 else:
                     # 兼容旧格式：从 root_cause + fix_suggestion 构建
+                    # FN 漏报原因已从 fn_miss 设置 root_causes，跳过链内覆盖
+                    if fn_miss and fn_miss.get("miss_category"):
+                        continue
                     rc = chain_data.get("root_cause", {})
                     if rc:
                         cat = rc.get("category", "")
@@ -308,6 +330,7 @@ class ReportAssembler:
             case_detail = {
                 "case_id": case_id,
                 "vuln_title": vuln_title,
+                "outcome": case_data.get("outcome", "FP"),
                 "root_cause": case_root_cause.get(case_id, {}),
                 "fix_suggestion": case_fix.get(case_id, ""),
                 "breakpoints": processed_breakpoints,

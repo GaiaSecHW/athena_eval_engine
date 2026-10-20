@@ -440,6 +440,7 @@ class RootCauseAnalyzer:
                 "summary": summary,
                 "outcome": case.get("outcome", ""),
                 "human_confirmation_summary": fp_reason,
+                "fn_miss": case.get("fn_miss") or {},
                 "mining": {**mining_result, "agent_type": mining_agent_type},
                 "verification": {**verification_result, "agent_type": verify_agent_type},
             }
