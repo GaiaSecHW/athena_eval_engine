@@ -205,7 +205,7 @@ RENDERERS.ingesting = function(el, data) {
     const matched = matches.filter(m => m.matched_baseline_case_id).length;
     html += `<details style="margin:16px 0 8px;">`
       + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">LLM 匹配结果 — ${matched}/${matches.length} 条匹配成功</summary>`;
-    html += `<table><thead><tr><th>告警中心编号</th><th>告警中心标题</th><th>匹配基线编号</th><th>匹配基线标题</th><th>置信度</th><th>原因</th></tr></thead><tbody>`;
+    html += `<table><thead><tr><th>告警中心编号</th><th>告警中心漏洞状态</th><th>告警中心标题</th><th>匹配基线编号</th><th>匹配基线漏洞状态</th><th>匹配基线标题</th><th>置信度</th><th>原因</th></tr></thead><tbody>`;
     for (const m of matches) {
       const conf = m.confidence ?? 0;
       const confColor = conf >= 0.7 ? "#27ae60" : conf >= 0.4 ? "#f39c12" : "#e74c3c";
@@ -216,10 +216,26 @@ RENDERERS.ingesting = function(el, data) {
       const mbtShort = mbt.length > 60 ? mbt.substring(0, 60) + "..." : mbt;
       const reason = m.reason ?? "";
       const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
+
+      // 告警中心漏洞状态（vulnerable/not_vulnerable）
+      const rawVr = m.raw_validation_result ?? "";
+      const rawVrLabel = rawVr === "vulnerable" ? "漏洞" :
+                         rawVr === "not_vulnerable" ? "非漏洞" : rawVr || "—";
+      const rawVrColor = rawVr === "vulnerable" ? "#e74c3c" :
+                         rawVr === "not_vulnerable" ? "#27ae60" : "#999";
+      // 基线漏洞状态（VULNERABLE/NON_VULNERABLE）
+      const blLabel = m.baseline_expected_label ?? "";
+      const blLabelShort = blLabel === "VULNERABLE" ? "漏洞" :
+                           blLabel === "NON_VULNERABLE" ? "非漏洞" : blLabel || "—";
+      const blColor = blLabel === "VULNERABLE" ? "#e74c3c" :
+                      blLabel === "NON_VULNERABLE" ? "#27ae60" : "#999";
+
       html += `<tr>`
         + `<td title="${m.raw_case_id ?? ""}">${m.raw_case_id ?? ""}</td>`
+        + `<td><span class="badge" style="background:${rawVrColor};color:#fff">${rawVrLabel}</span></td>`
         + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${rt.replace(/"/g, '&quot;')}">${rtShort}</td>`
         + `<td title="${matchedId ?? ""}">${matchedId ? matchedId : '<span style="color:#666">无匹配</span>'}</td>`
+        + `<td><span class="badge" style="background:${blColor};color:#fff">${blLabelShort}</span></td>`
         + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mbt.replace(/"/g, '&quot;')}">${mbtShort}</td>`
         + `<td style="color:${confColor};font-weight:bold">${(conf * 100).toFixed(0)}%</td>`
         + `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`

@@ -961,6 +961,26 @@ class Orchestrator:
                     cancel_cb=_make_cancel_cb(evaluation_id, "MATCH"),
                     progress_cb=_match_progress,
                 )
+                # 补充漏洞状态字段（debug 展示用）：
+                # - raw_validation_result: 告警中心漏洞状态（vulnerable/not_vulnerable）
+                # - baseline_expected_label: 基线漏洞状态（VULNERABLE/NON_VULNERABLE）
+                raw_status_map: dict[str, str] = {}
+                for c in alert_center_data.get("cases", []):
+                    cid = str(c.get("case_id") or c.get("id") or "")
+                    vr = c.get("validation_result", "")
+                    if cid and vr:
+                        raw_status_map[cid] = vr
+                baseline_status_map: dict[str, str] = {
+                    cid: detail.get("expected_label", "")
+                    for cid, detail in case_details.items()
+                }
+                for m in case_matches:
+                    rid = str(m.get("raw_case_id", ""))
+                    m["raw_validation_result"] = raw_status_map.get(rid, "")
+                    bid = m.get("matched_baseline_case_id", "") or ""
+                    m["baseline_expected_label"] = (
+                        baseline_status_map.get(bid, "")
+                        if bid else "")
                 matched = sum(
                     1 for m in case_matches
                     if m.get("matched_baseline_case_id")
