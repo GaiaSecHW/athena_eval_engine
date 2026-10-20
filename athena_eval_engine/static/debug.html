@@ -154,13 +154,20 @@ RENDERERS.ingesting = function(el, data) {
       const vr = c.validation_result || "pending";
       const summary = c.summary ?? "";
       const summaryShort = summary.length > 80 ? summary.substring(0, 80) + "..." : summary;
-      html += `<tr><td>${c.case_id ?? ""}</td><td>${c.title ?? ""}</td>`
+      const title = c.title ?? "";
+      const titleShort = title.length > 60 ? title.substring(0, 60) + "..." : title;
+      const sf = c.source_file ?? "";
+      const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
+      const hc = c.human_confirmation_summary ?? "";
+      const hcShort = hc.length > 60 ? hc.substring(0, 60) + "..." : hc;
+      html += `<tr><td title="${c.case_id ?? ""}">${c.case_id ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${title.replace(/"/g, '&quot;')}">${titleShort}</td>`
         + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${summary.replace(/"/g, '&quot;')}">${summaryShort}</td>`
         + `<td><span class="badge badge-${vr}">${vr}</span></td>`
         + `<td>${c.current_stage ?? ""}</td>`
         + `<td>${c.false_positive_group ?? ""}</td>`
-        + `<td>${c.human_confirmation_summary ?? ""}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.source_file ?? ""}</td>`
+        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${hc.replace(/"/g, '&quot;')}">${hcShort}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`
         + `<td>${c.project_id ?? ""}</td></tr>`;
     }
     html += `</tbody></table>`;
@@ -175,11 +182,18 @@ RENDERERS.ingesting = function(el, data) {
     html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报分组</th><th>人工确认原因</th></tr></thead><tbody>`;
     for (const c of bl.cases) {
       const lbl = c.expected_label || "";
-      html += `<tr><td>${c.case_id ?? ""}</td><td>${c.vuln_title ?? ""}</td>`
+      const vt = c.vuln_title ?? "";
+      const vtShort = vt.length > 60 ? vt.substring(0, 60) + "..." : vt;
+      const sf = c.source_file ?? "";
+      const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
+      const hc = c.human_confirmation_summary ?? "";
+      const hcShort = hc.length > 60 ? hc.substring(0, 60) + "..." : hc;
+      html += `<tr><td title="${c.case_id ?? ""}">${c.case_id ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`
         + `<td><span class="badge badge-${lbl}">${lbl}</span></td>`
-        + `<td>${c.source_file ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`
         + `<td>${c.false_positive_group ?? ""}</td>`
-        + `<td>${c.human_confirmation_summary ?? ""}</td></tr>`;
+        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${hc.replace(/"/g, '&quot;')}">${hcShort}</td></tr>`;
     }
     html += `</tbody></table>`;
   }
@@ -196,13 +210,19 @@ RENDERERS.ingesting = function(el, data) {
       const conf = m.confidence ?? 0;
       const confColor = conf >= 0.7 ? "#27ae60" : conf >= 0.4 ? "#f39c12" : "#e74c3c";
       const matchedId = m.matched_baseline_case_id;
+      const rt = m.raw_title ?? "";
+      const rtShort = rt.length > 60 ? rt.substring(0, 60) + "..." : rt;
+      const mbt = m.matched_baseline_title ?? "";
+      const mbtShort = mbt.length > 60 ? mbt.substring(0, 60) + "..." : mbt;
+      const reason = m.reason ?? "";
+      const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
       html += `<tr>`
-        + `<td>${m.raw_case_id ?? ""}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.raw_title ?? ""}</td>`
-        + `<td>${matchedId ? matchedId : '<span style="color:#666">无匹配</span>'}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.matched_baseline_title ?? ""}</td>`
+        + `<td title="${m.raw_case_id ?? ""}">${m.raw_case_id ?? ""}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${rt.replace(/"/g, '&quot;')}">${rtShort}</td>`
+        + `<td title="${matchedId ?? ""}">${matchedId ? matchedId : '<span style="color:#666">无匹配</span>'}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mbt.replace(/"/g, '&quot;')}">${mbtShort}</td>`
         + `<td style="color:${confColor};font-weight:bold">${(conf * 100).toFixed(0)}%</td>`
-        + `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${m.reason ?? ""}</td>`
+        + `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`
         + `</tr>`;
     }
     html += `</tbody></table>`;
