@@ -467,8 +467,23 @@ class Orchestrator:
             fp_fn_matches = [r for r in case_session_matches
                              if r["outcome"] in ("FP", "FN")]
 
-            # debug dump：CASE_MATCHING 中间数据（仅 FP/FN）
-            self._dump_debug(reports_dir, evaluation_id, "case_matching", {
+            # ── FN 漏报分析（开发态）──
+            # 对 LLM 未匹配上的 VULNERABLE 基线 case，用 source_file 与
+            # trace 一个个匹配，查找漏报原因。两种结果：
+            # 1. sink 找到 → 定位为什么没上报漏洞（漏洞识别能力问题）
+            # 2. sink 没找到 → 漏洞挖掘方向都没有（挖掘范围/路径覆盖问题）
+            fn_miss_results = []
+            if eval_mode == "dev":
+                _set_progress(evaluation_id, "FN 漏报分析...")
+                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
+                fn_analyzer = FnMissAnalyzer()
+                fn_miss_results = fn_analyzer.analyze(
+                    evaluation_id, case_details, case_matches,
+                    data_packs, eval_mode=eval_mode,
+                )
+
+            # debug dump：CASE_MATCHING 中间数据（FP/FN + FN 漏报分析）
+            case_matching_debug: dict = {
                 "eval_mode": eval_mode,
                 "total_cases": len(fp_fn_matches),
                 "matched": sum(1 for r in fp_fn_matches
@@ -480,7 +495,18 @@ class Orchestrator:
                     "FN": sum(1 for r in fp_fn_matches if r["outcome"] == "FN"),
                 },
                 "matches": fp_fn_matches,
-            })
+            }
+            if fn_miss_results:
+                case_matching_debug["fn_miss_analysis"] = {
+                    "total": len(fn_miss_results),
+                    "sink_found": sum(1 for r in fn_miss_results
+                                      if r.get("sink_found")),
+                    "sink_not_found": sum(1 for r in fn_miss_results
+                                          if not r.get("sink_found")),
+                    "results": fn_miss_results,
+                }
+            self._dump_debug(reports_dir, evaluation_id, "case_matching",
+                             case_matching_debug)
 
             # debug 断点
             if cfg.get("manifest", {}).get("debug_stop_after") == "case_matching":

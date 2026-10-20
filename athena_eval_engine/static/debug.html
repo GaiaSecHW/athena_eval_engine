@@ -459,6 +459,84 @@ RENDERERS.case_matching = function(el, data) {
   }
   html += `</tbody></table>`;
 
+  // ── FN 漏报分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
+  const fnMiss = data.fn_miss_analysis;
+  if (fnMiss && fnMiss.total > 0) {
+    html += `<details style="margin:16px 0 8px;">`
+      + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
+
+    // 统计
+    html += `<div class="stats" style="margin:8px 0;">`;
+    html += `<div class="stat"><div class="num" style="color:#e67e22">${fnMiss.total}</div><div class="label">未匹配 VULNERABLE 基线</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#f39c12">${fnMiss.sink_found || 0}</div><div class="label">sink 找到（识别能力问题）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到（挖掘方向问题）</div></div>`;
+    html += `</div>`;
+
+    html += `<table><thead><tr>`;
+    html += `<th>基线编号</th><th>漏洞标题</th><th>源文件</th><th>漏报类型</th>`;
+    html += `<th>命中 session</th><th>漏报原因</th>`;
+    html += `</tr></thead><tbody>`;
+
+    for (const r of (fnMiss.results || [])) {
+      const sinkFound = r.sink_found;
+      const category = r.miss_category || "";
+      const catLabel = {
+        "sink_not_found": "挖掘方向问题",
+        "sink_found_no_report": "识别能力问题",
+      }[category] || category;
+      const catColor = category === "sink_not_found" ? "#e74c3c" : "#f39c12";
+
+      // 命中 session 摘要
+      const hitSessions = r.hit_sessions || {};
+      const sessionSummary = Object.entries(hitSessions)
+        .map(([at, sids]) => `${at}: ${sids.length}`)
+        .join(", ") || '<span style="color:#999">—</span>';
+
+      const vt = r.vuln_title || "";
+      const vtShort = vt.length > 60 ? vt.substring(0, 60) + "..." : vt;
+      const sf = r.source_file || "";
+      const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
+      const reason = r.miss_reason || "";
+      const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
+
+      html += `<tr>`;
+      html += `<td style="font-family:monospace;font-size:12px">${r.case_id || ""}</td>`;
+      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`;
+      html += `<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`;
+      html += `<td><span class="badge" style="background:${catColor};color:#fff">${catLabel}</span></td>`;
+      html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sessionSummary}">${sessionSummary}</td>`;
+      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
+      html += `</tr>`;
+
+      // sink 找到时，展示命中 event 上下文（可展开）
+      if (sinkFound && r.hit_events && r.hit_events.length > 0) {
+        html += `<tr><td colspan="6" style="padding:0;">`;
+        html += `<details style="margin:4px 0 8px 20px;">`;
+        html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
+        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配类型</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
+        for (const ev of r.hit_events) {
+          const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          html += `<tr>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
+          html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
+          html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
+          html += `<td style="font-size:12px">${ev.match_type || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
+          html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+        html += `</details>`;
+        html += `</td></tr>`;
+      }
+    }
+    html += `</tbody></table>`;
+    html += `</details>`;
+  }
+
   el.innerHTML = html;
 };
 
