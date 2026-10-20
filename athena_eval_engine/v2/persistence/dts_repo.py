@@ -5,6 +5,7 @@ DB CRUD 操作，短连接 + 重试模式（与 kad_repo 同模式）。
 """
 from __future__ import annotations
 
+import json
 import time
 
 import pymysql
@@ -20,7 +21,7 @@ _FIELD_ORDER = (
     "breakpoint_desc", "evidence_uri",
     "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
     "replay_eval_id", "replay_result", "replay_data",
-    "status", "responsibility",
+    "status", "responsibility", "hypothesis_confirmations",
 )
 
 _INSERT_SQL = (
@@ -30,9 +31,9 @@ _INSERT_SQL = (
     "  breakpoint_desc, evidence_uri,"
     "  root_cause, solution, hypotheses, label_quality, analysis_data_path,"
     "  replay_eval_id, replay_result, replay_data,"
-    "  status, responsibility"
+    "  status, responsibility, hypothesis_confirmations"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
@@ -40,7 +41,8 @@ _INSERT_SQL = (
     "  analysis_data_path=VALUES(analysis_data_path),"
     "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
     "  replay_result=VALUES(replay_result),"
-    "  replay_data=VALUES(replay_data)"
+    "  replay_data=VALUES(replay_data),"
+    "  hypothesis_confirmations=VALUES(hypothesis_confirmations)"
 )
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
@@ -50,7 +52,7 @@ _SELECT_COLUMNS = (
     " d.breakpoint_desc, d.evidence_uri,"
     " d.root_cause, d.solution, d.hypotheses, d.label_quality, d.analysis_data_path,"
     " d.replay_eval_id, d.replay_result, d.replay_data,"
-    " d.status, d.responsibility,"
+    " d.status, d.responsibility, d.hypothesis_confirmations,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
 )
@@ -115,7 +117,7 @@ def _row_to_dict(row) -> dict:
         "breakpoint_desc", "evidence_uri",
         "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
         "replay_eval_id", "replay_result", "replay_data",
-        "status", "responsibility",
+        "status", "responsibility", "hypothesis_confirmations",
         "created_at", "updated_at", "closed_at",
         "evaluation_name",
     )
@@ -190,6 +192,18 @@ def get_dts_issue(dts_id: str) -> dict | None:
         except Exception as e:
             log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {str(e)[:200]}")
             result["analysis_data"] = None
+
+    # 解析 hypothesis_confirmations JSON（假设根因确认状态）
+    hc_raw = result.get("hypothesis_confirmations")
+    if hc_raw:
+        try:
+            import json as _json
+            hc = _json.loads(hc_raw) if isinstance(hc_raw, str) else hc_raw
+            result["hypothesis_confirmations"] = hc if isinstance(hc, dict) else {}
+        except Exception:
+            result["hypothesis_confirmations"] = {}
+    else:
+        result["hypothesis_confirmations"] = {}
 
     # 从 session_graph 表查 session 调用链信息
     # analysis_data 中的 mining.session_chain 和 verification.session_chain
@@ -402,7 +416,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     allowed = {
         "root_cause", "solution", "status",
         "replay_eval_id", "replay_result", "replay_data",
-        "hypotheses", "label_quality",
+        "hypotheses", "label_quality", "hypothesis_confirmations",
     }
     update_fields = {k: v for k, v in updates.items() if k in allowed}
     if not update_fields:
@@ -465,6 +479,65 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
         )
         by_cause = {row[0]: row[1] for row in cur.fetchall()}
 
+        # 按 case_type（FP/FN）分组
+        cur.execute(
+            f"SELECT d.case_type, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.case_type",
+            params,
+        )
+        by_case_type = {row[0]: row[1] for row in cur.fetchall()}
+
+        # 按 responsibility 分组（逗号分隔多值，每条取第一个）
+        cur.execute(
+            f"SELECT d.responsibility, COUNT(*) FROM dts_issue d{where_clause}"
+            f" WHERE d.responsibility IS NOT NULL AND d.responsibility != ''"
+            f" GROUP BY d.responsibility",
+            params,
+        )
+        by_resp_raw = {row[0]: row[1] for row in cur.fetchall()}
+        by_responsibility: dict[str, int] = {}
+        for resp_str, cnt in by_resp_raw.items():
+            for r in str(resp_str).split(","):
+                r = r.strip()
+                if r:
+                    by_responsibility[r] = by_responsibility.get(r, 0) + cnt
+
+        # 根因确认统计（从 hypothesis_confirmations JSON 聚合）
+        cur.execute(
+            f"SELECT d.hypothesis_confirmations FROM dts_issue d{where_clause}"
+            f" WHERE d.hypothesis_confirmations IS NOT NULL"
+            f" AND d.hypothesis_confirmations != ''",
+            params,
+        )
+        confirm_rows = cur.fetchall()
+        confirmed_root = 0
+        confirmed_not_root = 0
+        confirmed_by_cause: dict[str, int] = {}
+        confirmed_by_agent: dict[str, int] = {}
+        for (hc_raw,) in confirm_rows:
+            try:
+                hc = json.loads(hc_raw) if isinstance(hc_raw, str) else hc_raw
+            except Exception:
+                continue
+            if not isinstance(hc, dict):
+                continue
+            for key, val in hc.items():
+                if not isinstance(val, dict):
+                    continue
+                is_root = val.get("is_root")
+                if is_root is None:
+                    continue
+                cause = val.get("cause_code", "")
+                agent = val.get("agent_type", "")
+                if is_root is True:
+                    confirmed_root += 1
+                    if cause:
+                        confirmed_by_cause[cause] = confirmed_by_cause.get(cause, 0) + 1
+                    if agent:
+                        confirmed_by_agent[agent] = confirmed_by_agent.get(agent, 0) + 1
+                elif is_root is False:
+                    confirmed_not_root += 1
+
         # 总数
         cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", params)
         total = cur.fetchone()[0]
@@ -473,6 +546,14 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
             "by_status": by_status,
             "by_agent_type": by_agent,
             "by_cause_code": by_cause,
+            "by_case_type": by_case_type,
+            "by_responsibility": by_responsibility,
+            "root_confirmation": {
+                "confirmed_root": confirmed_root,
+                "confirmed_not_root": confirmed_not_root,
+                "by_cause_code": confirmed_by_cause,
+                "by_agent_type": confirmed_by_agent,
+            },
             "total": total,
         }
 

@@ -386,6 +386,13 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue MODIFY COLUMN responsibility VARCHAR(64)",
         ],
     },
+    {
+        "id": "024_dts_issue_hypothesis_confirmations",
+        "desc": "dts_issue 表新增 hypothesis_confirmations 字段（JSON，存每个假设的人工确认状态——是根因/非根因）",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN hypothesis_confirmations TEXT",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

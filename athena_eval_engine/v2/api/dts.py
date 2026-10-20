@@ -297,3 +297,59 @@ def update_issue(dts_id: str, update: DTSUpdate):
         raise HTTPException(status_code=500, detail=f"更新问题单 '{dts_id}' 失败")
 
     return get_dts_issue(dts_id)
+
+
+class HypothesisConfirmRequest(BaseModel):
+    """假设根因确认请求体。"""
+    hypothesis_key: str
+    is_root: bool
+    cause_code: str = ""
+    agent_type: str = ""
+    project_id: str = ""
+    project_name: str = ""
+    note: str = ""
+
+
+@router.post("/{dts_id}/confirm-hypothesis")
+def confirm_hypothesis(dts_id: str, req: HypothesisConfirmRequest):
+    """确认某个假设是根因 / 非根因，结果存 DB 供看板统计。
+
+    hypothesis_confirmations 结构：
+    {
+      "<hypothesis_key>": {
+        "is_root": true/false,
+        "cause_code": "A-K",
+        "agent_type": "turing/webvuln_verify/...",
+        "project_id": "...",
+        "project_name": "...",
+        "note": "...",
+        "confirmed_at": "ISO 时间"
+      },
+      ...
+    }
+    """
+    import json
+    from datetime import datetime
+
+    issue = get_dts_issue(dts_id)
+    if issue is None:
+        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
+
+    hc = issue.get("hypothesis_confirmations") or {}
+    hc[req.hypothesis_key] = {
+        "is_root": req.is_root,
+        "cause_code": req.cause_code,
+        "agent_type": req.agent_type,
+        "project_id": req.project_id,
+        "project_name": req.project_name,
+        "note": req.note,
+        "confirmed_at": datetime.now().isoformat(),
+    }
+
+    success = update_dts_issue(dts_id, {
+        "hypothesis_confirmations": json.dumps(hc, ensure_ascii=False),
+    })
+    if not success:
+        raise HTTPException(status_code=500, detail=f"确认假设 '{dts_id}' 失败")
+
+    return get_dts_issue(dts_id)
