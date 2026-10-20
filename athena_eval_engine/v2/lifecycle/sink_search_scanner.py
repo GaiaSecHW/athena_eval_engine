@@ -164,15 +164,19 @@ class SinkSearchScanner:
         """用 LLM 提取的结构化 sink 信息做精确匹配。
 
         三级匹配精度：
-        1. **精确命中**（function 或 line）：event 的 input/output 中
+        1. **精确命中**（function 或 line）：**读取型工具**（read/cat/sed/
+           awk 等）的 event input/output 中
            - 出现 sink 文件 + sink 函数名 → agent 读到了 sink 函数代码
            - 或 出现 sink 文件 + sink 行号在范围内 → agent 读到了 sink 行附近代码
            （XML 等配置文件没有函数，行号匹配是主要精确手段）
-        2. **文件级命中**（file）：event 中只出现 sink 文件路径/basename，
-           没有出现 sink 函数名也没有 sink 行号 → agent 读了文件但可能没碰到 sink 点
+        2. **文件级命中**（file）：event 中出现 sink 文件路径/basename，
+           但没有读取型工具的 sink 函数/行号命中——包括搜索型工具
+           （grep/glob 等）的 output 列表碰巧包含 sink 路径、或读取型
+           工具没碰到 sink 函数/行号 → agent 可能没真正读到 sink 点
         3. **未命中**：event 中没有出现任何 sink 文件
 
-        精确命中是"sink 找到"的强信号；文件级命中是弱信号。
+        精确命中是"sink 找到"的强信号（仅读取型工具）；搜索型工具的
+        命中无论是否出现函数名都只算文件级——搜索结果不代表真正读取。
 
         Args:
             sink_info: SinkInfoExtractor.extract() 返回的结构化 sink 信息
@@ -255,15 +259,22 @@ class SinkSearchScanner:
                 if not file_matched:
                     continue
 
-                # 2. 检查函数是否命中
+                # 2. 工具类型：读取型 vs 搜索型
+                # 搜索型工具（grep/glob/rg/find 及 bash 中的 grep 命令）的
+                # output 是路径列表或搜索片段，函数名出现在其中不代表
+                # agent 真正读到了 sink 点 → 只能算文件级命中
+                tool = ev.tool_name or ""
+                is_read_tool = self._is_read_tool(ev)
+
+                # 3. 检查函数是否命中（仅读取型工具算精确）
                 matched_funcs = self._check_functions_in_event(
-                    ev, sink_functions) if sink_functions else []
+                    ev, sink_functions) if sink_functions and is_read_tool else []
 
-                # 3. 检查行号是否命中
+                # 4. 检查行号是否命中（仅读取型工具算精确）
                 matched_lines = self._check_lines_in_event(
-                    ev, parsed_lines) if parsed_lines else []
+                    ev, parsed_lines) if parsed_lines and is_read_tool else []
 
-                # 4. 确定匹配精度
+                # 5. 确定匹配精度
                 if matched_funcs or matched_lines:
                     precision = "precise"
                 else:
@@ -276,7 +287,8 @@ class SinkSearchScanner:
                 hits_by_agent.setdefault(agent_type, []).append({
                     "session_id": sid,
                     "event_type": ev.event_type or "",
-                    "tool_name": ev.tool_name or "",
+                    "tool_name": tool,
+                    "tool_category": "read" if is_read_tool else "search",
                     "input_preview": _truncate_str(
                         _obj_to_str(ev.input_json), 200),
                     "output_preview": _truncate_str(
@@ -449,6 +461,52 @@ class SinkSearchScanner:
                     break
 
         return matched
+
+    @staticmethod
+    def _is_read_tool(ev) -> bool:
+        """判断 event 的工具是读取型还是搜索型。
+
+        读取型工具（read/cat/sed/awk/head/tail 等）：输出包含文件内容，
+        输出里出现 sink 函数/行号 → 说明 agent 真正读到了 sink 点。
+
+        搜索型工具（grep/rg/glob/find 及 bash 中的搜索命令）：输出是
+        路径列表或搜索片段，函数名出现在其中不代表 agent 真正读到了
+        sink 点 → 只能算文件级命中。
+        """
+        tool = (ev.tool_name or "").strip().lower()
+
+        # 明确读取型工具
+        if tool in ("read", "cat", "sed", "awk", "head", "tail", "less",
+                    "more", "view", "nl", "wc"):
+            return True
+        # 明确搜索型工具
+        if tool in ("grep", "rg", "glob", "find", "search", "ack",
+                    "ag", "ripgrep", "locate", "whereis", "which"):
+            return False
+
+        # bash 工具：看 command 的第一个单词判断
+        if tool in ("bash", "shell", "exec", "run", "sh"):
+            d = ev.input_json or {}
+            cmd = str(d.get("command") or d.get("cmd") or "").strip().lower()
+            if not cmd:
+                return False  # 无命令信息，保守按搜索型
+            # 提取命令第一个单词（去掉开头符号）
+            first_word = cmd.split()[0].lstrip("sudo ").strip() if cmd.split() else ""
+            # 管道命令：检查是否主要是读取
+            # 搜索类命令
+            search_cmds = ("grep", "rg", "find", "glob", "ack", "ag",
+                           "ripgrep", "locate", "whereis", "which", "ls",
+                           "ll", "dir", "tree", "file")
+            if first_word in search_cmds:
+                return False
+            # 读取类命令
+            read_cmds = ("cat", "sed", "awk", "head", "tail", "less",
+                         "more", "view", "nl", "wc", "vi", "vim", "nano")
+            if first_word in read_cmds:
+                return True
+            return False  # 其他命令保守按搜索型
+
+        return False
 
     @staticmethod
     def _find_match_location(
