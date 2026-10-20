@@ -439,7 +439,7 @@ RENDERERS.case_matching = function(el, data) {
 
   html += `<table><thead><tr>`;
   html += `<th>基线编号</th><th>告警中心编号</th><th>漏洞标题</th>`;
-  html += `<th>判定</th><th>匹配方式</th><th>挖掘 agent session</th><th>验证 agent session</th><th>匹配细节</th>`;
+  html += `<th>判定</th><th>验证判定</th><th>匹配方式</th><th>挖掘 agent session</th><th>验证 agent session</th><th>匹配细节</th>`;
   html += `</tr></thead><tbody>`;
 
   for (const m of matches) {
@@ -462,11 +462,19 @@ RENDERERS.case_matching = function(el, data) {
     const verifySids = (m.verify_sessions || []).join(", ") || '<span style="color:#999">—</span>';
     const detail = m.match_detail || '<span style="color:#999">—</span>';
 
+    // 验证 agent 判定（挖掘 CONFIRMED + 验证否定 → FN，根因在验证链）
+    const verifyVerdict = m.verify_verdict || "";
+    const vvLabel = verifyVerdict === "CONFIRMED" ? "确认" :
+                    verifyVerdict === "FALSE_POSITIVE" ? "否定" : verifyVerdict || "—";
+    const vvColor = verifyVerdict === "CONFIRMED" ? "#27ae60" :
+                    verifyVerdict === "FALSE_POSITIVE" ? "#e74c3c" : "#999";
+
     html += `<tr>`;
     html += `<td style="font-family:monospace;font-size:12px">${m.case_id || ""}</td>`;
     html += `<td style="font-family:monospace;font-size:12px">${m.ac_case_id || '<span style="color:#999">—</span>'}</td>`;
     html += `<td>${m.vuln_title || ""}</td>`;
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
+    html += `<td><span class="badge" style="background:${vvColor};color:#fff">${vvLabel}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
     html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
     html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;

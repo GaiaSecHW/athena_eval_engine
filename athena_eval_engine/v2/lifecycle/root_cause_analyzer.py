@@ -406,12 +406,37 @@ class RootCauseAnalyzer:
                 f"vuln_title={vuln_title})",
                 eval_id=evaluation_id)
 
-            mining_result = self._analyze_chain(
-                evaluation_id, case_id, "mining",
-                mining_chain, session_events,
-                vuln_title, desc, fp_reason, outcome, cancel_cb,
-                project_id=project_id,
+            # ── 漏报根因定位：验证否定场景只分析验证链 ──
+            # 挖掘 CONFIRMED + 验证否定 → FN，根因在验证 agent 的判定逻辑，
+            # 与挖掘 agent 无关。跳过挖掘链 LLM 分析（省成本 + 归因正确）。
+            verify_negated = (
+                outcome == "FN"
+                and case.get("verify_verdict") == "FALSE_POSITIVE"
             )
+            if verify_negated:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: 验证否定真漏洞（挖掘 CONFIRMED + "
+                    f"验证否定），根因在验证链，跳过挖掘链分析",
+                    eval_id=evaluation_id)
+                mining_result = {
+                    "session_chain": [],
+                    "root_cause": {
+                        "category": "mining_ok",
+                        "description": "挖掘 agent 已上报 CONFIRMED，"
+                                       "验证 agent 否定导致漏报——"
+                                       "挖掘链无问题，跳过分析",
+                    },
+                    "fix_suggestion": [],
+                    "compressed_summaries": [],
+                    "l0_l7_breakpoints": [],
+                }
+            else:
+                mining_result = self._analyze_chain(
+                    evaluation_id, case_id, "mining",
+                    mining_chain, session_events,
+                    vuln_title, desc, fp_reason, outcome, cancel_cb,
+                    project_id=project_id,
+                )
             verification_result = self._analyze_chain(
                 evaluation_id, case_id, "verification",
                 verify_chain, session_events,

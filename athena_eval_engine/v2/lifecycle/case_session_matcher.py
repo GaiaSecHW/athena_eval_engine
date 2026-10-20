@@ -279,13 +279,33 @@ class CaseSessionMatcher:
 
             # 判定 outcome：
             # - 误报 case（NON_VULNERABLE）：finding 命中 = FP，未命中 = TN
-            # - 漏报 case（VULNERABLE）：finding 命中 = TP，未命中 = FN
-            #   FN case 用基线 sink 点 source_file 扫描 trace 找 session
+            # - 漏报 case（VULNERABLE）：
+            #   * 挖掘 CONFIRMED + 验证 CONFIRMED → TP（正确上报）
+            #   * 挖掘 CONFIRMED + 验证否定 → FN（验证 agent 否定真漏洞，
+            #     根因在验证链——agent 漏报）
+            #   * 无 session → FN（挖掘方向问题）
+            #   * 只有文件级命中 → FN（挖掘方向问题）
+            # FN case 用基线 sink 点 source_file 扫描 trace 找 session
             all_sessions = mining_sessions + verify_sessions
+            verify_verdict = ""
             if expected_label == "NON_VULNERABLE":
                 outcome = "FP" if all_sessions else "TN"
             else:  # VULNERABLE
-                if all_sessions:
+                if verify_sessions:
+                    # 有验证 session：检查验证 agent 最终判定
+                    # 挖掘 agent 上报 CONFIRMED，但验证 agent 否定 → 漏报，根因在验证链
+                    verify_verdict = self._get_verify_verdict(
+                        verify_packs, verify_sessions)
+                    if verify_verdict == "FALSE_POSITIVE":
+                        outcome = "FN"
+                        match_method_used = (match_method_used +
+                            "+verify_negated" if match_method_used
+                            else "verify_negated")
+                    else:
+                        outcome = "TP"
+                elif all_sessions:
+                    # 有挖掘 session 无验证 session：保持 TP（挖掘已上报），
+                    # match_detail 提示验证链缺失
                     outcome = "TP"
                 else:
                     # FN case：用 source_file 扫描 trace 找 session
@@ -313,6 +333,14 @@ class CaseSessionMatcher:
                 detail_parts.append(
                     f"{len(mining_sessions)} × mining, "
                     f"{len(verify_sessions)} × verify ({match_method_used})")
+                # 验证 agent 判定结果（挖掘 CONFIRMED + 验证否定 → FN，根因在验证链）
+                if verify_verdict:
+                    detail_parts.append(
+                        f"验证判定: {verify_verdict}")
+                    if outcome == "FN" and verify_verdict == "FALSE_POSITIVE":
+                        detail_parts.append(
+                            "漏报根因: 验证 agent 否定真漏洞（挖掘 CONFIRMED，"
+                            "验证否定），根因在验证链")
                 if verify_match_detail:
                     detail_parts.append(verify_match_detail)
                 if mining_match_detail:
@@ -334,6 +362,7 @@ class CaseSessionMatcher:
                 "expected_label": expected_label,
                 "mining_sessions": mining_sessions,
                 "verify_sessions": verify_sessions,
+                "verify_verdict": verify_verdict,
                 "outcome": outcome,
                 "match_method": method,
                 "match_detail": detail,
@@ -525,6 +554,67 @@ class CaseSessionMatcher:
         if _search_in_obj(ev.output_json):
             return True
         return False
+
+    @staticmethod
+    def _get_verify_verdict(
+        verify_packs: list[DataPack],
+        verify_sessions: list[str],
+    ) -> str:
+        """提取验证 agent 的最终判定（CONFIRMED / FALSE_POSITIVE / 空）。
+
+        扫描验证 agent 的判定写入工具（WebVulnVerify 的 vulnerability_verify、
+        CVulnVerify 的 vuln_verify_final_verdict），取命中的验证 session
+        的最终判定。判定值归一化为 CONFIRMED / FALSE_POSITIVE。
+
+        WebVulnVerify status:
+          VULNERABLE / EXTERNAL_REQUEST_EXPLOITABLE / INTERNAL_REQUEST_EXPLOITABLE
+          / UNIT_TEST_EXPLOITABLE → CONFIRMED
+          NOT_VULNERABLE / NOT_EXPLOITABLE → FALSE_POSITIVE
+        CVulnVerify verdict:
+          confirmed → CONFIRMED
+          ruled_out → FALSE_POSITIVE
+        """
+        session_set = set(verify_sessions)
+        if not session_set:
+            return ""
+
+        for dp in verify_packs:
+            for ev in (dp.events or []):
+                if not ev.is_tool_call():
+                    continue
+                if (ev.session_id or "") not in session_set:
+                    continue
+                tool = ev.tool_name or ""
+                inp = ev.input_json or {}
+                if not isinstance(inp, dict):
+                    continue
+
+                # WebVulnVerify: vulnerability_verify（判定上报）
+                if tool == "vulnerability_verify":
+                    status = str(inp.get("status", "") or "")
+                    if status:
+                        if status in (
+                            "VULNERABLE", "EXTERNAL_REQUEST_EXPLOITABLE",
+                            "INTERNAL_REQUEST_EXPLOITABLE",
+                            "UNIT_TEST_EXPLOITABLE",
+                        ):
+                            return "CONFIRMED"
+                        if status in ("NOT_VULNERABLE", "NOT_EXPLOITABLE"):
+                            return "FALSE_POSITIVE"
+
+                # CVulnVerify: write 写 vuln_verify_final_verdict.json
+                if tool == "write":
+                    fp = str(inp.get("file_path") or inp.get("path") or "")
+                    if "vuln_verify_final_verdict" in fp:
+                        content = inp.get("content", "")
+                        if isinstance(content, str):
+                            verdict = _extract_verdict_value(content)
+                            if verdict == "confirmed":
+                                return "CONFIRMED"
+                            if verdict == "ruled_out":
+                                return "FALSE_POSITIVE"
+
+        return ""
 
     def _find_mining_via_parent_map(
         self,
@@ -896,3 +986,24 @@ class CaseSessionMatcher:
 
         category = inp.get("category", "") or inp.get("vuln_type", "") or ""
         return (str(category) if category else "", desc)
+
+
+def _extract_verdict_value(content: str) -> str:
+    """从 CVulnVerify verdict JSON 内容中提取 verdict 值。
+
+    verdict 文件格式：{"verdict": "confirmed" | "ruled_out", ...}
+    content 可能是 JSON 字符串，也可能被 bash heredoc 包裹。
+    """
+    if not content:
+        return ""
+    try:
+        data = json.loads(content)
+        if isinstance(data, dict):
+            return str(data.get("verdict", "") or "")
+    except (json.JSONDecodeError, TypeError):
+        pass
+    # bash heredoc 场景：从文本中匹配 "verdict": "confirmed"
+    m = re.search(r'"verdict"\s*:\s*"(\w+)"', content)
+    if m:
+        return m.group(1)
+    return ""
