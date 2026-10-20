@@ -837,6 +837,25 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       }
       html += `</tbody></table>`;
     }
+    // 查询过程透明化——展示评测引擎去知识库问了什么
+    const queryLog = l4v.query_log || [];
+    if (queryLog.length > 0) {
+      html += `<details style="margin:8px 0;">`;
+      html += `<summary style="color:#888;font-weight:600;font-size:13px;cursor:pointer;">查询过程 (${queryLog.length} 步)</summary>`;
+      html += `<table style="margin-top:6px;"><thead><tr><th>步骤</th><th>动作</th><th>详情</th><th>结果</th><th>命中数</th></tr></thead><tbody>`;
+      for (const q of queryLog) {
+        const stepColor = q.count > 0 ? "#27ae60" : "#888";
+        html += `<tr>`;
+        html += `<td style="font-size:12px;font-weight:600;color:#4a90d9;">${q.step || ""}</td>`;
+        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${q.action || ""}</td>`;
+        html += `<td style="font-size:11px;max-width:300px;word-break:break-all;color:#888;">${q.detail || ""}</td>`;
+        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${q.result || ""}</td>`;
+        html += `<td style="font-size:13px;font-weight:bold;color:${stepColor};">${q.count || 0}</td>`;
+        html += `</tr>`;
+      }
+      html += `</tbody></table>`;
+      html += `</details>`;
+    }
     if (l4v.error) {
       html += `<div style="color:#e74c3c;font-size:12px;margin-top:4px;">错误: ${l4v.error}</div>`;
     }

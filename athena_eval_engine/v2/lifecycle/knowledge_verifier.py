@@ -115,6 +115,10 @@ class KnowledgeVerifier:
     ) -> dict:
         """主动搜索知识库 + 记忆/wiki，验证是否有解决该误报所需的知识。
 
+        透明化：返回结果含 query_log 字段，记录查询过程的每一步——
+        提取的关键词、Athena API 请求、wiki 搜索路径、每步返回的候选数，
+        让用户能看到"评测引擎去知识库问了什么问题"。
+
         Args:
             vuln_title: 漏洞标题
             fp_reason: 人工标注的误报原因
@@ -124,17 +128,37 @@ class KnowledgeVerifier:
         Returns:
             {
                 "l4_knowledge_exists": true/false,
-                "matched_files": [{path, title, source, relevance, reason}],
+                "matched_files": [...],
                 "summary": "总体判断",
                 "kb_searched": {"athena_api": bool, "wiki_nfs": bool},
                 "candidate_files": int,
+                "query_log": [{
+                    "step": str,        # 步骤名
+                    "action": str,      # 动作描述
+                    "detail": str,      # 具体内容（URL/路径/关键词）
+                    "result": str,      # 结果摘要
+                    "count": int,       # 命中数量
+                }, ...],
             }
         """
+        # 查询过程日志——透明化每一步
+        query_log: list[dict] = []
+
         # 1. 提取查询关键词
         keywords = self._extract_keywords(vuln_title, fp_reason)
+        query_log.append({
+            "step": "关键词提取",
+            "action": "从漏洞标题 + 误报原因提取查询关键词",
+            "detail": (f"漏洞标题: {vuln_title}\n"
+                       f"误报原因: {fp_reason}"),
+            "result": f"提取到 {len(keywords)} 个关键词: {', '.join(keywords) if keywords else '（无）'}",
+            "count": len(keywords),
+        })
         if not keywords:
             log("KB_VERIFY", f"无法提取关键词: vuln_title={vuln_title}, fp_reason={fp_reason}")
-            return self._empty_result()
+            empty = self._empty_result()
+            empty["query_log"] = query_log
+            return empty
 
         log("KB_VERIFY",
             f"关键词: {keywords} (vuln_title={vuln_title[:50]}, "
@@ -144,13 +168,24 @@ class KnowledgeVerifier:
 
         # 2. 查 Athena API knowledge/concepts
         if project_id:
-            api_candidates = self._search_athena_api(project_id, keywords)
+            api_candidates, api_log = self._search_athena_api_logged(
+                project_id, keywords)
             candidates.extend(api_candidates)
+            query_log.extend(api_log)
             log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选")
+        else:
+            query_log.append({
+                "step": "Athena API 搜索",
+                "action": "跳过（无 project_id）",
+                "detail": "project_id 为空，跳过 Athena API 查询",
+                "result": "未查询",
+                "count": 0,
+            })
 
         # 3. 查 NFS compiled_knowledge (wiki/记忆)
-        wiki_candidates = self._search_wiki(keywords)
+        wiki_candidates, wiki_log = self._search_wiki_logged(keywords)
         candidates.extend(wiki_candidates)
+        query_log.extend(wiki_log)
         log("KB_VERIFY", f"Wiki NFS: {len(wiki_candidates)} 候选")
 
         # 去重（按 path）
@@ -163,8 +198,16 @@ class KnowledgeVerifier:
                 unique_candidates.append(c)
         candidates = unique_candidates[:_MAX_CANDIDATES]
 
+        query_log.append({
+            "step": "去重",
+            "action": f"按 path 去重（上限 {_MAX_CANDIDATES}）",
+            "detail": f"去重前 {len(candidates) + len(seen_paths)} 个候选",
+            "result": f"去重后 {len(unique_candidates)} 个候选",
+            "count": len(unique_candidates),
+        })
+
         if not candidates:
-            return {
+            result = {
                 "l4_knowledge_exists": False,
                 "matched_files": [],
                 "summary": "知识库和记忆/wiki 中均未找到与误报原因相关的知识",
@@ -174,19 +217,38 @@ class KnowledgeVerifier:
                 },
                 "candidate_files": 0,
             }
+            result["query_log"] = query_log
+            return result
 
         # 4. 读取候选文件内容摘要
         for c in candidates:
             if not c.get("content_preview"):
                 c["content_preview"] = self._read_content(c)
 
+        query_log.append({
+            "step": "读取候选文件",
+            "action": f"读取 {len(candidates)} 个候选文件内容摘要（前 {_MD_PREVIEW_LINES} 行）",
+            "detail": "; ".join(c.get("path", "")[:80] for c in candidates[:10]),
+            "result": f"已读取 {len(candidates)} 个文件",
+            "count": len(candidates),
+        })
+
         # 5. LLM 判定
+        query_log.append({
+            "step": "LLM 判定",
+            "action": f"用 LLM 判定 {len(candidates)} 个候选文件是否含消减误报的知识",
+            "detail": f"漏洞标题: {vuln_title[:60]}; 误报原因: {fp_reason[:60]}",
+            "result": "等待 LLM 判定...",
+            "count": len(candidates),
+        })
+
         result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb)
         result["kb_searched"] = {
             "athena_api": bool(project_id),
             "wiki_nfs": os.path.isdir(_WIKI_ROOT),
         }
         result["candidate_files"] = len(candidates)
+        result["query_log"] = query_log
 
         log("KB_VERIFY",
             f"LLM 判定完成: l4={result.get('l4_knowledge_exists')}, "
@@ -249,22 +311,43 @@ class KnowledgeVerifier:
         API: GET /api/athena/projects/{project_id}/knowledge/concepts?query=xxx
         返回 matches[]，每个含 aliases + mentions[]（含 document_path + context）
         """
+        candidates, _ = self._search_athena_api_logged(project_id, keywords)
+        return candidates
+
+    def _search_athena_api_logged(
+        self, project_id: str, keywords: list[str],
+    ) -> tuple[list[dict], list[dict]]:
+        """Athena API 搜索（带查询日志）。
+
+        每个关键词发一次请求，记录请求 URL、返回 matches 数、命中的文档路径。
+        """
         candidates: list[dict] = []
         seen_docs: set[str] = set()
+        log_entries: list[dict] = []
 
         for kw in keywords:
+            url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
+                   f"/knowledge/concepts?" +
+                   urllib.parse.urlencode({"query": kw}))
             try:
-                url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
-                       f"/knowledge/concepts?" +
-                       urllib.parse.urlencode({"query": kw}))
                 req = urllib.request.Request(url)
                 resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
                 data = json.loads(resp.read())
             except Exception as e:
                 log("KB_VERIFY", f"Athena API 查询失败 (kw={kw}): {str(e)[:150]}")
+                log_entries.append({
+                    "step": "Athena API 搜索",
+                    "action": f"GET {url}",
+                    "detail": f"关键词: {kw}",
+                    "result": f"查询失败: {str(e)[:100]}",
+                    "count": 0,
+                })
                 continue
 
-            for match in data.get("matches", []):
+            matches = data.get("matches", [])
+            match_count = len(matches)
+            new_docs: list[str] = []
+            for match in matches:
                 aliases = match.get("aliases", [])
                 for mention in match.get("mentions", []):
                     doc_path = mention.get("document_path", "")
@@ -272,10 +355,9 @@ class KnowledgeVerifier:
                     if not doc_path or doc_path in seen_docs:
                         continue
                     seen_docs.add(doc_path)
+                    new_docs.append(doc_path)
 
-                    # 立即读取文件内容（project_id 在此上下文中可用）
                     content = self._read_athena_file(project_id, doc_path)
-
                     candidates.append({
                         "source": "athena_api",
                         "path": doc_path,
@@ -287,9 +369,29 @@ class KnowledgeVerifier:
                     })
 
                     if len(candidates) >= _MAX_CANDIDATES:
-                        return candidates
+                        log_entries.append({
+                            "step": "Athena API 搜索",
+                            "action": f"GET {url}",
+                            "detail": f"关键词: {kw}",
+                            "result": (f"返回 {match_count} 个 matches，"
+                                       f"命中 {len(new_docs)} 个文档: "
+                                       f"{', '.join(d.split('/')[-1] for d in new_docs[:3])}"),
+                            "count": len(new_docs),
+                        })
+                        return candidates, log_entries
 
-        return candidates
+            log_entries.append({
+                "step": "Athena API 搜索",
+                "action": f"GET {url}",
+                "detail": f"关键词: {kw}",
+                "result": (f"返回 {match_count} 个 matches，"
+                           f"命中 {len(new_docs)} 个文档"
+                           + (f": {', '.join(d.split('/')[-1] for d in new_docs[:3])}"
+                              if new_docs else "")),
+                "count": len(new_docs),
+            })
+
+        return candidates, log_entries
 
     def _read_athena_file(
         self, project_id: str, doc_path: str,
@@ -310,26 +412,76 @@ class KnowledgeVerifier:
     # ── Wiki/记忆 NFS 搜索 ──
 
     def _search_wiki(self, keywords: list[str]) -> list[dict]:
-        """搜索 NFS compiled_knowledge 目录的 .md 文件。
+        """搜索 NFS compiled_knowledge 目录的 .md 文件。"""
+        candidates, _ = self._search_wiki_logged(keywords)
+        return candidates
 
-        模拟 agent 的访问方式：先读 AGENTS.md 的 Fast Memory Index，
-        关键词匹配 index 的 title/abstract/keywords 列 → 候选文章。
-        索引匹配不足时回退到逐文件扫描。
+    def _search_wiki_logged(self, keywords: list[str]) -> tuple[list[dict], list[dict]]:
+        """Wiki/记忆 NFS 搜索（带查询日志）。
+
+        记录 Fast Memory Index 条目数、匹配结果、逐文件扫描了哪些目录。
         """
+        log_entries: list[dict] = []
+
         if not os.path.isdir(_WIKI_ROOT):
-            return []
+            log_entries.append({
+                "step": "Wiki/记忆 NFS 搜索",
+                "action": f"检查目录 {_WIKI_ROOT}",
+                "detail": "目录不存在",
+                "result": "跳过 wiki 搜索",
+                "count": 0,
+            })
+            return [], log_entries
+
+        log_entries.append({
+            "step": "Wiki/记忆 NFS 搜索",
+            "action": f"搜索目录 {_WIKI_ROOT}",
+            "detail": f"关键词: {', '.join(keywords)}",
+            "result": "开始搜索",
+            "count": 0,
+        })
 
         # 1. 读 Fast Memory Index
         index_entries = self._load_fast_memory_index()
+        log_entries.append({
+            "step": "Wiki/记忆 NFS 搜索",
+            "action": f"读 Fast Memory Index（{_AGENTS_MD}）",
+            "detail": f"AGENTS.md {'存在' if index_entries else '不存在或为空'}",
+            "result": f"解析到 {len(index_entries)} 个索引条目",
+            "count": len(index_entries),
+        })
+
         candidates = self._match_index(keywords, index_entries)
+        log_entries.append({
+            "step": "Wiki/记忆 NFS 搜索",
+            "action": "关键词匹配 Fast Memory Index",
+            "detail": f"关键词: {', '.join(keywords)}",
+            "result": f"索引匹配到 {len(candidates)} 个候选",
+            "count": len(candidates),
+        })
 
         # 2. 索引匹配不足时逐文件扫描
         if len(candidates) < 3:
             exclude = {c.get("path") for c in candidates}
+            scan_dirs = ("vulns", "topics", "products", "experiences", "overlays")
+            log_entries.append({
+                "step": "Wiki/记忆 NFS 搜索",
+                "action": "逐文件扫描（索引匹配不足 3，回退扫描）",
+                "detail": f"扫描子目录: {', '.join(scan_dirs)}",
+                "result": "开始逐文件扫描...",
+                "count": 0,
+            })
             extra = self._scan_files_direct(keywords, exclude)
             candidates.extend(extra[:_MAX_CANDIDATES - len(candidates)])
+            log_entries.append({
+                "step": "Wiki/记忆 NFS 搜索",
+                "action": "逐文件扫描完成",
+                "detail": f"扫描子目录: {', '.join(scan_dirs)}",
+                "result": f"逐文件扫描追加 {len(extra)} 个候选",
+                "count": len(extra),
+            })
 
-        return candidates[:_MAX_CANDIDATES]
+        return candidates[:_MAX_CANDIDATES], log_entries
 
     def _load_fast_memory_index(self) -> list[dict]:
         """读取 AGENTS.md，解析 Fast Memory Index 表。"""
