@@ -530,12 +530,17 @@ class WebVulnVerifyParser(BaseParser):
                     graph['edges'][pid].add(sid)
                     graph['parent_map'][sid] = pid
                 # metadata.vulnerability_id 或 metadata.chimera_vuln_id — 所有 session 都有
+                # 双 key 注册：vulnerability_id（数字 59734）与 chimera_vuln_id（case_id
+                # case-20260918-xxx）都作为 vuln_id_to_sessions 的 key——
+                # case_session_matcher 用基线/原始 case_id 查 v2s 才能命中。
                 meta = sess.get("metadata", {})
                 if isinstance(meta, dict):
-                    vid = str(meta.get("vulnerability_id", "") or meta.get("chimera_vuln_id", ""))
-                    if vid:
-                        sg['vuln_ids'].add(vid)
-                        graph['vuln_id_to_sessions'][vid].add(sid)
+                    num_vid = str(meta.get("vulnerability_id", "") or "")
+                    case_vid = str(meta.get("chimera_vuln_id", "") or "")
+                    for vid in (num_vid, case_vid):
+                        if vid:
+                            sg['vuln_ids'].add(vid)
+                            graph['vuln_id_to_sessions'][vid].add(sid)
 
             if not ev.is_tool_call():
                 continue

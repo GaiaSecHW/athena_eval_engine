@@ -200,23 +200,32 @@ class CaseSessionMatcher:
                         match_method_used = "raw_title_multi"
 
             # 验证 agent 回退：用 session_graph.vuln_id_to_sessions 匹配
-            # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id），
-            # 但 vulnerability_analyze/verify 的 result 文本标题与告警中心 title 不一致，
-            # 导致 title 精确匹配失败。用 case_id 直接从 vuln_id_to_sessions 查找。
+            # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id）
+            # 和 vulnerability_id（数字）。v2s 双 key（数字 ID + case_id）——
+            # 用基线 case_id（cid）或 LLM 匹配的原始 case_id（ac_case_id）查找。
+            # CVulnVerify 用 finding_to_session（case_id → session），v2s 为空时兜底。
             verify_match_detail = ""
             if not verify_sessions:
                 for dp in verify_packs:
-                    v2s = (dp.session_graph or {}).get("vuln_id_to_sessions", {})
-                    if not v2s:
-                        continue
+                    sg = dp.session_graph or {}
+                    v2s = sg.get("vuln_id_to_sessions", {})
                     # case_id 可能带前缀（case-20260730-...），也可能只有数字 ID
-                    sids = v2s.get(cid, set()) or v2s.get(ac_case_id, set())
+                    sids = set()
+                    if v2s:
+                        sids = set(v2s.get(cid, set())) or set(v2s.get(ac_case_id, set()))
+                        if not sids:
+                            # 尝试用数字 ID 匹配（case_id 中提取数字部分）
+                            for vid, vid_sids in v2s.items():
+                                if vid == cid or vid == ac_case_id:
+                                    sids = set(vid_sids)
+                                    break
+                    # CVulnVerify 兜底：finding_to_session（case_id → session）
                     if not sids:
-                        # 尝试用数字 ID 匹配（case_id 中提取数字部分）
-                        for vid, vid_sids in v2s.items():
-                            if vid == cid or vid == ac_case_id:
-                                sids = vid_sids
-                                break
+                        f2s = sg.get("finding_to_session", {})
+                        for key in (cid, ac_case_id):
+                            f_sid = f2s.get(key, "")
+                            if f_sid:
+                                sids.add(f_sid)
                     if sids:
                         # 去重父子关系：同一 vuln_id 可能关联多个 session，
                         # 其中存在父子关系（如 analyze + verify session）。
