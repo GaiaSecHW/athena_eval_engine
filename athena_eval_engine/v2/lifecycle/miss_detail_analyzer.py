@@ -20,6 +20,7 @@ sink_found_no_report（sink 精确命中但未上报漏洞）只是第一层分�
 from __future__ import annotations
 
 from ..infra import llm as llm_mod
+from ..infra.token_counter import count_tokens
 from ...infrastructure.log_util import log
 from ..core.raw_event import RawEvent
 
@@ -37,6 +38,12 @@ MISS_SUB_CATEGORIES = {
     "vuln_confusion": "多漏洞混淆",
     "other": "其他",
 }
+
+# 细分漏报成因的 LLM 输入 token 预算——
+# 精确命中 session 事件可能巨大（110+ session），超 LLM 上下文（400K tokens）
+# 用 count_tokens 预计算，动态适配 session 数量
+_DETAIL_MAX_TOKENS = 60_000     # 给细分漏报成因的最大上下文（远小于 400K 主限制）
+_DETAIL_RESERVE_TOKENS = 8_000  # 预留给 system prompt + 输出 + 格式
 
 # 每个成因 → 责任方
 MISS_SUB_RESPONSIBILITY = {
@@ -210,6 +217,8 @@ class MissDetailAnalyzer:
         precise_sessions = case.get("precise_sessions", {}) or {}
 
         # 收集精确命中 session 的事件
+        # 用 token 预计算动态适配体积：从 token 最少的 session 开始取，
+        # 直到塞满上下文预算（避免超 LLM 上下文；也避免硬编码限制 session 数）
         session_texts: list[str] = []
         for at, sids in precise_sessions.items():
             for sid in sids:
@@ -217,6 +226,19 @@ class MissDetailAnalyzer:
                 text = _format_session_events(sid, events)
                 if text and text not in session_texts:
                     session_texts.append(text)
+
+        # 按 token 排序（小→大），从小的开始取，塞满预算
+        session_texts.sort(key=lambda t: count_tokens(t))
+        budget = _DETAIL_MAX_TOKENS - _DETAIL_RESERVE_TOKENS
+        selected: list[str] = []
+        used_tokens = 0
+        for text in session_texts:
+            t = count_tokens(text)
+            if used_tokens + t > budget and selected:
+                break
+            selected.append(text)
+            used_tokens += t
+        session_texts = selected
 
         if not session_texts:
             log("MISS_DETAIL",
