@@ -480,6 +480,7 @@ class Orchestrator:
                 fn_miss_results = fn_analyzer.analyze(
                     evaluation_id, case_details, case_matches,
                     data_packs, eval_mode=eval_mode,
+                    cancel_cb=_cancel_cb,
                 )
 
             # debug dump：CASE_MATCHING 中间数据（FP/FN + FN 漏报分析）

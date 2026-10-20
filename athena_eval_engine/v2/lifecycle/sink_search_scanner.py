@@ -156,6 +156,242 @@ class SinkSearchScanner:
             "total_hits": total,
         }
 
+    def scan_with_sink_info(
+        self,
+        sink_info: dict,
+        data_packs: list[DataPack],
+    ) -> dict:
+        """用 LLM 提取的结构化 sink 信息做精确匹配。
+
+        三级匹配精度：
+        1. **函数级命中**（最精确）：event 的 input/output 中同时出现
+           sink 文件（basename 或完整路径）和 sink 函数名 → agent
+           读到了 sink 点的函数代码
+        2. **文件级命中**（次精确）：event 中只出现 sink 文件路径/basename，
+           没有出现任何 sink 函数名 → agent 读了文件但可能没碰到 sink 函数
+        3. **未命中**：event 中没有出现任何 sink 文件
+
+        函数级命中是"sink 找到"的充分条件；文件级命中是"可能找到"
+        的弱信号，需要标注精度级别。
+
+        Args:
+            sink_info: SinkInfoExtractor.extract() 返回的结构化 sink 信息
+                {
+                    "sink_files": [str],
+                    "sink_functions": [str],
+                    "sink_lines": [str],
+                    "sink_description": str,
+                    "confidence": float,
+                    "source_file_raw": str,
+                }
+            data_packs: 全部 DataPack（挖掘 + 验证 agent）
+
+        Returns:
+            {
+                "sink_info": dict,          # 原始 sink_info
+                "found": bool,               # 是否有任何级别命中
+                "found_function_level": bool, # 是否有函数级命中
+                "hits_by_agent": {
+                    agent_type: [
+                        {
+                            "session_id": str,
+                            "event_type": str,
+                            "tool_name": str,
+                            "input_preview": str,
+                            "output_preview": str,
+                            "matched_field": str,
+                            "match_precision": "function" | "file",
+                            "matched_functions": [str],  # 命中的函数名
+                        }
+                    ]
+                },
+                "hit_sessions": {agent_type: [session_id, ...]},
+                "function_level_sessions": {agent_type: [session_id, ...]},
+                "file_level_sessions": {agent_type: [session_id, ...]},
+                "total_sessions": int,
+                "total_function_level": int,
+                "total_file_level": int,
+            }
+        """
+        sink_files = sink_info.get("sink_files") or []
+        sink_functions = sink_info.get("sink_functions") or []
+        # 合并 source_file_raw 作为兜底文件
+        source_file_raw = sink_info.get("source_file_raw") or ""
+        if source_file_raw and source_file_raw not in sink_files:
+            sink_files = sink_files + [source_file_raw]
+
+        if not sink_files:
+            return {
+                "sink_info": sink_info,
+                "found": False,
+                "found_function_level": False,
+                "hits_by_agent": {},
+                "hit_sessions": {},
+                "function_level_sessions": {},
+                "file_level_sessions": {},
+                "total_sessions": 0,
+                "total_function_level": 0,
+                "total_file_level": 0,
+            }
+
+        # 预计算 basenames
+        basenames = [os.path.basename(f) for f in sink_files if f]
+
+        hits_by_agent: dict[str, list[dict]] = {}
+        hit_sessions: dict[str, set[str]] = {}
+        func_level_sessions: dict[str, set[str]] = {}
+        file_level_sessions: dict[str, set[str]] = {}
+
+        for dp in data_packs:
+            agent_type = dp.agent_type or ""
+            for ev in (dp.events or []):
+                # 1. 检查文件是否命中
+                file_matched, file_field = self._check_files_in_event(
+                    ev, sink_files, basenames)
+                if not file_matched:
+                    continue
+
+                # 2. 检查函数是否命中
+                matched_funcs = self._check_functions_in_event(
+                    ev, sink_functions) if sink_functions else []
+
+                # 3. 确定匹配精度
+                if matched_funcs:
+                    precision = "function"
+                else:
+                    precision = "file"
+
+                sid = ev.session_id or ""
+                if not sid:
+                    continue
+
+                hits_by_agent.setdefault(agent_type, []).append({
+                    "session_id": sid,
+                    "event_type": ev.event_type or "",
+                    "tool_name": ev.tool_name or "",
+                    "input_preview": _truncate_str(
+                        _obj_to_str(ev.input_json), 200),
+                    "output_preview": _truncate_str(
+                        _obj_to_str(ev.output_json), 200),
+                    "matched_field": file_field,
+                    "match_precision": precision,
+                    "matched_functions": matched_funcs,
+                })
+                hit_sessions.setdefault(agent_type, set()).add(sid)
+                if precision == "function":
+                    func_level_sessions.setdefault(agent_type, set()).add(sid)
+                else:
+                    file_level_sessions.setdefault(agent_type, set()).add(sid)
+
+        hit_sessions_result = {
+            at: sorted(sids) for at, sids in hit_sessions.items()
+        }
+        func_level_result = {
+            at: sorted(sids) for at, sids in func_level_sessions.items()
+        }
+        file_level_result = {
+            at: sorted(sids) for at, sids in file_level_sessions.items()
+        }
+        total = sum(len(sids) for sids in hit_sessions_result.values())
+        total_func = sum(len(sids) for sids in func_level_result.values())
+        total_file = sum(len(sids) for sids in file_level_result.values())
+
+        log("SINK_SCAN",
+            f"scan_with_sink_info files={len(sink_files)} "
+            f"funcs={len(sink_functions)}: {total} sessions "
+            f"(func_level={total_func}, file_level={total_file})",
+            eval_id="")
+
+        return {
+            "sink_info": sink_info,
+            "found": total > 0,
+            "found_function_level": total_func > 0,
+            "hits_by_agent": hits_by_agent,
+            "hit_sessions": hit_sessions_result,
+            "function_level_sessions": func_level_result,
+            "file_level_sessions": file_level_result,
+            "total_sessions": total,
+            "total_function_level": total_func,
+            "total_file_level": total_file,
+        }
+
+    @staticmethod
+    def _check_files_in_event(
+        ev, sink_files: list[str], basenames: list[str],
+    ) -> tuple[bool, str]:
+        """检查 event 中是否出现 sink 文件。
+
+        Returns:
+            (matched, field) — matched=True 时 field 为 "input"/"output"/"both"
+        """
+        in_matched = False
+        out_matched = False
+        for i, sf in enumerate(sink_files):
+            if not sf:
+                continue
+            bn = basenames[i] if i < len(basenames) else os.path.basename(sf)
+            if not in_matched and _search_in_obj(ev.input_json, sf):
+                in_matched = True
+            if not in_matched and bn and bn != sf:
+                if _search_in_obj(ev.input_json, bn):
+                    in_matched = True
+            if not out_matched and _search_in_obj(ev.output_json, sf):
+                out_matched = True
+            if not out_matched and bn and bn != sf:
+                if _search_in_obj(ev.output_json, bn):
+                    out_matched = True
+            if in_matched and out_matched:
+                break
+
+        if in_matched and out_matched:
+            return True, "both"
+        if in_matched:
+            return True, "input"
+        if out_matched:
+            return True, "output"
+        return False, ""
+
+    @staticmethod
+    def _check_functions_in_event(
+        ev, sink_functions: list[str],
+    ) -> list[str]:
+        """检查 event 中是否出现 sink 函数名，返回命中的函数名列表。
+
+        匹配策略：
+        1. 完整方法引用匹配（如 ClassName.methodName）
+        2. 简单方法名匹配（如 methodName）—— 只匹配 sink_functions
+           中提取出的方法名部分（去掉类名前缀和括号）
+        """
+        if not sink_functions:
+            return []
+
+        matched: list[str] = []
+        in_str = _obj_to_str(ev.input_json)
+        out_str = _obj_to_str(ev.output_json)
+        combined = in_str + out_str
+        if not combined:
+            return []
+
+        for func in sink_functions:
+            if not func:
+                continue
+            # 完整方法引用匹配
+            if func in combined:
+                matched.append(func)
+                continue
+            # 简单方法名匹配：提取方法名部分（去掉类名前缀和括号）
+            simple_name = func
+            if "." in func:
+                simple_name = func.rsplit(".", 1)[-1]
+            if "(" in simple_name:
+                simple_name = simple_name.split("(")[0]
+            if simple_name and simple_name != func:
+                if simple_name in combined:
+                    matched.append(func)
+                    continue
+
+        return matched
+
     @staticmethod
     def _find_match_location(
         ev, source_file: str, basename: str,
@@ -251,6 +487,28 @@ class SinkSearchScanner:
             if _search_in_obj(ev.output_json, basename):
                 return True
         return False
+
+
+def _search_in_obj(obj, target: str) -> bool:
+    """递归搜索 obj 中是否包含 target 字符串。
+
+    obj 可以是 str/dict/list/None，递归搜索所有字符串值。
+    """
+    if obj is None:
+        return False
+    if isinstance(obj, str):
+        return target in obj
+    if isinstance(obj, dict):
+        for v in obj.values():
+            if _search_in_obj(v, target):
+                return True
+        return False
+    if isinstance(obj, list):
+        for item in obj:
+            if _search_in_obj(item, target):
+                return True
+        return False
+    return False
 
 
 def _truncate_str(s: str, n: int) -> str:

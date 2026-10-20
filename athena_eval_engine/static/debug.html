@@ -462,23 +462,27 @@ RENDERERS.case_matching = function(el, data) {
   // ── FN 漏报分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
   const fnMiss = data.fn_miss_analysis;
   if (fnMiss && fnMiss.total > 0) {
+    const funcLevelCount = (fnMiss.results || []).filter(r => r.sink_found_function_level).length;
     html += `<details style="margin:16px 0 8px;">`
       + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
 
     // 统计
     html += `<div class="stats" style="margin:8px 0;">`;
     html += `<div class="stat"><div class="num" style="color:#e67e22">${fnMiss.total}</div><div class="label">未匹配 VULNERABLE 基线</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#f39c12">${fnMiss.sink_found || 0}</div><div class="label">sink 找到（识别能力问题）</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到（挖掘方向问题）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#f39c12">${fnMiss.sink_found || 0}</div><div class="label">sink 找到</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#27ae60">${funcLevelCount}</div><div class="label">函数级命中</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#f39c12">${(fnMiss.sink_found || 0) - funcLevelCount}</div><div class="label">仅文件级命中</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到</div></div>`;
     html += `</div>`;
 
     html += `<table><thead><tr>`;
-    html += `<th>基线编号</th><th>漏洞标题</th><th>源文件</th><th>漏报类型</th>`;
+    html += `<th>基线编号</th><th>漏洞标题</th><th>LLM 提取 sink</th><th>漏报类型</th>`;
     html += `<th>命中 session</th><th>漏报原因</th>`;
     html += `</tr></thead><tbody>`;
 
     for (const r of (fnMiss.results || [])) {
       const sinkFound = r.sink_found;
+      const foundFuncLevel = r.sink_found_function_level;
       const category = r.miss_category || "";
       const catLabel = {
         "sink_not_found": "挖掘方向问题",
@@ -486,25 +490,56 @@ RENDERERS.case_matching = function(el, data) {
       }[category] || category;
       const catColor = category === "sink_not_found" ? "#e74c3c" : "#f39c12";
 
-      // 命中 session 摘要
+      // LLM 提取的 sink 信息摘要
+      const si = r.sink_info || {};
+      const sinkFiles = (si.sink_files || []).filter(Boolean);
+      const sinkFuncs = (si.sink_functions || []).filter(Boolean);
+      const sinkLines = (si.sink_lines || []).filter(Boolean);
+      const sinkConf = (si.confidence ?? 0) * 100;
+      let sinkSummary = "";
+      if (sinkFiles.length || sinkFuncs.length || sinkLines.length) {
+        const parts = [];
+        if (sinkFiles.length) parts.push(`文件: ${sinkFiles.map(f => f.length > 40 ? f.substring(f.lastIndexOf('/')+1) : f).join(", ")}`);
+        if (sinkFuncs.length) parts.push(`函数: ${sinkFuncs.join(", ")}`);
+        if (sinkLines.length) parts.push(`行号: ${sinkLines.join(", ")}`);
+        sinkSummary = parts.join(" | ") + ` (${sinkConf.toFixed(0)}%)`;
+      }
+      const sinkShort = sinkSummary.length > 100 ? sinkSummary.substring(0, 100) + "..." : sinkSummary;
+
+      // 命中 session 摘要（区分函数级和文件级）
       const hitSessions = r.hit_sessions || {};
-      const sessionSummary = Object.entries(hitSessions)
-        .map(([at, sids]) => `${at}: ${sids.length}`)
-        .join(", ") || '<span style="color:#999">—</span>';
+      const funcLevelSessions = r.function_level_sessions || {};
+      const fileLevelSessions = r.file_level_sessions || {};
+      let sessionSummary = "";
+      if (Object.keys(hitSessions).length) {
+        const parts = [];
+        for (const [at, sids] of Object.entries(hitSessions)) {
+          const funcCount = (funcLevelSessions[at] || []).length;
+          const fileCount = (fileLevelSessions[at] || []).length;
+          if (funcCount > 0 && fileCount > 0) {
+            parts.push(`${at}: ${sids.length} (函数${funcCount}+文件${fileCount})`);
+          } else if (funcCount > 0) {
+            parts.push(`${at}: ${sids.length} (全函数级)`);
+          } else {
+            parts.push(`${at}: ${sids.length} (仅文件级)`);
+          }
+        }
+        sessionSummary = parts.join(", ");
+      } else {
+        sessionSummary = '<span style="color:#999">—</span>';
+      }
 
       const vt = r.vuln_title || "";
       const vtShort = vt.length > 60 ? vt.substring(0, 60) + "..." : vt;
-      const sf = r.source_file || "";
-      const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
       const reason = r.miss_reason || "";
       const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
 
       html += `<tr>`;
       html += `<td style="font-family:monospace;font-size:12px">${r.case_id || ""}</td>`;
       html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`;
-      html += `<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`;
+      html += `<td style="font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sinkSummary.replace(/"/g, '&quot;')}">${sinkShort || '<span style="color:#999">—</span>'}</td>`;
       html += `<td><span class="badge" style="background:${catColor};color:#fff">${catLabel}</span></td>`;
-      html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sessionSummary}">${sessionSummary}</td>`;
+      html += `<td style="font-family:monospace;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sessionSummary}">${sessionSummary}</td>`;
       html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
       html += `</tr>`;
 
@@ -513,17 +548,21 @@ RENDERERS.case_matching = function(el, data) {
         html += `<tr><td colspan="6" style="padding:0;">`;
         html += `<details style="margin:4px 0 8px 20px;">`;
         html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
-        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配类型</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
+        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
         for (const ev of r.hit_events) {
           const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
           const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          const precision = ev.match_precision || "";
+          const precisionColor = precision === "function" ? "#27ae60" : "#f39c12";
+          const matchedFuncs = (ev.matched_functions || []).join(", ");
           html += `<tr>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
           html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
           html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
-          html += `<td style="font-size:12px">${ev.match_type || ""}</td>`;
+          html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "function" ? "函数级" : "文件级"}</span></td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedFuncs}">${matchedFuncs || '—'}</td>`;
           html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
           html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
           html += `</tr>`;
