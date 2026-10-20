@@ -462,7 +462,7 @@ RENDERERS.case_matching = function(el, data) {
   // ── FN 漏报分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
   const fnMiss = data.fn_miss_analysis;
   if (fnMiss && fnMiss.total > 0) {
-    const funcLevelCount = (fnMiss.results || []).filter(r => r.sink_found_function_level).length;
+    const preciseCount = (fnMiss.results || []).filter(r => r.sink_found_precise).length;
     html += `<details style="margin:16px 0 8px;">`
       + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
 
@@ -470,8 +470,8 @@ RENDERERS.case_matching = function(el, data) {
     html += `<div class="stats" style="margin:8px 0;">`;
     html += `<div class="stat"><div class="num" style="color:#e67e22">${fnMiss.total}</div><div class="label">未匹配 VULNERABLE 基线</div></div>`;
     html += `<div class="stat"><div class="num" style="color:#f39c12">${fnMiss.sink_found || 0}</div><div class="label">sink 找到</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#27ae60">${funcLevelCount}</div><div class="label">函数级命中</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#f39c12">${(fnMiss.sink_found || 0) - funcLevelCount}</div><div class="label">仅文件级命中</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#27ae60">${preciseCount}</div><div class="label">精确命中（函数/行号）</div></div>`;
+    html += `<div class="stat"><div class="num" style="color:#f39c12">${(fnMiss.sink_found || 0) - preciseCount}</div><div class="label">仅文件级命中</div></div>`;
     html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到</div></div>`;
     html += `</div>`;
 
@@ -482,7 +482,7 @@ RENDERERS.case_matching = function(el, data) {
 
     for (const r of (fnMiss.results || [])) {
       const sinkFound = r.sink_found;
-      const foundFuncLevel = r.sink_found_function_level;
+      const foundPrecise = r.sink_found_precise;
       const category = r.miss_category || "";
       const catLabel = {
         "sink_not_found": "挖掘方向问题",
@@ -506,20 +506,20 @@ RENDERERS.case_matching = function(el, data) {
       }
       const sinkShort = sinkSummary.length > 100 ? sinkSummary.substring(0, 100) + "..." : sinkSummary;
 
-      // 命中 session 摘要（区分函数级和文件级）
+      // 命中 session 摘要（区分精确和文件级）
       const hitSessions = r.hit_sessions || {};
-      const funcLevelSessions = r.function_level_sessions || {};
+      const preciseSessions = r.precise_sessions || {};
       const fileLevelSessions = r.file_level_sessions || {};
       let sessionSummary = "";
       if (Object.keys(hitSessions).length) {
         const parts = [];
         for (const [at, sids] of Object.entries(hitSessions)) {
-          const funcCount = (funcLevelSessions[at] || []).length;
+          const preciseCount = (preciseSessions[at] || []).length;
           const fileCount = (fileLevelSessions[at] || []).length;
-          if (funcCount > 0 && fileCount > 0) {
-            parts.push(`${at}: ${sids.length} (函数${funcCount}+文件${fileCount})`);
-          } else if (funcCount > 0) {
-            parts.push(`${at}: ${sids.length} (全函数级)`);
+          if (preciseCount > 0 && fileCount > 0) {
+            parts.push(`${at}: ${sids.length} (精确${preciseCount}+文件${fileCount})`);
+          } else if (preciseCount > 0) {
+            parts.push(`${at}: ${sids.length} (全精确)`);
           } else {
             parts.push(`${at}: ${sids.length} (仅文件级)`);
           }
@@ -548,21 +548,23 @@ RENDERERS.case_matching = function(el, data) {
         html += `<tr><td colspan="6" style="padding:0;">`;
         html += `<details style="margin:4px 0 8px 20px;">`;
         html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
-        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
+        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>命中行号</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
         for (const ev of r.hit_events) {
           const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
           const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
           const precision = ev.match_precision || "";
-          const precisionColor = precision === "function" ? "#27ae60" : "#f39c12";
+          const precisionColor = precision === "precise" ? "#27ae60" : "#f39c12";
           const matchedFuncs = (ev.matched_functions || []).join(", ");
+          const matchedLines = (ev.matched_lines || []).join(", ");
           html += `<tr>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
           html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
           html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
           html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
-          html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "function" ? "函数级" : "文件级"}</span></td>`;
+          html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "precise" ? "精确" : "文件级"}</span></td>`;
           html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedFuncs}">${matchedFuncs || '—'}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedLines}">${matchedLines || '—'}</td>`;
           html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
           html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
           html += `</tr>`;

@@ -164,22 +164,22 @@ class SinkSearchScanner:
         """用 LLM 提取的结构化 sink 信息做精确匹配。
 
         三级匹配精度：
-        1. **函数级命中**（最精确）：event 的 input/output 中同时出现
-           sink 文件（basename 或完整路径）和 sink 函数名 → agent
-           读到了 sink 点的函数代码
-        2. **文件级命中**（次精确）：event 中只出现 sink 文件路径/basename，
-           没有出现任何 sink 函数名 → agent 读了文件但可能没碰到 sink 函数
+        1. **精确命中**（function 或 line）：event 的 input/output 中
+           - 出现 sink 文件 + sink 函数名 → agent 读到了 sink 函数代码
+           - 或 出现 sink 文件 + sink 行号在范围内 → agent 读到了 sink 行附近代码
+           （XML 等配置文件没有函数，行号匹配是主要精确手段）
+        2. **文件级命中**（file）：event 中只出现 sink 文件路径/basename，
+           没有出现 sink 函数名也没有 sink 行号 → agent 读了文件但可能没碰到 sink 点
         3. **未命中**：event 中没有出现任何 sink 文件
 
-        函数级命中是"sink 找到"的充分条件；文件级命中是"可能找到"
-        的弱信号，需要标注精度级别。
+        精确命中是"sink 找到"的强信号；文件级命中是弱信号。
 
         Args:
             sink_info: SinkInfoExtractor.extract() 返回的结构化 sink 信息
                 {
                     "sink_files": [str],
                     "sink_functions": [str],
-                    "sink_lines": [str],
+                    "sink_lines": [str],   # 行号或行号区间，如 ["1022", "1022-1042"]
                     "sink_description": str,
                     "confidence": float,
                     "source_file_raw": str,
@@ -188,9 +188,9 @@ class SinkSearchScanner:
 
         Returns:
             {
-                "sink_info": dict,          # 原始 sink_info
-                "found": bool,               # 是否有任何级别命中
-                "found_function_level": bool, # 是否有函数级命中
+                "sink_info": dict,
+                "found": bool,
+                "found_precise": bool,      # 是否有精确命中（函数或行号级）
                 "hits_by_agent": {
                     agent_type: [
                         {
@@ -200,21 +200,23 @@ class SinkSearchScanner:
                             "input_preview": str,
                             "output_preview": str,
                             "matched_field": str,
-                            "match_precision": "function" | "file",
-                            "matched_functions": [str],  # 命中的函数名
+                            "match_precision": "precise" | "file",
+                            "matched_functions": [str],
+                            "matched_lines": [str],   # 命中的行号
                         }
                     ]
                 },
                 "hit_sessions": {agent_type: [session_id, ...]},
-                "function_level_sessions": {agent_type: [session_id, ...]},
+                "precise_sessions": {agent_type: [session_id, ...]},
                 "file_level_sessions": {agent_type: [session_id, ...]},
                 "total_sessions": int,
-                "total_function_level": int,
+                "total_precise": int,
                 "total_file_level": int,
             }
         """
         sink_files = sink_info.get("sink_files") or []
         sink_functions = sink_info.get("sink_functions") or []
+        sink_lines = sink_info.get("sink_lines") or []
         # 合并 source_file_raw 作为兜底文件
         source_file_raw = sink_info.get("source_file_raw") or ""
         if source_file_raw and source_file_raw not in sink_files:
@@ -224,22 +226,24 @@ class SinkSearchScanner:
             return {
                 "sink_info": sink_info,
                 "found": False,
-                "found_function_level": False,
+                "found_precise": False,
                 "hits_by_agent": {},
                 "hit_sessions": {},
-                "function_level_sessions": {},
+                "precise_sessions": {},
                 "file_level_sessions": {},
                 "total_sessions": 0,
-                "total_function_level": 0,
+                "total_precise": 0,
                 "total_file_level": 0,
             }
 
         # 预计算 basenames
         basenames = [os.path.basename(f) for f in sink_files if f]
+        # 预解析行号区间为 (start, end) 列表
+        parsed_lines = _parse_sink_lines(sink_lines)
 
         hits_by_agent: dict[str, list[dict]] = {}
         hit_sessions: dict[str, set[str]] = {}
-        func_level_sessions: dict[str, set[str]] = {}
+        precise_sessions: dict[str, set[str]] = {}
         file_level_sessions: dict[str, set[str]] = {}
 
         for dp in data_packs:
@@ -255,9 +259,13 @@ class SinkSearchScanner:
                 matched_funcs = self._check_functions_in_event(
                     ev, sink_functions) if sink_functions else []
 
-                # 3. 确定匹配精度
-                if matched_funcs:
-                    precision = "function"
+                # 3. 检查行号是否命中
+                matched_lines = self._check_lines_in_event(
+                    ev, parsed_lines) if parsed_lines else []
+
+                # 4. 确定匹配精度
+                if matched_funcs or matched_lines:
+                    precision = "precise"
                 else:
                     precision = "file"
 
@@ -276,42 +284,44 @@ class SinkSearchScanner:
                     "matched_field": file_field,
                     "match_precision": precision,
                     "matched_functions": matched_funcs,
+                    "matched_lines": matched_lines,
                 })
                 hit_sessions.setdefault(agent_type, set()).add(sid)
-                if precision == "function":
-                    func_level_sessions.setdefault(agent_type, set()).add(sid)
+                if precision == "precise":
+                    precise_sessions.setdefault(agent_type, set()).add(sid)
                 else:
                     file_level_sessions.setdefault(agent_type, set()).add(sid)
 
         hit_sessions_result = {
             at: sorted(sids) for at, sids in hit_sessions.items()
         }
-        func_level_result = {
-            at: sorted(sids) for at, sids in func_level_sessions.items()
+        precise_result = {
+            at: sorted(sids) for at, sids in precise_sessions.items()
         }
         file_level_result = {
             at: sorted(sids) for at, sids in file_level_sessions.items()
         }
         total = sum(len(sids) for sids in hit_sessions_result.values())
-        total_func = sum(len(sids) for sids in func_level_result.values())
+        total_precise = sum(len(sids) for sids in precise_result.values())
         total_file = sum(len(sids) for sids in file_level_result.values())
 
         log("SINK_SCAN",
             f"scan_with_sink_info files={len(sink_files)} "
-            f"funcs={len(sink_functions)}: {total} sessions "
-            f"(func_level={total_func}, file_level={total_file})",
+            f"funcs={len(sink_functions)} lines={len(sink_lines)}: "
+            f"{total} sessions "
+            f"(precise={total_precise}, file_level={total_file})",
             eval_id="")
 
         return {
             "sink_info": sink_info,
             "found": total > 0,
-            "found_function_level": total_func > 0,
+            "found_precise": total_precise > 0,
             "hits_by_agent": hits_by_agent,
             "hit_sessions": hit_sessions_result,
-            "function_level_sessions": func_level_result,
+            "precise_sessions": precise_result,
             "file_level_sessions": file_level_result,
             "total_sessions": total,
-            "total_function_level": total_func,
+            "total_precise": total_precise,
             "total_file_level": total_file,
         }
 
@@ -389,6 +399,54 @@ class SinkSearchScanner:
                 if simple_name in combined:
                     matched.append(func)
                     continue
+
+        return matched
+
+    @staticmethod
+    def _check_lines_in_event(
+        ev, parsed_lines: list[tuple[int, int, str]],
+    ) -> list[str]:
+        """检查 event 中是否出现 sink 行号，返回命中的行号列表。
+
+        行号匹配策略：trace event 的 input/output 中常出现行号引用
+        （如 "line 1022"、":1022"、"行 1022" 等）。提取 event 文本中
+        的数字行号，检查是否落在 sink 行号区间内。
+
+        Args:
+            parsed_lines: _parse_sink_lines() 返回的 (start, end, original) 列表
+
+        Returns:
+            命中的原始行号字符串列表（如 ["1022", "1022-1042"]）
+        """
+        if not parsed_lines:
+            return []
+
+        combined = _obj_to_str(ev.input_json) + _obj_to_str(ev.output_json)
+        if not combined:
+            return []
+
+        # 提取 event 文本中所有数字（前后可能有冒号、空格等）
+        import re
+        # 匹配独立的行号数字：前后非数字字符（避免匹配到 10222 中的 1022）
+        numbers = set()
+        for m in re.finditer(r'(?<!\d)(\d{1,6})(?!\d)', combined):
+            try:
+                num = int(m.group(1))
+                if 0 < num < 1_000_000:  # 合理行号范围
+                    numbers.add(num)
+            except ValueError:
+                continue
+
+        if not numbers:
+            return []
+
+        matched: list[str] = []
+        for start, end, original in parsed_lines:
+            # 检查 event 中是否有数字落在 [start, end] 区间内
+            for num in numbers:
+                if start <= num <= end:
+                    matched.append(original)
+                    break
 
         return matched
 
@@ -509,6 +567,44 @@ def _search_in_obj(obj, target: str) -> bool:
                 return True
         return False
     return False
+
+
+def _parse_sink_lines(sink_lines: list[str]) -> list[tuple[int, int, str]]:
+    """解析 sink 行号列表，返回 (start, end, original) 列表。
+
+    支持格式：
+    - "1022" → (1022, 1022, "1022")
+    - "1022-1042" → (1022, 1042, "1022-1042")
+    - "1022~1042" → (1022, 1042, "1022~1042")
+    """
+    import re
+    parsed: list[tuple[int, int, str]] = []
+    for line_str in sink_lines:
+        if not line_str:
+            continue
+        s = str(line_str).strip()
+        # 区间格式：1022-1042 或 1022~1042
+        m = re.match(r'^(\d+)\s*[-~]\s*(\d+)$', s)
+        if m:
+            try:
+                start = int(m.group(1))
+                end = int(m.group(2))
+                if start <= end and 0 < start < 1_000_000:
+                    parsed.append((start, end, s))
+                continue
+            except ValueError:
+                pass
+        # 单行号
+        m = re.match(r'^(\d+)$', s)
+        if m:
+            try:
+                num = int(m.group(1))
+                if 0 < num < 1_000_000:
+                    parsed.append((num, num, s))
+                continue
+            except ValueError:
+                pass
+    return parsed
 
 
 def _truncate_str(s: str, n: int) -> str:

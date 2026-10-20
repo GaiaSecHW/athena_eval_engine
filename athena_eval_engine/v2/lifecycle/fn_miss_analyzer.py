@@ -118,9 +118,9 @@ class FnMissAnalyzer:
             # 用结构化 sink 信息扫描 trace
             scan_result = scanner.scan_with_sink_info(sink_info, data_packs)
             sink_found = scan_result.get("found", False)
-            found_func_level = scan_result.get("found_function_level", False)
+            found_precise = scan_result.get("found_precise", False)
             hit_sessions = scan_result.get("hit_sessions", {})
-            func_level_sessions = scan_result.get("function_level_sessions", {})
+            precise_sessions = scan_result.get("precise_sessions", {})
             file_level_sessions = scan_result.get("file_level_sessions", {})
             hits_by_agent = scan_result.get("hits_by_agent", {})
 
@@ -137,22 +137,22 @@ class FnMissAnalyzer:
                         })
                 total_sessions = sum(
                     len(sids) for sids in hit_sessions.values())
-                total_func = sum(
-                    len(sids) for sids in func_level_sessions.values())
+                total_precise = sum(
+                    len(sids) for sids in precise_sessions.values())
                 total_file = sum(
                     len(sids) for sids in file_level_sessions.values())
-                if found_func_level:
+                if found_precise:
                     miss_reason = (
                         f"trace 中找到 sink 点（{total_sessions} 个 session "
-                        f"命中，其中 {total_func} 个函数级命中、"
-                        f"{total_file} 个文件级命中），"
+                        f"命中，其中 {total_precise} 个精确命中"
+                        f"（函数或行号）、{total_file} 个仅文件级命中），"
                         f"但 agent 未上报漏洞——"
                         f"属于漏洞识别能力问题")
                 else:
                     miss_reason = (
                         f"trace 中找到 sink 文件（{total_sessions} 个 session "
-                        f"文件级命中，无函数级命中——agent 读了文件但"
-                        f"可能未碰到 sink 函数），但 agent 未上报漏洞——"
+                        f"仅文件级命中，无函数或行号级命中——agent 读了文件"
+                        f"但可能未碰到 sink 点），但 agent 未上报漏洞——"
                         f"属于漏洞识别能力问题")
             else:
                 miss_category = "sink_not_found"
@@ -170,11 +170,11 @@ class FnMissAnalyzer:
                 "expected_label": "VULNERABLE",
                 "raw_matched": False,
                 "sink_found": sink_found,
-                "sink_found_function_level": found_func_level,
+                "sink_found_precise": found_precise,
                 "miss_category": miss_category,
                 "sink_info": sink_info,
                 "hit_sessions": hit_sessions,
-                "function_level_sessions": func_level_sessions,
+                "precise_sessions": precise_sessions,
                 "file_level_sessions": file_level_sessions,
                 "hit_events": hit_events,
                 "miss_reason": miss_reason,
@@ -182,7 +182,7 @@ class FnMissAnalyzer:
 
             log("FN_MISS",
                 f"case {cid}: sink_found={sink_found}, "
-                f"func_level={found_func_level}, "
+                f"precise={found_precise}, "
                 f"category={miss_category}, "
                 f"hit_sessions={sum(len(s) for s in hit_sessions.values())}",
                 eval_id=evaluation_id)
@@ -190,12 +190,12 @@ class FnMissAnalyzer:
         # 统计
         sink_found_count = sum(1 for r in results if r["sink_found"])
         sink_not_found_count = len(results) - sink_found_count
-        func_level_count = sum(
-            1 for r in results if r.get("sink_found_function_level"))
+        precise_count = sum(
+            1 for r in results if r.get("sink_found_precise"))
         log("FN_MISS",
             f"FN 漏报分析完成: {len(results)} 个 case, "
             f"sink_found={sink_found_count} "
-            f"(func_level={func_level_count}), "
+            f"(precise={precise_count}), "
             f"sink_not_found={sink_not_found_count}",
             eval_id=evaluation_id)
 
