@@ -470,39 +470,36 @@ class Orchestrator:
             # ── FN 漏报匹配结果（开发态）──
             # LLM 未匹配的 VULNERABLE 基线在 case_session_matches 里被 sink
             # 文件扫描判为 TP，但 agent 实际未上报漏洞——评测上是漏报。
-            # 这里的漏报匹配结果指：哪些 case 是漏报 + 匹配到的 session
-            # （sink 文件扫描命中）。漏报原因分析（sink 精确命中 vs 未命中）
-            # 在 ROOT_CAUSE_ANALYSIS 阶段做，这里只出匹配判定。
+            # 这里的漏报匹配结果是**精确匹配**：只有 sink 函数/行号级命中
+            # （且读取型工具）的 session 才算匹配上——agent 确实读到过
+            # 疑似 sink 点。文件级命中（grep/glob 结果列表碰巧含路径）
+            # 不算匹配。FnMissAnalyzer 一次完成：sink 提取 + 精确匹配 +
+            # 细分漏报成因，结果在 CASE_MATCHING 展示匹配、在
+            # ROOT_CAUSE_ANALYSIS 展示漏报原因（避免重复 LLM 调用）。
+            fn_miss_results: list[dict] = []
             fn_miss_match_cases: list[dict] = []
             if eval_mode == "dev":
-                from ..lifecycle.sink_search_scanner import SinkSearchScanner
-                matched_baseline_ids: set[str] = set()
-                for m in case_matches:
-                    bid = m.get("matched_baseline_case_id") or ""
-                    if bid:
-                        matched_baseline_ids.add(bid)
-                miss_scanner = SinkSearchScanner()
-                for cid, cd in case_details.items():
-                    if cd.get("expected_label") != "VULNERABLE":
-                        continue
-                    if cid in matched_baseline_ids:
-                        continue
-                    # LLM 未匹配 → 漏报。用 sink 文件扫描 trace 定位匹配到的
-                    # session（文件级命中即可——session 归属是匹配结果，
-                    # 精确命中判定留给根因分析）。
-                    source_file = cd.get("source_file", "")
-                    sink_hits = miss_scanner.scan(source_file, data_packs)
+                _set_progress(evaluation_id, "FN 漏报原因分析...")
+                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
+                fn_analyzer = FnMissAnalyzer()
+                fn_miss_results = fn_analyzer.analyze(
+                    evaluation_id, case_details, case_matches,
+                    data_packs, eval_mode=eval_mode,
+                    cancel_cb=_cancel_cb,
+                )
+                for r in fn_miss_results:
+                    precise_sessions = r.get("precise_sessions", {}) or {}
                     mining_sessions: list[str] = []
-                    for at, sids in sink_hits.items():
+                    for at, sids in precise_sessions.items():
                         for sid in sids:
                             if sid not in mining_sessions:
                                 mining_sessions.append(sid)
                     fn_miss_match_cases.append({
-                        "case_id": cid,
+                        "case_id": r.get("case_id", ""),
                         "ac_case_id": "",
-                        "vuln_title": cd.get("vuln_title", ""),
-                        "summary": cd.get("summary", ""),
-                        "description": cd.get("description", ""),
+                        "vuln_title": r.get("vuln_title", ""),
+                        "summary": r.get("summary", ""),
+                        "description": r.get("description", ""),
                         "expected_label": "VULNERABLE",
                         "mining_sessions": mining_sessions,
                         "verify_sessions": [],
@@ -510,14 +507,14 @@ class Orchestrator:
                         "match_method": "unmatched" if not mining_sessions
                         else "matched",
                         "match_detail": (
-                            f"{len(mining_sessions)} 个 session 命中 sink 文件，"
-                            f"LLM 未匹配原始数据，漏报"
+                            f"{len(mining_sessions)} 个 session 精确命中 sink 点"
+                            f"（函数/行号级），LLM 未匹配原始数据，漏报"
                             if mining_sessions else
-                            "LLM 未匹配原始数据且 trace 未命中 sink 文件，漏报"),
+                            "LLM 未匹配原始数据且 trace 未精确命中 sink 点，漏报"),
                     })
 
             # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定 + 漏报匹配结果，
-            # 不含漏报原因——漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段做）
+            # 不含漏报原因——漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段展示）
             fn_match_cases = fp_fn_matches + fn_miss_match_cases
             case_matching_debug: dict = {
                 "eval_mode": eval_mode,
@@ -544,29 +541,14 @@ class Orchestrator:
                 return
 
             # ── ROOT_CAUSE_ANALYSIS（FP + FN case 独立压缩 + 合并输出根因分析）──
-            # 漏报原因分析（sink 精确命中）在此阶段做，不在 CASE_MATCHING——
-            # case 匹配只做匹配判定，漏报原因属于根因分析范畴
+            # FN 漏报原因分析（sink 精确命中 + 细分漏报成因）已在
+            # CASE_MATCHING 阶段完成（fn_miss_results），此处直接复用，
+            # 不重复调 LLM。
             _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
             self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
             fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
-
-            # ── FN 漏报原因分析（开发态）──
-            # 对 LLM 未匹配上的 VULNERABLE 基线 case（真漏报——agent 实际
-            # 没上报漏洞），用 LLM 提取的 sink 信息与 trace 精确匹配，
-            # 判定漏报原因：sink 精确命中（识别能力问题）或 sink 未命中
-            # （挖掘方向问题）。结果附加到根因分析 case 的 fn_miss 字段。
-            fn_miss_results: list[dict] = []
-            if eval_mode == "dev":
-                _set_progress(evaluation_id, "FN 漏报原因分析...")
-                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
-                fn_analyzer = FnMissAnalyzer()
-                fn_miss_results = fn_analyzer.analyze(
-                    evaluation_id, case_details, case_matches,
-                    data_packs, eval_mode=eval_mode,
-                    cancel_cb=_cancel_cb,
-                )
 
             # 补充人工标注误报原因到 fp_cases/fn_cases，供根因分析使用
             for fc in fp_cases + fn_cases:
