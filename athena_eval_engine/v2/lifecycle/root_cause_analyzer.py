@@ -260,24 +260,32 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 
 针对**所有假设**的修复点，合并输出修复建议列表。一个 case 可能需要多个修复点同时执行才能解决。
 
-每条修复建议必须包含：
+每条修复建议必须包含（**结构化字段，用于派单定位**）：
 - target：修复责任方，取值：
-  * agent_prompt — 修改 agent 的提示词（如挖掘 agent 或验证 agent 的 system/user prompt 中某段指令）
-  * agent_code — 修改 agent 的代码逻辑（如工具调用判断、验证条件代码）
-  * knowledge — 补充/修改知识库内容（不区分结构化知识还是文档型记忆，统一归为此类）。
-    包括：漏洞挖掘模式知识、误报判别方法、业务环境知识（如接口暴露面、部署架构约束）、
-    不可调用文档（哪些路由/接口不可从公网触达）等
-  * external_data_source — 提供 Agent 当前无法获取的外部数据
-    （如网关/Ingress 配置查询接口、运行时状态接口、部署架构数据源等）
-  * eval_process — 评测流程改进（如人工标注需追问细化、评测指标需新增维度）
-- location：具体修改位置。必须指明：
-  * 如果是 agent_prompt：哪个 agent（挖掘/验证）的哪个环节（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
-  * 如果是 agent_code：哪个 agent 的哪个函数/逻辑分支（如"验证 agent 的 sink 点匹配逻辑"）
-  * 如果是 knowledge：需要补充/修正哪类知识（如"GitCode Actions 接口暴露面知识"）
-  * 如果是 external_data_source：需要提供什么数据源（如"网关配置查询接口"）
-  * 如果是 eval_process：需要改评测流程的什么环节（如"人工标注增加追问字段"）
-- action：具体修改内容（如"在 prompt 中增加'检查接口是否对外暴露'的指令"）
-- expected_effect：修改后预期效果（如"agent 在验证时会先检查接口可达性，避免对内网接口误报为可利用漏洞"）
+  * agent_prompt — 修改 agent 的提示词
+  * agent_code — 修改 agent 的代码逻辑
+  * knowledge — 补充/修改知识库内容
+  * memory — 更新/补充记忆文档
+  * external_data_source — 提供外部数据源
+  * eval_process — 评测流程改进
+- agent_type：**具体修改哪个 agent**（target=agent_prompt/agent_code 时必须填写），取值：
+  * turing — 挖掘 agent（漏洞挖掘）
+  * argo / secmate / dataflow — 其他挖掘 agent
+  * webvuln_verify — 验证 agent（Web 漏洞验证）
+  * cvuln_verify — 验证 agent（代码漏洞验证）
+  * 填空字符串表示不适用
+- knowledge_source：**具体修改哪个知识/记忆源**（target=knowledge/memory 时必须填写），取值：
+  * knowledge_base — 知识库（漏洞模式知识、判别方法、业务环境知识、部署约束知识）
+  * memory_wiki — 记忆/wiki（暴露面清单、不可调用文档、经验总结）
+  * 填空字符串表示不适用
+- location：具体修改位置（文字描述）：
+  * 如果是 agent_prompt/agent_code：哪个 agent 的哪个环节/函数（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
+  * 如果是 knowledge：知识库哪类知识（如"漏洞挖掘模式知识 - SQL 注入 sink 判定"）
+  * 如果是 memory：记忆里哪个文档（如"暴露面清单 - spportal 接口"）
+  * 如果是 external_data_source：需要提供什么数据源
+  * 如果是 eval_process：需要改评测流程的什么环节
+- action：具体修改内容（如"在挖掘 agent 的 prompt 中增加'检查删除端点权限码'的指令"）
+- expected_effect：修改后预期效果（如"挖掘 agent 在审计删除端点时会检查权限码，避免漏报权限提升漏洞"）
 
 ## L0-L8 断点判定
 
@@ -332,7 +340,9 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
       "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
       "needed_external_data": ["如果 agent_can_resolve=false，列出需要的外部数据（如'网关配置'、'Ingress 路由'）；如果 true 则填空数组"],
       "fix_suggestion": {
-        "target": "agent_prompt|agent_code|knowledge|external_data_source|eval_process",
+        "target": "agent_prompt|agent_code|knowledge|memory|external_data_source|eval_process",
+        "agent_type": "turing|webvuln_verify|cvuln_verify|...(target=agent_* 时填写，否则空)",
+        "knowledge_source": "knowledge_base|memory_wiki(target=knowledge/memory 时填写，否则空)",
         "location": "具体修改位置",
         "action": "具体修改内容",
         "expected_effect": "修改后预期效果"

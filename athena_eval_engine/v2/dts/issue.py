@@ -56,8 +56,25 @@ _TARGET_LABELS = {
     "agent_prompt": "Agent提示词",
     "agent_code": "Agent代码",
     "knowledge": "知识库",
+    "memory": "记忆/Wiki",
     "external_data_source": "外部数据源",
     "eval_process": "评测流程",
+}
+
+# ── fix_suggestion.agent_type → 中文标签 ──
+_AGENT_TYPE_LABELS = {
+    "turing": "挖掘Agent(Turing)",
+    "argo": "挖掘Agent(Argo)",
+    "secmate": "挖掘Agent(SecMate)",
+    "dataflow": "挖掘Agent(Dataflow)",
+    "webvuln_verify": "验证Agent(WebVulnVerify)",
+    "cvuln_verify": "验证Agent(CVulnVerify)",
+}
+
+# ── fix_suggestion.knowledge_source → 中文标签 ──
+_KNOWLEDGE_SOURCE_LABELS = {
+    "knowledge_base": "知识库",
+    "memory_wiki": "记忆/Wiki",
 }
 
 
