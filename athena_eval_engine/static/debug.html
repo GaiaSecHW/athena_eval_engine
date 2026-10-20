@@ -146,7 +146,8 @@ RENDERERS.ingesting = function(el, data) {
 
   // 原始数据明细
   const raw = data.raw_data || {};
-  html += `<h3 style="margin:16px 0 8px;color:#6c5ce7;">原始数据（告警中心） — ${raw.total ?? 0} 条</h3>`;
+  html += `<details style="margin:16px 0 8px;" open>`
+    + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">原始数据（告警中心） — ${raw.total ?? 0} 条</summary>`;
   if (raw.cases?.length) {
     html += `<table><thead><tr><th>告警中心编号</th><th>标题</th><th>验证结果</th><th>阶段</th><th>误报分组</th><th>人工确认原因</th><th>项目编号</th></tr></thead><tbody>`;
     for (const c of raw.cases) {
@@ -160,10 +161,12 @@ RENDERERS.ingesting = function(el, data) {
     }
     html += `</tbody></table>`;
   }
+  html += `</details>`;
 
   // 基线数据明细
   const bl = data.baseline || {};
-  html += `<h3 style="margin:16px 0 8px;color:#6c5ce7;">基线数据 — ${bl.total ?? 0} 条</h3>`;
+  html += `<details style="margin:16px 0 8px;" open>`
+    + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">基线数据 — ${bl.total ?? 0} 条</summary>`;
   if (bl.cases?.length) {
     html += `<table><thead><tr><th>基线编号</th><th>漏洞标题</th><th>预期标签</th><th>源文件</th><th>误报分组</th><th>人工确认原因</th></tr></thead><tbody>`;
     for (const c of bl.cases) {
@@ -176,6 +179,7 @@ RENDERERS.ingesting = function(el, data) {
     }
     html += `</tbody></table>`;
   }
+  html += `</details>`;
 
   // LLM 匹配结果（开发态：原始数据 ↔ 基线）
   const matches = data.case_matches;
