@@ -580,11 +580,11 @@ class KnowledgeVerifier:
                     "content_preview": "",
                 })
 
-        matched.sort(key=lambda x: sum(
-            3 if "title" in x.get("hit_fields", []) else 0 +
-            2 if "abstract" in x.get("hit_fields", []) else 0 +
-            2 if "keywords" in x.get("hit_fields", []) else 0
-        ), reverse=True)
+        matched.sort(key=lambda x: sum([
+            (3 if "title" in x.get("hit_fields", []) else 0),
+            (2 if "abstract" in x.get("hit_fields", []) else 0),
+            (2 if "keywords" in x.get("hit_fields", []) else 0),
+        ]), reverse=True)
 
         return matched[:_MAX_CANDIDATES]
 
