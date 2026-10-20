@@ -115,6 +115,11 @@ def match_cases(
     # 对每条原始数据 case，对每批基线做 LLM 匹配
     # 用 LLM gate 控制并发
     def _do_match(args: tuple) -> dict:
+        """单次 LLM 调用：1 条原始数据 × 1 批基线。
+
+        返回 raw_idx 和本批所有 same_vuln=true 的候选匹配（按 confidence 降序）。
+        不只返回 best_match — 保留全部候选，供去重阶段回填次优匹配。
+        """
         raw_idx, batch_idx = args
         raw_case = raw_cases[raw_idx]
         batch_indices = batches[batch_idx]
@@ -136,69 +141,56 @@ def match_cases(
             {"role": "user", "content": user_content},
         ]
 
+        raw_case_id = raw_case.get("case_id") or raw_case.get("id") or ""
+        raw_title = raw_case.get("title") or raw_case.get("vuln_title") or ""
+
         try:
             result = llm_mod.chat_json(messages, temperature=0, reasoning_effort="none")
             matches = result.get("matches", [])
 
-            # 找到 same_vuln=true 且 confidence 最高的
-            best_match = None
-            best_conf = 0.0
+            # 收集本批所有 same_vuln=true 的候选（按 confidence 降序）
+            candidates = []
             for m in matches:
                 if m.get("same_vuln"):
                     conf = float(m.get("confidence", 0))
-                    if conf > best_conf:
-                        best_conf = conf
-                        local_idx = int(m.get("index", -1))
-                        if 0 <= local_idx < len(batch_indices):
-                            best_match = {
-                                "raw_case_id": raw_case.get("case_id")
-                                    or raw_case.get("id") or "",
-                                "raw_title": raw_case.get("title")
-                                    or raw_case.get("vuln_title") or "",
-                                "matched_baseline_case_id": baseline_cases[
+                    local_idx = int(m.get("index", -1))
+                    if 0 <= local_idx < len(batch_indices):
+                        candidates.append({
+                            "matched_baseline_case_id": baseline_cases[
+                                batch_indices[local_idx]
+                            ].get("case_id")
+                                or baseline_cases[
                                     batch_indices[local_idx]
-                                ].get("case_id")
-                                    or baseline_cases[
-                                        batch_indices[local_idx]
-                                    ].get("id") or "",
-                                "matched_baseline_title": baseline_cases[
+                                ].get("id") or "",
+                            "matched_baseline_title": baseline_cases[
+                                batch_indices[local_idx]
+                            ].get("title")
+                                or baseline_cases[
                                     batch_indices[local_idx]
-                                ].get("title")
-                                    or baseline_cases[
-                                        batch_indices[local_idx]
-                                    ].get("vuln_title") or "",
-                                "matched_baseline_index": batch_indices[local_idx],
-                                "confidence": conf,
-                                "reason": m.get("reason", ""),
-                                "batch": batch_idx,
-                            }
-            return best_match or {
-                "raw_case_id": raw_case.get("case_id")
-                    or raw_case.get("id") or "",
-                "raw_title": raw_case.get("title")
-                    or raw_case.get("vuln_title") or "",
-                "matched_baseline_case_id": None,
-                "matched_baseline_title": None,
-                "matched_baseline_index": None,
-                "confidence": 0.0,
-                "reason": "无匹配",
+                                ].get("vuln_title") or "",
+                            "matched_baseline_index": batch_indices[local_idx],
+                            "confidence": conf,
+                            "reason": m.get("reason", ""),
+                        })
+            candidates.sort(key=lambda x: x["confidence"], reverse=True)
+            return {
+                "raw_idx": raw_idx,
+                "raw_case_id": raw_case_id,
+                "raw_title": raw_title,
+                "candidates": candidates,
                 "batch": batch_idx,
             }
         except Exception as e:
-            log("MATCH", f"LLM 匹配失败 raw={raw_case.get('case_id')} "
+            log("MATCH", f"LLM 匹配失败 raw={raw_case_id} "
                   f"batch={batch_idx}: {str(e)[:200]}",
                 eval_id=evaluation_id)
             return {
-                "raw_case_id": raw_case.get("case_id")
-                    or raw_case.get("id") or "",
-                "raw_title": raw_case.get("title")
-                    or raw_case.get("vuln_title") or "",
-                "matched_baseline_case_id": None,
-                "matched_baseline_title": None,
-                "matched_baseline_index": None,
-                "confidence": 0.0,
-                "reason": f"LLM 调用失败: {str(e)[:100]}",
+                "raw_idx": raw_idx,
+                "raw_case_id": raw_case_id,
+                "raw_title": raw_title,
+                "candidates": [],
                 "batch": batch_idx,
+                "error": str(e)[:200],
             }
 
     # 生成所有 (raw_idx, batch_idx) 组合
@@ -211,96 +203,136 @@ def match_cases(
     # 用 LLM gate 并发提交
     futures = llm_mod.submit_llm_batch(_do_match, tasks, cancel_cb=cancel_cb)
 
-    # 收集结果：每条原始数据 case 取所有批次中 confidence 最高的匹配
-    best_by_raw: dict[int, dict] = {}
+    # 收集结果：每条原始数据 case 汇总所有批次的候选匹配
+    # candidates_by_raw[raw_idx] = [candidate, ...]（跨批次合并，按 confidence 降序）
+    candidates_by_raw: dict[int, list[dict]] = {}
+    raw_meta: dict[int, dict] = {}  # raw_idx → {raw_case_id, raw_title}
     done_count = 0
     total_count = len(futures)
-    matched_count = 0
     for fut in futures:
         try:
             result = fut.result()
             done_count += 1
             if result is None:
                 continue
-            # 从 result 找到 raw_idx
-            raw_case_id = result.get("raw_case_id", "")
-            # 找 raw_idx
-            raw_idx = None
-            for ri, rc in enumerate(raw_cases):
-                if (rc.get("case_id") or rc.get("id") or "") == raw_case_id:
-                    raw_idx = ri
-                    break
+            raw_idx = result.get("raw_idx")
+            if raw_idx is None:
+                # 兼容：从 raw_case_id 反查
+                raw_case_id = result.get("raw_case_id", "")
+                for ri, rc in enumerate(raw_cases):
+                    if (rc.get("case_id") or rc.get("id") or "") == raw_case_id:
+                        raw_idx = ri
+                        break
             if raw_idx is None:
                 continue
 
-            existing = best_by_raw.get(raw_idx)
-            if existing is None or result["confidence"] > existing["confidence"]:
-                best_by_raw[raw_idx] = result
-
-            matched_count = sum(
-                1 for v in best_by_raw.values()
-                if v.get("matched_baseline_case_id")
+            raw_meta.setdefault(raw_idx, {
+                "raw_case_id": result.get("raw_case_id", ""),
+                "raw_title": result.get("raw_title", ""),
+            })
+            candidates_by_raw.setdefault(raw_idx, []).extend(
+                result.get("candidates", [])
             )
+
             if progress_cb and done_count % 10 == 0:
+                matched_count = sum(
+                    1 for ri, cands in candidates_by_raw.items() if cands
+                )
                 progress_cb(done_count, total_count, matched_count)
         except Exception as e:
             log("MATCH", f"收集匹配结果失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
 
+    # 每条原始数据的候选按 confidence 降序排序
+    for ri in candidates_by_raw:
+        candidates_by_raw[ri].sort(key=lambda x: x["confidence"], reverse=True)
+
     if progress_cb:
+        matched_count = sum(1 for cands in candidates_by_raw.values() if cands)
         progress_cb(done_count, total_count, matched_count)
 
-    # 按原始数据顺序输出
-    results = []
-    for ri in range(len(raw_cases)):
-        if ri in best_by_raw:
-            results.append(best_by_raw[ri])
-        else:
-            rc = raw_cases[ri]
-            results.append({
-                "raw_case_id": rc.get("case_id") or rc.get("id") or "",
-                "raw_title": rc.get("title")
-                    or rc.get("vuln_title") or "",
-                "matched_baseline_case_id": None,
-                "matched_baseline_title": None,
-                "matched_baseline_index": None,
-                "confidence": 0.0,
-                "reason": "未执行匹配",
-            })
+    # ── 去重 + 回填 ──
+    # 一个基线 case 只能被一条原始 case 匹配。
+    # 多条原始 case 匹配到同一个基线时，只保留 confidence 最高的；
+    # 被踢掉的原始 case 从自己的候选列表里取下一个未被占用的基线（回填）。
+    #
+    # 算法：按每条原始数据的最高候选 confidence 降序处理，
+    #       高 confidence 的原始数据先占用基线，
+    #       低 confidence 的原始数据如果撞了就回填到自己的次优候选。
+    occupied_baselines: set[str] = set()
+    # 处理顺序：有候选的按最高 confidence 降序，无候选的排最后
+    raw_order = sorted(
+        range(len(raw_cases)),
+        key=lambda ri: (
+            -(candidates_by_raw.get(ri, [{}])[0].get("confidence", 0)
+              if candidates_by_raw.get(ri) else 0),
+        ),
+    )
 
-    # 去重：一个基线 case 只能被一条原始 case 匹配。
-    # 多条原始 case 匹配到同一个基线时，只保留 confidence 最高的，
-    # 其余改为未匹配。
-    baseline_best: dict[str, dict] = {}  # baseline_case_id → result with highest confidence
-    for r in results:
-        bid = r.get("matched_baseline_case_id")
-        if not bid:
-            continue
-        existing = baseline_best.get(bid)
-        if existing is None or r["confidence"] > existing["confidence"]:
-            baseline_best[bid] = r
+    # 按 raw_idx → result 映射，最后按原始顺序输出
+    result_by_raw: dict[int, dict] = {}
 
-    deduped_count = 0
-    for i, r in enumerate(results):
-        bid = r.get("matched_baseline_case_id")
-        if not bid:
-            continue
-        winner = baseline_best.get(bid)
-        if winner and r is not winner:
-            # 这条不是最高 confidence 的匹配者，改为未匹配
-            results[i] = {
-                "raw_case_id": r.get("raw_case_id", ""),
-                "raw_title": r.get("raw_title", ""),
-                "matched_baseline_case_id": None,
-                "matched_baseline_title": None,
-                "matched_baseline_index": None,
-                "confidence": 0.0,
-                "reason": f"基线 {bid} 已被更高 confidence 的原始 case 匹配",
+    for ri in raw_order:
+        meta = raw_meta.get(ri, {})
+        rc = raw_cases[ri]
+        raw_case_id = meta.get("raw_case_id") or rc.get("case_id") or rc.get("id") or ""
+        raw_title = meta.get("raw_title") or rc.get("title") or rc.get("vuln_title") or ""
+
+        cands = candidates_by_raw.get(ri, [])
+        chosen = None
+        reason = "无匹配"
+        for cand in cands:
+            bid = cand.get("matched_baseline_case_id", "")
+            if not bid:
+                continue
+            if bid in occupied_baselines:
+                continue  # 该基线已被占用，尝试下一个候选
+            chosen = cand
+            occupied_baselines.add(bid)
+            reason = cand.get("reason", "")
+            break
+
+        if chosen:
+            result_by_raw[ri] = {
+                "raw_case_id": raw_case_id,
+                "raw_title": raw_title,
+                "matched_baseline_case_id": chosen.get("matched_baseline_case_id"),
+                "matched_baseline_title": chosen.get("matched_baseline_title"),
+                "matched_baseline_index": chosen.get("matched_baseline_index"),
+                "confidence": chosen.get("confidence", 0.0),
+                "reason": reason,
             }
-            deduped_count += 1
+        else:
+            # 所有候选都被占用或无候选
+            skipped = [c.get("matched_baseline_case_id", "") for c in cands
+                       if c.get("matched_baseline_case_id")]
+            if skipped:
+                reason = f"候选基线 {','.join(skipped[:3])} 均已被占用"
+            result_by_raw[ri] = {
+                "raw_case_id": raw_case_id,
+                "raw_title": raw_title,
+                "matched_baseline_case_id": None,
+                "matched_baseline_title": None,
+                "matched_baseline_index": None,
+                "confidence": 0.0,
+                "reason": reason,
+            }
 
-    if deduped_count > 0:
-        log("MATCH", f"基线去重: 移除 {deduped_count} 条重复匹配",
+    # 按原始数据顺序输出
+    results = [result_by_raw[ri] for ri in range(len(raw_cases))]
+
+    # 去重统计：回填了多少条
+    backfilled = 0
+    for ri, cands in candidates_by_raw.items():
+        if not cands:
+            continue
+        # 如果最终匹配的不是第一个候选，说明发生了回填
+        r = result_by_raw.get(ri, {})
+        if r.get("matched_baseline_case_id") and r["matched_baseline_case_id"] != cands[0].get("matched_baseline_case_id"):
+            backfilled += 1
+
+    if backfilled > 0:
+        log("MATCH", f"去重回填: {backfilled} 条原始数据使用了次优候选",
             eval_id=evaluation_id)
 
     matched = sum(1 for r in results if r.get("matched_baseline_case_id"))
