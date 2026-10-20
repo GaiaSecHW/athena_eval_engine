@@ -103,7 +103,7 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 | L5 | 成功取回？ | 返回内容是否有效（无 error/timeout/exception） | D 链路问题 | Agent + 知识方 |
 | L6 | 被使用？ | agent 推理文本是否引用了知识返回内容 | E 查到没用 | Agent |
 | L7 | 影响结论？ | 知识是否影响了判定结论 | F 用了没推动 / G 导致误判 | F: Agent/知识方, G: 知识方 |
-| L8 | 其他问题？ | 知识访问链路全程通过（L7=positive）后，agent 仍误报。分析是否存在知识访问之外的问题导致误报 | H 其他（自行总结） | Agent |
+| L8 | 其他问题？ | 知识访问链路全程通过（L7=positive）后，agent 仍误报。分析是否存在知识访问之外的问题导致误报 | H 挖掘方向偏差 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 | Agent |
 
 ## L6 判定关键规则
 
@@ -117,7 +117,8 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
 
 断点应反映导致误报的**主要原因**，不是所有 L6=false 的知识访问都是误报根因。
 - 如果 agent 读了知识但没用（L6=false），但这与人工标注的误报原因无关（如误报原因是"接口非对外暴露"），则该知识访问的 L6=false 只是记录，不是主要断点
-- 此时主要断点应为 L8（其他问题），在 query_content 中填写人工标注的误报原因
+- 此时主要断点应为 L8（非知识访问维度），从 H/I/J/K 中选最匹配的，
+  在 query_content 中填写人工标注的误报原因
 - 只有人工标注的误报原因与知识访问直接相关时（如"该查没查"、"查了错误的知识"），才将知识访问断点作为主要断点
 
 判定规则：
@@ -158,7 +159,7 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
       "l6_used": true/false/null,
       "l7_influenced": "positive/negative/null",
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
-      "cause_code": "A/B/C/D/E/F/G/H/null",
+      "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
       "query_content": "agent 实际执行的查询命令或参数（从 session 文本提取，不要概括）",
       "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）"
     }
@@ -309,7 +310,12 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
   - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
   - L1=false → 不产生知识访问断点
 - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
-  - cause_code 填 "H"
+  - L8 断点表示知识访问链路无问题，但存在其他非知识访问的原因导致误报/漏报
+  - cause_code 从非知识访问维度选（与 A-K 体系一致）：
+    * H（挖掘方向偏差）— 挖掘范围/路径未覆盖
+    * I（调用链中断）— 找到 sink 未追踪到 source
+    * J（模型幻觉）— 虚构不存在的防护/漏洞逻辑
+    * K（验证否定真漏洞）— 挖掘 CONFIRMED 但验证否定
   - breakpoint 填 "L8"
   - query_content 填问题总结（如"验证逻辑不充分：验证条件错误"）
   - l0_source 填空字符串
@@ -348,7 +354,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
       "hypothesis": "假设描述（如'Agent 将路由定义等同于公网可达'）",
       "probability": 0.4,  # 根因置信度（0-1），不要求归一
       "responsibility": "agent|knowledge|external_data_source|eval_process",
-      "cause_code": "A/B/C/D/E/F/G/H",
+      "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
       "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
       "agent_can_resolve": true/false,
       "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
@@ -812,17 +818,21 @@ class RootCauseAnalyzer:
         """从假设的 responsibility 映射到 root_cause.category（兼容旧字段）。"""
         resp = hypothesis.get("responsibility", "")
         cause = hypothesis.get("cause_code", "")
-        # cause_code A/B/E/F/H → agent 侧问题
-        # cause_code C/D/G → knowledge 侧问题
+        # cause_code 与 responsibility 对应（A-K 体系）：
+        #   A/B/E/F/H/I/J/K → agent 侧
+        #   C/D/G → knowledge 侧
         category_map = {
-            "A": "knowledge_gap",  # 该查没查
-            "B": "query_inaccurate",  # 查询太泛
-            "C": "knowledge_gap",  # 查了没得（知识缺失）
-            "D": "knowledge_error",  # 链路问题
-            "E": "knowledge_gap",  # 查到没用
-            "F": "reasoning_flaw",  # 用了没推动
-            "G": "knowledge_error",  # 导致误判
-            "H": "verification_dimension_missing",  # 其他
+            "A": "reasoning_flaw",       # 该查没查（agent 召回意识不足）
+            "B": "query_inaccurate",     # 查询太泛（agent 查询不聚焦）
+            "C": "knowledge_gap",        # 查了没得（知识缺失，knowledge 责任）
+            "D": "knowledge_error",      # 链路问题（工具失败，knowledge 责任）
+            "E": "reasoning_flaw",       # 查到没用（agent 推理未引用）
+            "F": "reasoning_flaw",       # 用了没推动（agent 未受影响）
+            "G": "knowledge_error",      # 知识误导（knowledge 责任）
+            "H": "verification_dimension_missing",  # 挖掘方向偏差/其他 agent 侧
+            "I": "reasoning_flaw",       # 调用链中断（agent 数据流分析不足）
+            "J": "reasoning_flaw",       # 模型幻觉（agent 推理虚构）
+            "K": "verification_dimension_missing",  # 验证否定真漏洞（agent 侧）
         }
         return category_map.get(cause, "reasoning_flaw")
 

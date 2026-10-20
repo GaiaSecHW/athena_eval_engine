@@ -37,6 +37,22 @@ CAUSE_TO_LEVEL = {
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
+# ── FN 细分漏报成因 → cause_code 映射（A-K 体系）──
+# MissDetailAnalyzer 的 miss_sub_category → cause_code
+_FN_SUB_TO_CAUSE = {
+    "chain_break": "I",              # sink→source 调用链中断
+    "params_uncontrollable": "I",    # 参数可控性误判（调用链未追完）
+    "knowledge_mislead": "G",        # 知识/记忆误导
+    "hallucination": "J",            # 模型幻觉
+    "logic_jump": "H",               # 逻辑跳跃（agent 推理，归挖掘方向/其他）
+    "evidence_ignored": "H",         # 忽略关键证据（agent 侧）
+    "verify_dimension_missing": "K", # 验证维度遗漏（验证否定相关）
+    "verify_standard_too_strict": "K", # 判定标准过严（验证否定相关）
+    "context_loss": "H",             # 上下文压缩丢失（agent 侧）
+    "vuln_confusion": "H",           # 多漏洞混淆（agent 侧）
+    "other": "H",                    # 其他
+}
+
 # 所有 Agent 类型（行头）
 _ALL_AGENT_TYPES = [
     "turing", "argo", "secmate", "dataflow",
@@ -178,6 +194,11 @@ class CausalChainAnalyzer:
                 if not fn_agent_type:
                     fn_agent_type = _CHAIN_DEFAULT_AGENT_TYPE["mining"]
                 if fn_category:
+                    # 细分漏报成因 → cause_code 映射（与 A-K 体系对齐）
+                    # 挖掘方向偏差→H，调用链中断→I，知识误导→G，幻觉→J，
+                    # 验证否定→K，其他 agent 侧问题→H
+                    fn_cause_code = _FN_SUB_TO_CAUSE.get(
+                        fn_sub, "H")
                     # query_content 带细分漏报成因（如有）
                     fn_query = fn_category
                     if fn_sub:
@@ -187,7 +208,7 @@ class CausalChainAnalyzer:
                         "vuln_title": vuln_title,
                         "chain_type": "mining",
                         "agent_type": fn_agent_type,
-                        "cause_code": "H",
+                        "cause_code": fn_cause_code,
                         "breakpoint": "L8",
                         "l0_source": "",
                         "query_content": fn_query,
@@ -202,7 +223,8 @@ class CausalChainAnalyzer:
                         "fix_suggestion": [],
                         "_fn_miss": True,
                     }
-                    dedup_key = (case_id, "mining", "H", "L8", fn_query)
+                    dedup_key = (
+                        case_id, "mining", fn_cause_code, "L8", fn_query)
                     if dedup_key not in seen_keys:
                         seen_keys.add(dedup_key)
                         flat.append(fn_bp)
