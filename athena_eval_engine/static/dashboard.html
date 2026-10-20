@@ -92,6 +92,14 @@ td.num{font-family:"SF Mono",Consolas,monospace;color:var(--acc)}
 .btn{background:var(--acc);color:#fff;border:none;padding:11px 20px;border-radius:10px;cursor:pointer;font-size:16px;font-weight:500}
 .btn:disabled{opacity:.4;cursor:not-allowed}
 .btn.g{background:var(--p2);border:1px solid var(--bd);color:var(--txt)}
+/* 根因确认按钮——立体感：渐变 + 阴影 + 悬浮抬升 */
+.confirm-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:.2px;transition:all .18s cubic-bezier(.4,0,.2,1);position:relative;user-select:none}
+.confirm-btn:active{transform:translateY(1px)}
+.confirm-btn-yes{background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;box-shadow:0 3px 10px rgba(22,163,74,.35),inset 0 1px 0 rgba(255,255,255,.2)}
+.confirm-btn-yes:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(22,163,74,.45),inset 0 1px 0 rgba(255,255,255,.25);filter:brightness(1.05)}
+.confirm-btn-no{background:linear-gradient(135deg,#fff,#f8fafc);color:#dc2626;border:2px solid #dc2626;box-shadow:0 3px 10px rgba(220,38,38,.15)}
+.confirm-btn-no:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,.25);background:linear-gradient(135deg,#fef2f2,#fff)}
+.confirm-btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important;box-shadow:none!important}
 .nav-item{font-size:15px;padding:8px 14px;border-radius:8px;font-weight:500}
 .nav-item.nav-active{background:var(--acc);color:#fff}
 label{display:block;font-size:15px;color:var(--sub);margin:12px 0 5px}
@@ -1255,13 +1263,14 @@ async function renderDtsDetailPage(dtsId){
             var hk=(chainType||'chain')+':hyp'+(idx+1);
             var hcInfo=(d.hypothesis_confirmations||{})[hk]||{};
             html+='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--bd);display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+            html+='<span style="font-size:13px;color:var(--sub);font-weight:500">根因确认：</span>';
             if(hcInfo.is_root===true){
-              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green)">✓ 确认为根因</span>';
+              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(34,197,94,.2)">✓ 确认为根因</span>';
             }else if(hcInfo.is_root===false){
-              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red)">✗ 确认为非根因</span>';
+              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
             }else{
-              html+='<button class="btn g" style="font-size:12px;padding:3px 10px" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
-                +'<button class="btn" style="font-size:12px;padding:3px 10px" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
             }
             html+='</div>';
             html+='</div>';
@@ -1270,13 +1279,14 @@ async function renderDtsDetailPage(dtsId){
             var hk2=(chainType||'chain')+':hyp'+(idx+1);
             var hcInfo2=(d.hypothesis_confirmations||{})[hk2]||{};
             html+='<div style="padding:10px 12px;border-top:1px solid var(--bd)"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+            html+='<span style="font-size:13px;color:var(--sub);font-weight:500">根因确认：</span>';
             if(hcInfo2.is_root===true){
-              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green)">✓ 确认为根因</span>';
+              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(34,197,94,.2)">✓ 确认为根因</span>';
             }else if(hcInfo2.is_root===false){
-              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red)">✗ 确认为非根因</span>';
+              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
             }else{
-              html+='<button class="btn g" style="font-size:12px;padding:3px 10px" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
-                +'<button class="btn" style="font-size:12px;padding:3px 10px" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',this)">✗ 非此根因</button>';
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
             }
             html+='</div></div>';
           }
