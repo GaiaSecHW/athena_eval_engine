@@ -497,122 +497,9 @@ RENDERERS.root_cause = function(el, data) {
   html += `<div class="stat"><div class="num" style="color:#27ae60">${analyzed}</div><div class="label">已分析</div></div>`;
   html += `</div>`;
 
-  // ── FN 漏报原因分析子段（开发态：LLM 未匹配的 VULNERABLE 基线）──
-  const fnMiss = data.fn_miss_analysis;
-  if (fnMiss && fnMiss.total > 0) {
-    const sinkFoundCount = (fnMiss.results || []).filter(r => r.sink_found).length;
-    const preciseCount = (fnMiss.results || []).filter(r => r.sink_found_precise).length;
-    html += `<details style="margin:16px 0 8px;">`
-      + `<summary style="cursor:pointer;color:#e67e22;font-size:16px;font-weight:600;">FN 漏报原因分析 — ${fnMiss.total} 个 VULNERABLE 基线 LLM 未匹配上原始数据</summary>`;
-
-    // 统计
-    html += `<div class="stats" style="margin:8px 0;">`;
-    html += `<div class="stat"><div class="num" style="color:#e67e22">${fnMiss.total}</div><div class="label">未匹配 VULNERABLE 基线</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#27ae60">${sinkFoundCount}</div><div class="label">sink 找到（识别能力）</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#f39c12">${preciseCount}</div><div class="label">精确命中（函数/行号）</div></div>`;
-    html += `<div class="stat"><div class="num" style="color:#e74c3c">${fnMiss.sink_not_found || 0}</div><div class="label">sink 没找到（挖掘方向）</div></div>`;
-    html += `</div>`;
-
-    html += `<table><thead><tr>`;
-    html += `<th>基线编号</th><th>漏洞标题</th><th>LLM 提取 sink</th><th>漏报类型</th><th>细分成因</th>`;
-    html += `<th>命中 session</th><th>漏报原因</th>`;
-    html += `</tr></thead><tbody>`;
-
-    for (const r of (fnMiss.results || [])) {
-      const category = r.miss_category || "";
-      const catLabel = {
-        "sink_not_found": "挖掘方向问题",
-        "sink_found_no_report": "识别能力问题",
-      }[category] || category;
-      const catColor = category === "sink_not_found" ? "#e74c3c" : "#f39c12";
-
-      // 细分漏报成因（sink_found_no_report 由 LLM 判定，sink_not_found 直接结论）
-      const md = r.miss_detail || {};
-      const subLabel = md.miss_sub_category_label || "";
-      const subColor = {
-        "chain_break": "#6c5ce7",
-        "knowledge_mislead": "#e74c3c",
-        "hallucination": "#e74c3c",
-      }[md.miss_sub_category] || "#f39c12";
-
-      // LLM 提取的 sink 信息摘要
-      const si = r.sink_info || {};
-      const sinkFiles = (si.sink_files || []).filter(Boolean);
-      const sinkFuncs = (si.sink_functions || []).filter(Boolean);
-      const sinkLines = (si.sink_lines || []).filter(Boolean);
-      const sinkConf = (si.confidence ?? 0) * 100;
-      let sinkSummary = "";
-      if (sinkFiles.length || sinkFuncs.length || sinkLines.length) {
-        const parts = [];
-        if (sinkFiles.length) parts.push(`文件: ${sinkFiles.map(f => f.length > 40 ? f.substring(f.lastIndexOf('/')+1) : f).join(", ")}`);
-        if (sinkFuncs.length) parts.push(`函数: ${sinkFuncs.join(", ")}`);
-        if (sinkLines.length) parts.push(`行号: ${sinkLines.join(", ")}`);
-        sinkSummary = parts.join(" | ") + ` (${sinkConf.toFixed(0)}%)`;
-      }
-      const sinkShort = sinkSummary.length > 100 ? sinkSummary.substring(0, 100) + "..." : sinkSummary;
-
-      // 命中 session 摘要（精确命中）
-      const preciseSessions = r.precise_sessions || {};
-      let sessionSummary = "";
-      if (Object.keys(preciseSessions).length) {
-        sessionSummary = Object.entries(preciseSessions)
-          .map(([at, sids]) => `${at}: ${sids.length}`)
-          .join(", ");
-      } else {
-        sessionSummary = '<span style="color:#999">—</span>';
-      }
-
-      const vt = r.vuln_title || "";
-      const vtShort = vt.length > 60 ? vt.substring(0, 60) + "..." : vt;
-      const reason = r.miss_reason || "";
-      const reasonShort = reason.length > 80 ? reason.substring(0, 80) + "..." : reason;
-      const subReason = md.reason || "";
-      const subReasonShort = subReason.length > 60 ? subReason.substring(0, 60) + "..." : subReason;
-
-      html += `<tr>`;
-      html += `<td style="font-family:monospace;font-size:12px">${r.case_id || ""}</td>`;
-      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`;
-      html += `<td style="font-size:12px;max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sinkSummary.replace(/"/g, '&quot;')}">${sinkShort || '<span style="color:#999">—</span>'}</td>`;
-      html += `<td><span class="badge" style="background:${catColor};color:#fff">${catLabel}</span></td>`;
-      html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${subReason.replace(/"/g, '&quot;')}">${subLabel ? '<span class="badge" style="background:' + subColor + ';color:#fff">' + subLabel + '</span>' : '<span style="color:#999">—</span>'}</td>`;
-      html += `<td style="font-family:monospace;font-size:11px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sessionSummary}">${sessionSummary}</td>`;
-      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`;
-      html += `</tr>`;
-
-      // 有精确命中 event 时，展示上下文（可展开）
-      if (r.hit_events && r.hit_events.length > 0) {
-        html += `<tr><td colspan="7" style="padding:0;">`;
-        html += `<details style="margin:4px 0 8px 20px;">`;
-        html += `<summary style="cursor:pointer;color:#888;font-size:13px;">命中 event 上下文（${r.hit_events.length} 条）</summary>`;
-        html += `<table style="margin:4px 0;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>命中行号</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
-        for (const ev of r.hit_events) {
-          const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
-          const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
-          const precision = ev.match_precision || "";
-          const precisionColor = precision === "precise" ? "#27ae60" : "#f39c12";
-          const matchedFuncs = (ev.matched_functions || []).join(", ");
-          const matchedLines = (ev.matched_lines || []).join(", ");
-          html += `<tr>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
-          html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
-          html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
-          html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "precise" ? "精确" : "文件级"}</span></td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedFuncs}">${matchedFuncs || '—'}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedLines}">${matchedLines || '—'}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
-          html += `</tr>`;
-        }
-        html += `</tbody></table>`;
-        html += `</details>`;
-        html += `</td></tr>`;
-      }
-    }
-    html += `</tbody></table>`;
-    html += `</details>`;
-  }
+  // FN 漏报原因分析数据已拆分到下面的问题单分析（results）里——
+  // 每个漏报 case 是 results 中的一个条目（fn_miss 字段含漏报原因），
+  // 不再独立成子段，与误报风险风格统一。
 
   const results = data.results || [];
   if (!results.length) {
@@ -687,12 +574,27 @@ RENDERERS.root_cause = function(el, data) {
   for (const r of results) {
     const mining = r.mining || {};
     const verification = r.verification || {};
+    const outcome = r.outcome || "";
 
     const fpReason = r.human_confirmation_summary || "";
+    // 漏报 case：summary 加漏报类型 badge + 漏报原因短标记（与误报原因同位置）
+    const fnMissData = r.fn_miss || {};
+    const fnCat = fnMissData.miss_category || "";
+    const fnCatLabel = {
+      "sink_not_found": "挖掘方向问题",
+      "sink_found_no_report": "识别能力问题",
+    }[fnCat] || "";
+    const fnCatColor = fnCat === "sink_not_found" ? "#e74c3c" : "#f39c12";
+    const fnMissReason = fnMissData.miss_reason || "";
+    const fnMissReasonShort = fnMissReason.length > 50 ? fnMissReason.substring(0, 50) + "..." : fnMissReason;
+
     html += `<details style="margin:16px 0 8px;">`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">`
       + `${r.case_id} — ${r.vuln_title}`
+      + (outcome === "FN" ? ` <span class="badge" style="background:#e67e22;color:#fff">漏报</span>` : "")
+      + (fnCatLabel ? ` <span class="badge" style="background:${fnCatColor};color:#fff">${fnCatLabel}</span>` : "")
       + (fpReason ? ` <span style="color:#e74c3c;font-size:14px;">—— ${fpReason}</span>` : "")
+      + (fnMissReasonShort && outcome === "FN" ? ` <span style="color:#e67e22;font-size:14px;">—— ${fnMissReasonShort}</span>` : "")
       + `</summary>`;
 
     // 挖掘链
@@ -700,6 +602,102 @@ RENDERERS.root_cause = function(el, data) {
 
     // 验证链
     html += _renderChain(verification, "验证", "#9b59b6", catLabels, catColor);
+
+    // ── FN 漏报原因分析（拆分到问题单分析里）──
+    // 漏报 case 的 fn_miss 字段含漏报原因（sink 精确命中分析 + 细分漏报成因）
+    if (fnCatLabel) {
+      const md = fnMissData.miss_detail || {};
+      const subLabel = md.miss_sub_category_label || "";
+      const subColor = {
+        "chain_break": "#6c5ce7",
+        "knowledge_mislead": "#e74c3c",
+        "hallucination": "#e74c3c",
+      }[md.miss_sub_category] || "#f39c12";
+
+      // LLM 提取的 sink 信息摘要
+      const si = fnMissData.sink_info || {};
+      const sinkFiles = (si.sink_files || []).filter(Boolean);
+      const sinkFuncs = (si.sink_functions || []).filter(Boolean);
+      const sinkLines = (si.sink_lines || []).filter(Boolean);
+      const sinkConf = (si.confidence ?? 0) * 100;
+      let sinkSummary = "";
+      if (sinkFiles.length || sinkFuncs.length || sinkLines.length) {
+        const parts = [];
+        if (sinkFiles.length) parts.push(`文件: ${sinkFiles.map(f => f.length > 40 ? f.substring(f.lastIndexOf('/')+1) : f).join(", ")}`);
+        if (sinkFuncs.length) parts.push(`函数: ${sinkFuncs.join(", ")}`);
+        if (sinkLines.length) parts.push(`行号: ${sinkLines.join(", ")}`);
+        sinkSummary = parts.join(" | ") + ` (${sinkConf.toFixed(0)}%)`;
+      }
+
+      html += `<div style="margin:12px 0;padding:12px;background:#f8f8fa;border-radius:6px;border-left:3px solid #e67e22">`;
+      html += `<div style="color:#e67e22;font-weight:600;font-size:15px;margin-bottom:8px;">`
+        + `漏报原因分析 <span class="badge" style="background:${fnCatColor};color:#fff">${fnCatLabel}</span>`
+        + (subLabel ? ` <span class="badge" style="background:${subColor};color:#fff">${subLabel}</span>` : "")
+        + `</div>`;
+
+      // 漏报原因（红色块，对齐根因风格）
+      html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
+      html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">漏报原因</summary>`;
+      html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${fnMissData.miss_reason || "—"}</div>`;
+      html += `</details>`;
+
+      // 细分漏报成因
+      if (subLabel) {
+        html += `<details style="margin:8px 0;padding:8px;background:#f0f0ff;border-radius:4px;">`;
+        html += `<summary style="color:#6c5ce7;font-weight:600;font-size:14px;cursor:pointer;">细分成因 — ${subLabel}</summary>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${md.reason || "—"}</div>`;
+        if (md.evidence) {
+          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;"><b>证据:</b> ${md.evidence}</div>`;
+        }
+        if (md.confidence) {
+          html += `<div style="color:#888;font-size:13px;margin-top:4px;"><b>置信度:</b> ${(md.confidence * 100).toFixed(0)}%</div>`;
+        }
+        html += `</details>`;
+      }
+
+      // LLM 提取的 sink 信息
+      if (sinkSummary) {
+        html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
+        html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">LLM 提取 sink 点</summary>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${sinkSummary}</div>`;
+        if (si.sink_description) {
+          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;">${si.sink_description}</div>`;
+        }
+        html += `</details>`;
+      }
+
+      // 命中 event 上下文
+      const hitEvents = fnMissData.hit_events || [];
+      if (hitEvents.length > 0) {
+        html += `<details style="margin:8px 0;">`;
+        html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">命中 event 上下文 (${hitEvents.length})</summary>`;
+        html += `<table style="margin-top:6px;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>命中行号</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
+        for (const ev of hitEvents) {
+          const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          const precision = ev.match_precision || "";
+          const precisionColor = precision === "precise" ? "#27ae60" : "#f39c12";
+          const matchedFuncs = (ev.matched_functions || []).join(", ");
+          const matchedLines = (ev.matched_lines || []).join(", ");
+          html += `<tr>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
+          html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
+          html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
+          html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "precise" ? "精确" : "文件级"}</span></td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedFuncs}">${matchedFuncs || '—'}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedLines}">${matchedLines || '—'}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
+          html += `</tr>`;
+        }
+        html += `</tbody></table>`;
+        html += `</details>`;
+      }
+
+      html += `</div>`;
+    }
 
     html += `</details>`;
   }
