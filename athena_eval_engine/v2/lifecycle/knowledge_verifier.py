@@ -357,14 +357,15 @@ class KnowledgeVerifier:
                     seen_docs.add(doc_path)
                     new_docs.append(doc_path)
 
-                    content = self._read_athena_file(project_id, doc_path)
+                    # context 已是知识摘要——直接用，不调 knowledge/file 读全文
+                    # （knowledge/file 端点返回 404，路径格式不匹配）
                     candidates.append({
                         "source": "athena_api",
                         "path": doc_path,
                         "title": doc_path.split("/")[-1].replace(".md", ""),
                         "abstract": context[:200],
                         "keywords": ", ".join(aliases),
-                        "content_preview": content,
+                        "content_preview": context,
                         "hit_fields": ["concepts"],
                     })
 
@@ -682,7 +683,7 @@ class KnowledgeVerifier:
         path = candidate.get("path", "")
 
         if source == "athena_api":
-            # 搜索阶段已通过 _read_athena_file 读取，直接返回
+            # context 已在搜索阶段直接用作 content_preview，无需再读文件
             return candidate.get("content_preview", "") or candidate.get("abstract", "")
         elif source == "wiki_nfs" and path and os.path.isfile(path):
             try:
