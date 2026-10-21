@@ -360,12 +360,12 @@ class ArgoParser(BaseParser):
         - 子 agent session：在 subagents/ 子目录下，JSONL 的 sessionId 字段 = 父 session ID
         - 根 session 的 sessionId = 自己的 ID（与文件名相同）
 
-        Session 父子关系来源（优先级从高到低）：
+        Session 父子关系来源：
         1. JSONL 的 sessionId 字段：子 session 的 sessionId != 文件名 → sessionId 是父
-        2. Fact 引用链：session B 引用 fact f → B 依赖创建 f 的 session A → A 是 B 的父
-           - verified_finding → verify session：通过 original_finding_id 链可靠匹配
-           - finding → investigate session：通过 description 中的 fact 引用 + 时间排序间接推断
-           - module → 无创建 session（root）
+           （配合 subagents/ 目录 + meta.json 的 toolUseId 确认真实调用关系）
+        2. Argo MySQL 权威 fact 依赖（intent_sources / intent_outputs）：
+           investigate 输出 fact → verify 消费该 fact。这是**多对多依赖关系**，
+           独立存于 graph['fact_deps']，**不作为 parent_map**（fact 引用 ≠ 父子调用）。
         """
         from collections import defaultdict as _dd
         import time as _time
@@ -376,6 +376,7 @@ class ArgoParser(BaseParser):
             'fact_details': {},  # fact_id -> {type, description, original_finding_id}
             'edges': _dd(set),
             'parent_map': {},
+            'fact_deps': [],  # [{investigate_sid, fact_id, verify_sid}, ...] 多对多依赖
         }
 
         _n = len(events)
@@ -495,9 +496,6 @@ class ArgoParser(BaseParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建 fact_to_creator 映射
-        fact_to_creator = self._build_fact_to_creator(graph)
-
         # 构建边：从 JSONL session 数据推断真实调用关系
         # 来源 1: sessionId 字段（子 agent → 父 session）
         for child_sid, parent_sid in self._session_parents.items():
@@ -506,33 +504,12 @@ class ArgoParser(BaseParser):
             graph['edges'][child_sid].add(parent_sid)
             graph['edges'][parent_sid].add(child_sid)
 
-        # 来源 2: Fact 引用链（session B 引用 fact f → B 依赖创建 f 的 session A）
-        # 时间约束：creator 必须在 child 之前完成，避免循环依赖
-        for sid, sg_data in graph['sessions'].items():
-            if not sg_data.get('facts'):
-                continue
-            child_start = sg_data.get('time_created') or 0
-            best_parent = None
-            best_parent_time = 0
-            for fid in sg_data['facts']:
-                creator = fact_to_creator.get(fid)
-                if not creator or creator == sid:
-                    continue
-                creator_sg = graph['sessions'].get(creator)
-                if not creator_sg:
-                    continue
-                # creator 必须在 child 开始前完成（避免循环依赖）
-                creator_end = creator_sg.get('time_updated') or 0
-                if creator_end == 0 or creator_end >= child_start:
-                    continue
-                # 选完成时间最接近 child 开始的 creator（最直接的依赖）
-                if creator_end > best_parent_time:
-                    best_parent = creator
-                    best_parent_time = creator_end
-            if best_parent and sid not in graph['parent_map']:
-                graph['parent_map'][sid] = best_parent
-                graph['edges'][sid].add(best_parent)
-                graph['edges'][best_parent].add(sid)
+        # 来源 2（修正）: Argo MySQL 权威 fact 依赖（intent_sources / intent_outputs）
+        # investigate 输出 fact → verify 消费该 fact。这是**多对多依赖关系**，
+        # 独立存于 graph['fact_deps']，**不作为 parent_map**——fact 引用 ≠ 父子调用。
+        # 原实现用 JSONL 内容推断 fact→creator 并错误设为 parent（导致 16 条
+        # 凭空父子关系、挖掘 session 被挂到 verify 下），现改为 MySQL 权威数据。
+        graph['fact_deps'] = self._query_fact_deps_from_db(list(graph['sessions'].keys()))
 
         return graph
 
@@ -881,6 +858,81 @@ class ArgoParser(BaseParser):
         except Exception as e:
             _log.debug("Argo _query_task_type_from_db failed: %s", str(e)[:200])
             return {}
+
+    def _query_fact_deps_from_db(self, session_ids: list[str]) -> list[dict]:
+        """从 Argo MySQL 读取权威的 fact 依赖关系（intent_sources / intent_outputs）。
+
+        真实关系模型（多对多，非父子）：
+        - intent_outputs: intent 输出了哪些 fact（investigate 挖掘产出 fact）
+        - intent_sources: intent 以哪些 fact 为输入（verify 验证消费 fact）
+        - investigate 输出 fact → 该 fact 被 verify 引用为 source = 依赖关系
+
+        Returns:
+            [{"investigate_sid": str, "fact_id": str, "verify_sid": str}, ...]
+            连接失败返回空列表（DB 查询是增强数据，非解析必需）。
+        """
+        if not session_ids:
+            return []
+        try:
+            mgr = AgentDBManager()
+            conn = mgr.get_connection("argo")
+            if conn is None:
+                _log.debug("Argo _query_fact_deps_from_db: 无 argo 连接")
+                return []
+            try:
+                cur = conn.cursor()
+                # 1. investigate intent 输出的 fact（intent_outputs）
+                placeholders = ", ".join(["%s"] * len(session_ids))
+                sql_outputs = (
+                    "SELECT i.session_id, o.fact_id FROM intents i "
+                    "JOIN intent_outputs o ON i.id = o.intent_id "
+                    "WHERE i.task_type IN ('investigate','verify') "
+                    "AND i.session_id IN (" + placeholders + ")"
+                )
+                cur.execute(sql_outputs, session_ids)
+                output_rows = cur.fetchall()
+                # fact_id -> 输出它的 investigate session 集合
+                fact_producers: dict[str, list[str]] = {}
+                for sid, fid in output_rows:
+                    if sid and fid:
+                        fact_producers.setdefault(fid, []).append(sid)
+
+                # 2. verify intent 消费的 fact（intent_sources）
+                sql_sources = (
+                    "SELECT i.session_id, s.fact_id FROM intents i "
+                    "JOIN intent_sources s ON i.id = s.intent_id "
+                    "WHERE i.task_type = 'verify' "
+                    "AND i.session_id IN (" + placeholders + ")"
+                )
+                cur.execute(sql_sources, session_ids)
+                source_rows = cur.fetchall()
+                cur.close()
+
+                # 3. 组装依赖：producer(investigate) --fact--> consumer(verify)
+                deps: list[dict] = []
+                seen: set[tuple[str, str, str]] = set()
+                for verify_sid, fact_id in source_rows:
+                    if not verify_sid or not fact_id:
+                        continue
+                    producers = fact_producers.get(fact_id, [])
+                    for prod_sid in producers:
+                        key = (prod_sid, fact_id, verify_sid)
+                        if key in seen:
+                            continue
+                        seen.add(key)
+                        deps.append({
+                            "investigate_sid": prod_sid,
+                            "fact_id": fact_id,
+                            "verify_sid": verify_sid,
+                        })
+                _log.debug("Argo _query_fact_deps_from_db: %d 条依赖 (producers=%d, consumers=%d)",
+                           len(deps), len(fact_producers), len(source_rows))
+                return deps
+            finally:
+                conn.close()
+        except Exception as e:
+            _log.debug("Argo _query_fact_deps_from_db failed: %s", str(e)[:200])
+            return []
 
     def label_session_phases(
         self, events: list[RawEvent], session_meta: dict

@@ -278,6 +278,11 @@ RENDERERS.parsing = function(el, data) {
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
+      // 多对多 fact 依赖流图（investigate → fact → verify，Sankey）
+      const factDeps = p.fact_deps || [];
+      if (factDeps.length > 0) {
+        html += renderFactDepsSankey(factDeps, sessions, p.task_run_id);
+      }
       // session 调用树（文本缩进格式）
       html += renderSessionTree(sessions);
     }
@@ -289,6 +294,92 @@ RENDERERS.parsing = function(el, data) {
   }
   el.innerHTML = html;
 };
+
+// ── 多对多 fact 依赖流图（纯 SVG，零依赖）──
+// 三层布局：左列=挖掘 investigate，中列=fact，右列=验证 verify
+// 连线用贝塞尔曲线表示 investigate --fact--> verify 的多对多依赖
+function renderFactDepsSankey(factDeps, sessions, taskRunId) {
+  // 构建 sid -> session 映射
+  const smap = {};
+  for (const s of sessions) smap[s.session_id] = s;
+  const shortName = (sid) => {
+    const s = smap[sid];
+    const tt = (s && (s.task_type || s.session_type)) || "?";
+    return tt + " " + sid.slice(0, 8);
+  };
+
+  // 收集节点与边（去重）
+  const invSet = {}, factSet = {}, verSet = {};
+  const seen = {};
+  const edges = [];
+  for (const dep of factDeps) {
+    const inv = dep.investigate_sid, fid = dep.fact_id, ver = dep.verify_sid;
+    if (!inv || !fid || !ver) continue;
+    invSet[inv] = 1; factSet[fid] = 1; verSet[ver] = 1;
+    const k1 = inv + "|" + fid, k2 = fid + "|" + ver;
+    if (!seen[k1]) { seen[k1] = 1; edges.push({ from: inv, to: fid, kind: "inv-fact" }); }
+    if (!seen[k2]) { seen[k2] = 1; edges.push({ from: fid, to: ver, kind: "fact-ver" }); }
+  }
+
+  const invs = Object.keys(invSet), facts = Object.keys(factSet), vers = Object.keys(verSet);
+  if (!invs.length || !facts.length || !vers.length) return "";
+
+  // 布局参数
+  const colW = 300, gap = 28, nodeH = 30, rowGap = 18, padX = 20, padY = 24;
+  const W = colW * 3 + gap * 2 + padX * 2;
+  const H = Math.max(invs.length, facts.length, vers.length) * (nodeH + rowGap) + padY * 2;
+  const invX = padX, factX = padX + colW + gap, verX = padX + colW * 2 + gap * 2;
+
+  function colPos(list, x, len) {
+    const total = list.length * (nodeH + rowGap) - rowGap;
+    const startY = (H - total) / 2;
+    const map = {};
+    list.forEach((id, i) => {
+      const y = startY + i * (nodeH + rowGap);
+      map[id] = { x: x, y: y + nodeH / 2 };
+    });
+    return map;
+  }
+  const invPos = colPos(invs, invX, len), factPos = colPos(facts, factX, len), verPos = colPos(vers, verX, len);
+
+  // 连线（贝塞尔）
+  let lines = "";
+  for (const e of edges) {
+    const a = e.kind === "inv-fact" ? invPos[e.from] : factPos[e.from];
+    const b = e.kind === "inv-fact" ? factPos[e.to] : verPos[e.to];
+    if (!a || !b) continue;
+    const color = e.kind === "inv-fact" ? "#6c5ce7" : "#00a8ff";
+    const midX = (a.x + b.x) / 2;
+    lines += `<path d="M${a.x},${a.y} C${midX},${a.y} ${midX},${b.y} ${b.x},${b.y}" `
+      + `fill="none" stroke="${color}" stroke-opacity="0.35" stroke-width="1.5"/>`;
+  }
+
+  // 节点
+  function renderNodes(list, pos, color, title) {
+    return list.map((id) => {
+      const p = pos[id];
+      const label = (title === "fact") ? id : shortName(id);
+      const text = label.length > 28 ? label.slice(0, 26) + "…" : label;
+      return `<g>`
+        + `<rect x="${p.x - 4}" y="${p.y - nodeH / 2}" width="${colW - 8}" height="${nodeH}" rx="6" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="1"/>`
+        + `<text x="${p.x + 6}" y="${p.y + 4}" font-size="11" fill="#444" style="user-select:none">${text.replace(/</g, "&lt;")}</text>`
+        + `</g>`;
+    }).join("");
+  }
+
+  const svg = `<svg width="${W}" height="${H}" style="background:#fafafd;border:1px solid #eee;border-radius:6px;display:block;max-width:100%">`
+    + lines
+    + renderNodes(invs, invPos, "#6c5ce7", "inv")
+    + renderNodes(facts, factPos, "#00a8ff", "fact")
+    + renderNodes(vers, verPos, "#e74c3c", "ver")
+    + `</svg>`;
+
+  return `<details style="margin-bottom:12px" open>`
+    + `<summary style="cursor:pointer;color:#00a8ff;font-size:14px;font-weight:600;">`
+    + `Fact 依赖流图（挖掘 → 验证，多对多，${invs.length} 挖掘 → ${facts.length} fact → ${vers.length} 验证）</summary>`
+    + `<div style="margin-top:8px;overflow:auto">${svg}</div>`
+    + `</details>`;
+}
 
 // ── session 调用树（jstree 渲染）──
 let _jstreeSeq = 0;

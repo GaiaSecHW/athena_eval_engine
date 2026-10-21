@@ -1714,6 +1714,7 @@ class Orchestrator:
             "db_columns": db_columns,
             "sessions": session_list,
             "edges": edge_list,
+            "fact_deps": sg.get("fact_deps", []),  # 多对多 fact 依赖（investigate→fact→verify），turing 为空
             "vuln_id_to_sessions": {
                 str(k): sorted(list(v)) if isinstance(v, (set, list)) else list(v)
                 for k, v in (sg.get("vuln_id_to_sessions", {}) or {}).items()
