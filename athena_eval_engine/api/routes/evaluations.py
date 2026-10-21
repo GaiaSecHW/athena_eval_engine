@@ -525,13 +525,62 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             row = cur.fetchone()
             if not row:
                 raise HTTPException(status_code=404, detail=f"evaluation {evaluation_id} not found")
-            if row[0] in _RUNNING_STATES and not force:
+            is_running = row[0] in _RUNNING_STATES
+            if is_running and not force:
                 raise HTTPException(status_code=409,
                                    detail=f"evaluation {evaluation_id} is running (status={row[0]}), "
                                          f"retry not allowed. Wait for completion, delete first, "
                                          f"or retry with ?force=true to force.")
         finally:
             conn.close()
+
+        # Step 0b: 任务运行中 + force → 先中断旧线程，等待其真正退出后再重跑
+        # 否则旧线程可能仍在写 DTS/报告，新线程同时写导致重复问题单。
+        if is_running and force:
+            from ...infrastructure.log_util import log as _log
+            import time as _time
+            es.set_cancel(evaluation_id)  # 发协作取消信号（DB cancel_requested=1）
+            # 等待旧线程退出：轮询本进程 _running_futures 移除 + DB 状态离开 RUNNING_STATES
+            # 跨 worker 场景本进程可能没有该线程，直接依赖 DB 状态。
+            # 超时 = 180s：覆盖一次 LLM 调用（80-120s）+ 阶段边界检查，旧线程
+            # 卡在 LLM 调用时取消信号要到调用结束才生效。
+            _wait_timeout = 180
+            _deadline = _time.time() + _wait_timeout
+            _waited = 0.0
+            while _time.time() < _deadline:
+                _old = _running_futures.get(evaluation_id)
+                _db_state = None
+                _conn2 = connect(autocommit=True)
+                try:
+                    _cur2 = _conn2.cursor()
+                    _cur2.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))
+                    _r2 = _cur2.fetchone()
+                    _db_state = _r2[0] if _r2 else None
+                finally:
+                    _conn2.close()
+                _thread_done = _old is None
+                _db_left = _db_state not in _RUNNING_STATES
+                if _thread_done and _db_left:
+                    break
+                _time.sleep(1)
+                _waited += 1
+            _log("RETRY", f"{evaluation_id} force retry: 等待旧线程退出 {_waited}s "
+                  f"(running_futures={'None' if _running_futures.get(evaluation_id) is None else 'set'}, "
+                  f"db_state={_db_state})")
+            # 旧线程未在超时内退出 → 明确报错，不允许并发重跑
+            # （用户要求：前一个没中断前，重跑不能进行。宁可让用户再等/再触发，
+            #  也不允许两个线程同时写 DTS/报告导致重复问题单。）
+            if _old is not None or _db_state in _RUNNING_STATES:
+                raise HTTPException(
+                    status_code=409,
+                    detail=(
+                        f"evaluation {evaluation_id} 旧线程未在 {_waited:.0f}s 内退出 "
+                        f"(running_futures={'set' if _old is not None else 'None'}, "
+                        f"db_state={_db_state})，拒绝并发重跑。"
+                        f"请稍后重试或再次 force 触发。"
+                    ),
+                )
+
 
         # Step 1: 获取 benchmark_set_id（用于清理 benchmark_item）
         bsid = None

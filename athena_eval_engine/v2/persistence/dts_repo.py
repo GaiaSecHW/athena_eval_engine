@@ -130,7 +130,14 @@ def _row_to_dict(row) -> dict:
 
 def upsert_dts_issues(issues: list[dict], evaluation_id: str,
                       reports_dir: str) -> int:
-    """批量写入问题单（幂等：ON DUPLICATE KEY UPDATE）。
+    """批量写入问题单（幂等：同 evaluation 先删后插）。
+
+    每次 pipeline 运行都是为该 evaluation **全量重建**问题单（生成新
+    dts_id 随机主键）。若只靠 ON DUPLICATE KEY UPDATE 按 dts_id 去重，
+    重跑会插入全新 dts_id 行，导致同一 case_id 出现重复问题单。
+
+    因此这里改为：先删除该 evaluation 下全部旧单，再插入新单——
+    保证 (evaluation_id, case_id) 恒唯一，重跑只保留最新一轮。
 
     Args:
         issues: 问题单 dict 列表，每条含 dts_id、evaluation_id 等。
@@ -144,6 +151,8 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
         return 0
 
     def _do_insert(cur):
+        # 先删旧单（同 evaluation 全量重建），避免随机 dts_id 主键导致重复
+        cur.execute("DELETE FROM dts_issue WHERE evaluation_id=%s", (evaluation_id,))
         args = [tuple(iss.get(k) for k in _FIELD_ORDER) for iss in issues]
         cur.executemany(_INSERT_SQL, args)
         return len(args)
