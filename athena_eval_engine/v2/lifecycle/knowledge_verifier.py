@@ -53,8 +53,10 @@ _MAX_CANDIDATES = 20
 # ── 单个 .md 文件读取前 N 行 ──
 _MD_PREVIEW_LINES = 40
 
-# ── API 超时 ──
+# ── API 超时 + 重试 ──
 _API_TIMEOUT = 10
+_ATHENA_RETRIES = 3       # Athena API 查询重试次数（404/连接错误可能是临时网络问题）
+_ATHENA_RETRY_DELAY = 1   # 重试间隔（秒）
 
 # LLM 判定 prompt
 _VERIFY_PROMPT = """你是知识库内容判定专家。
@@ -329,17 +331,27 @@ class KnowledgeVerifier:
             url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
                    f"/knowledge/concepts?" +
                    urllib.parse.urlencode({"query": kw}))
-            try:
-                req = urllib.request.Request(url)
-                resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                data = json.loads(resp.read())
-            except Exception as e:
-                log("KB_VERIFY", f"Athena API 查询失败 (kw={kw}): {str(e)[:150]}")
+            # 重试：404/连接错误可能是临时网络问题，重试 2 次
+            data = None
+            last_err = None
+            for attempt in range(_ATHENA_RETRIES):
+                try:
+                    req = urllib.request.Request(url)
+                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
+                    data = json.loads(resp.read())
+                    break
+                except Exception as e:
+                    last_err = e
+                    if attempt < _ATHENA_RETRIES - 1:
+                        import time
+                        time.sleep(_ATHENA_RETRY_DELAY)
+            if data is None:
+                log("KB_VERIFY", f"Athena API 查询失败 (kw={kw}, {_ATHENA_RETRIES}次重试后): {str(last_err)[:150]}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"GET {url}",
                     "detail": f"关键词: {kw}",
-                    "result": f"查询失败: {str(e)[:100]}",
+                    "result": f"查询失败（{_ATHENA_RETRIES}次重试后）: {str(last_err)[:100]}",
                     "count": 0,
                 })
                 continue

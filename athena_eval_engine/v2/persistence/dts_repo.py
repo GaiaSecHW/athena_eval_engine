@@ -488,11 +488,12 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
         by_case_type = {row[0]: row[1] for row in cur.fetchall()}
 
         # 按 responsibility 分组（逗号分隔多值，每条取第一个）
-        # where_clause 已含 WHERE 前缀（如 " WHERE d.evaluation_id=%s"），
-        # 附加条件用 AND 拼接
+        # where_clause 为空（无 evaluation_id）时用 WHERE，非空时用 AND
+        resp_where = (where_clause + " AND " if where_clause
+                      else " WHERE ")
         cur.execute(
-            f"SELECT d.responsibility, COUNT(*) FROM dts_issue d{where_clause}"
-            f" AND d.responsibility IS NOT NULL AND d.responsibility != ''"
+            f"SELECT d.responsibility, COUNT(*) FROM dts_issue d"
+            f"{resp_where}d.responsibility IS NOT NULL AND d.responsibility != ''"
             f" GROUP BY d.responsibility",
             params,
         )
@@ -505,9 +506,11 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
                     by_responsibility[r] = by_responsibility.get(r, 0) + cnt
 
         # 根因确认统计（从 hypothesis_confirmations JSON 聚合）
+        hc_where = (where_clause + " AND " if where_clause
+                    else " WHERE ")
         cur.execute(
-            f"SELECT d.hypothesis_confirmations FROM dts_issue d{where_clause}"
-            f" AND d.hypothesis_confirmations IS NOT NULL"
+            f"SELECT d.hypothesis_confirmations FROM dts_issue d"
+            f"{hc_where}d.hypothesis_confirmations IS NOT NULL"
             f" AND d.hypothesis_confirmations != ''",
             params,
         )
