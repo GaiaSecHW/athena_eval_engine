@@ -140,6 +140,15 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
   - 常见场景：推理逻辑错误、验证条件不充分等（注意：验证维度遗漏不一定是 L8——如果遗漏的维度需要知识支撑，应是 L2 断点）
   - cause_code 填 "H"，breakpoint 填 "L8"
   - 在 l0_l7 数组中新增一条记录，l0_source 填空，query_content 填问题总结，returned_content 填空
+
+## 重复上报的特殊归因规则（重要）
+
+人工标注的原因包含"重复上报"（或"重复"、"已上报"、"已报过"）时，**必须按以下规则归因**：
+- 重复上报 = 漏洞真实存在但已作为历史记录上报过（同根因/同链路），agent 不该再报一次
+- 这是 agent 挖掘/验证流程的**去重缺陷**，与知识/记忆无关——知识/记忆里有该漏洞的历史记录，agent 可能还读到了，问题在于 agent 未识别"这是已上报过的漏洞"
+- **禁止**将重复上报归因到知识/记忆链路（禁止 L2/A、L4/C、L6/E、L7/G）
+- 断点应为 **L8，cause_code 填 "H"**（挖掘/验证流程缺陷），query_content 填"重复上报未识别：agent 未比对已上报漏洞清单/历史记录，将已上报过的同根因同链路漏洞再次上报"
+- 责任方为 agent，fix_suggestion.target 应为 agent_code 或 agent_prompt（增加上报前去重逻辑），不能是 knowledge
 - 如果 L1=false（不需要知识），后续级别全部 null，不产生断点
 
 # 输出格式
@@ -241,6 +250,18 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 - G 知识误导【knowledge】：知识/记忆返回内容错误/过时，误导了判定
 - J 模型幻觉【agent】：虚构了不存在的防护措施，导致认为不是漏洞
 - K 验证否定真漏洞【agent】：挖掘 CONFIRMED 但验证 agent 否定（验证维度遗漏/判定标准过严）
+
+### 重复上报的特殊归因规则（重要）
+
+人工标注的原因包含"重复上报"（或"重复"、"已上报"、"已报过"）时，**必须按以下规则归因**：
+- 重复上报 = 漏洞真实存在但已作为历史记录上报过（同根因/同链路），agent 不该再报一次
+- 这是 agent 挖掘/验证流程的**去重缺陷**，与知识/记忆无关——知识/记忆里有该漏洞的历史记录，
+  agent 可能还读到了，问题在于 agent 未识别"这是已上报过的漏洞"
+- **禁止**将重复上报归因到知识/记忆链路（禁止 A 该查没查、C 查了没得、E 查到没用、G 知识误导）
+- 断点应为 **L8，cause_code 填 "H"**（挖掘/验证流程缺陷），query_content 填"重复上报未识别：
+  agent 未比对已上报漏洞清单/历史记录，将已上报过的同根因同链路漏洞再次上报"
+- 责任方为 agent，fix_suggestion.target 应为 agent_code 或 agent_prompt（增加上报前去重逻辑），
+  不能是 knowledge/memory
 
 ### 责任边界判定
 
@@ -793,6 +814,45 @@ class RootCauseAnalyzer:
             f"top={merge_root_cause.get('category', '?')})",
             eval_id=evaluation_id)
 
+        # ── 重复上报强制归因修正（代码级兜底，防 LLM 不遵守 prompt 规则）──
+        # 人工标注为重复上报时，将所有指向知识/记忆链路的假设（C/E/G/知识责任）
+        # 强制修正为 H（挖掘/验证流程去重缺陷，agent 责任）。
+        # 重复上报 = 漏洞真实存在但已报过，与知识/记忆无关；知识/记忆有记录
+        # 甚至 agent 读到了，问题是 agent 未识别重复性。
+        if self._is_duplicate_report(fp_reason):
+            corrected = 0
+            for h in merge_hypotheses:
+                cc = h.get("cause_code", "")
+                resp = h.get("responsibility", "")
+                if cc in ("C", "E", "G", "D") or resp == "knowledge":
+                    h["cause_code"] = "H"
+                    h["responsibility"] = "agent"
+                    h["hypothesis"] = (
+                        "重复上报未识别：agent 未比对已上报漏洞清单/历史记录，"
+                        "将已上报过的同根因同链路漏洞再次上报。"
+                        + h.get("hypothesis", "")
+                    )
+                    fs = h.get("fix_suggestion")
+                    if isinstance(fs, dict) and fs.get("target") in (
+                            "knowledge", "memory"):
+                        fs["target"] = "agent_code"
+                        fs["action"] = (
+                            "增加上报前去重逻辑：agent 在提交漏洞前比对"
+                            "已上报漏洞清单/历史确认记录（同根因/同链路），"
+                            "识别重复上报并标记为重复，而非作为新漏洞上报。"
+                        )
+                    corrected += 1
+            if corrected:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} 重复上报归因修正："
+                    f"{corrected} 个知识链路假设修正为 H/agent"
+                    f"（重复上报是流程去重缺陷，非知识问题）")
+            # 同步修正断点列表中的 C/E/G 断点
+            for bp in all_breakpoints:
+                if bp.get("cause_code") in ("C", "E", "G", "D"):
+                    bp["cause_code"] = "H"
+                    bp["breakpoint"] = "L8"
+
         # ── L4 独立验证（扩展：知识缺失假设也触发）──
         l4_verification = self._verify_l4_independently(
             case_id, chain_type, vuln_title, fp_reason, outcome,
@@ -872,6 +932,28 @@ class RootCauseAnalyzer:
         )
         return "\n".join(parts)
 
+    @staticmethod
+    def _is_duplicate_report(fp_reason: str) -> bool:
+        """判断人工标注原因是否为"重复上报"。
+
+        重复上报 = 漏洞真实存在但已作为历史记录上报过（同根因/同链路），
+        agent 不该再报一次。这是挖掘/验证流程的去重缺陷，不是知识问题。
+
+        关键词匹配（容忍前缀/后缀/标点差异）：
+        - "重复上报" / "重复" / "已上报" / "已报过" / "重复提交"
+        - "重复误报"
+        """
+        if not fp_reason:
+            return False
+        reason = str(fp_reason).strip()
+        if not reason:
+            return False
+        keywords = (
+            "重复上报", "重复提交", "重复误报", "已上报", "已报过",
+            "重复发现", "重复报告", "重复",
+        )
+        return any(kw in reason for kw in keywords)
+
     def _verify_l4_independently(
         self,
         case_id: str,
@@ -906,6 +988,24 @@ class RootCauseAnalyzer:
         )
         if not has_l2_break and not has_knowledge_hypothesis:
             return None
+
+        # ── 重复上报豁免：人工标注为"重复上报"时，不触发 L4 知识库验证 ──
+        # 重复上报是 agent 挖掘/验证流程的去重缺陷（漏洞真实存在但已报过），
+        # 与知识/记忆无关——知识/记忆里有记录，agent 还读到了，问题在于
+        # agent 未识别重复性。若走 L4 验证，知识库必然没有"重复判定"知识，
+        # 会把 L2/A 错误修正为 L4/C（知识缺失），归因方向完全错误。
+        if self._is_duplicate_report(fp_reason):
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 人工标注为重复上报，"
+                f"跳过 L4 知识库验证（重复上报是流程/去重问题，"
+                f"与知识/记忆无关，不归因知识链路）")
+            return {
+                "l4_knowledge_exists": None,
+                "candidate_files": 0,
+                "matched_files": [],
+                "summary": "重复上报——agent 流程去重缺陷，跳过知识库验证",
+                "skipped_reason": "duplicate_report",
+            }
 
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 检测到"
