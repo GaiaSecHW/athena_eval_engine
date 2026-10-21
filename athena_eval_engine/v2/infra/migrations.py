@@ -393,6 +393,18 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN hypothesis_confirmations TEXT",
         ],
     },
+    {
+        "id": "025_cause_code_extend_a_k",
+        "desc": "dts_issue + knowledge_access_detail 的 cause_code CHECK 扩展到 A-K（新增 I/J/K：调用链中断/模型幻觉/验证否定真漏洞）",
+        "sql": [
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_chk_2",
+            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_chk_2 "
+            "CHECK (cause_code IN ('A','B','C','D','E','F','G','H','I','J','K'))",
+            "ALTER TABLE knowledge_access_detail DROP CHECK knowledge_access_detail_chk_2",
+            "ALTER TABLE knowledge_access_detail ADD CONSTRAINT knowledge_access_detail_chk_2 "
+            "CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H','I','J','K'))",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
