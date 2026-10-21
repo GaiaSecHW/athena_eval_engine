@@ -1469,6 +1469,7 @@ class Orchestrator:
         从基线 case_details 和告警中心数据计算：
         - 召回率 = TP / (TP + FN)
         - 准确率 = TP / (TP + FP)
+        - 误报率 = FP / (TP + FP)（Agent 上报总数中误报占比）
 
         TP = 基线 VULNERABLE + 告警中心有匹配（agent 上报了）
         FN = 基线 VULNERABLE + 告警中心无匹配（agent 漏报）
@@ -1492,8 +1493,10 @@ class Orchestrator:
         precision_denom = tp_count + fp_count
         precision_rate = (tp_count / precision_denom) if precision_denom > 0 else None
 
-        # 误报率 = FP / (FP + TN)
-        fpr_denom = fp_count + tn_count
+        # 误报率 = FP / (TP + FP)（Agent 上报总数中误报占比）
+        # 原公式 FP/(FP+TN) 依赖基线 NON_VULNERABLE 样本量，样本少且全命中时
+        # TN=0 导致误报率虚高到 100%；C 口径只依赖 agent 上报行为，更稳健。
+        fpr_denom = tp_count + fp_count
         fpr_rate = (fp_count / fpr_denom) if fpr_denom > 0 else None
 
         result = {
