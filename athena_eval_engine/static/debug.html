@@ -608,7 +608,19 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 2000); }
       return;
     }
-    // 非叶子节点：向上全部祖先 + 向下1跳子节点 + 保留根节点
+    // 双击根节点（无父节点）：显示所有根节点 + 它们的直接子节点
+    if (inDeg[id] === 0) {
+      const result = new Set(rootNodes);
+      for (const r of rootNodes) {
+        for (const c of (outAdj[r] || [])) result.add(c);
+      }
+      visibleNodes = Array.from(result);
+      selectedId = id;
+      focusHighlight = null;
+      renderD3();
+      return;
+    }
+    // 非根非叶子节点：向上全部祖先 + 向下1跳子节点 + 保留根节点
     const ancestors = collectAncestors(id);
     const children = collectChildren(id);
     const result = new Set([...ancestors, ...children]);
