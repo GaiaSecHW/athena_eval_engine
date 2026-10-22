@@ -544,7 +544,7 @@ class ArgoParser(BaseParser):
         # 独立存于 graph['fact_deps']，**不作为 parent_map**——fact 引用 ≠ 父子调用。
         # 原实现用 JSONL 内容推断 fact→creator 并错误设为 parent（导致 16 条
         # 凭空父子关系、挖掘 session 被挂到 verify 下），现改为 MySQL 权威数据。
-        graph['fact_deps'] = self._query_fact_deps_from_db(list(graph['sessions'].keys()))
+        graph['fact_deps'] = self._query_fact_deps_from_db()
 
         return graph
 
@@ -894,7 +894,7 @@ class ArgoParser(BaseParser):
             _log.debug("Argo _query_task_type_from_db failed: %s", str(e)[:200])
             return {}
 
-    def _query_fact_deps_from_db(self, session_ids: list[str]) -> dict:
+    def _query_fact_deps_from_db(self) -> dict:
         """从 Argo MySQL 读取权威的 fact 依赖图（对齐 argo 前端 FullGraph 模型）。
 
         真实关系模型（对齐 argo 官方 /boards/{id}/graph）：
@@ -919,8 +919,6 @@ class ArgoParser(BaseParser):
             }
             连接失败返回空 dict（DB 查询是增强数据，非解析必需）。
         """
-        if not session_ids:
-            return {}
         try:
             mgr = AgentDBManager()
             conn = mgr.get_connection("argo")
@@ -976,28 +974,23 @@ class ArgoParser(BaseParser):
                     }
 
                 # 3. intent 产出/消费的 fact（必须限定双 project_id 防串库）
-                ph = ", ".join(["%s"] * len(session_ids))
+                # 不按 session_id 过滤：官方图是全量 intent 的 from/outputs。
+                # 之前按 session_ids 过滤导致 session_id 不在 trace 解析
+                # session 列表中的 intent（如 module_expand/synthesize）的边
+                # 全部丢失（4883 → 4090 边，145 节点无入边 vs 官方 12）。
                 outputs: dict[str, list[str]] = {}
                 cur.execute(
                     "SELECT o.intent_id, o.fact_id FROM intent_outputs o "
-                    "WHERE o.project_id = %s "
-                    "AND o.intent_id IN ("
-                    "  SELECT id FROM intents WHERE project_id = %s "
-                    "  AND session_id IN (" + ph + ")"
-                    ")",
-                    [project_id, project_id] + session_ids,
+                    "WHERE o.project_id = %s",
+                    (project_id,),
                 )
                 for iid, fid in cur.fetchall():
                     outputs.setdefault(iid, []).append(fid)
                 sources: dict[str, list[str]] = {}
                 cur.execute(
                     "SELECT s.intent_id, s.fact_id FROM intent_sources s "
-                    "WHERE s.project_id = %s "
-                    "AND s.intent_id IN ("
-                    "  SELECT id FROM intents WHERE project_id = %s "
-                    "  AND session_id IN (" + ph + ")"
-                    ")",
-                    [project_id, project_id] + session_ids,
+                    "WHERE s.project_id = %s",
+                    (project_id,),
                 )
                 for iid, fid in cur.fetchall():
                     sources.setdefault(iid, []).append(fid)
