@@ -350,15 +350,26 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const DEFAULT_EDGE = "#95a5a6";
 
   // 全部节点集合（edges 端点 + facts 表）
+  // 排除 report 类型：report 是挖掘流程的最终汇总产物，对本评测/根因分析
+  // 无用，不作为节点显示（其入边 finding→report 也一并忽略）
   const nodeIds = new Set();
-  for (const e of edges) { nodeIds.add(e.from); nodeIds.add(e.to); }
-  for (const fid of Object.keys(facts)) nodeIds.add(fid);
+  for (const fid of Object.keys(facts)) {
+    if ((facts[fid] || {}).type !== "report") nodeIds.add(fid);
+  }
+  for (const e of edges) {
+    if (e.from !== e.to) {
+      if ((facts[e.from] || {}).type !== "report") nodeIds.add(e.from);
+      if ((facts[e.to] || {}).type !== "report") nodeIds.add(e.to);
+    }
+  }
   const allNodes = Array.from(nodeIds);
 
-  // 邻接表（用于渐进展开）
+  // 邻接表（用于渐进展开，排除 report 节点）
   const outAdj = {}, inAdj = {};
+  const nodeSet = new Set(allNodes);
   for (const e of edges) {
     if (e.from === e.to) continue;
+    if (!nodeSet.has(e.from) || !nodeSet.has(e.to)) continue;
     if (!outAdj[e.from]) outAdj[e.from] = [];
     if (!inAdj[e.to]) inAdj[e.to] = [];
     outAdj[e.from].push(e.to);
@@ -406,8 +417,8 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const roots = allNodes.filter(n => inDeg[n] === 0);
       start = roots[0] || allNodes[0];
     }
-    // 终点：report（若存在），否则选出度为 0 的节点
-    let goal = allNodes.find(n => labels[n].type === "report");
+    // 终点：verified_finding（report 已排除，verified_finding 是链的自然终点）
+    let goal = allNodes.find(n => labels[n].type === "verified_finding");
     if (!goal) {
       const outDeg = {};
       for (const n of allNodes) outDeg[n] = 0;
@@ -593,8 +604,9 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     }
   }
 
-  // 点击：渐进展开该节点上下游（1 跳），再点收缩
-  // 展开上限保护：避免 visibleNodes 无限增长导致 dagre 布局卡死/画布空白
+  // 点击：聚焦该节点 —— 只显示本节点 + 其直接上下游（1 跳），
+  // 不相关的节点全部隐藏。再点同一节点恢复主链。
+  // 上限保护：节点上下游过多时仅显示直接邻居并提示
   const MAX_EXPAND_NODES = 200;
   function onNodeClick(id) {
     if (selectedId === id) {
@@ -604,27 +616,23 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       renderD3();
       return;
     }
-    const add = new Set(visibleNodes);
-    for (const t of (outAdj[id] || [])) add.add(t);
-    for (const s of (inAdj[id] || [])) add.add(s);
-    add.add(id);
-    if (add.size > MAX_EXPAND_NODES) {
-      // 超上限：只取选中节点 + 直接上下游（不累加历史），并提示
-      const focused = new Set([id]);
-      for (const t of (outAdj[id] || [])) focused.add(t);
-      for (const s of (inAdj[id] || [])) focused.add(s);
-      if (focused.size > MAX_EXPAND_NODES) {
-        const tip = document.createElement("div");
-        tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
-        tip.textContent = "该节点上下游过多（" + focused.size + " 个），仅显示直接邻居";
-        const box = document.getElementById(containerId);
-        if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 4000); }
-        visibleNodes = Array.from(focused).slice(0, MAX_EXPAND_NODES);
-      } else {
-        visibleNodes = Array.from(focused);
-      }
+    // 聚焦：只显示选中节点 + 直接上下游（不累加历史）
+    const focused = new Set([id]);
+    for (const t of (outAdj[id] || [])) focused.add(t);
+    for (const s of (inAdj[id] || [])) focused.add(s);
+    if (focused.size > MAX_EXPAND_NODES) {
+      // 只保留选中节点 + 出边/入边各前 N 个，避免 dagre 布局卡死
+      const limited = new Set([id]);
+      for (const t of (outAdj[id] || []).slice(0, 80)) limited.add(t);
+      for (const s of (inAdj[id] || []).slice(0, 80)) limited.add(s);
+      const tip = document.createElement("div");
+      tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
+      tip.textContent = "该节点上下游过多（" + focused.size + " 个），仅显示部分邻居";
+      const box = document.getElementById(containerId);
+      if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 4000); }
+      visibleNodes = Array.from(limited);
     } else {
-      visibleNodes = Array.from(add);
+      visibleNodes = Array.from(focused);
     }
     selectedId = id;
     renderD3();
@@ -652,10 +660,15 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     for (const f of (found.from || [])) focus.add(f);
     for (const f of (found.outputs || [])) focus.add(f);
     focusHighlight = focus;
-    // 展开聚焦节点
-    const add = new Set(visibleNodes);
-    for (const f of focus) { add.add(f); for (const t of (outAdj[f] || [])) add.add(t); for (const s of (inAdj[f] || [])) add.add(s); }
-    visibleNodes = Array.from(add);
+    // 聚焦：只显示搜索到的 fact 集合 + 其直接上下游（不累加历史）
+    const focused = new Set();
+    for (const f of focus) {
+      focused.add(f);
+      for (const t of (outAdj[f] || []).slice(0, 60)) focused.add(t);
+      for (const s of (inAdj[f] || []).slice(0, 60)) focused.add(s);
+    }
+    if (!focused.size) focused.add(found.id || "");
+    visibleNodes = Array.from(focused).slice(0, MAX_EXPAND_NODES);
     selectedId = focus.size ? Array.from(focus)[0] : "";
     renderD3();
   }
