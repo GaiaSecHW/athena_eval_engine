@@ -47,6 +47,9 @@ class CaseSessionMatcher:
     _MINING_AGENT_TYPES = MINING_AGENT_SET
     _VERIFY_AGENT_TYPES = VERIFY_AGENT_SET
 
+    # session_id → session_type 查找表（match() 每次构建，_classify_session 用）
+    _session_type_map: dict[str, str] = {}
+
     def match(
         self,
         evaluation_id: str,
@@ -78,6 +81,24 @@ class CaseSessionMatcher:
             - match_method: "matched" / "unmatched"
             - match_detail: 匹配细节
         """
+        # 构建 session_id → session_type 查找表（investigate/verify/reason/None）
+        # 用于 _classify_session 按 session 实际类型分类，而不是只看 agent_type。
+        # argo 的 DataPack agent_type=argo，但一个 pack 内同时含 investigate 和
+        # verify session（挖掘 + 验证混合），仅按 agent_type 分类会把 verify
+        # session 误放 mining_sessions（导致一个 case 匹配多个 mining session）。
+        # 存实例属性（match 每次调用刷新）
+        self._session_type_map = {}
+        for dp in data_packs:
+            sg = dp.session_graph or {}
+            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
+            if isinstance(sessions, dict):
+                for sid, sdata in sessions.items():
+                    if not isinstance(sdata, dict):
+                        continue
+                    st = sdata.get("session_type") or sdata.get("task_type") or ""
+                    if st:
+                        self._session_type_map[sid] = str(st).lower()
+
         # 构建基线 case_id → 告警中心 case_id 的映射
         baseline_to_ac = self._build_baseline_ac_map(
             case_details, case_matches, eval_mode)
@@ -377,14 +398,31 @@ class CaseSessionMatcher:
 
         return results
 
-    @staticmethod
     def _classify_session(
+        self,
         sid: str,
         agent_type: str,
         mining_sessions: list[str],
         verify_sessions: list[str],
     ):
-        """按 agent_type 将 session 分类到挖掘或验证列表。"""
+        """按 session 实际类型分类到挖掘或验证列表。
+
+        优先级：
+        1. session_type（investigate/verify）——session 级真实类型
+           （argo 一个 pack 混合挖掘+验证 session，仅靠 agent_type 会误分类）
+        2. agent_type 兜底（cvuln_verify/webvuln_verify → 验证）
+        """
+        st = (self._session_type_map or {}).get(sid, "") \
+            if hasattr(self, "_session_type_map") else ""
+        if st == "verify":
+            if sid not in verify_sessions:
+                verify_sessions.append(sid)
+            return
+        if st == "investigate":
+            if sid not in mining_sessions:
+                mining_sessions.append(sid)
+            return
+        # 无 session_type 信息时按 agent_type 兜底
         if agent_type in CaseSessionMatcher._VERIFY_AGENT_TYPES:
             if sid not in verify_sessions:
                 verify_sessions.append(sid)
