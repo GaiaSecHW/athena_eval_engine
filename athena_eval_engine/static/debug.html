@@ -343,7 +343,7 @@ function renderFactDepsSankey(factDeps, sessions, taskRunId) {
   const H = Math.max(invs.length, facts.length, vers.length) * (nodeH + rowGap) + padY * 2;
   const invX = padX, factX = padX + colW + gap, verX = padX + colW * 2 + gap * 2;
 
-  function colPos(list, x, len) {
+  function colPos(list, x) {
     const total = list.length * (nodeH + rowGap) - rowGap;
     const startY = (H - total) / 2;
     const map = {};
@@ -353,7 +353,7 @@ function renderFactDepsSankey(factDeps, sessions, taskRunId) {
     });
     return map;
   }
-  const invPos = colPos(invs, invX, len), factPos = colPos(facts, factX, len), verPos = colPos(vers, verX, len);
+  const invPos = colPos(invs, invX), factPos = colPos(facts, factX), verPos = colPos(vers, verX);
 
   // 连线（贝塞尔）
   let lines = "";
