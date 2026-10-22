@@ -604,10 +604,9 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     }
   }
 
-  // 点击：聚焦该节点 —— 只显示本节点 + 其直接上下游（1 跳），
-  // 不相关的节点全部隐藏。再点同一节点恢复主链。
-  // 上限保护：节点上下游过多时仅显示直接邻居并提示
-  const MAX_EXPAND_NODES = 200;
+  // 点击：聚焦该节点 —— 显示从根到叶经过该节点的上下主链
+  // （完整上游祖先链 + 完整下游后代链，各取一条路径，不含旁支）。
+  // 再点同一节点恢复主链。
   function onNodeClick(id) {
     if (selectedId === id) {
       selectedId = "";
@@ -616,24 +615,33 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       renderD3();
       return;
     }
-    // 聚焦：只显示选中节点 + 直接上下游（不累加历史）
-    const focused = new Set([id]);
-    for (const t of (outAdj[id] || [])) focused.add(t);
-    for (const s of (inAdj[id] || [])) focused.add(s);
-    if (focused.size > MAX_EXPAND_NODES) {
-      // 只保留选中节点 + 出边/入边各前 N 个，避免 dagre 布局卡死
-      const limited = new Set([id]);
-      for (const t of (outAdj[id] || []).slice(0, 80)) limited.add(t);
-      for (const s of (inAdj[id] || []).slice(0, 80)) limited.add(s);
-      const tip = document.createElement("div");
-      tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
-      tip.textContent = "该节点上下游过多（" + focused.size + " 个），仅显示部分邻居";
-      const box = document.getElementById(containerId);
-      if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 4000); }
-      visibleNodes = Array.from(limited);
-    } else {
-      visibleNodes = Array.from(focused);
+    // 上游链：从选中节点沿 inAdj 回溯到根（每层选第一个父）
+    const upChain = [];
+    let cur = id;
+    const upSeen = new Set();
+    while (cur !== undefined && !upSeen.has(cur)) {
+      upSeen.add(cur);
+      upChain.unshift(cur);
+      const parents = inAdj[cur] || [];
+      cur = parents.length ? parents[0] : undefined;
     }
+    // 下游链：从选中节点沿 outAdj 走到叶子（每层选第一个子）
+    const downChain = [];
+    cur = id;
+    const downSeen = new Set();
+    while (cur !== undefined && !downSeen.has(cur)) {
+      downSeen.add(cur);
+      downChain.push(cur);
+      const children = outAdj[cur] || [];
+      cur = children.length ? children[0] : undefined;
+    }
+    // 合并（去重，保留顺序）
+    const chain = [];
+    const seen = new Set();
+    for (const n of [...upChain, ...downChain]) {
+      if (!seen.has(n)) { seen.add(n); chain.push(n); }
+    }
+    visibleNodes = chain;
     selectedId = id;
     renderD3();
   }
@@ -660,16 +668,37 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     for (const f of (found.from || [])) focus.add(f);
     for (const f of (found.outputs || [])) focus.add(f);
     focusHighlight = focus;
-    // 聚焦：只显示搜索到的 fact 集合 + 其直接上下游（不累加历史）
-    const focused = new Set();
-    for (const f of focus) {
-      focused.add(f);
-      for (const t of (outAdj[f] || []).slice(0, 60)) focused.add(t);
-      for (const s of (inAdj[f] || []).slice(0, 60)) focused.add(s);
+    // 聚焦：对搜索到的第一个 fact 取上下主链（根→叶经过该 fact）
+    let focusNode = focus.size ? Array.from(focus)[0] : (found.outputs || [])[0];
+    if (focusNode === undefined) focusNode = found.id || "";
+    // 上游链
+    const upChain = [];
+    let cur = focusNode;
+    const upSeen = new Set();
+    while (cur !== undefined && !upSeen.has(cur)) {
+      upSeen.add(cur);
+      upChain.unshift(cur);
+      const parents = inAdj[cur] || [];
+      cur = parents.length ? parents[0] : undefined;
     }
-    if (!focused.size) focused.add(found.id || "");
-    visibleNodes = Array.from(focused).slice(0, MAX_EXPAND_NODES);
-    selectedId = focus.size ? Array.from(focus)[0] : "";
+    // 下游链
+    const downChain = [];
+    cur = focusNode;
+    const downSeen = new Set();
+    while (cur !== undefined && !downSeen.has(cur)) {
+      downSeen.add(cur);
+      downChain.push(cur);
+      const children = outAdj[cur] || [];
+      cur = children.length ? children[0] : undefined;
+    }
+    // 合并（去重保留顺序）
+    const chain = [];
+    const seen = new Set();
+    for (const n of [...upChain, ...downChain]) {
+      if (!seen.has(n)) { seen.add(n); chain.push(n); }
+    }
+    visibleNodes = chain;
+    selectedId = focusNode;
     renderD3();
   }
 
