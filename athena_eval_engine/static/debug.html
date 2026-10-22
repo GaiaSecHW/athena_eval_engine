@@ -422,26 +422,34 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     return outAdj[id] || [];
   }
 
-  // 默认视图：最新 2 层（verified_finding + finding 的直接上级）
-  // verified_finding 是最右层（最新产出），finding 是它的直接上级
-  function buildDefaultView() {
-    const result = new Set();
-    // 找 verified_finding 节点
-    const vfNodes = allNodes.filter(n => labels[n].type === "verified_finding");
-    for (const n of vfNodes.slice(0, 3)) {  // 取前 3 个 verified_finding
-      result.add(n);
-      // 直接上级 finding
-      for (const p of (inAdj[n] || [])) {
-        result.add(p);
+  // BFS 分层（用于默认视图取根开始 2 层）
+  const inDeg = {};
+  for (const n of allNodes) inDeg[n] = 0;
+  for (const n of allNodes) {
+    for (const t of (outAdj[n] || [])) inDeg[t] = (inDeg[t] || 0) + 1;
+  }
+  const rootNodes = allNodes.filter(n => inDeg[n] === 0);
+  const nodeLevel = {};
+  {
+    const q = rootNodes.slice();
+    for (const r of rootNodes) nodeLevel[r] = 0;
+    while (q.length) {
+      const cur = q.shift();
+      for (const nxt of (outAdj[cur] || [])) {
+        if (nodeLevel[nxt] === undefined) {
+          nodeLevel[nxt] = nodeLevel[cur] + 1;
+          q.push(nxt);
+        }
       }
     }
-    // 兜底：如果没找到 verified_finding，取 finding 前 3 个 + 上级
-    if (result.size === 0) {
-      const fNodes = allNodes.filter(n => labels[n].type === "finding");
-      for (const n of fNodes.slice(0, 3)) {
-        result.add(n);
-        for (const p of (inAdj[n] || [])) result.add(p);
-      }
+  }
+
+  // 默认视图：根开始 2 层（L0 + L1）
+  function buildDefaultView() {
+    const result = new Set();
+    for (const n of allNodes) {
+      const lv = nodeLevel[n];
+      if (lv !== undefined && lv <= 1) result.add(n);
     }
     return Array.from(result);
   }
