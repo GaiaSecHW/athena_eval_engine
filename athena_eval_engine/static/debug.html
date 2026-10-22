@@ -543,18 +543,25 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const node = g.node(n);
       if (node) pos[n] = { x: node.x - NODE_W / 2, y: node.y - NODE_H / 2 };
     }
-    // 虚拟节点位置：取该层最后一个显示节点的下方
+    // 虚拟节点位置：取该层最后一个显示节点的正下方（左上角坐标）
+    let maxBottom = 0;
     for (const r of Object.keys(virtuals)) {
       const nodes = byRank[r];
-      const lastShown = nodes.slice(0, MAX_PER_LEVEL).map(n => g.node(n)).filter(Boolean);
-      if (lastShown.length) {
-        const base = lastShown[lastShown.length - 1];
-        pos[virtuals[r].id] = { x: base.x - NODE_W / 2, y: base.y + NODE_H / 2 + 8 };
+      const lastShownId = nodes.slice(0, MAX_PER_LEVEL).filter(n => g.node(n)).slice(-1)[0];
+      const lastPos = lastShownId ? pos[lastShownId] : null;
+      if (lastPos) {
+        // 虚拟节点放在最后一个显示节点正下方，垂直偏移（不与其他层重叠）
+        const vx = lastPos.x;
+        const vy = lastPos.y + NODE_H + 10;
+        pos[virtuals[r].id] = { x: vx, y: vy };
+        maxBottom = Math.max(maxBottom, vy + 44);
       }
     }
     const visEdges = edges.filter(e => e.from !== e.to && shown.has(e.from) && shown.has(e.to));
+    // H 考虑虚拟节点（可能超出 dagre 布局高度）
+    const H = Math.max((graph.height || 600) + 40, maxBottom + 20);
     return { vis: shown, visEdges, pos, virtuals, hiddenByLevel,
-             W: (graph.width || 800) + 40, H: (graph.height || 600) + 40 };
+             W: (graph.width || 800) + 40, H: H };
   }
   let layout = computeVisible();
 
