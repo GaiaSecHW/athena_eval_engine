@@ -1273,6 +1273,7 @@ class Orchestrator:
             tasks.append({
                 "task_run": tr,
                 "source_uri": local_path,
+                "original_source_uri": src_uri,
                 "trace_kind": trace_kind,
                 "benchmark_items": bench,
                 "category": category,
@@ -1322,6 +1323,7 @@ class Orchestrator:
         source_uri = task["source_uri"]
         trace_kind = task.get("trace_kind")
         bench = task.get("benchmark_items", [])
+        original_source_uri = task.get("original_source_uri", source_uri)
 
         if cancel_cb:
             cancel_cb()
@@ -1335,8 +1337,11 @@ class Orchestrator:
             tr.benchmark_item_id = bench[0].benchmark_item_id
 
         # 构造 trace_source dict（所有 parser 的 parse()/load_session() 都期望 dict）
+        # original_source_uri 保留原始 /data/files/{pid}/tasks/{tid}/ 路径，
+        # 供 argo parser 解析原始数据 project_id/task_id（本地拷贝路径格式不同）
         trace_source = {
             "source_uri": source_uri,
+            "original_source_uri": original_source_uri,
             "trace_id": tr.trace_id or source_uri,
         }
         dp = parser.build_data_pack(trace_source, tr)

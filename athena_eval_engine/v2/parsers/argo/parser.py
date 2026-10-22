@@ -101,9 +101,14 @@ class ArgoParser(BaseParser):
         trace_id = trace_source.get("trace_id", uri)
         session_id = trace_source.get("turing_session_id", "")
 
-        # 从 source_uri 解析原始数据 project_id + task_id
-        # 路径格式：/data/files/{project_id}/tasks/{task_id}/session/argo/ 或拷贝目录
-        m = re.search(r"/files/([^/]+)/tasks/([^/]+)/", uri)
+        # 从原始 source_uri 解析原始数据 project_id + task_id
+        # 优先用 original_source_uri（k8s 下 trace 拷贝到 /tmp，source_uri 是
+        # 拷贝路径不含 /files/{pid}/tasks/{tid}/ 格式）；回退用 source_uri。
+        # 路径格式：/data/files/{project_id}/tasks/{task_id}/session/argo/
+        orig_uri = trace_source.get("original_source_uri", uri)
+        m = re.search(r"/files/([^/]+)/tasks/([^/]+)/", orig_uri)
+        if not m:
+            m = re.search(r"/files/([^/]+)/tasks/([^/]+)/", uri)
         if m:
             self._project_id = m.group(1)  # d70b3a3532651d61（chimera_id）
             self._task_id = m.group(2)     # f35872944ed542bcb3901118
