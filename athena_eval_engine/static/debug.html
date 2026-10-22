@@ -562,9 +562,9 @@ RENDERERS.case_matching = function(el, data) {
       "unmatched": "未匹配",
     }[method] || method;
 
-    const miningSids = (m.mining_sessions || []).join(", ") || '<span style="color:#999">—</span>';
-    const verifySids = (m.verify_sessions || []).join(", ") || '<span style="color:#999">—</span>';
-    const detail = m.match_detail || '<span style="color:#999">—</span>';
+    const miningSids = (m.mining_sessions || []).join(", ");
+    const verifySids = (m.verify_sessions || []).join(", ");
+    const detail = m.match_detail || '';
 
     // 验证 agent 判定（挖掘 CONFIRMED + 验证否定 → FN，根因在验证链）
     const verifyVerdict = m.verify_verdict || "";
@@ -580,9 +580,9 @@ RENDERERS.case_matching = function(el, data) {
     html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${esc(outcomeLabel)}</span></td>`;
     html += `<td><span class="badge" style="background:${vvColor};color:#fff">${esc(vvLabel)}</span></td>`;
     html += `<td><span class="badge" style="background:${methodColor};color:#fff">${esc(methodLabel)}</span></td>`;
-    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(miningSids)}">${esc(miningSids)}</td>`;
-    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(verifySids)}">${esc(verifySids)}</td>`;
-    html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${esc(detail)}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(miningSids)}">${miningSids ? esc(miningSids) : '<span style="color:#999">—</span>'}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(verifySids)}">${verifySids ? esc(verifySids) : '<span style="color:#999">—</span>'}</td>`;
+    html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${detail ? esc(detail) : '<span style="color:#999">—</span>'}</td>`;
     html += `</tr>`;
   }
   html += `</tbody></table>`;
