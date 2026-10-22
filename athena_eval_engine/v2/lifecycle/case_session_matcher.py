@@ -36,17 +36,16 @@ import re
 from collections import defaultdict
 
 from ..core.data_pack import DataPack
+from ..core.agents import MINING_AGENT_SET, VERIFY_AGENT_SET
 from ...infrastructure.log_util import log
 
 
 class CaseSessionMatcher:
     """case↔session 匹配器。"""
 
-    # 挖掘 agent 的 DataPack.agent_type
-    _MINING_AGENT_TYPES = {"turing", "argo", "secmate", "dataflow"}
-
-    # 验证 agent 的 DataPack.agent_type
-    _VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
+    # 挖掘 / 验证 agent 类型（集中配置，见 v2/core/agents.py）
+    _MINING_AGENT_TYPES = MINING_AGENT_SET
+    _VERIFY_AGENT_TYPES = VERIFY_AGENT_SET
 
     def match(
         self,
@@ -663,7 +662,11 @@ class CaseSessionMatcher:
             return ""
 
         for sid in found_mining:
-            agent_type = mining_session_to_agent.get(sid, "turing")
+            # parent_map 反推到的 session 应在 mining_session_to_agent 中，
+            # 不在则跳过（避免错误归类为某个 agent）
+            agent_type = mining_session_to_agent.get(sid, "")
+            if not agent_type:
+                continue
             self._classify_session(sid, agent_type,
                                    mining_sessions, verify_sessions)
 

@@ -53,11 +53,8 @@ _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7"]
 
-# 所有 Agent 类型（行头）
-_ALL_AGENT_TYPES = [
-    "turing", "argo", "secmate", "dataflow",
-    "cvuln_verify", "webvuln_verify",
-]
+# 所有 Agent 类型（行头，集中配置见 v2/core/agents.py）
+from ..core.agents import ALL_AGENT_TYPES as _ALL_AGENT_TYPES
 
 
 class ReportAssembler:

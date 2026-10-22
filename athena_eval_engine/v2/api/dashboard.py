@@ -33,11 +33,8 @@ REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "reports")
 # A-K 成因码
 _ALL_CAUSE_CODES = list("ABCDEFGHIJK")
 
-# 6 个 agent 类型
-_ALL_AGENT_TYPES = [
-    "turing", "argo", "secmate", "dataflow",
-    "cvuln_verify", "webvuln_verify",
-]
+# 6 个 agent 类型（集中配置见 v2/core/agents.py）
+from ..core.agents import ALL_AGENT_TYPES as _ALL_AGENT_TYPES
 
 
 def _read_eval_reports() -> list[dict]:

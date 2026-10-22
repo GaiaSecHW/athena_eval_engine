@@ -61,15 +61,8 @@ _TARGET_LABELS = {
     "eval_process": "评测流程",
 }
 
-# ── fix_suggestion.agent_type → 中文标签 ──
-_AGENT_TYPE_LABELS = {
-    "turing": "挖掘Agent(Turing)",
-    "argo": "挖掘Agent(Argo)",
-    "secmate": "挖掘Agent(SecMate)",
-    "dataflow": "挖掘Agent(Dataflow)",
-    "webvuln_verify": "验证Agent(WebVulnVerify)",
-    "cvuln_verify": "验证Agent(CVulnVerify)",
-}
+# ── fix_suggestion.agent_type → 中文标签（集中配置见 v2/core/agents.py）──
+from ..core.agents import AGENT_DISPLAY_NAMES as _AGENT_TYPE_LABELS
 
 # ── fix_suggestion.knowledge_source → 中文标签 ──
 _KNOWLEDGE_SOURCE_LABELS = {

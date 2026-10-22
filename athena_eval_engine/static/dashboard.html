@@ -229,6 +229,13 @@ const DEBUG=new URLSearchParams(location.search).get("debug")==="true";
 if(DEBUG){var _sb=document.getElementById("sys-btn");if(_sb)_sb.style.display="";}
 const _P=location.pathname;const _INGRESS=(_P==='/eval'||_P.indexOf('/eval/')===0)?'/eval':'';
 const U=(u)=>_INGRESS&&(u.indexOf("/api/")===0||u.indexOf("/reports/")===0||u.indexOf("/dts")===0||u==="/health")?_INGRESS+u:u;const F=(u,...a)=>fetch(U(u),...a);let activeId=null;
+// ── Agent 类型集中配置（新增 agent 只改这一处）──
+const AGENT_TYPES=['turing','argo','secmate','dataflow','cvuln_verify','webvuln_verify'];
+const AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
+// _toolLabel 额外含 dataflow_vuln_scan（trace_kind 用）
+const TOOL_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify','dataflow_vuln_scan':'DataflowVulnScan'};
+function _agentLabel(a){return AGENT_LABELS[a]||a||'-';}
+function _toolLabel(k){return TOOL_LABELS[k]||k||'-';}
 const THEMES={
   light:{"--bg":"#f5f6f8","--panel":"#ffffff","--p2":"#f0f2f5","--bd":"#e1e4e8","--txt":"#1a1d23","--sub":"#6b7280","--acc":"#2563eb","--green":"#16a34a","--red":"#dc2626","--amber":"#d97706","--gray":"#9ca3af","--header-bg":"#ffffff","--bar-bg":"#e5e7eb","--hover-shadow":"0 8px 24px rgba(0,0,0,.1)"},
   dark:{"--bg":"#0b0e14","--panel":"#141821","--p2":"#1c212c","--bd":"#2a3140","--txt":"#e8eaed","--sub":"#a8b2c0","--acc":"#5b9cf6","--green":"#4ade80","--red":"#f87171","--amber":"#fbbf24","--gray":"#8b95a5","--header-bg":"rgba(20,24,33,.6)","--bar-bg":"var(--p2)","--hover-shadow":"0 8px 32px rgba(0,0,0,.3)"}
@@ -428,8 +435,7 @@ function fmtPct(v){
 function renderCauseAgentMatrix(matrix,dts){
   var causeCodes=['A','B','C','D','E','F','G','H','I','J','K'];
   var causeLabels={'A':'该查没查','B':'查询太泛','C':'查了没得','D':'链路问题','E':'查到没用','F':'用了没推动','G':'导致误判','H':'挖掘方向偏差','I':'调用链中断','J':'模型幻觉','K':'验证否定真漏洞'};
-  var agentTypes=['turing','argo','secmate','dataflow','cvuln_verify','webvuln_verify'];
-  var agentLabels={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
+  var agentTypes=AGENT_TYPES,agentLabels=AGENT_LABELS;
   var hasData=false;
   for(var c in causeCodes){for(var i=0;i<agentTypes.length;i++){if((matrix[causeCodes[c]]||{})[agentTypes[i]]>0)hasData=true;}}
   if(!hasData)return '';
@@ -459,7 +465,7 @@ function renderCauseAgentMatrix(matrix,dts){
 // agent 维度明细表：各 agent 问题单数、FP/FN、误报率、回归验证、回归后误报率
 function renderAgentDetail(detail){
   if(!detail||!detail.length)return '';
-  var agentLabels={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
+  var agentLabels=AGENT_LABELS;
   function pctClass(v){
     if(v===null||v===undefined)return 'pct-na';
     return v>0.5?'pct-bad':(v>0.2?'pct-warn':'pct-good');
@@ -743,8 +749,7 @@ function renderLifecycle(lc){
   const bp=lc.breakpoint_distribution||{};
   const pc=lc.per_case_details||[];
 
-  const agents=['turing','argo','secmate','dataflow','cvuln_verify','webvuln_verify'];
-  const agentLabels={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
+  const agents=AGENT_TYPES,agentLabels=AGENT_LABELS;
   const levels=['L2','L3','L4','L5','L6','L7','L8'];
   const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
 
@@ -921,12 +926,6 @@ async function renderDtsList(){
         </select>
         <select id="dts-f-agent" onchange="_dtsFilter.agent_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部 Agent</option>
-          <option value="turing">Turing</option>
-          <option value="argo">Argo</option>
-          <option value="secmate">SecMate</option>
-          <option value="dataflow">Dataflow</option>
-          <option value="cvuln_verify">CVulnVerify</option>
-          <option value="webvuln_verify">WebVulnVerify</option>
         </select>
         <select id="dts-f-case" onchange="_dtsFilter.case_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:120px">
           <option value="">全部类型</option>
@@ -946,6 +945,15 @@ async function renderDtsList(){
       <div id="dts-table" style="overflow-x:auto"><div style="color:var(--sub);padding:20px;text-align:center">加载中…</div></div>
       <div id="dts-pager" style="margin-top:12px"></div>
     </div></div>`;
+  // 动态填充 agent 过滤选项（集中配置，新增 agent 自动出现）
+  var _agentSel=$('dts-f-agent');
+  if(_agentSel){
+    var _cur=_dtsFilter.agent_type||'';
+    AGENT_TYPES.forEach(function(at){
+      var o=document.createElement('option');o.value=at;o.textContent=AGENT_LABELS[at]||at;_agentSel.appendChild(o);
+      if(at===_cur)o.selected=true;
+    });
+  }
   loadDtsPage();
 }
 
@@ -1042,7 +1050,7 @@ const DTS_STATUS_LABELS={'open':'未关闭','passed':'回归通过','failed':'�
 const DTS_STATUS_COLORS={'open':'var(--gray)','passed':'var(--green)','failed':'var(--red)'};
 const DTS_RESP_LABELS={'agent':'Agent','knowledge':'知识/记忆','knowledge_base':'知识库','memory':'记忆','external_data_source':'外部数据源','eval_process':'评测流程'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
-const DTS_AGENT_LABELS={'turing':'Turing','argo':'Argo','secmate':'SecMate','dataflow':'Dataflow','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify'};
+const DTS_AGENT_LABELS=AGENT_LABELS;  // 复用全局集中配置
 const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(知识误导)','H':'L8断(挖掘方向偏差)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
 function dtsAgentLabel(at){
   if(!at)return '-';
@@ -1649,7 +1657,6 @@ function _checkTraceMain(){
     renderMainSide();renderRunConf();
   });
 }
-function _toolLabel(k){var m={'turing':'Turing','argo':'Argo','secmate':'SecMate','cvuln_verify':'CVulnVerify','webvuln_verify':'WebVulnVerify','dataflow_vuln_scan':'DataflowVulnScan'};return m[k]||k||'-';}
 
 async function renderRunConf(){
   const kgReady=sel.traceReady;

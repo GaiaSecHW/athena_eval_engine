@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from collections import Counter, defaultdict
 
+from ..core.agents import ALL_AGENT_TYPES
 from ...infrastructure.log_util import log
 
 # ── 断点→级别映射（§4.1 断点→成因映射）──
@@ -53,11 +54,8 @@ _FN_SUB_TO_CAUSE = {
     "other": "H",                    # 其他
 }
 
-# 所有 Agent 类型（行头）
-_ALL_AGENT_TYPES = [
-    "turing", "argo", "secmate", "dataflow",
-    "cvuln_verify", "webvuln_verify",
-]
+# 所有 Agent 类型（行头，集中配置见 v2/core/agents.py）
+_ALL_AGENT_TYPES = ALL_AGENT_TYPES
 
 # 所有 cause_code
 _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
@@ -69,8 +67,10 @@ _ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 _ALL_RESPONSIBILITIES = ["agent", "knowledge", "external_data_source", "eval_process"]
 
 # ── 链类型→默认 agent_type 映射（回退用，优先从 chain_data.agent_type 取）──
+# mining 无默认值——挖掘 agent 有多种（turing/argo/secmate/dataflow），
+# 不应假设默认是 turing，缺数据时留空让下游处理
 _CHAIN_DEFAULT_AGENT_TYPE = {
-    "mining": "turing",
+    "mining": "",
     "verification": "",
 }
 
