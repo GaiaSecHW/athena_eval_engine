@@ -57,6 +57,9 @@ class ArgoParser(BaseParser):
         self.parser_version = parser_version
         self._llm = llm_module  # 可选的自定义 LLM 模块；默认用 v2 infra.llm 模块函数
         self._session_parents: dict[str, str] = {}  # child_sid -> parent_sid（从 JSONL sessionId 字段提取）
+        # 原始数据任务标识（从 source_uri 解析，用于查 argo MySQL 权威数据）
+        self._project_id: str = ""  # argo 的 project_id（proj_xxx）
+        self._task_id: str = ""     # 原始数据任务 ID（f35872944...）
 
     # ------------------------------------------------------------------
     # BaseParser 抽象属性
@@ -97,6 +100,14 @@ class ArgoParser(BaseParser):
         uri = trace_source["source_uri"]
         trace_id = trace_source.get("trace_id", uri)
         session_id = trace_source.get("turing_session_id", "")
+
+        # 从 source_uri 解析原始数据 project_id + task_id
+        # 路径格式：/data/files/{project_id}/tasks/{task_id}/session/argo/ 或拷贝目录
+        m = re.search(r"/files/([^/]+)/tasks/([^/]+)/", uri)
+        if m:
+            self._project_id = m.group(1)  # d70b3a3532651d61（chimera_id）
+            self._task_id = m.group(2)     # f35872944ed542bcb3901118
+            _log.debug("Argo parse: uri=%s project=%s task=%s", uri, self._project_id, self._task_id)
 
         # 如果是目录，读所有 .jsonl（含 argo/ 子目录）；如果是单文件，读它
         files = self._resolve_jsonl_files(uri)
@@ -867,6 +878,10 @@ class ArgoParser(BaseParser):
         - intent_sources: intent 以哪些 fact 为输入（verify 验证消费 fact）
         - investigate 输出 fact → 该 fact 被 verify 引用为 source = 依赖关系
 
+        注意：intents.id 是 (id, project_id) 复合主键，id 跨 project 不唯一。
+        JOIN intent_outputs/intent_sources 时必须限定 project_id，否则会
+        串到其他 project 的 intent（曾导致 419 行膨胀为 14 万行假依赖）。
+
         Returns:
             [{"investigate_sid": str, "fact_id": str, "verify_sid": str}, ...]
             连接失败返回空列表（DB 查询是增强数据，非解析必需）。
@@ -881,17 +896,35 @@ class ArgoParser(BaseParser):
                 return []
             try:
                 cur = conn.cursor()
-                # 1. investigate intent 输出的 fact（intent_outputs）
-                placeholders = ", ".join(["%s"] * len(session_ids))
+                # 0. 用原始数据 task_id 查 projects 表拿 argo project_id
+                # （task_id → project_id 关系存在 projects 表：projects.id=proj_xxx,
+                #   projects.task_id=原始任务ID。session_ids 反查不够权威）
+                project_id = self._project_id  # 从 source_uri 解析的 chimera_id 兜底
+                if self._task_id:
+                    cur.execute(
+                        "SELECT id FROM projects WHERE task_id = %s LIMIT 1",
+                        (self._task_id,),
+                    )
+                    prow = cur.fetchone()
+                    if prow:
+                        project_id = prow[0]  # 权威的 argo project_id（proj_582）
+                if not project_id:
+                    _log.debug("Argo _query_fact_deps_from_db: 无 project_id")
+                    return []
+
+                # 1. investigate/verify intent 输出的 fact（intent_outputs）
+                # 必须同时限定 i.project_id 和 o.project_id（防跨 project 串行）
+                ph = ", ".join(["%s"] * len(session_ids))
                 sql_outputs = (
-                    "SELECT i.session_id, o.fact_id FROM intents i "
+                    "SELECT DISTINCT i.session_id, o.fact_id FROM intents i "
                     "JOIN intent_outputs o ON i.id = o.intent_id "
-                    "WHERE i.task_type IN ('investigate','verify') "
-                    "AND i.session_id IN (" + placeholders + ")"
+                    "WHERE i.project_id = %s AND o.project_id = %s "
+                    "AND i.task_type IN ('investigate','verify') "
+                    "AND i.session_id IN (" + ph + ")"
                 )
-                cur.execute(sql_outputs, session_ids)
+                cur.execute(sql_outputs, [project_id, project_id] + session_ids)
                 output_rows = cur.fetchall()
-                # fact_id -> 输出它的 investigate session 集合
+                # fact_id -> 输出它的 investigate/verify session 集合
                 fact_producers: dict[str, list[str]] = {}
                 for sid, fid in output_rows:
                     if sid and fid:
@@ -899,12 +932,13 @@ class ArgoParser(BaseParser):
 
                 # 2. verify intent 消费的 fact（intent_sources）
                 sql_sources = (
-                    "SELECT i.session_id, s.fact_id FROM intents i "
+                    "SELECT DISTINCT i.session_id, s.fact_id FROM intents i "
                     "JOIN intent_sources s ON i.id = s.intent_id "
-                    "WHERE i.task_type = 'verify' "
-                    "AND i.session_id IN (" + placeholders + ")"
+                    "WHERE i.project_id = %s AND s.project_id = %s "
+                    "AND i.task_type = 'verify' "
+                    "AND i.session_id IN (" + ph + ")"
                 )
-                cur.execute(sql_sources, session_ids)
+                cur.execute(sql_sources, [project_id, project_id] + session_ids)
                 source_rows = cur.fetchall()
                 cur.close()
 
