@@ -13,7 +13,7 @@ h1 { font-size: 20px; margin-bottom: 16px; color: #6c5ce7; word-break: break-all
 .step-btn:hover { background: #ececff; color: #333; }
 .step-btn.active { background: #6c5ce7; color: #fff; border-color: #6c5ce7; }
 .content { background: #fff; border: 1px solid #e0e0e0; border-radius: 6px; padding: 16px;
-  max-height: 75vh; overflow: auto; }
+  height: calc(100vh - 110px); overflow: auto; }
 .content pre { font-size: 14px; line-height: 1.6; white-space: pre-wrap; word-break: break-all; }
 .empty { color: #999; padding: 40px; text-align: center; }
 .stats { display: flex; gap: 12px; margin-bottom: 12px; flex-wrap: wrap; }
@@ -398,7 +398,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     }
   }
 
-  // 当前绘制节点集：收缩时每层截断，超出合并为聚合节点
+  // 当前绘制节点集：收缩时按 BFS 连通采样（保持上下游连通，边不断裂）
   let drawNodes = nodeList;
   let aggregated = null;
 
@@ -408,22 +408,45 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       aggregated = null;
       return;
     }
+    // BFS 连通采样：从 root 出发沿边取每层前 MAX_PER_LEVEL 个连通节点。
+    // 比按层截断更优——保证节点间连线完整（按层截断会导致 99% 边断裂）。
     const shown = new Set();
     const agg = {};
-    for (const lv of levels) {
-      const nodes = byLevel[lv];
-      if (nodes.length <= MAX_PER_LEVEL) {
-        for (const n of nodes) shown.add(n);
+    // 构建邻接表（from → [to]）
+    const adj = {};
+    for (const e of edges) {
+      if (!adj[e.from]) adj[e.from] = [];
+      adj[e.from].push(e.to);
+    }
+    // BFS：按层遍历，每层取前 MAX_PER_LEVEL 个
+    let frontier = roots.slice();
+    const visited = new Set();
+    for (const r of roots) { visited.add(r); shown.add(r); }
+    while (frontier.length) {
+      const next = [];
+      for (const cur of frontier) {
+        for (const tgt of (adj[cur] || [])) {
+          if (!visited.has(tgt)) {
+            visited.add(tgt);
+            next.push(tgt);
+          }
+        }
+      }
+      // 按层分组
+      if (next.length <= MAX_PER_LEVEL) {
+        for (const n of next) shown.add(n);
       } else {
-        for (const n of nodes.slice(0, MAX_PER_LEVEL)) shown.add(n);
+        for (const n of next.slice(0, MAX_PER_LEVEL)) shown.add(n);
+        const lv = level[next[0]] === 99 ? Math.max(...Object.values(level)) + 1 : level[next[0]];
         agg[lv] = {
           id: "__agg_" + lv,
-          count: nodes.length - MAX_PER_LEVEL,
+          count: next.length - MAX_PER_LEVEL,
         };
       }
+      frontier = next.slice(0, MAX_PER_LEVEL);
     }
     drawNodes = Array.from(shown);
-    aggregated = agg;
+    aggregated = Object.keys(agg).length ? agg : null;
   }
   buildDrawSets();
 
@@ -497,6 +520,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const r = relatedOf(selectedId);
       relNodes = r.nodes; relEdges = r.relEdges;
     }
+    // 选中时只显示关联节点和边，不相关的不画（隐藏而非变淡）
     // 边（只画两端都在当前绘制集或指向聚合节点的）
     let lines = "";
     for (const e of edges) {
@@ -507,8 +531,10 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const fromShown = drawNodes.includes(e.from) || (aggregated && aggregated[lvFrom]);
       const toShown = drawNodes.includes(e.to) || (aggregated && aggregated[lvTo]);
       if (!fromShown || !toShown) continue;
-      const color = EDGE_COLOR[e.task_type] || "#95a5a6";
+      // 选中时只画关联边
       const key = e.from + "|" + e.to;
+      if (selectedId && relEdges && !relEdges.has(key) && !(focusHighlight && (focusHighlight.has(e.from) || focusHighlight.has(e.to)))) continue;
+      const color = EDGE_COLOR[e.task_type] || "#95a5a6";
       const edgeInFocus = focusHighlight && (focusHighlight.has(e.from) || focusHighlight.has(e.to));
       const active = (selectedId && relEdges && relEdges.has(key)) || edgeInFocus;
       const dim = selectedId && relEdges && !relEdges.has(key) && !edgeInFocus;
@@ -516,23 +542,24 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       lines += `<path d="M${a.x + nodeW},${a.y + nodeH / 2} C${midX},${a.y + nodeH / 2} ${midX},${b.y + nodeH / 2} ${b.x},${b.y + nodeH / 2}" `
         + `fill="none" stroke="${color}" stroke-opacity="${active ? 0.95 : (dim ? 0.06 : 0.45)}" stroke-width="${active ? 2.5 : 1.3}"/>`;
     }
-    // 节点
+    // 节点（选中时只显示关联节点，不相关的不画）
     let nodes = "";
     for (const n of drawNodes) {
       const p = pos[n];
       if (!p) continue;
-      const st = FACT_STYLE[(facts[n] || {}).type] || DEFAULT_STYLE;
       const inFocus = focusHighlight && focusHighlight.has(n);
       const active = (selectedId && relNodes && relNodes.has(n)) || inFocus;
-      const dim = selectedId && relNodes && !relNodes.has(n) && !inFocus;
       const sel = selectedId === n;
+      // 选中时隐藏非关联节点
+      if (selectedId && !active && !sel) continue;
+      const st = FACT_STYLE[(facts[n] || {}).type] || DEFAULT_STYLE;
       const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
       const sid = factSid[n] || "—";
       const ftype = (facts[n] || {}).type || "";
       nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
-        + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
-        + `<text x="${p.x + 6}" y="${p.y + 11}" font-size="11" fill="${dim ? "#ccc" : "#333"}" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} <tspan fill="${dim ? "#ccc" : "#888"}">${esc(ftype)}</tspan></text>`
-        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="${dim ? "#ddd" : "#888"}" style="user-select:none">${esc(sid)}</text>`
+        + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
+        + `<text x="${p.x + 6}" y="${p.y + 11}" font-size="11" fill="#333" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} <tspan fill="#888">${esc(ftype)}</tspan></text>`
+        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="#888" style="user-select:none">${esc(sid)}</text>`
         + `</g>`;
     }
     // 聚合节点（收缩模式每层超出部分）
@@ -637,7 +664,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     + ` <input type="text" id="factSearch-${taskRunId}" placeholder="输入 session_id 定位节点" style="font-size:13px;padding:2px 6px;width:240px;margin-left:8px;" />`
     + `<button type="button" id="factSearchBtn-${taskRunId}" style="font-size:13px;padding:2px 8px;cursor:pointer;">定位</button>`
     + ` <span style="color:#888;font-size:12px;">${fullMode ? "全量" : "每层最多 " + MAX_PER_LEVEL + " 个，点击聚合节点展开"}</span></div>`
-    + `<div style="margin-top:8px;overflow:auto;max-height:80vh;border:1px solid #eee;border-radius:6px" id="${containerId}">${buildSvg()}</div>`
+    + `<div style="margin-top:8px;overflow:auto;max-width:100%" id="${containerId}">${buildSvg()}</div>`
     + `</details>`;
 
   _pendingSankeyClick.push(function() {
