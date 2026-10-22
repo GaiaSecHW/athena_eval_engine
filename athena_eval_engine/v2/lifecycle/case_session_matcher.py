@@ -199,6 +199,25 @@ class CaseSessionMatcher:
                                                    mining_sessions, verify_sessions)
                         match_method_used = "raw_title_multi"
 
+            # Argo 挖掘 agent 回退：vuln_title ↔ finding description 精确匹配
+            # Argo finding 无 title（只有 description），告警中心 title 与 description
+            # 不同源，raw_title 匹配不到。运行态下 finding 上报漏洞中心，其
+            # description 成为漏洞中心 case 的 title（vuln_title），直接精确匹配。
+            # 只在挖掘 session 尚未匹配到且运行态时启用（开发态由 LLM 匹配处理）。
+            if not mining_sessions and eval_mode == "runtime" and vuln_title:
+                if vuln_title in finding_index:
+                    entries = finding_index[vuln_title]
+                    matched_any = False
+                    for sid, fkey, agent_type in entries:
+                        if agent_type in self._MINING_AGENT_TYPES:
+                            self._classify_session(sid, agent_type,
+                                                   mining_sessions, verify_sessions)
+                            matched_any = True
+                    if matched_any:
+                        match_method_used = (match_method_used +
+                            "+mining_vuln_title" if match_method_used
+                            else "mining_vuln_title")
+
             # 验证 agent 回退：用 session_graph.vuln_id_to_sessions 匹配
             # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id）
             # 和 vulnerability_id（数字）。v2s 双 key（数字 ID + case_id）——
@@ -864,6 +883,27 @@ class CaseSessionMatcher:
                         entry = (sid, desc, dp.agent_type)
                         if entry not in index[title]:
                             index[title].append(entry)
+
+        # ── Argo 平台（挖掘 agent）──
+        # Argo finding 无 title，只有 description + (cwe, file, line) key。
+        # 运行态下 finding 上报漏洞中心，description 成为漏洞中心 case 的
+        # vuln_title，用 description 作索引键（等价于 turing 的 title 位置）。
+        for dp in mining_packs:
+            if dp.agent_type != "argo":
+                continue
+            sessions = (dp.session_graph or {}).get("sessions", {}) if isinstance(dp.session_graph, dict) else {}
+            for sid, sdata in sessions.items():
+                sdata_d = sdata if isinstance(sdata, dict) else {}
+                fdescs = sdata_d.get("finding_descs", {})
+                if not fdescs:
+                    continue
+                for fkey, fdesc in fdescs.items():
+                    fdesc = str(fdesc or "").strip()
+                    if not fdesc:
+                        continue
+                    entry = (sid, fkey, dp.agent_type)
+                    if entry not in index[fdesc]:
+                        index[fdesc].append(entry)
 
         # ── WebVulnVerify 平台（验证 agent）──
         for dp in verify_packs:

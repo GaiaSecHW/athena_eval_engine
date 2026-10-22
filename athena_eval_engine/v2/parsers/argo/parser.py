@@ -410,6 +410,7 @@ class ArgoParser(BaseParser):
                     'session_type': None,  # 'investigate' / 'verify'
                     'task_type': None,     # 'investigate' / 'verify' / 'reason'
                     'finding_keys': set(),
+                    'finding_descs': {},   # finding_key -> description（供 case↔session 匹配）
                     'time_created': None,
                     'time_updated': None,
                 }
@@ -436,6 +437,17 @@ class ArgoParser(BaseParser):
                 # verify session 标记
                 if "## Finding to Verify" in content or "# Verify:" in content:
                     sg['session_type'] = 'verify'
+                    # 提取被验证 finding 的标题（Description 行）
+                    # 运行态下 finding 上报漏洞中心，Description 成为 case 的
+                    # vuln_title。从 verify queue 提取，供 case↔session 匹配。
+                    m = re.search(
+                        r'\*\*Description:\*\*\s*(.+?)(?=\n\n|\n\*\*Metadata|\Z)',
+                        content, re.DOTALL,
+                    )
+                    if m:
+                        fdesc = m.group(1).strip()
+                        if fdesc:
+                            sg['finding_descs'][f"verify:{fdesc[:40]}"] = fdesc
                 # fact 引用（prompt 文本中引用的 fact ID）
                 # 用 negative lookbehind 避免 hex 字符串（如项目 ID 中的 f58851）误匹配
                 for fid in re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', content):
@@ -462,6 +474,13 @@ class ArgoParser(BaseParser):
                                 key = self._finding_key(f)
                                 if key and key != "(,,)":
                                     sg['finding_keys'].add(key)
+                                # 保存 finding description（供 case↔session 匹配）
+                                # 运行态下 finding 由挖掘 agent 上报漏洞中心，
+                                # description 成为漏洞中心 case 的 vuln_title。
+                                fdesc = f.get("description") or ""
+                                if fdesc:
+                                    if key and key != "(,,)":
+                                        sg['finding_descs'][key] = fdesc
                         # verify verdict: 存 verdict description 用于后续匹配 verified_finding
                         if "verdict" in data:
                             sg['session_type'] = 'verify'
