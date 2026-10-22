@@ -386,7 +386,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const MAX_PER_LEVEL = 12;
 
   // 布局参数
-  const nodeW = 240, nodeH = 36, colGap = 60, rowGap = 10, padX = 20, padY = 20;
+  const nodeW = 280, nodeH = 36, colGap = 60, rowGap = 10, padX = 20, padY = 20;
   const colW = nodeW + colGap;
 
   // fact_id → 生产该 fact 的 intent 的 session_id（节点显示用）
@@ -527,13 +527,12 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const dim = selectedId && relNodes && !relNodes.has(n) && !inFocus;
       const sel = selectedId === n;
       const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
-      const sid = factSid[n] || "";
-      const sidShort = sid ? sid.slice(0, 22) + (sid.length > 22 ? "…" : "") : "—";
+      const sid = factSid[n] || "—";
       const ftype = (facts[n] || {}).type || "";
       nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
         + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
         + `<text x="${p.x + 6}" y="${p.y + 11}" font-size="11" fill="${dim ? "#ccc" : "#333"}" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} <tspan fill="${dim ? "#ccc" : "#888"}">${esc(ftype)}</tspan></text>`
-        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="${dim ? "#ddd" : "#888"}" style="user-select:none">${esc(sidShort)}</text>`
+        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="${dim ? "#ddd" : "#888"}" style="user-select:none">${esc(sid)}</text>`
         + `</g>`;
     }
     // 聚合节点（收缩模式每层超出部分）
