@@ -133,6 +133,19 @@ function render(step, data) {
 // ── 步骤渲染器 ──
 const RENDERERS = {};
 
+// HTML 转义工具：所有插入 innerHTML 的外部字段必须经过 esc()。
+// 不转义 < > & 会把字段当标签解析（如 summary 里的 <script> 会吞掉后续 DOM），
+// 且存在 XSS 注入风险。
+function esc(v) {
+  if (v === null || v === undefined) return "";
+  return String(v)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
+}
+
 RENDERERS.ingesting = function(el, data) {
   let html = "";
 
@@ -160,15 +173,15 @@ RENDERERS.ingesting = function(el, data) {
       const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
       const hc = c.human_confirmation_summary ?? "";
       const hcShort = hc.length > 60 ? hc.substring(0, 60) + "..." : hc;
-      html += `<tr><td title="${c.case_id ?? ""}">${c.case_id ?? ""}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${title.replace(/"/g, '&quot;')}">${titleShort}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${summary.replace(/"/g, '&quot;')}">${summaryShort}</td>`
-        + `<td><span class="badge badge-${vr}">${vr}</span></td>`
-        + `<td>${c.current_stage ?? ""}</td>`
-        + `<td>${c.false_positive_group ?? ""}</td>`
-        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${hc.replace(/"/g, '&quot;')}">${hcShort}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`
-        + `<td>${c.project_id ?? ""}</td></tr>`;
+      html += `<tr><td title="${esc(c.case_id ?? "")}">${esc(c.case_id ?? "")}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(title)}">${esc(titleShort)}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(summary)}">${esc(summaryShort)}</td>`
+        + `<td><span class="badge badge-${vr}">${esc(vr)}</span></td>`
+        + `<td>${esc(c.current_stage ?? "")}</td>`
+        + `<td>${esc(c.false_positive_group ?? "")}</td>`
+        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(hc)}">${esc(hcShort)}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sf)}">${esc(sfShort)}</td>`
+        + `<td>${esc(c.project_id ?? "")}</td></tr>`;
     }
     html += `</tbody></table>`;
   }
@@ -188,12 +201,12 @@ RENDERERS.ingesting = function(el, data) {
       const sfShort = sf.length > 60 ? sf.substring(0, 60) + "..." : sf;
       const hc = c.human_confirmation_summary ?? "";
       const hcShort = hc.length > 60 ? hc.substring(0, 60) + "..." : hc;
-      html += `<tr><td title="${c.case_id ?? ""}">${c.case_id ?? ""}</td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${vt.replace(/"/g, '&quot;')}">${vtShort}</td>`
-        + `<td><span class="badge badge-${lbl}">${lbl}</span></td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${sf.replace(/"/g, '&quot;')}">${sfShort}</td>`
-        + `<td>${c.false_positive_group ?? ""}</td>`
-        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${hc.replace(/"/g, '&quot;')}">${hcShort}</td></tr>`;
+      html += `<tr><td title="${esc(c.case_id ?? "")}">${esc(c.case_id ?? "")}</td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(vt)}">${esc(vtShort)}</td>`
+        + `<td><span class="badge badge-${lbl}">${esc(lbl)}</span></td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(sf)}">${esc(sfShort)}</td>`
+        + `<td>${esc(c.false_positive_group ?? "")}</td>`
+        + `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(hc)}">${esc(hcShort)}</td></tr>`;
     }
     html += `</tbody></table>`;
   }
@@ -231,14 +244,14 @@ RENDERERS.ingesting = function(el, data) {
                       blLabel === "NON_VULNERABLE" ? "#27ae60" : "#999";
 
       html += `<tr>`
-        + `<td title="${m.raw_case_id ?? ""}">${m.raw_case_id ?? ""}</td>`
-        + `<td><span class="badge" style="background:${rawVrColor};color:#fff">${rawVrLabel}</span></td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${rt.replace(/"/g, '&quot;')}">${rtShort}</td>`
-        + `<td title="${matchedId ?? ""}">${matchedId ? matchedId : '<span style="color:#666">无匹配</span>'}</td>`
-        + `<td><span class="badge" style="background:${blColor};color:#fff">${blLabelShort}</span></td>`
-        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mbt.replace(/"/g, '&quot;')}">${mbtShort}</td>`
+        + `<td title="${esc(m.raw_case_id ?? "")}">${esc(m.raw_case_id ?? "")}</td>`
+        + `<td><span class="badge" style="background:${rawVrColor};color:#fff">${esc(rawVrLabel)}</span></td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(rt)}">${esc(rtShort)}</td>`
+        + `<td title="${esc(matchedId ?? "")}">${matchedId ? esc(matchedId) : '<span style="color:#666">无匹配</span>'}</td>`
+        + `<td><span class="badge" style="background:${blColor};color:#fff">${esc(blLabelShort)}</span></td>`
+        + `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(mbt)}">${esc(mbtShort)}</td>`
         + `<td style="color:${confColor};font-weight:bold">${(conf * 100).toFixed(0)}%</td>`
-        + `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${reason.replace(/"/g, '&quot;')}">${reasonShort}</td>`
+        + `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(reason)}">${esc(reasonShort)}</td>`
         + `</tr>`;
     }
     html += `</tbody></table>`;
@@ -274,7 +287,7 @@ RENDERERS.parsing = function(el, data) {
     const sc = p.session_count || 0;
     const ec = p.edge_count || 0;
     html += `<details style="margin:16px 0 8px;">`
-      + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">${p.task_run_id} — ${agentLabel} (${condLabel}) — ${sc} 会话, ${ec} 边</summary>`;
+      + `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">${esc(p.task_run_id)} — ${esc(agentLabel)} (${esc(condLabel)}) — ${sc} 会话, ${ec} 边</summary>`;
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
@@ -362,7 +375,7 @@ function renderFactDepsSankey(factDeps, sessions, taskRunId) {
       const text = label.length > 28 ? label.slice(0, 26) + "…" : label;
       return `<g>`
         + `<rect x="${p.x - 4}" y="${p.y - nodeH / 2}" width="${colW - 8}" height="${nodeH}" rx="6" fill="${color}" fill-opacity="0.12" stroke="${color}" stroke-width="1"/>`
-        + `<text x="${p.x + 6}" y="${p.y + 4}" font-size="11" fill="#444" style="user-select:none">${text.replace(/</g, "&lt;")}</text>`
+        + `<text x="${p.x + 6}" y="${p.y + 4}" font-size="11" fill="#444" style="user-select:none">${esc(text)}</text>`
         + `</g>`;
     }).join("");
   }
@@ -425,13 +438,13 @@ function renderSessionTree(sessions) {
       const s = smap[sid];
       if (!s) return;
 
-      const agent = s.agent || s.session_type || "?";
-      const phase = s.phase ? ` [${s.phase}]` : "";
-      const status = s.status ? ` <span style="color:#aaa;font-size:12px">(${s.status})</span>` : "";
+      const agent = esc(s.agent || s.session_type || "?");
+      const phase = s.phase ? ` [${esc(s.phase)}]` : "";
+      const status = s.status ? ` <span style="color:#aaa;font-size:12px">(${esc(s.status)})</span>` : "";
       const text = `<span style="color:#6c5ce7;font-weight:600">${agent}</span>`
         + `<span style="color:#6c5ce7">${phase}</span>`
         + `${status} `
-        + `<span style="color:#999;font-size:12px">${sid}</span>`;
+        + `<span style="color:#999;font-size:12px">${esc(sid)}</span>`;
 
       const hasKids = (childrenMap[sid] || []).length > 0;
       treeNodes.push({
@@ -478,11 +491,11 @@ function renderSessionTree(sessions) {
     html += `<details style="margin-bottom:12px">`;
     html += `<summary style="cursor:pointer;color:#888;font-size:14px;">孤立节点（${isolated.length}）— 按 agent 分组</summary>`;
     for (const [agent, sess] of Object.entries(byAgent).sort((a,b) => b[1].length - a[1].length)) {
-      html += `<div style="margin:8px 0 4px;color:#6c5ce7;font-size:14px;">${agent} (${sess.length})</div>`;
+      html += `<div style="margin:8px 0 4px;color:#6c5ce7;font-size:14px;">${esc(agent)} (${sess.length})</div>`;
       html += `<div style="font-family:monospace;font-size:13px;line-height:1.6;color:#888;white-space:pre-wrap;">`;
       for (const s of sess) {
-        const phase = s.phase ? ` <span style="color:#6c5ce7">[${s.phase}]</span>` : "";
-        html += `${s.session_id}${phase}\n`;
+        const phase = s.phase ? ` <span style="color:#6c5ce7">[${esc(s.phase)}]</span>` : "";
+        html += `${esc(s.session_id)}${phase}\n`;
       }
       html += `</div>`;
     }
@@ -561,15 +574,15 @@ RENDERERS.case_matching = function(el, data) {
                     verifyVerdict === "FALSE_POSITIVE" ? "#e74c3c" : "#999";
 
     html += `<tr>`;
-    html += `<td style="font-family:monospace;font-size:12px">${m.case_id || ""}</td>`;
-    html += `<td style="font-family:monospace;font-size:12px">${m.ac_case_id || '<span style="color:#999">—</span>'}</td>`;
-    html += `<td>${m.vuln_title || ""}</td>`;
-    html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${outcomeLabel}</span></td>`;
-    html += `<td><span class="badge" style="background:${vvColor};color:#fff">${vvLabel}</span></td>`;
-    html += `<td><span class="badge" style="background:${methodColor};color:#fff">${methodLabel}</span></td>`;
-    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${miningSids}">${miningSids}</td>`;
-    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${verifySids}">${verifySids}</td>`;
-    html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${detail}">${detail}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px">${esc(m.case_id || "")}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px">${m.ac_case_id ? esc(m.ac_case_id) : '<span style="color:#999">—</span>'}</td>`;
+    html += `<td>${esc(m.vuln_title || "")}</td>`;
+    html += `<td><span class="badge" style="background:${outcomeColor};color:#fff">${esc(outcomeLabel)}</span></td>`;
+    html += `<td><span class="badge" style="background:${vvColor};color:#fff">${esc(vvLabel)}</span></td>`;
+    html += `<td><span class="badge" style="background:${methodColor};color:#fff">${esc(methodLabel)}</span></td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(miningSids)}">${esc(miningSids)}</td>`;
+    html += `<td style="font-family:monospace;font-size:12px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(verifySids)}">${esc(verifySids)}</td>`;
+    html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(detail)}">${esc(detail)}</td>`;
     html += `</tr>`;
   }
   html += `</tbody></table>`;
@@ -681,11 +694,11 @@ RENDERERS.root_cause = function(el, data) {
 
     html += `<details style="margin:16px 0 8px;">`;
     html += `<summary style="cursor:pointer;color:#6c5ce7;font-size:16px;font-weight:600;">`
-      + `${r.case_id} — ${r.vuln_title}`
+      + `${esc(r.case_id)} — ${esc(r.vuln_title)}`
       + (outcome === "FN" ? ` <span class="badge" style="background:#e67e22;color:#fff">漏报</span>` : "")
-      + (fnCatLabel ? ` <span class="badge" style="background:${fnCatColor};color:#fff">${fnCatLabel}</span>` : "")
-      + (fpReason ? ` <span style="color:#e74c3c;font-size:14px;">—— ${fpReason}</span>` : "")
-      + (fnMissReasonShort && outcome === "FN" ? ` <span style="color:#e67e22;font-size:14px;">—— ${fnMissReasonShort}</span>` : "")
+      + (fnCatLabel ? ` <span class="badge" style="background:${fnCatColor};color:#fff">${esc(fnCatLabel)}</span>` : "")
+      + (fpReason ? ` <span style="color:#e74c3c;font-size:14px;">—— ${esc(fpReason)}</span>` : "")
+      + (fnMissReasonShort && outcome === "FN" ? ` <span style="color:#e67e22;font-size:14px;">—— ${esc(fnMissReasonShort)}</span>` : "")
       + `</summary>`;
 
     // 挖掘链
@@ -722,23 +735,23 @@ RENDERERS.root_cause = function(el, data) {
 
       html += `<div style="margin:12px 0;padding:12px;background:#f8f8fa;border-radius:6px;border-left:3px solid #e67e22">`;
       html += `<div style="color:#e67e22;font-weight:600;font-size:15px;margin-bottom:8px;">`
-        + `漏报原因分析 <span class="badge" style="background:${fnCatColor};color:#fff">${fnCatLabel}</span>`
-        + (subLabel ? ` <span class="badge" style="background:${subColor};color:#fff">${subLabel}</span>` : "")
+        + `漏报原因分析 <span class="badge" style="background:${fnCatColor};color:#fff">${esc(fnCatLabel)}</span>`
+        + (subLabel ? ` <span class="badge" style="background:${subColor};color:#fff">${esc(subLabel)}</span>` : "")
         + `</div>`;
 
       // 漏报原因（红色块，对齐根因风格）
       html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
       html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">漏报原因</summary>`;
-      html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${fnMissData.miss_reason || "—"}</div>`;
+      html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${esc(fnMissData.miss_reason || "—")}</div>`;
       html += `</details>`;
 
       // 细分漏报成因
       if (subLabel) {
         html += `<details style="margin:8px 0;padding:8px;background:#f0f0ff;border-radius:4px;">`;
-        html += `<summary style="color:#6c5ce7;font-weight:600;font-size:14px;cursor:pointer;">细分成因 — ${subLabel}</summary>`;
-        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${md.reason || "—"}</div>`;
+        html += `<summary style="color:#6c5ce7;font-weight:600;font-size:14px;cursor:pointer;">细分成因 — ${esc(subLabel)}</summary>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${esc(md.reason || "—")}</div>`;
         if (md.evidence) {
-          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;"><b>证据:</b> ${md.evidence}</div>`;
+          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;"><b>证据:</b> ${esc(md.evidence)}</div>`;
         }
         if (md.confidence) {
           html += `<div style="color:#888;font-size:13px;margin-top:4px;"><b>置信度:</b> ${(md.confidence * 100).toFixed(0)}%</div>`;
@@ -750,9 +763,9 @@ RENDERERS.root_cause = function(el, data) {
       if (sinkSummary) {
         html += `<details style="margin:8px 0;padding:8px;background:#f0fff0;border-radius:4px;">`;
         html += `<summary style="color:#27ae60;font-weight:600;font-size:14px;cursor:pointer;">LLM 提取 sink 点</summary>`;
-        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${sinkSummary}</div>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${esc(sinkSummary)}</div>`;
         if (si.sink_description) {
-          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;">${si.sink_description}</div>`;
+          html += `<div style="color:#888;font-size:13px;line-height:1.6;margin-top:4px;">${esc(si.sink_description)}</div>`;
         }
         html += `</details>`;
       }
@@ -764,23 +777,23 @@ RENDERERS.root_cause = function(el, data) {
         html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">命中 event 上下文 (${hitEvents.length})</summary>`;
         html += `<table style="margin-top:6px;"><thead><tr><th>agent</th><th>session</th><th>event_type</th><th>tool</th><th>命中字段</th><th>匹配精度</th><th>命中函数</th><th>命中行号</th><th>input 预览</th><th>output 预览</th></tr></thead><tbody>`;
         for (const ev of hitEvents) {
-          const inputPreview = (ev.input_preview || "").replace(/</g, '&lt;').substring(0, 100);
-          const outputPreview = (ev.output_preview || "").replace(/</g, '&lt;').substring(0, 100);
+          const inputPreview = esc(ev.input_preview || "").substring(0, 100);
+          const outputPreview = esc(ev.output_preview || "").substring(0, 100);
           const precision = ev.match_precision || "";
           const precisionColor = precision === "precise" ? "#27ae60" : "#f39c12";
           const matchedFuncs = (ev.matched_functions || []).join(", ");
           const matchedLines = (ev.matched_lines || []).join(", ");
           html += `<tr>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.agent_type || ""}</td>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.session_id || ""}</td>`;
-          html += `<td style="font-size:12px">${ev.event_type || ""}</td>`;
-          html += `<td style="font-family:monospace;font-size:12px">${ev.tool_name || ""}</td>`;
-          html += `<td style="font-size:12px">${ev.matched_field || ""}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${esc(ev.agent_type || "")}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${esc(ev.session_id || "")}</td>`;
+          html += `<td style="font-size:12px">${esc(ev.event_type || "")}</td>`;
+          html += `<td style="font-family:monospace;font-size:12px">${esc(ev.tool_name || "")}</td>`;
+          html += `<td style="font-size:12px">${esc(ev.matched_field || "")}</td>`;
           html += `<td><span class="badge" style="background:${precisionColor};color:#fff">${precision === "precise" ? "精确" : "文件级"}</span></td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedFuncs}">${matchedFuncs || '—'}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${matchedLines}">${matchedLines || '—'}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.input_preview || '').replace(/"/g, '&quot;')}">${inputPreview}</td>`;
-          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(ev.output_preview || '').replace(/"/g, '&quot;')}">${outputPreview}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(matchedFuncs)}">${esc(matchedFuncs) || '—'}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(matchedLines)}">${esc(matchedLines) || '—'}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(ev.input_preview || '')}">${inputPreview}</td>`;
+          html += `<td style="font-family:monospace;font-size:11px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(ev.output_preview || '')}">${outputPreview}</td>`;
           html += `</tr>`;
         }
         html += `</tbody></table>`;
@@ -802,7 +815,7 @@ function _renderFixSuggestion(fs) {
   if (!fs) return '<span style="color:#999">—</span>';
   // 字符串直接返回
   if (typeof fs === "string") {
-    return `<div style="color:#555;font-size:14px;line-height:1.6;">${fs}</div>`;
+    return `<div style="color:#555;font-size:14px;line-height:1.6;">${esc(fs)}</div>`;
   }
   // 单个 dict
   if (!Array.isArray(fs)) fs = [fs];
@@ -811,15 +824,15 @@ function _renderFixSuggestion(fs) {
   for (let i = 0; i < fs.length; i++) {
     const item = fs[i];
     if (typeof item === "string") {
-      out += `<div style="color:#555;font-size:14px;line-height:1.6;margin-bottom:6px;">${item}</div>`;
+      out += `<div style="color:#555;font-size:14px;line-height:1.6;margin-bottom:6px;">${esc(item)}</div>`;
       continue;
     }
     if (!item || typeof item !== "object") continue;
     const parts = [];
-    if (item.target) parts.push(`<b>修复方:</b> ${item.target}`);
-    if (item.location) parts.push(`<b>位置:</b> ${item.location}`);
-    if (item.action) parts.push(`<b>修改:</b> ${item.action}`);
-    if (item.expected_effect) parts.push(`<b>预期:</b> ${item.expected_effect}`);
+    if (item.target) parts.push(`<b>修复方:</b> ${esc(item.target)}`);
+    if (item.location) parts.push(`<b>位置:</b> ${esc(item.location)}`);
+    if (item.action) parts.push(`<b>修改:</b> ${esc(item.action)}`);
+    if (item.expected_effect) parts.push(`<b>预期:</b> ${esc(item.expected_effect)}`);
     out += `<div style="color:#555;font-size:14px;line-height:1.6;margin-bottom:6px;padding:6px;background:#fff;border-radius:3px;">`
       + (parts.length ? parts.join(" · ") : JSON.stringify(item))
       + `</div>`;
@@ -836,7 +849,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   html += `<div style="margin:12px 0;padding:12px;background:#f8f8fa;border-radius:6px;border-left:3px solid ${color}">`;
   html += `<div style="color:${color};font-weight:600;font-size:15px;margin-bottom:8px;">`
     + `${label}链 (${chain.length} 会话) `
-    + `<span class="badge" style="background:${cc};color:#fff">${catLabels[cat] || cat}</span>`
+    + `<span class="badge" style="background:${cc};color:#fff">${esc(catLabels[cat] || cat)}</span>`
     + `</div>`;
 
   // session 链
@@ -849,7 +862,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   // 根因
   html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
   html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">根因</summary>`;
-  html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${chainData.root_cause?.description || "—"}</div>`;
+  html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;">${esc(chainData.root_cause?.description || "—")}</div>`;
   html += `</details>`;
 
   // 修复建议
@@ -871,9 +884,9 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       const code = bp.cause_code || "—";
       const bpColor = code !== "—" ? "#e74c3c" : "#888";
       html += `<tr>`;
-      html += `<td style="font-family:monospace;font-size:12px">${bp.session_id || ""}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold">${lvl}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold">${code}</td>`;
+      html += `<td style="font-family:monospace;font-size:12px">${esc(bp.session_id || "")}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold">${esc(lvl)}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold">${esc(code)}</td>`;
       html += `<td>${bp.l1_need === true ? "✓" : bp.l1_need === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l2_initiated === true ? "✓" : bp.l2_initiated === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l3_accurate === true ? "✓" : bp.l3_accurate === false ? "✗" : "—"}</td>`;
@@ -881,8 +894,8 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `<td>${bp.l5_retrieved === true ? "✓" : bp.l5_retrieved === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l6_used === true ? "✓" : bp.l6_used === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l7_influenced === "positive" ? "正向" : bp.l7_influenced === "negative" ? "负向" : "—"}</td>`;
-      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${bp.query_content || ""}">${bp.query_content || "—"}</td>`;
-      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${bp.returned_content || ""}">${bp.returned_content || "—"}</td>`;
+      html += `<td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bp.query_content || "")}">${esc(bp.query_content || "—")}</td>`;
+      html += `<td style="max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bp.returned_content || "")}">${esc(bp.returned_content || "—")}</td>`;
       html += `</tr>`;
     }
     html += `</tbody></table>`;
@@ -911,7 +924,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
     html += `<span style="font-size:13px;color:#888;margin-left:12px;">候选文件：${l4v.candidate_files || 0}</span>`;
     html += `</div>`;
     if (l4v.summary) {
-      html += `<div style="color:#555;font-size:13px;line-height:1.6;margin-bottom:6px;">${l4v.summary}</div>`;
+      html += `<div style="color:#555;font-size:13px;line-height:1.6;margin-bottom:6px;">${esc(l4v.summary)}</div>`;
     }
     const matched = l4v.matched_files || [];
     if (matched.length > 0) {
@@ -920,10 +933,10 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
         const rel = mf.relevance || "—";
         const relColor = rel === "high" ? "#27ae60" : rel === "medium" ? "#f39c12" : "#888";
         html += `<tr>`;
-        html += `<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.path || ""}">${mf.path || ""}</td>`;
-        html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${mf.title || ""}</td>`;
-        html += `<td><span class="badge" style="background:${relColor};color:#fff;">${rel}</span></td>`;
-        html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${mf.reason || ""}">${mf.reason || "—"}</td>`;
+        html += `<td style="font-family:monospace;font-size:12px;max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(mf.path || "")}">${esc(mf.path || "")}</td>`;
+        html += `<td style="max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(mf.title || "")}</td>`;
+        html += `<td><span class="badge" style="background:${relColor};color:#fff;">${esc(rel)}</span></td>`;
+        html += `<td style="max-width:250px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(mf.reason || "")}">${esc(mf.reason || "—")}</td>`;
         html += `</tr>`;
       }
       html += `</tbody></table>`;
@@ -937,10 +950,10 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       for (const q of queryLog) {
         const stepColor = q.count > 0 ? "#27ae60" : "#888";
         html += `<tr>`;
-        html += `<td style="font-size:12px;font-weight:600;color:#4a90d9;">${q.step || ""}</td>`;
-        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${q.action || ""}</td>`;
-        html += `<td style="font-size:11px;max-width:300px;word-break:break-all;color:#888;">${q.detail || ""}</td>`;
-        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${q.result || ""}</td>`;
+        html += `<td style="font-size:12px;font-weight:600;color:#4a90d9;">${esc(q.step || "")}</td>`;
+        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${esc(q.action || "")}</td>`;
+        html += `<td style="font-size:11px;max-width:300px;word-break:break-all;color:#888;">${esc(q.detail || "")}</td>`;
+        html += `<td style="font-size:12px;max-width:250px;word-break:break-all;">${esc(q.result || "")}</td>`;
         html += `<td style="font-size:13px;font-weight:bold;color:${stepColor};">${q.count || 0}</td>`;
         html += `</tr>`;
       }
@@ -948,7 +961,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `</details>`;
     }
     if (l4v.error) {
-      html += `<div style="color:#e74c3c;font-size:12px;margin-top:4px;">错误: ${l4v.error}</div>`;
+      html += `<div style="color:#e74c3c;font-size:12px;margin-top:4px;">错误: ${esc(l4v.error)}</div>`;
     }
     html += `</details>`;
   }
@@ -960,10 +973,10 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
     html += `<summary style="color:${color};font-weight:600;font-size:14px;cursor:pointer;">各 Session 独立压缩 (${summaries.length})</summary>`;
     for (const s of summaries) {
       html += `<div style="margin:6px 0;padding:8px;background:#f0f0f5;border-radius:4px;border-left:2px solid ${color}40;">`;
-      html += `<div style="color:${color};font-size:13px;font-weight:600;margin-bottom:4px;font-family:monospace;">${s.session_id || ""}</div>`;
-      html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;">${s.summary || ""}</pre>`;
+      html += `<div style="color:${color};font-size:13px;font-weight:600;margin-bottom:4px;font-family:monospace;">${esc(s.session_id || "")}</div>`;
+      html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;">${esc(s.summary || "")}</pre>`;
       if (s.key_findings && s.key_findings.length > 0) {
-        html += `<div style="color:#6c5ce7;font-size:12px;margin-top:4px;">关键发现: ${s.key_findings.join(" | ")}</div>`;
+        html += `<div style="color:#6c5ce7;font-size:12px;margin-top:4px;">关键发现: ${esc(s.key_findings.join(" | "))}</div>`;
       }
       // session 级 L0-L7
       const l0l7 = s.l0_l7 || [];
@@ -973,7 +986,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
           const bp = kp.breakpoint || "—";
           const code = kp.cause_code || "—";
           const bpColor = code !== "—" ? "#e74c3c" : "#888";
-          html += `<span style="margin-right:8px;color:${bpColor};">${bp}/${code}</span>`;
+          html += `<span style="margin-right:8px;color:${bpColor};">${esc(bp)}/${esc(code)}</span>`;
         }
         html += `</div>`;
       }
@@ -986,7 +999,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   if (chainData.merge_summary) {
     html += `<details style="margin:8px 0;padding:8px;background:#fff8e1;border-radius:4px;border-left:3px solid #f39c12;">`;
     html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">合并压缩摘要</summary>`;
-    html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;margin-top:4px;">${chainData.merge_summary}</pre>`;
+    html += `<pre style="font-size:13px;line-height:1.6;white-space:pre-wrap;word-break:break-all;color:#555;margin-top:4px;">${esc(chainData.merge_summary)}</pre>`;
     html += `</details>`;
   }
 
@@ -1044,7 +1057,7 @@ RENDERERS.resolving = function(el, data) {
     const titleColor = hasBp ? "#e74c3c" : "#27ae60";
     html += `<details style="margin:16px 0 8px;">`;
     html += `<summary style="cursor:pointer;color:${titleColor};font-size:16px;font-weight:600;">`;
-    html += `${c.case_id || ""} — ${c.vuln_title || ""} (${bps.length} 断点)`;
+    html += `${esc(c.case_id || "")} — ${esc(c.vuln_title || "")} (${bps.length} 断点)`;
     html += `</summary>`;
     html += `<div style="margin-top:8px;">`;
 
@@ -1054,7 +1067,7 @@ RENDERERS.resolving = function(el, data) {
       html += `<details style="margin:8px 0;padding:8px;background:#fff0f0;border-radius:4px;">`;
       html += `<summary style="color:#e74c3c;font-weight:600;font-size:14px;cursor:pointer;">根因</summary>`;
       for (const [cat, desc] of Object.entries(rc)) {
-        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;"><b>${cat}:</b> ${desc}</div>`;
+        html += `<div style="color:#555;font-size:14px;line-height:1.6;margin-top:4px;"><b>${esc(cat)}:</b> ${esc(desc)}</div>`;
       }
       html += `</details>`;
     }
@@ -1076,11 +1089,11 @@ RENDERERS.resolving = function(el, data) {
         const code = bp.cause_code || "—";
         const bpColor = code !== "—" ? "#e74c3c" : "#888";
         html += `<tr>`;
-        html += `<td>${bp.agent_type || "—"}</td>`;
-        html += `<td>${bp.chain_type || "—"}</td>`;
-        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${bp.break_level || "—"}</td>`;
-        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${code}</td>`;
-        html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${(bp.evidence||"").replace(/"/g,"&quot;")}">${bp.evidence || "—"}</td>`;
+        html += `<td>${esc(bp.agent_type || "—")}</td>`;
+        html += `<td>${esc(bp.chain_type || "—")}</td>`;
+        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(bp.break_level || "—")}</td>`;
+        html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(code)}</td>`;
+        html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bp.evidence || "")}">${esc(bp.evidence || "—")}</td>`;
         html += `</tr>`;
       }
       html += `</tbody></table>`;
