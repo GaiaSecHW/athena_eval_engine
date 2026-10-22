@@ -48,31 +48,6 @@ class CaseSessionMatcher:
     # 验证 agent 的 DataPack.agent_type
     _VERIFY_AGENT_TYPES = {"cvuln_verify", "webvuln_verify"}
 
-    # Turing 平台：含漏洞 finding 的 session agent 名（挖掘 agent 内部阶段）
-    _TURING_FINDING_AGENTS = {
-        "vuln-hunt-validate",  # 旧版命名
-        "web-validate",         # 新版命名
-    }
-
-    # Turing 平台：提取 finding 的工具名（已归一化，横线→下划线）
-    _TURING_FINDING_TOOLS = {
-        "vuln_hunt_query_finding",
-        "vuln_hunt_update_finding",
-    }
-
-    # WebVulnVerify 平台：提取 finding 的工具名
-    _WEBVV_FINDING_TOOLS = {
-        "vulnerability_analyze",
-        "vulnerability_verify",
-    }
-
-    # CVulnVerify 平台：提取 finding 的工具名
-    _CVULN_FINDING_TOOLS = {
-        "vulnerability_verify",
-        "vulnerability_cvss",
-        "vulnerability_analyze",
-    }
-
     def match(
         self,
         evaluation_id: str,
@@ -142,13 +117,8 @@ class CaseSessionMatcher:
 
         # Turing 内部：含 finding 的 session（vuln-hunt-validate/web-validate）
         # 这些是挖掘 agent 内部的验证阶段 session，归类为挖掘 agent session
-        turing_finding_sids: set[str] = set()
-        for dp in mining_packs:
-            if dp.agent_type != "turing":
-                continue
-            for sid, sdata in (dp.session_graph.get("sessions") or {}).items():
-                if sdata.get("agent") in self._TURING_FINDING_AGENTS:
-                    turing_finding_sids.add(sid)
+        from .findings import collect_turing_finding_sids
+        turing_finding_sids: set[str] = collect_turing_finding_sids(mining_packs)
 
         log("MATCH",
             f"mining_packs={len(mining_packs)}, "
@@ -159,7 +129,7 @@ class CaseSessionMatcher:
         # 构建 title → [(session_id, description, agent_type)] 索引
         # 跨全部 agent 类型，命中后按 agent_type 分类到 mining/verify
         finding_index = self._build_finding_index(
-            mining_packs, verify_packs, turing_finding_sids)
+            data_packs, turing_finding_sids)
 
         results: list[dict] = []
         for cid, cd in target_cases:
@@ -853,179 +823,36 @@ class CaseSessionMatcher:
 
     def _build_finding_index(
         self,
-        mining_packs: list[DataPack],
-        verify_packs: list[DataPack],
+        data_packs: list[DataPack],
         turing_finding_sids: set[str],
     ) -> dict[str, list[tuple[str, str, str]]]:
         """构建 title → [(session_id, description, agent_type)] 索引。
 
         跨全部 agent 类型扫描 finding，命中后按 agent_type 分类。
+        各 agent 的提取逻辑由 findings/ 子包的 FindingExtractor 策略类负责，
+        此处仅按 data_pack.agent_type 路由到对应 extractor 并合并索引。
+        新增 agent 只需在 findings/ 下加实现类，无需改动本方法。
         """
+        from .findings import get_finding_extractor
+
         index: dict[str, list[tuple[str, str, str]]] = defaultdict(list)
+        seen_agent_types: set[str] = set()
 
-        # ── Turing 平台（挖掘 agent）──
-        # 从 vuln-hunt-validate session 的工具调用提取 finding
-        for dp in mining_packs:
-            if dp.agent_type != "turing":
+        for dp in data_packs:
+            at = dp.agent_type or ""
+            if not at or at in seen_agent_types:
                 continue
-            for ev in (dp.events or []):
-                if not ev.is_tool_call():
-                    continue
-                if ev.session_id not in turing_finding_sids:
-                    continue
-                tool = ev.tool_name or ""
-                if tool not in self._TURING_FINDING_TOOLS:
-                    continue
-                title, desc = self._extract_title_desc_turing(ev)
-                if title:
-                    sid = ev.session_id or ""
-                    if sid:
-                        entry = (sid, desc, dp.agent_type)
-                        if entry not in index[title]:
-                            index[title].append(entry)
-
-        # ── Argo 平台（挖掘 agent）──
-        # Argo finding 无 title，只有 description + (cwe, file, line) key。
-        # 运行态下 finding 上报漏洞中心，description 成为漏洞中心 case 的
-        # vuln_title，用 description 作索引键（等价于 turing 的 title 位置）。
-        for dp in mining_packs:
-            if dp.agent_type != "argo":
+            seen_agent_types.add(at)
+            extractor = get_finding_extractor(at)
+            if extractor is None:
                 continue
-            sessions = (dp.session_graph or {}).get("sessions", {}) if isinstance(dp.session_graph, dict) else {}
-            for sid, sdata in sessions.items():
-                sdata_d = sdata if isinstance(sdata, dict) else {}
-                fdescs = sdata_d.get("finding_descs", {})
-                if not fdescs:
-                    continue
-                for fkey, fdesc in fdescs.items():
-                    fdesc = str(fdesc or "").strip()
-                    if not fdesc:
-                        continue
-                    entry = (sid, fkey, dp.agent_type)
-                    if entry not in index[fdesc]:
-                        index[fdesc].append(entry)
-
-        # ── WebVulnVerify 平台（验证 agent）──
-        for dp in verify_packs:
-            if dp.agent_type != "webvuln_verify":
-                continue
-            for ev in (dp.events or []):
-                if not ev.is_tool_call():
-                    continue
-                tool = ev.tool_name or ""
-                if tool not in self._WEBVV_FINDING_TOOLS:
-                    continue
-                title, desc = self._extract_title_desc_webvv(ev)
-                if title:
-                    sid = ev.session_id or ""
-                    if sid:
-                        entry = (sid, desc, dp.agent_type)
-                        if entry not in index[title]:
-                            index[title].append(entry)
-
-        # ── CVulnVerify 平台（验证 agent）──
-        for dp in verify_packs:
-            if dp.agent_type != "cvuln_verify":
-                continue
-            for ev in (dp.events or []):
-                if not ev.is_tool_call():
-                    continue
-                tool = ev.tool_name or ""
-                if tool not in self._CVULN_FINDING_TOOLS:
-                    continue
-                inp = ev.input_json or {}
-                key = (
-                    inp.get("vulnerability_id")
-                    or inp.get("case_id")
-                    or ""
-                )
-                if key:
-                    sid = ev.session_id or ""
-                    if sid:
-                        entry = (sid, "", dp.agent_type)
-                        if entry not in index[str(key)]:
-                            index[str(key)].append(entry)
+            extractor.extract([dp], turing_finding_sids=turing_finding_sids)
+            for title, entries in extractor.index().items():
+                for entry in entries:
+                    if entry not in index[title]:
+                        index[title].append(entry)
 
         return dict(index)
-
-    @staticmethod
-    def _extract_title_desc_turing(ev) -> tuple[str, str]:
-        """从 Turing 工具调用事件中提取漏洞 title + description。
-
-        vuln_hunt_query_finding 的 output_json 结构：
-        {"result": "{...JSON string with title/description...}"}
-        或直接是 JSON 字符串
-
-        Returns:
-            (title, description)
-        """
-        outp = ev.output_json
-        if not outp:
-            return "", ""
-
-        if isinstance(outp, str):
-            try:
-                outp = json.loads(outp)
-            except (json.JSONDecodeError, ValueError):
-                return "", ""
-        if not isinstance(outp, dict):
-            return "", ""
-
-        result_str = outp.get("result", "")
-        if isinstance(result_str, str):
-            try:
-                result = json.loads(result_str)
-            except (json.JSONDecodeError, ValueError):
-                return "", ""
-        elif isinstance(result_str, dict):
-            result = result_str
-        else:
-            return "", ""
-
-        if not isinstance(result, dict):
-            return "", ""
-
-        title = result.get("title") or ""
-        desc = result.get("description") or ""
-        return (str(title) if title else "", str(desc) if desc else "")
-
-    @staticmethod
-    def _extract_title_desc_webvv(ev) -> tuple[str, str]:
-        """从 WebVulnVerify 工具调用事件中提取漏洞 title + description。
-
-        vulnerability_analyze / vulnerability_verify 的 input_json 含：
-        - result: 验证报告文本（含"一句话结论"或"漏洞类型"表格行）
-        - category: 漏洞分类标签
-        - description: 漏洞描述
-
-        优先从 result 提取一句话结论作为 title，
-        其次提取漏洞类型表格行，
-        回退到 category。
-        description 从 input_json 的 description 字段提取。
-
-        Returns:
-            (title, description)
-        """
-        inp = ev.input_json
-        if not isinstance(inp, dict):
-            return "", ""
-
-        desc = str(inp.get("description", "") or "")
-
-        result_text = str(inp.get("result", "") or "")
-        if result_text:
-            m = re.search(
-                r'一句话结论[：:]\s*(.+?)(?=\n\n|\n#|\n-|\Z)',
-                result_text, re.DOTALL,
-            )
-            if m:
-                return m.group(1).strip(), desc
-            m = re.search(r'漏洞类型\s*\|\s*(.+?)\s*\|', result_text)
-            if m:
-                return m.group(1).strip(), desc
-
-        category = inp.get("category", "") or inp.get("vuln_type", "") or ""
-        return (str(category) if category else "", desc)
 
 
 def _extract_verdict_value(content: str) -> str:
