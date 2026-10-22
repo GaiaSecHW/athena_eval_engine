@@ -894,30 +894,39 @@ class ArgoParser(BaseParser):
             _log.debug("Argo _query_task_type_from_db failed: %s", str(e)[:200])
             return {}
 
-    def _query_fact_deps_from_db(self, session_ids: list[str]) -> list[dict]:
-        """从 Argo MySQL 读取权威的 fact 依赖关系（intent_sources / intent_outputs）。
+    def _query_fact_deps_from_db(self, session_ids: list[str]) -> dict:
+        """从 Argo MySQL 读取权威的 fact 依赖图（对齐 argo 前端 FullGraph 模型）。
 
-        真实关系模型（多对多，非父子）：
-        - intent_outputs: intent 输出了哪些 fact（investigate 挖掘产出 fact）
-        - intent_sources: intent 以哪些 fact 为输入（verify 验证消费 fact）
-        - investigate 输出 fact → 该 fact 被 verify 引用为 source = 依赖关系
+        真实关系模型（对齐 argo 官方 /boards/{id}/graph）：
+        - 节点 = Fact（6 种类型：system_profile/module/fact/finding/verified_finding/report）
+        - 边   = Intent（5 种类型：bootstrap/module_expand/investigate/verify/synthesize）
+        - 边方向 = intent.from（消费的 facts）→ intent.outputs（产出的 facts）
+        - 多跳链：origin →(bootstrap) system_profile →(module_expand) module
+                  →(investigate) finding →(verify) verified_finding →(synthesize) report
+
+        Query 全部 task_type（旧实现只查 investigate/verify，漏掉
+        bootstrap/module_expand/synthesize 共 ~12% 边）。
 
         注意：intents.id 是 (id, project_id) 复合主键，id 跨 project 不唯一。
         JOIN intent_outputs/intent_sources 时必须限定 project_id，否则会
         串到其他 project 的 intent（曾导致 419 行膨胀为 14 万行假依赖）。
 
         Returns:
-            [{"investigate_sid": str, "fact_id": str, "verify_sid": str}, ...]
-            连接失败返回空列表（DB 查询是增强数据，非解析必需）。
+            {
+              "facts": {fact_id: {"type": str, "description": str}},     # 节点
+              "intents": [{id, task_type, session_id, label}],          # 边元数据
+              "edges": [{from: fact_id, to: fact_id, task_type, label}] # 边
+            }
+            连接失败返回空 dict（DB 查询是增强数据，非解析必需）。
         """
         if not session_ids:
-            return []
+            return {}
         try:
             mgr = AgentDBManager()
             conn = mgr.get_connection("argo")
             if conn is None:
                 _log.debug("Argo _query_fact_deps_from_db: 无 argo 连接")
-                return []
+                return {}
             try:
                 cur = conn.cursor()
                 # 0. 用原始数据 task_id 查 projects 表拿 argo project_id
@@ -934,63 +943,111 @@ class ArgoParser(BaseParser):
                         project_id = prow[0]  # 权威的 argo project_id（proj_582）
                 if not project_id:
                     _log.debug("Argo _query_fact_deps_from_db: 无 project_id")
-                    return []
+                    return {}
 
-                # 1. investigate/verify intent 输出的 fact（intent_outputs）
-                # 必须同时限定 i.project_id 和 o.project_id（防跨 project 串行）
+                # 1. 该 project 的全部 facts（节点）
+                cur.execute(
+                    "SELECT id, type, description FROM facts "
+                    "WHERE project_id = %s",
+                    (project_id,),
+                )
+                fact_map: dict[str, dict] = {}
+                for fid, ftype, fdesc in cur.fetchall():
+                    fact_map[fid] = {
+                        "type": ftype or "fact",
+                        "description": (fdesc or "")[:80],
+                    }
+
+                # 2. 该 project 的全部 intents（边元数据，含 from/outputs 解析）
+                cur.execute(
+                    "SELECT id, task_type, session_id, description "
+                    "FROM intents WHERE project_id = %s",
+                    (project_id,),
+                )
+                intent_rows = cur.fetchall()
+                intent_by_id: dict[str, dict] = {}
+                for iid, itype, isid, idesc in intent_rows:
+                    intent_by_id[iid] = {
+                        "id": iid,
+                        "task_type": itype or "investigate",
+                        "session_id": isid or "",
+                        "label": (idesc or "").strip().splitlines()[0][:80]
+                        if idesc else "",
+                    }
+
+                # 3. intent 产出/消费的 fact（必须限定双 project_id 防串库）
                 ph = ", ".join(["%s"] * len(session_ids))
-                sql_outputs = (
-                    "SELECT DISTINCT i.session_id, o.fact_id FROM intents i "
-                    "JOIN intent_outputs o ON i.id = o.intent_id "
-                    "WHERE i.project_id = %s AND o.project_id = %s "
-                    "AND i.task_type IN ('investigate','verify') "
-                    "AND i.session_id IN (" + ph + ")"
+                outputs: dict[str, list[str]] = {}
+                cur.execute(
+                    "SELECT o.intent_id, o.fact_id FROM intent_outputs o "
+                    "WHERE o.project_id = %s "
+                    "AND o.intent_id IN ("
+                    "  SELECT id FROM intents WHERE project_id = %s "
+                    "  AND session_id IN (" + ph + ")"
+                    ")",
+                    [project_id, project_id] + session_ids,
                 )
-                cur.execute(sql_outputs, [project_id, project_id] + session_ids)
-                output_rows = cur.fetchall()
-                # fact_id -> 输出它的 investigate/verify session 集合
-                fact_producers: dict[str, list[str]] = {}
-                for sid, fid in output_rows:
-                    if sid and fid:
-                        fact_producers.setdefault(fid, []).append(sid)
-
-                # 2. verify intent 消费的 fact（intent_sources）
-                sql_sources = (
-                    "SELECT DISTINCT i.session_id, s.fact_id FROM intents i "
-                    "JOIN intent_sources s ON i.id = s.intent_id "
-                    "WHERE i.project_id = %s AND s.project_id = %s "
-                    "AND i.task_type = 'verify' "
-                    "AND i.session_id IN (" + ph + ")"
+                for iid, fid in cur.fetchall():
+                    outputs.setdefault(iid, []).append(fid)
+                sources: dict[str, list[str]] = {}
+                cur.execute(
+                    "SELECT s.intent_id, s.fact_id FROM intent_sources s "
+                    "WHERE s.project_id = %s "
+                    "AND s.intent_id IN ("
+                    "  SELECT id FROM intents WHERE project_id = %s "
+                    "  AND session_id IN (" + ph + ")"
+                    ")",
+                    [project_id, project_id] + session_ids,
                 )
-                cur.execute(sql_sources, [project_id, project_id] + session_ids)
-                source_rows = cur.fetchall()
+                for iid, fid in cur.fetchall():
+                    sources.setdefault(iid, []).append(fid)
                 cur.close()
 
-                # 3. 组装依赖：producer(investigate) --fact--> consumer(verify)
-                deps: list[dict] = []
-                seen: set[tuple[str, str, str]] = set()
-                for verify_sid, fact_id in source_rows:
-                    if not verify_sid or not fact_id:
+                # 4. 组装：节点 facts + 边 intents（from → outputs，fact→fact）
+                intents_out: list[dict] = []
+                edges: list[dict] = []
+                seen_edges: set[tuple[str, str, str]] = set()
+                for iid, meta in intent_by_id.items():
+                    froms = sources.get(iid, [])
+                    outs = outputs.get(iid, [])
+                    if not froms and not outs:
                         continue
-                    producers = fact_producers.get(fact_id, [])
-                    for prod_sid in producers:
-                        key = (prod_sid, fact_id, verify_sid)
-                        if key in seen:
+                    intents_out.append({
+                        **meta,
+                        "from": froms,
+                        "outputs": outs,
+                    })
+                    for src in froms:
+                        if src not in fact_map:
                             continue
-                        seen.add(key)
-                        deps.append({
-                            "investigate_sid": prod_sid,
-                            "fact_id": fact_id,
-                            "verify_sid": verify_sid,
-                        })
-                _log.debug("Argo _query_fact_deps_from_db: %d 条依赖 (producers=%d, consumers=%d)",
-                           len(deps), len(fact_producers), len(source_rows))
-                return deps
+                        for tgt in outs:
+                            if tgt not in fact_map or src == tgt:
+                                continue
+                            key = (src, tgt, meta["task_type"])
+                            if key in seen_edges:
+                                continue
+                            seen_edges.add(key)
+                            edges.append({
+                                "from": src,
+                                "to": tgt,
+                                "task_type": meta["task_type"],
+                                "label": meta.get("label", ""),
+                            })
+
+                _log.debug(
+                    "Argo _query_fact_deps_from_db: facts=%d intents=%d edges=%d",
+                    len(fact_map), len(intents_out), len(edges),
+                )
+                return {
+                    "facts": fact_map,
+                    "intents": intents_out,
+                    "edges": edges,
+                }
             finally:
                 conn.close()
         except Exception as e:
             _log.debug("Argo _query_fact_deps_from_db failed: %s", str(e)[:200])
-            return []
+            return {}
 
     def label_session_phases(
         self, events: list[RawEvent], session_meta: dict

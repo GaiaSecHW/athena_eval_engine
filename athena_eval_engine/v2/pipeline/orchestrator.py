@@ -1711,7 +1711,7 @@ class Orchestrator:
             "event_count": len(dp.events or []),
             "sessions": session_list,
             "edges": edge_list,
-            "fact_deps": sg.get("fact_deps", []),  # 多对多 fact 依赖（investigate→fact→verify），turing 为空
+            "fact_deps": sg.get("fact_deps", {}),  # fact 依赖图 {facts, intents, edges}，turing 为空
         }
 
     def _fix_check_constraint(self, evaluation_id: str, status: str):

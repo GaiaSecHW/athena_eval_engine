@@ -291,10 +291,11 @@ RENDERERS.parsing = function(el, data) {
 
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
-      // 多对多 fact 依赖流图（investigate → fact → verify，Sankey）
-      const factDeps = p.fact_deps || [];
-      if (factDeps.length > 0) {
-        html += renderFactDepsSankey(factDeps, sessions, p.task_run_id);
+      // fact 依赖图（节点=Fact，边=Intent，多跳网络）
+      const factDeps = p.fact_deps || {};
+      const hasFactGraph = factDeps.edges && factDeps.edges.length > 0;
+      if (hasFactGraph) {
+        html += renderFactDepsGraph(factDeps, sessions, p.task_run_id);
       }
       // session 调用树（文本缩进格式）
       html += renderSessionTree(sessions, factDeps);
@@ -308,136 +309,177 @@ RENDERERS.parsing = function(el, data) {
   el.innerHTML = html;
 };
 
-// ── 多对多 fact 依赖流图（纯 SVG，零依赖）──
-// 三层布局：左列=挖掘 investigate，中列=fact，右列=验证 verify
-// 连线用贝塞尔曲线表示 investigate --fact--> verify 的多对多依赖
-// 点击任一节点高亮其上下游（investigate ↔ fact ↔ verify 关联链）
-function renderFactDepsSankey(factDeps, sessions, taskRunId) {
-  // 构建 sid -> session 映射
-  const smap = {};
-  for (const s of sessions) smap[s.session_id] = s;
-  const shortName = (sid) => {
-    const s = smap[sid];
-    const tt = (s && (s.task_type || s.session_type)) || "?";
-    return tt + " " + sid;
-  };
+// ── Fact 依赖图（纯 SVG，零依赖）──
+// 节点 = Fact（system_profile/module/fact/finding/verified_finding/report）
+// 边   = Intent（bootstrap/module_expand/investigate/verify/synthesize）
+// 边方向 = intent.from（消费的 facts）→ intent.outputs（产出的 facts）
+// 多跳链：origin → system_profile → module → finding → verified_finding → report
+// 按 BFS 跳数分层布局；点击节点高亮其上下游
+function renderFactDepsGraph(factDeps, sessions, taskRunId) {
+  const facts = factDeps.facts || {};
+  const intents = factDeps.intents || [];
+  const edges = factDeps.edges || [];
+  if (!edges.length) return "";
 
-  // 收集节点与边（去重）
-  const invSet = {}, factSet = {}, verSet = {};
-  const seen = {};
-  const edges = [];
-  for (const dep of factDeps) {
-    const inv = dep.investigate_sid, fid = dep.fact_id, ver = dep.verify_sid;
-    if (!inv || !fid || !ver) continue;
-    invSet[inv] = 1; factSet[fid] = 1; verSet[ver] = 1;
-    const k1 = inv + "|" + fid, k2 = fid + "|" + ver;
-    if (!seen[k1]) { seen[k1] = 1; edges.push({ from: inv, to: fid, kind: "inv-fact" }); }
-    if (!seen[k2]) { seen[k2] = 1; edges.push({ from: fid, to: ver, kind: "fact-ver" }); }
+  // 节点类型 → 颜色 / 形状
+  const FACT_STYLE = {
+    "system_profile": { color: "#8e44ad", shape: "rect" },
+    "module":         { color: "#2980b9", shape: "rect" },
+    "fact":           { color: "#00a8ff", shape: "rect" },
+    "finding":        { color: "#e67e22", shape: "rect" },
+    "verified_finding":{ color: "#27ae60", shape: "rect" },
+    "report":         { color: "#e74c3c", shape: "rect" },
+  };
+  // 边类型 → 颜色
+  const EDGE_COLOR = {
+    "bootstrap": "#8e44ad",
+    "module_expand": "#2980b9",
+    "investigate": "#00a8ff",
+    "verify": "#27ae60",
+    "synthesize": "#e74c3c",
+  };
+  const DEFAULT_STYLE = { color: "#95a5a6", shape: "rect" };
+
+  // 收集节点集合（edge 端点 + facts 表）
+  const nodeIds = new Set();
+  for (const e of edges) { nodeIds.add(e.from); nodeIds.add(e.to); }
+  for (const fid of Object.keys(facts)) nodeIds.add(fid);
+  const nodeList = Array.from(nodeIds);
+
+  // BFS 分层：从没有入边的节点（根，通常 origin）出发
+  const inDeg = {};
+  for (const n of nodeList) inDeg[n] = 0;
+  for (const e of edges) { inDeg[e.to] = (inDeg[e.to] || 0) + 1; }
+  const roots = nodeList.filter(n => (inDeg[n] || 0) === 0);
+  const level = {};
+  const queue = [];
+  for (const r of roots) { level[r] = 0; queue.push(r); }
+  // 环保护：最多访问所有节点
+  let guard = 0;
+  while (queue.length && guard < nodeList.length * 2) {
+    guard++;
+    const cur = queue.shift();
+    const curLv = level[cur] || 0;
+    for (const e of edges) {
+      if (e.from !== cur) continue;
+      if (level[e.to] === undefined) {
+        level[e.to] = curLv + 1;
+        queue.push(e.to);
+      }
+    }
+  }
+  // 环中或孤立的节点放最后一层
+  for (const n of nodeList) {
+    if (level[n] === undefined) level[n] = 99;
   }
 
-  const invs = Object.keys(invSet), facts = Object.keys(factSet), vers = Object.keys(verSet);
-  if (!invs.length || !facts.length || !vers.length) return "";
+  // 按层分组
+  const byLevel = {};
+  for (const n of nodeList) {
+    const lv = level[n] === 99 ? Math.max(...Object.values(level)) + 1 : level[n];
+    (byLevel[lv] = byLevel[lv] || []).push(n);
+  }
+  const levels = Object.keys(byLevel).map(Number).sort((a, b) => a - b);
+
+  // 展示状态：false=收缩（每层截断+聚合），true=全量
+  let fullMode = false;
+  const MAX_PER_LEVEL = 12;
 
   // 布局参数
-  const colW = 300, gap = 28, nodeH = 30, rowGap = 18, padX = 20, padY = 24;
-  const W = colW * 3 + gap * 2 + padX * 2;
-  const H = Math.max(invs.length, facts.length, vers.length) * (nodeH + rowGap) + padY * 2;
-  const invX = padX, factX = padX + colW + gap, verX = padX + colW * 2 + gap * 2;
+  const nodeW = 200, nodeH = 26, colGap = 60, rowGap = 10, padX = 20, padY = 20;
+  const colW = nodeW + colGap;
 
-  function colPos(list, x) {
-    const total = list.length * (nodeH + rowGap) - rowGap;
-    const startY = (H - total) / 2;
-    const map = {};
-    list.forEach((id, i) => {
-      const y = startY + i * (nodeH + rowGap);
-      map[id] = { x: x, y: y + nodeH / 2 };
-    });
-    return map;
+  // 当前绘制节点集：收缩时每层截断，超出合并为聚合节点
+  let drawNodes = nodeList;
+  let aggregated = null;
+
+  function buildDrawSets() {
+    if (fullMode) {
+      drawNodes = nodeList;
+      aggregated = null;
+      return;
+    }
+    const shown = new Set();
+    const agg = {};
+    for (const lv of levels) {
+      const nodes = byLevel[lv];
+      if (nodes.length <= MAX_PER_LEVEL) {
+        for (const n of nodes) shown.add(n);
+      } else {
+        for (const n of nodes.slice(0, MAX_PER_LEVEL)) shown.add(n);
+        agg[lv] = {
+          id: "__agg_" + lv,
+          count: nodes.length - MAX_PER_LEVEL,
+        };
+      }
+    }
+    drawNodes = Array.from(shown);
+    aggregated = agg;
   }
-  const invPos = colPos(invs, invX), factPos = colPos(facts, factX), verPos = colPos(vers, verX);
+  buildDrawSets();
 
-  // 点击选中态：记录选中节点，重绘 SVG 高亮其上下游
+  function computeLayout() {
+    const dByLevel = {};
+    for (const n of drawNodes) {
+      const lv = level[n] === 99 ? Math.max(...Object.values(level)) + 1 : level[n];
+      (dByLevel[lv] = dByLevel[lv] || []).push(n);
+    }
+    const allLevels = Object.keys(dByLevel).map(Number).sort((a, b) => a - b);
+    for (const lv of Object.keys(aggregated || {})) {
+      const lvNum = Number(lv);
+      if (!dByLevel[lvNum]) dByLevel[lvNum] = [];
+    }
+    const sortedLevels = Object.keys(dByLevel).map(Number).sort((a, b) => a - b);
+    const maxPerCol = Math.max(...sortedLevels.map(lv => (dByLevel[lv] || []).length + ((aggregated && aggregated[lv]) ? 1 : 0)));
+    const H = maxPerCol * (nodeH + rowGap) + padY * 2;
+    const W = sortedLevels.length * colW + padX * 2;
+    const pos = {};
+    for (const lv of sortedLevels) {
+      const nodes = dByLevel[lv] || [];
+      const list = aggregated && aggregated[lv] ? [...nodes, "__agg_" + lv] : nodes;
+      const totalH = list.length * (nodeH + rowGap) - rowGap;
+      const startY = (H - totalH) / 2;
+      const x = padX + sortedLevels.indexOf(lv) * colW;
+      list.forEach((id, i) => {
+        pos[id] = { x: x, y: startY + i * (nodeH + rowGap) };
+      });
+    }
+    return { pos, H, W };
+  }
+  let layout = computeLayout();
+  const pos = layout.pos, H = layout.H, W = layout.W;
+
+  // 点击选中态
   let selectedId = "";
 
-  // 计算选中节点的关联子图：{nodes: Set, edges: Set}
+  // 选中节点的上下游节点集合
   function relatedOf(id) {
     const nodes = new Set([id]);
     const relEdges = new Set();
-    if (invSet[id] || factSet[id] || verSet[id]) {
-      // fact 节点：上游 investigate + 下游 verify
-      if (factSet[id]) {
-        for (const e of edges) {
-          if (e.kind === "inv-fact" && e.to === id) { nodes.add(e.from); relEdges.add(e.from + "|" + id + "|inv-fact"); }
-          if (e.kind === "fact-ver" && e.from === id) { nodes.add(e.to); relEdges.add(id + "|" + e.to + "|fact-ver"); }
-        }
-      } else {
-        // session 节点（investigate/verify）：所有关联边 + 对端
-        for (const e of edges) {
-          if (e.from === id || e.to === id) {
-            relEdges.add(e.from + "|" + e.to + "|" + e.kind);
+    for (const e of edges) {
+      if (e.from === id || e.to === id) {
+        relEdges.add(e.from + "|" + e.to);
+        nodes.add(e.from); nodes.add(e.to);
+      }
+    }
+    // 再扩展一跳：沿边传播
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const e of edges) {
+        const key = e.from + "|" + e.to;
+        if (relEdges.has(key)) continue;
+        if (nodes.has(e.from) || nodes.has(e.to)) {
+          // 只扩展与选中同侧方向的关联
+          if (selectedId === id) {
+            relEdges.add(key);
             nodes.add(e.from); nodes.add(e.to);
+            changed = true;
           }
         }
-        // session 点击时，再扩展一跳：关联 fact 的另一端 session
-        const extra = new Set();
-        for (const e of edges) {
-          const key = e.from + "|" + e.to + "|" + e.kind;
-          if (!relEdges.has(key)) continue;
-          if (e.kind === "inv-fact" && e.from === id) {
-            // id(fact) -> 消费该 fact 的 verify
-            for (const e2 of edges) {
-              if (e2.kind === "fact-ver" && e2.from === e.to) { extra.add(e2.to); relEdges.add(e2.from + "|" + e2.to + "|fact-ver"); }
-            }
-          } else if (e.kind === "fact-ver" && e.to === id) {
-            // verify -> 生产该 fact 的 investigate
-            for (const e2 of edges) {
-              if (e2.kind === "inv-fact" && e2.to === e.from) { extra.add(e2.from); relEdges.add(e2.from + "|" + e2.to + "|inv-fact"); }
-            }
-          }
-        }
-        for (const n of extra) nodes.add(n);
       }
     }
     return { nodes, relEdges };
-  }
-
-  // 连线（贝塞尔）——选中时高亮关联边，其余变淡
-  function renderLines(relEdges) {
-    let out = "";
-    for (const e of edges) {
-      const a = e.kind === "inv-fact" ? invPos[e.from] : factPos[e.from];
-      const b = e.kind === "inv-fact" ? factPos[e.to] : verPos[e.to];
-      if (!a || !b) continue;
-      const color = e.kind === "inv-fact" ? "#6c5ce7" : "#00a8ff";
-      const midX = (a.x + b.x) / 2;
-      const key = e.from + "|" + e.to + "|" + e.kind;
-      const active = selectedId && relEdges && relEdges.has(key);
-      const dim = selectedId && relEdges && !relEdges.has(key);
-      const sw = active ? 3 : 1.5;
-      const op = active ? 0.95 : (dim ? 0.06 : 0.35);
-      out += `<path d="M${a.x},${a.y} C${midX},${a.y} ${midX},${b.y} ${b.x},${b.y}" `
-        + `fill="none" stroke="${color}" stroke-opacity="${op}" stroke-width="${sw}"/>`;
-    }
-    return out;
-  }
-
-  // 节点——选中时高亮关联节点，其余变淡
-  function renderNodes(list, pos, color, title, relNodes) {
-    return list.map((id) => {
-      const p = pos[id];
-      const label = (title === "fact") ? id : shortName(id);
-      const text = label.length > 52 ? label.slice(0, 50) + "…" : label;
-      const active = selectedId && relNodes && relNodes.has(id);
-      const dim = selectedId && relNodes && !relNodes.has(id);
-      const sel = selectedId === id;
-      const fillOp = sel ? 0.45 : (active ? 0.28 : 0.12);
-      const strokeW = sel ? 3 : (active ? 2 : 1);
-      const fontW = sel ? "bold" : "normal";
-      return `<g style="cursor:pointer" data-id="${esc(id)}">`
-        + `<rect x="${p.x - 4}" y="${p.y - nodeH / 2}" width="${colW - 8}" height="${nodeH}" rx="6" fill="${color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${color}" stroke-width="${strokeW}"/>`
-        + `<text x="${p.x + 6}" y="${p.y + 4}" font-size="11" fill="${dim ? "#ccc" : "#444"}" font-weight="${fontW}" style="user-select:none">${esc(text)}</text>`
-        + `</g>`;
-    }).join("");
   }
 
   function buildSvg() {
@@ -446,39 +488,162 @@ function renderFactDepsSankey(factDeps, sessions, taskRunId) {
       const r = relatedOf(selectedId);
       relNodes = r.nodes; relEdges = r.relEdges;
     }
+    // 边（只画两端都在当前绘制集或指向聚合节点的）
+    let lines = "";
+    for (const e of edges) {
+      const a = pos[e.from], b = pos[e.to];
+      if (!a || !b) continue;
+      const lvFrom = level[e.from] === 99 ? Math.max(...Object.values(level)) + 1 : level[e.from];
+      const lvTo = level[e.to] === 99 ? Math.max(...Object.values(level)) + 1 : level[e.to];
+      const fromShown = drawNodes.includes(e.from) || (aggregated && aggregated[lvFrom]);
+      const toShown = drawNodes.includes(e.to) || (aggregated && aggregated[lvTo]);
+      if (!fromShown || !toShown) continue;
+      const color = EDGE_COLOR[e.task_type] || "#95a5a6";
+      const key = e.from + "|" + e.to;
+      const edgeInFocus = focusHighlight && (focusHighlight.has(e.from) || focusHighlight.has(e.to));
+      const active = (selectedId && relEdges && relEdges.has(key)) || edgeInFocus;
+      const dim = selectedId && relEdges && !relEdges.has(key) && !edgeInFocus;
+      const midX = (a.x + nodeW) + (b.x - (a.x + nodeW)) / 2;
+      lines += `<path d="M${a.x + nodeW},${a.y + nodeH / 2} C${midX},${a.y + nodeH / 2} ${midX},${b.y + nodeH / 2} ${b.x},${b.y + nodeH / 2}" `
+        + `fill="none" stroke="${color}" stroke-opacity="${active ? 0.95 : (dim ? 0.06 : 0.45)}" stroke-width="${active ? 2.5 : 1.3}"/>`;
+    }
+    // 节点
+    let nodes = "";
+    for (const n of drawNodes) {
+      const p = pos[n];
+      if (!p) continue;
+      const st = FACT_STYLE[(facts[n] || {}).type] || DEFAULT_STYLE;
+      const inFocus = focusHighlight && focusHighlight.has(n);
+      const active = (selectedId && relNodes && relNodes.has(n)) || inFocus;
+      const dim = selectedId && relNodes && !relNodes.has(n) && !inFocus;
+      const sel = selectedId === n;
+      const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
+      nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
+        + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
+        + `<text x="${p.x + 6}" y="${p.y + 17}" font-size="11" fill="${dim ? "#ccc" : "#333"}" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} ${esc((facts[n] || {}).type || "")}</text>`
+        + `</g>`;
+    }
+    // 聚合节点（收缩模式每层超出部分）
+    if (aggregated) {
+      for (const lv of Object.keys(aggregated)) {
+        const agg = aggregated[lv];
+        const p = pos[agg.id];
+        if (!p) continue;
+        nodes += `<g style="cursor:pointer" data-id="${esc(agg.id)}">`
+          + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="#95a5a6" fill-opacity="0.2" stroke="#95a5a6" stroke-width="1" stroke-dasharray="4,3"/>`
+          + `<text x="${p.x + 6}" y="${p.y + 17}" font-size="11" fill="#888" style="user-select:none">... 另有 ${agg.count} 个（点击展开全量）</text>`
+          + `</g>`;
+      }
+    }
     return `<svg width="${W}" height="${H}" style="background:#fafafd;border:1px solid #eee;border-radius:6px;display:block;max-width:100%">`
-      + renderLines(relEdges)
-      + renderNodes(invs, invPos, "#6c5ce7", "inv", relNodes)
-      + renderNodes(facts, factPos, "#00a8ff", "fact", relNodes)
-      + renderNodes(vers, verPos, "#e74c3c", "ver", relNodes)
-      + `</svg>`;
+      + lines + nodes + `</svg>`;
   }
 
-  // 点击：重绘 SVG（关联上下游高亮），再次点击同一节点取消选中
   function onNodeClick(id) {
+    // 聚合节点点击 → 切换全量模式
+    if (id && id.startsWith("__agg_")) {
+      fullMode = true;
+      buildDrawSets();
+      layout = computeLayout();
+      const box = document.getElementById("factGraph-" + taskRunId);
+      if (box) box.innerHTML = buildSvg();
+      return;
+    }
     if (selectedId === id) selectedId = "";
     else selectedId = id;
-    const box = document.getElementById("factSankey-" + taskRunId);
+    const box = document.getElementById("factGraph-" + taskRunId);
     if (box) box.innerHTML = buildSvg();
   }
 
-  // 生成 SVG 容器 + 事件委托（避免给上千节点逐个绑监听）
-  const containerId = "factSankey-" + taskRunId;
+  // 全量/收缩切换按钮
+  function toggleFull() {
+    fullMode = !fullMode;
+    buildDrawSets();
+    layout = computeLayout();
+    selectedId = "";
+    const box = document.getElementById("factGraph-" + taskRunId);
+    if (box) box.innerHTML = buildSvg();
+  }
+
+  // 按 session_id 搜索：找到该 session 对应的 intent，聚焦其 from/outputs
+  // fact 链并高亮关联边。support 前缀匹配。
+  function searchSession(q) {
+    const query = (q || "").trim();
+    if (!query) return;
+    let found = null;
+    for (const it of intents) {
+      if (it.session_id && it.session_id.includes(query)) {
+        found = it;
+        break;
+      }
+    }
+    if (!found) {
+      const box = document.getElementById(containerId);
+      if (box) {
+        const tip = document.createElement("div");
+        tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
+        tip.textContent = "未找到 session_id: " + query;
+        box.parentNode.insertBefore(tip, box.nextSibling);
+        setTimeout(() => tip.remove(), 4000);
+      }
+      return;
+    }
+    // 自动切全量模式，确保目标节点可见
+    if (!fullMode) {
+      fullMode = true;
+      buildDrawSets();
+      layout = computeLayout();
+    }
+    const focus = new Set();
+    for (const f of (found.from || [])) focus.add(f);
+    for (const f of (found.outputs || [])) focus.add(f);
+    selectedId = focus.size ? Array.from(focus)[0] : "";
+    // 高亮焦点链：selectedId 之外，把 focus 集合也作为高亮
+    focusHighlight = focus;
+    const box = document.getElementById(containerId);
+    if (box) box.innerHTML = buildSvg();
+  }
+
+  const containerId = "factGraph-" + taskRunId;
+  // 搜索聚焦的 fact 集合（除 selectedId 外也高亮）
+  let focusHighlight = null;
+  const typeCount = {};
+  for (const n of nodeList) {
+    const t = (facts[n] || {}).type || "?";
+    typeCount[t] = (typeCount[t] || 0) + 1;
+  }
+  const typeSummary = Object.entries(typeCount)
+    .map(([t, c]) => `${t}:${c}`).join(", ");
+
   const html = `<details style="margin-bottom:12px" open>`
     + `<summary style="cursor:pointer;color:#00a8ff;font-size:14px;font-weight:600;">`
-    + `Fact 依赖流图（挖掘 → 验证，多对多，${invs.length} 挖掘 → ${facts.length} fact → ${vers.length} 验证）`
-    + (selectedId ? ` — 选中: ${esc(selectedId)}` : "")
-    + `</summary>`
+    + `Fact 依赖图（${nodeList.length} 节点 / ${edges.length} 边 / ${intents.length} intent）`
+    + ` — ${esc(typeSummary)}</summary>`
+    + `<div style="margin:6px 0;">`
+    + `<button type="button" id="factToggle-${taskRunId}" style="font-size:13px;padding:2px 10px;cursor:pointer;">`
+    + `${fullMode ? "收缩视图" : "展开全量"}</button>`
+    + ` <input type="text" id="factSearch-${taskRunId}" placeholder="输入 session_id 定位节点" style="font-size:13px;padding:2px 6px;width:240px;margin-left:8px;" />`
+    + `<button type="button" id="factSearchBtn-${taskRunId}" style="font-size:13px;padding:2px 8px;cursor:pointer;">定位</button>`
+    + ` <span style="color:#888;font-size:12px;">${fullMode ? "全量" : "每层最多 " + MAX_PER_LEVEL + " 个，点击聚合节点展开"}</span></div>`
     + `<div style="margin-top:8px;overflow:auto" id="${containerId}">${buildSvg()}</div>`
     + `</details>`;
 
-  // 点击事件用容器委托，重绘后仍生效
   _pendingSankeyClick.push(function() {
     const box = document.getElementById(containerId);
     if (!box) return;
     box.onclick = function(ev) {
       const g = ev.target.closest ? ev.target.closest("g[data-id]") : null;
       if (g && g.dataset.id) onNodeClick(g.dataset.id);
+    };
+    const btn = document.getElementById("factToggle-" + taskRunId);
+    if (btn) btn.onclick = toggleFull;
+    const inp = document.getElementById("factSearch-" + taskRunId);
+    const sbtn = document.getElementById("factSearchBtn-" + taskRunId);
+    if (inp) inp.addEventListener("keydown", function(ev) {
+      if (ev.key === "Enter") searchSession(inp.value);
+    });
+    if (sbtn) sbtn.onclick = function() {
+      if (inp) searchSession(inp.value);
     };
   });
 
@@ -510,12 +675,12 @@ function renderSessionTree(sessions, factDeps) {
   let isolated = roots.filter(r => !(r.session_id in childrenMap));
 
   // 剔除已在 fact 依赖图中的孤立节点——fact 图已表达它们的协作关系，
-  // 只在孤立节点列表重复展示会造成信息冗余（784 个孤立里 547 个在 fact 图）。
-  if (factDeps && factDeps.length) {
+  // 只在孤立节点列表重复展示会造成信息冗余。fact 图中的 session =
+  // intents[].session_id（intent 是 session 的执行载体）。
+  if (factDeps && factDeps.intents && factDeps.intents.length) {
     const factSids = new Set();
-    for (const dep of factDeps) {
-      if (dep.investigate_sid) factSids.add(dep.investigate_sid);
-      if (dep.verify_sid) factSids.add(dep.verify_sid);
+    for (const it of factDeps.intents) {
+      if (it.session_id) factSids.add(it.session_id);
     }
     isolated = isolated.filter(r => !factSids.has(r.session_id));
   }
