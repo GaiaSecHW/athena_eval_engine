@@ -389,7 +389,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const nodeW = 240, nodeH = 36, colGap = 60, rowGap = 10, padX = 20, padY = 20;
   const colW = nodeW + colGap;
 
-  // fact_id → 生产该 fact 的 intent 的 session_id（用于节点显示 session）
+  // fact_id → 生产该 fact 的 intent 的 session_id（节点显示用）
   const factSid = {};
   for (const it of intents) {
     if (!it.session_id) continue;
@@ -528,7 +528,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const sel = selectedId === n;
       const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
       const sid = factSid[n] || "";
-      const sidShort = sid ? sid.slice(0, 18) + (sid.length > 18 ? "…" : "") : "—";
+      const sidShort = sid ? sid.slice(0, 22) + (sid.length > 22 ? "…" : "") : "—";
       const ftype = (facts[n] || {}).type || "";
       nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
         + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
