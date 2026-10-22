@@ -365,14 +365,25 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     inAdj[e.to].push(e.from);
   }
 
-  // 节点标签（description 截断）
-  const NODE_W = 220, NODE_H = 30;
+  // 节点标签（description 截断 + 生产者 session_id）
+  const NODE_W = 260, NODE_H = 40;
+  // fact_id → 生产该 fact 的 intent 的 session_id（节点显示用）
+  const factSid = {};
+  for (const it of intents) {
+    if (!it.session_id) continue;
+    for (const fid of (it.outputs || [])) {
+      if (!factSid[fid]) factSid[fid] = it.session_id;
+    }
+  }
   function nodeLabel(n) {
     const fd = facts[n] || {};
     const desc = fd.description || n;
+    const sid = factSid[n] || "";
+    const sidShort = sid.length > 34 ? sid.slice(0, 32) + "…" : sid;
     return { id: n, type: fd.type || "?", desc: desc,
-             short: desc.length > 26 ? desc.slice(0, 24) + "…" : desc,
-             full: n + " [" + (fd.type || "?") + "] " + desc };
+             short: desc.length > 24 ? desc.slice(0, 22) + "…" : desc,
+             sid: sidShort || "—",
+             full: n + " [" + (fd.type || "?") + "] " + desc + (sid ? " | session: " + sid : "") };
   }
   const labels = {};
   for (const n of allNodes) labels[n] = nodeLabel(n);
@@ -431,6 +442,9 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   }
   let layout = computeVisible();
 
+  // 缩放/平移状态（点击重渲染后恢复，保持视角不跳）
+  let zoomState = null;
+
   // d3 渲染
   function renderD3() {
     const box = document.getElementById(containerId);
@@ -441,9 +455,11 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       .attr("width", "100%").attr("height", "100%")
       .attr("style", "display:block;background:#fafafd;border:1px solid #eee;border-radius:6px");
     const gWrap = svg.append("g");
-    svg.call(d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => {
+    const zoom = d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => {
+      zoomState = ev.transform;
       gWrap.attr("transform", ev.transform);
-    }));
+    });
+    svg.call(zoom);
 
     const { vis, visEdges, pos, W, H } = layout;
 
@@ -493,20 +509,39 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
           .attr("fill", st).attr("fill-opacity", sel ? 0.5 : (inFocus ? 0.35 : 0.12))
           .attr("stroke", st).attr("stroke-width", sel ? 3 : 1);
         gEl.append("text")
-          .attr("x", 6).attr("y", NODE_H / 2 + 4)
-          .attr("font-size", 11).attr("fill", "#333")
+          .attr("x", 6).attr("y", 13)
+          .attr("font-size", 10.5).attr("fill", "#333")
           .attr("font-weight", sel ? "bold" : "normal")
           .attr("style", "user-select:none")
           .text(fd.short);
+        gEl.append("text")
+          .attr("x", 6).attr("y", 28)
+          .attr("font-size", 9).attr("fill", "#888")
+          .attr("style", "user-select:none")
+          .text(fd.sid);
       });
 
-    // 缩放适配可见图尺寸
+    // 缩放适配：首次用 fit（缩小到容器），点击展开后保持 zoomState 且聚焦选中节点
     const contentW = W, contentH = H;
     const boxW = box.clientWidth || 800, boxH = box.clientHeight || 600;
-    if (contentW > boxW || contentH > boxH) {
+    if (selectedId && pos[selectedId]) {
+      // 聚焦选中节点：计算其屏幕位置并平移视角到中心（保持当前缩放级别）
+      const k = zoomState ? zoomState.k : 1;
+      const nx = pos[selectedId].x + NODE_W / 2;
+      const ny = pos[selectedId].y + NODE_H / 2;
+      const tx = boxW / 2 - k * nx;
+      const ty = boxH / 2 - k * ny;
+      const t = d3.zoomIdentity.translate(tx, ty).scale(k);
+      zoomState = t;
+      svg.call(zoom.transform, t);
+    } else if (zoomState) {
+      svg.call(zoom.transform, zoomState);
+    } else if (contentW > boxW || contentH > boxH) {
       const scale = Math.min(boxW / contentW, boxH / contentH, 1);
       if (scale < 1) {
-        gWrap.attr("transform", "translate(" + (boxW - contentW * scale) / 2 + "," + (boxH - contentH * scale) / 2 + ") scale(" + scale + ")");
+        const t = d3.zoomIdentity.translate((boxW - contentW * scale) / 2, (boxH - contentH * scale) / 2).scale(scale);
+        zoomState = t;
+        gWrap.attr("transform", t);
       }
     }
   }
