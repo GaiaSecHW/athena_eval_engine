@@ -489,79 +489,93 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   // 1 个虚拟节点（"… 还剩 N 个"，点击展开该层其余节点）
   const MAX_PER_LEVEL = 5;
   // 记录各层被聚合的隐藏节点（点击虚拟节点时展开）
-  const hiddenByLevel = {};  // rank -> [nodeIds]
+  let hiddenByLevel = {};  // rank -> [nodeIds]
   // 已展开的层（该层虚拟节点被点击过，不再聚合）
   const expandedLevels = new Set();
 
   function computeVisible() {
     const vis = new Set(visibleNodes);
-    // dagre 全量布局（含所有 visibleNodes，得到 rank 分层）
+    // 每层只放入 dagre 的"显示节点"（每层前 MAX_PER_LEVEL 个），
+    // 隐藏节点不参与布局——否则 dagre 高度包含隐藏节点，fit 缩放把
+    // 所有可见内容压成一团重叠。
+    // 先用"只含可见节点的图"做一次粗布局得到 rank 分层，
+    // 再按层截断重排（只布局显示节点）。
+    const g0 = new dagre.graphlib.Graph();
+    g0.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 80, edgesep: 20, marginx: 24, marginy: 24 });
+    g0.setDefaultEdgeLabel(function() { return {}; });
+    for (const n of vis) g0.setNode(n, { width: NODE_W, height: NODE_H });
+    const seenE0 = new Set();
+    for (const e of edges) {
+      if (e.from !== e.to && vis.has(e.from) && vis.has(e.to)) {
+        const key = e.from + "|" + e.to;
+        if (seenE0.has(key)) continue;
+        seenE0.add(key);
+        g0.setEdge(e.from, e.to, { taskType: e.task_type });
+      }
+    }
+    dagre.layout(g0);
+    // 按 rank 分组
+    const byRank = {};
+    for (const n of vis) {
+      const node = g0.node(n);
+      if (node) {
+        const r = node.rank !== undefined ? node.rank : 0;
+        (byRank[r] = byRank[r] || []).push(n);
+      }
+    }
+    // 每层截断：只保留前 MAX_PER_LEVEL 个（按 dagre y 排序，取层内顶部几个）
+    hiddenByLevel = {};
+    const shown = new Set();
+    const virtuals = {};  // rank -> {id, count}
+    for (const r of Object.keys(byRank)) {
+      const nodes = byRank[r].slice().sort((a, b) => (g0.node(a)?.y || 0) - (g0.node(b)?.y || 0));
+      if (expandedLevels.has(r) || nodes.length <= MAX_PER_LEVEL) {
+        for (const n of nodes) shown.add(n);
+        continue;
+      }
+      for (const n of nodes.slice(0, MAX_PER_LEVEL)) shown.add(n);
+      hiddenByLevel[r] = nodes.slice(MAX_PER_LEVEL);
+      virtuals[r] = { id: "__virtual_" + r, count: nodes.length - MAX_PER_LEVEL };
+    }
+
+    // 重新布局：只放显示节点（+ 虚拟节点占位），隐藏节点不参与
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 80, edgesep: 20, marginx: 24, marginy: 24 });
     g.setDefaultEdgeLabel(function() { return {}; });
-    for (const n of vis) g.setNode(n, { width: NODE_W, height: NODE_H });
+    for (const n of shown) g.setNode(n, { width: NODE_W, height: NODE_H });
+    for (const r of Object.keys(virtuals)) {
+      g.setNode(virtuals[r].id, { width: 220, height: 44 });
+    }
     const seenE = new Set();
     for (const e of edges) {
-      if (e.from !== e.to && vis.has(e.from) && vis.has(e.to)) {
+      if (e.from !== e.to && shown.has(e.from) && shown.has(e.to)) {
         const key = e.from + "|" + e.to;
         if (seenE.has(key)) continue;
         seenE.add(key);
         g.setEdge(e.from, e.to, { taskType: e.task_type });
       }
     }
+    // 虚拟节点连到该层第一个显示节点（占位边，dagre 同列定位）
+    for (const r of Object.keys(virtuals)) {
+      const nodes = byRank[r].slice().sort((a, b) => (g0.node(a)?.y || 0) - (g0.node(b)?.y || 0));
+      const firstShown = nodes.filter(n => shown.has(n))[0];
+      if (firstShown) g.setEdge(firstShown, virtuals[r].id, { placeholder: true });
+    }
     dagre.layout(g);
 
-    // 按 rank 分组
-    const byRank = {};
-    for (const n of vis) {
-      const node = g.node(n);
-      if (node) {
-        const r = node.rank !== undefined ? node.rank : 0;
-        (byRank[r] = byRank[r] || []).push(n);
-      }
-    }
-    // 每层截断 + 生成虚拟节点
-    hiddenByLevel.length = 0;
-    const shown = new Set();
-    const virtuals = {};  // rank -> {id, count}
-    for (const r of Object.keys(byRank)) {
-      const nodes = byRank[r];
-      if (expandedLevels.has(r) || nodes.length <= MAX_PER_LEVEL) {
-        for (const n of nodes) shown.add(n);
-        continue;
-      }
-      // 该层超出：显示前 MAX_PER_LEVEL 个 + 虚拟节点
-      for (const n of nodes.slice(0, MAX_PER_LEVEL)) shown.add(n);
-      hiddenByLevel[r] = nodes.slice(MAX_PER_LEVEL);
-      virtuals[r] = { id: "__virtual_" + r, count: nodes.length - MAX_PER_LEVEL };
-    }
-
-    // 位置：真实节点用 dagre 坐标；虚拟节点放在同层第 MAX_PER_LEVEL 个节点下方
     const pos = {};
     const graph = g.graph();
     for (const n of shown) {
       const node = g.node(n);
       if (node) pos[n] = { x: node.x - NODE_W / 2, y: node.y - NODE_H / 2 };
     }
-    // 虚拟节点位置：取该层最后一个显示节点的正下方（左上角坐标）
-    let maxBottom = 0;
     for (const r of Object.keys(virtuals)) {
-      const nodes = byRank[r];
-      const lastShownId = nodes.slice(0, MAX_PER_LEVEL).filter(n => g.node(n)).slice(-1)[0];
-      const lastPos = lastShownId ? pos[lastShownId] : null;
-      if (lastPos) {
-        // 虚拟节点放在最后一个显示节点正下方，垂直偏移（不与其他层重叠）
-        const vx = lastPos.x;
-        const vy = lastPos.y + NODE_H + 10;
-        pos[virtuals[r].id] = { x: vx, y: vy };
-        maxBottom = Math.max(maxBottom, vy + 44);
-      }
+      const node = g.node(virtuals[r].id);
+      if (node) pos[virtuals[r].id] = { x: node.x - 110, y: node.y - 22 };
     }
     const visEdges = edges.filter(e => e.from !== e.to && shown.has(e.from) && shown.has(e.to));
-    // H 考虑虚拟节点（可能超出 dagre 布局高度）
-    const H = Math.max((graph.height || 600) + 40, maxBottom + 20);
     return { vis: shown, visEdges, pos, virtuals, hiddenByLevel,
-             W: (graph.width || 800) + 40, H: H };
+             W: (graph.width || 800) + 40, H: (graph.height || 600) + 40 };
   }
   let layout = computeVisible();
 
