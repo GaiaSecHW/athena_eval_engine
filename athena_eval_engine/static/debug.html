@@ -542,14 +542,14 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
         return EDGE_COLOR[e.task_type] || DEFAULT_EDGE;
       })
       .attr("stroke-opacity", function(e) {
-        if (!selectedId) return 0.5;
+        if (!selectedId) return 0.6;
         const k = e.from + "|" + e.to;
-        return relEdges.has(k) ? 0.9 : 0.15;
+        return relEdges.has(k) ? 0.9 : 0.2;
       })
       .attr("stroke-width", function(e) {
-        if (!selectedId) return 1.2;
+        if (!selectedId) return 2;
         const k = e.from + "|" + e.to;
-        return relEdges.has(k) ? 2.5 : 0.8;
+        return relEdges.has(k) ? 3 : 1;
       });
 
     // 节点
@@ -608,13 +608,15 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 2000); }
       return;
     }
-    // 非叶子节点：向上全部祖先 + 向下1跳子节点
+    // 非叶子节点：向上全部祖先 + 向下1跳子节点 + 保留根节点
     const ancestors = collectAncestors(id);
     const children = collectChildren(id);
     const result = new Set([...ancestors, ...children]);
+    // 保留根节点（入度为0的节点始终显示）
+    for (const r of rootNodes) result.add(r);
     // 子节点过多截断
     if (children.length > MAX_CHILDREN) {
-      const limited = new Set([...ancestors]);
+      const limited = new Set([...ancestors, ...rootNodes]);
       for (const c of children.slice(0, MAX_CHILDREN)) limited.add(c);
       const tip = document.createElement("div");
       tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
@@ -672,10 +674,10 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
         if (!descendants.has(c)) { descendants.add(c); queue.push(c); }
       }
     }
-    const all = new Set([...ancestors, ...descendants]);
+    const all = new Set([...ancestors, ...descendants, ...rootNodes]);
     if (all.size > 500) {
-      // 过大：只显示祖先 + 直接子节点
-      const limited = new Set([...ancestors, target]);
+      // 过大：只显示祖先 + 直接子节点 + 根节点
+      const limited = new Set([...ancestors, target, ...rootNodes]);
       for (const c of (outAdj[target] || []).slice(0, 30)) limited.add(c);
       const tip = document.createElement("div");
       tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
