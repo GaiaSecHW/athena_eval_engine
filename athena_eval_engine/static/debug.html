@@ -386,8 +386,17 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const MAX_PER_LEVEL = 12;
 
   // 布局参数
-  const nodeW = 200, nodeH = 26, colGap = 60, rowGap = 10, padX = 20, padY = 20;
+  const nodeW = 240, nodeH = 36, colGap = 60, rowGap = 10, padX = 20, padY = 20;
   const colW = nodeW + colGap;
+
+  // fact_id → 生产该 fact 的 intent 的 session_id（用于节点显示 session）
+  const factSid = {};
+  for (const it of intents) {
+    if (!it.session_id) continue;
+    for (const fid of (it.outputs || [])) {
+      if (!factSid[fid]) factSid[fid] = it.session_id;
+    }
+  }
 
   // 当前绘制节点集：收缩时每层截断，超出合并为聚合节点
   let drawNodes = nodeList;
@@ -518,9 +527,13 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       const dim = selectedId && relNodes && !relNodes.has(n) && !inFocus;
       const sel = selectedId === n;
       const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
+      const sid = factSid[n] || "";
+      const sidShort = sid ? sid.slice(0, 18) + (sid.length > 18 ? "…" : "") : "—";
+      const ftype = (facts[n] || {}).type || "";
       nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
         + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${dim ? 0.03 : fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
-        + `<text x="${p.x + 6}" y="${p.y + 17}" font-size="11" fill="${dim ? "#ccc" : "#333"}" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} ${esc((facts[n] || {}).type || "")}</text>`
+        + `<text x="${p.x + 6}" y="${p.y + 11}" font-size="11" fill="${dim ? "#ccc" : "#333"}" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} <tspan fill="${dim ? "#ccc" : "#888"}">${esc(ftype)}</tspan></text>`
+        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="${dim ? "#ddd" : "#888"}" style="user-select:none">${esc(sidShort)}</text>`
         + `</g>`;
     }
     // 聚合节点（收缩模式每层超出部分）
@@ -535,7 +548,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
           + `</g>`;
       }
     }
-    return `<svg width="${W}" height="${H}" style="background:#fafafd;border:1px solid #eee;border-radius:6px;display:block;max-width:100%">`
+    return `<svg width="${W}" height="${H}" style="background:#fafafd;border:1px solid #eee;border-radius:6px;display:block">`
       + lines + nodes + `</svg>`;
   }
 
@@ -625,7 +638,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     + ` <input type="text" id="factSearch-${taskRunId}" placeholder="输入 session_id 定位节点" style="font-size:13px;padding:2px 6px;width:240px;margin-left:8px;" />`
     + `<button type="button" id="factSearchBtn-${taskRunId}" style="font-size:13px;padding:2px 8px;cursor:pointer;">定位</button>`
     + ` <span style="color:#888;font-size:12px;">${fullMode ? "全量" : "每层最多 " + MAX_PER_LEVEL + " 个，点击聚合节点展开"}</span></div>`
-    + `<div style="margin-top:8px;overflow:auto" id="${containerId}">${buildSvg()}</div>`
+    + `<div style="margin-top:8px;overflow:auto;max-height:80vh;border:1px solid #eee;border-radius:6px" id="${containerId}">${buildSvg()}</div>`
     + `</details>`;
 
   _pendingSankeyClick.push(function() {
