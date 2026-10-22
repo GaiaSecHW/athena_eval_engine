@@ -391,26 +391,69 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const labels = {};
   for (const n of allNodes) labels[n] = nodeLabel(n);
 
-  // 主链构建：从 origin 出发沿边 BFS，每类取 1-2 个代表节点，
-  // 形成 origin → system_profile → module → finding → verified_finding → report 骨架
+  // 主链构建：沿真实边从起点 BFS 取一条完整路径（每层 1 个代表节点）。
+  // 保证主链每个节点都有上级（父子边真实存在），不会出现"无上级"的孤立。
+  // 起点 = origin（或入度为 0 的节点），终点 = report（或最长可达节点）。
   function buildMainChain() {
+    // 起点：origin（若存在），否则选入度为 0 的节点
+    let start = "origin";
+    if (!(start in labels)) {
+      const inDeg = {};
+      for (const n of allNodes) inDeg[n] = 0;
+      for (const e of edges) {
+        if (e.from !== e.to && inDeg[e.to] !== undefined) inDeg[e.to]++;
+      }
+      const roots = allNodes.filter(n => inDeg[n] === 0);
+      start = roots[0] || allNodes[0];
+    }
+    // 终点：report（若存在），否则选出度为 0 的节点
+    let goal = allNodes.find(n => labels[n].type === "report");
+    if (!goal) {
+      const outDeg = {};
+      for (const n of allNodes) outDeg[n] = 0;
+      for (const e of edges) {
+        if (e.from !== e.to && outDeg[e.from] !== undefined) outDeg[e.from]++;
+      }
+      goal = allNodes.filter(n => outDeg[n] === 0)[0] || allNodes[allNodes.length - 1];
+    }
+    // BFS 找 start → goal 的一条路径
+    const parent = {};
+    const queue = [start];
+    const visited = new Set([start]);
+    let found = false;
+    while (queue.length) {
+      const cur = queue.shift();
+      if (cur === goal) { found = true; break; }
+      for (const nxt of (outAdj[cur] || [])) {
+        if (!visited.has(nxt)) {
+          visited.add(nxt);
+          parent[nxt] = cur;
+          queue.push(nxt);
+        }
+      }
+    }
+    if (found) {
+      // 回溯路径
+      const path = [];
+      let cur = goal;
+      while (cur !== undefined) {
+        path.unshift(cur);
+        cur = parent[cur];
+      }
+      return path;
+    }
+    // 无通路：退化为返回类型代表（至少保证有节点可看）
+    const order = ["system_profile", "module", "finding", "verified_finding", "report"];
     const chain = [];
     const used = new Set();
-    // 按类型顺序挑代表
-    const order = ["system_profile", "module", "finding", "verified_finding", "report"];
     for (const t of order) {
       const cands = allNodes.filter(n => labels[n].type === t && !used.has(n));
       for (const c of cands.slice(0, 2)) { chain.push(c); used.add(c); }
     }
-    // origin 和 goal
     for (const n of allNodes) {
       if (n === "origin" || n === "goal") { chain.push(n); used.add(n); }
     }
-    if (!chain.length) {
-      // 无类型信息时取前 20 个
-      return allNodes.slice(0, 20);
-    }
-    return chain;
+    return chain.length ? chain : allNodes.slice(0, 20);
   }
 
   // 可见节点（渐进展开）
