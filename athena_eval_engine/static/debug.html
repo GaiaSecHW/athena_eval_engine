@@ -485,30 +485,76 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   let focusHighlight = null;
   let selectedId = "";
 
+  // 按层聚合：每层最多显示 MAX_PER_LEVEL 个真实节点，超出部分合并为
+  // 1 个虚拟节点（"… 还剩 N 个"，点击展开该层其余节点）
+  const MAX_PER_LEVEL = 5;
+  // 记录各层被聚合的隐藏节点（点击虚拟节点时展开）
+  const hiddenByLevel = {};  // rank -> [nodeIds]
+  // 已展开的层（该层虚拟节点被点击过，不再聚合）
+  const expandedLevels = new Set();
+
   function computeVisible() {
     const vis = new Set(visibleNodes);
-    // 边：两端都可见的才画
-    const visEdges = edges.filter(e => e.from !== e.to && vis.has(e.from) && vis.has(e.to));
-    // dagre 布局
+    // dagre 全量布局（含所有 visibleNodes，得到 rank 分层）
     const g = new dagre.graphlib.Graph();
     g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 80, edgesep: 20, marginx: 24, marginy: 24 });
     g.setDefaultEdgeLabel(function() { return {}; });
     for (const n of vis) g.setNode(n, { width: NODE_W, height: NODE_H });
     const seenE = new Set();
-    for (const e of visEdges) {
-      const key = e.from + "|" + e.to;
-      if (seenE.has(key)) continue;
-      seenE.add(key);
-      g.setEdge(e.from, e.to, { taskType: e.task_type });
+    for (const e of edges) {
+      if (e.from !== e.to && vis.has(e.from) && vis.has(e.to)) {
+        const key = e.from + "|" + e.to;
+        if (seenE.has(key)) continue;
+        seenE.add(key);
+        g.setEdge(e.from, e.to, { taskType: e.task_type });
+      }
     }
     dagre.layout(g);
-    const graph = g.graph();
-    const pos = {};
+
+    // 按 rank 分组
+    const byRank = {};
     for (const n of vis) {
+      const node = g.node(n);
+      if (node) {
+        const r = node.rank !== undefined ? node.rank : 0;
+        (byRank[r] = byRank[r] || []).push(n);
+      }
+    }
+    // 每层截断 + 生成虚拟节点
+    hiddenByLevel.length = 0;
+    const shown = new Set();
+    const virtuals = {};  // rank -> {id, count}
+    for (const r of Object.keys(byRank)) {
+      const nodes = byRank[r];
+      if (expandedLevels.has(r) || nodes.length <= MAX_PER_LEVEL) {
+        for (const n of nodes) shown.add(n);
+        continue;
+      }
+      // 该层超出：显示前 MAX_PER_LEVEL 个 + 虚拟节点
+      for (const n of nodes.slice(0, MAX_PER_LEVEL)) shown.add(n);
+      hiddenByLevel[r] = nodes.slice(MAX_PER_LEVEL);
+      virtuals[r] = { id: "__virtual_" + r, count: nodes.length - MAX_PER_LEVEL };
+    }
+
+    // 位置：真实节点用 dagre 坐标；虚拟节点放在同层第 MAX_PER_LEVEL 个节点下方
+    const pos = {};
+    const graph = g.graph();
+    for (const n of shown) {
       const node = g.node(n);
       if (node) pos[n] = { x: node.x - NODE_W / 2, y: node.y - NODE_H / 2 };
     }
-    return { vis, visEdges, pos, W: (graph.width || 800) + 40, H: (graph.height || 600) + 40 };
+    // 虚拟节点位置：取该层最后一个显示节点的下方
+    for (const r of Object.keys(virtuals)) {
+      const nodes = byRank[r];
+      const lastShown = nodes.slice(0, MAX_PER_LEVEL).map(n => g.node(n)).filter(Boolean);
+      if (lastShown.length) {
+        const base = lastShown[lastShown.length - 1];
+        pos[virtuals[r].id] = { x: base.x - NODE_W / 2, y: base.y + NODE_H / 2 + 8 };
+      }
+    }
+    const visEdges = edges.filter(e => e.from !== e.to && shown.has(e.from) && shown.has(e.to));
+    return { vis: shown, visEdges, pos, virtuals, hiddenByLevel,
+             W: (graph.width || 800) + 40, H: (graph.height || 600) + 40 };
   }
   let layout = computeVisible();
 
@@ -600,25 +646,31 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
           .text(fd.sid);
       });
 
-    // 虚拟节点：还有多少节点未显示。点击虚拟节点才展开隐藏节点。
-    const hiddenCount = allNodes.length - vis.size;
-    if (hiddenCount > 0) {
+    // 按层虚拟节点：每层超出 MAX_PER_LEVEL 的部分合并为 1 个虚拟节点，
+    // 点击虚拟节点才展开该层其余节点
+    const virtuals = layout.virtuals || {};
+    for (const r of Object.keys(virtuals)) {
+      const v = virtuals[r];
+      const vp = pos[v.id];
+      if (!vp) continue;
       const vw = 220, vh = 44;
-      const vx = 10, vy = 10;
       gWrap.append("g")
         .attr("class", "virtual-node")
-        .attr("transform", "translate(" + vx + "," + vy + ")")
+        .attr("transform", "translate(" + vp.x + "," + vp.y + ")")
         .style("cursor", "pointer")
         .on("click", function() {
-          // 展开全部节点（点击虚拟节点才展开）
+          // 展开该层全部隐藏节点
+          expandedLevels.add(r);
+          const hidden = hiddenByLevel[r] || [];
+          const next = new Set(visibleNodes);
+          for (const h of hidden) next.add(h);
+          visibleNodes = Array.from(next);
           selectedId = "";
-          visibleNodes = allNodes;
-          focusHighlight = null;
           renderD3();
         })
         .each(function() {
           const gEl = d3.select(this);
-          gEl.append("title").text("点击展开全部 " + hiddenCount + " 个隐藏节点");
+          gEl.append("title").text("点击展开该层剩余 " + v.count + " 个节点");
           gEl.append("rect")
             .attr("width", vw).attr("height", vh)
             .attr("rx", 6)
@@ -630,12 +682,12 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
             .attr("font-size", 11).attr("fill", "#64748b")
             .attr("font-weight", "bold")
             .attr("style", "user-select:none")
-            .text("… 还有 " + hiddenCount + " 个节点");
+            .text("… 还剩 " + v.count + " 个");
           gEl.append("text")
             .attr("x", 10).attr("y", 34)
             .attr("font-size", 9).attr("fill", "#94a3b8")
             .attr("style", "user-select:none")
-            .text("点击展开全部");
+            .text("点击展开");
         });
     }
 
