@@ -56,6 +56,14 @@ const _LIB_BASE = _INGRESS + '/static/lib/';
     document.head.appendChild(js);
   };
   document.head.appendChild(jq);
+
+  // fact 依赖图布局与渲染（dagre 分层 + d3 SVG）
+  const dg = document.createElement('script');
+  dg.src = _LIB_BASE + 'dagre.min.js';
+  document.head.appendChild(dg);
+  const d3s = document.createElement('script');
+  d3s.src = _LIB_BASE + 'd3.min.js';
+  document.head.appendChild(d3s);
 })();
 
 const STEPS = ["ingesting", "parsing", "case_matching", "root_cause", "reporting"];
@@ -321,15 +329,16 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const edges = factDeps.edges || [];
   if (!edges.length) return "";
 
-  // 节点类型 → 颜色 / 形状
+  // 节点类型 → 颜色
   const FACT_STYLE = {
-    "system_profile": { color: "#8e44ad", shape: "rect" },
-    "module":         { color: "#2980b9", shape: "rect" },
-    "fact":           { color: "#00a8ff", shape: "rect" },
-    "finding":        { color: "#e67e22", shape: "rect" },
-    "verified_finding":{ color: "#27ae60", shape: "rect" },
-    "report":         { color: "#e74c3c", shape: "rect" },
+    "system_profile": "#8e44ad",
+    "module":         "#2980b9",
+    "fact":           "#00a8ff",
+    "finding":        "#e67e22",
+    "verified_finding": "#27ae60",
+    "report":         "#e74c3c",
   };
+  const DEFAULT_COLOR = "#95a5a6";
   // 边类型 → 颜色
   const EDGE_COLOR = {
     "bootstrap": "#8e44ad",
@@ -338,274 +347,187 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     "verify": "#27ae60",
     "synthesize": "#e74c3c",
   };
-  const DEFAULT_STYLE = { color: "#95a5a6", shape: "rect" };
+  const DEFAULT_EDGE = "#95a5a6";
 
-  // 收集节点集合（edge 端点 + facts 表）
+  // 全部节点集合（edges 端点 + facts 表）
   const nodeIds = new Set();
   for (const e of edges) { nodeIds.add(e.from); nodeIds.add(e.to); }
   for (const fid of Object.keys(facts)) nodeIds.add(fid);
-  const nodeList = Array.from(nodeIds);
+  const allNodes = Array.from(nodeIds);
 
-  // BFS 分层：从没有入边的节点（根，通常 origin）出发
-  const inDeg = {};
-  for (const n of nodeList) inDeg[n] = 0;
-  for (const e of edges) { inDeg[e.to] = (inDeg[e.to] || 0) + 1; }
-  const roots = nodeList.filter(n => (inDeg[n] || 0) === 0);
-  const level = {};
-  const queue = [];
-  for (const r of roots) { level[r] = 0; queue.push(r); }
-  // 环保护：最多访问所有节点
-  let guard = 0;
-  while (queue.length && guard < nodeList.length * 2) {
-    guard++;
-    const cur = queue.shift();
-    const curLv = level[cur] || 0;
-    for (const e of edges) {
-      if (e.from !== cur) continue;
-      if (level[e.to] === undefined) {
-        level[e.to] = curLv + 1;
-        queue.push(e.to);
-      }
-    }
-  }
-  // 环中或孤立的节点放最后一层
-  for (const n of nodeList) {
-    if (level[n] === undefined) level[n] = 99;
+  // 邻接表（用于渐进展开）
+  const outAdj = {}, inAdj = {};
+  for (const e of edges) {
+    if (e.from === e.to) continue;
+    if (!outAdj[e.from]) outAdj[e.from] = [];
+    if (!inAdj[e.to]) inAdj[e.to] = [];
+    outAdj[e.from].push(e.to);
+    inAdj[e.to].push(e.from);
   }
 
-  // 按层分组
-  const byLevel = {};
-  for (const n of nodeList) {
-    const lv = level[n] === 99 ? Math.max(...Object.values(level)) + 1 : level[n];
-    (byLevel[lv] = byLevel[lv] || []).push(n);
+  // 节点标签（description 截断）
+  const NODE_W = 220, NODE_H = 30;
+  function nodeLabel(n) {
+    const fd = facts[n] || {};
+    const desc = fd.description || n;
+    return { id: n, type: fd.type || "?", desc: desc,
+             short: desc.length > 26 ? desc.slice(0, 24) + "…" : desc,
+             full: n + " [" + (fd.type || "?") + "] " + desc };
   }
-  const levels = Object.keys(byLevel).map(Number).sort((a, b) => a - b);
+  const labels = {};
+  for (const n of allNodes) labels[n] = nodeLabel(n);
 
-  // 展示状态：false=收缩（每层截断+聚合），true=全量
-  let fullMode = false;
-  const MAX_PER_LEVEL = 12;
-
-  // 布局参数
-  const nodeW = 280, nodeH = 36, colGap = 60, rowGap = 10, padX = 20, padY = 20;
-  const colW = nodeW + colGap;
-
-  // fact_id → 生产该 fact 的 intent 的 session_id（节点显示用）
-  const factSid = {};
-  for (const it of intents) {
-    if (!it.session_id) continue;
-    for (const fid of (it.outputs || [])) {
-      if (!factSid[fid]) factSid[fid] = it.session_id;
+  // 主链构建：从 origin 出发沿边 BFS，每类取 1-2 个代表节点，
+  // 形成 origin → system_profile → module → finding → verified_finding → report 骨架
+  function buildMainChain() {
+    const chain = [];
+    const used = new Set();
+    // 按类型顺序挑代表
+    const order = ["system_profile", "module", "finding", "verified_finding", "report"];
+    for (const t of order) {
+      const cands = allNodes.filter(n => labels[n].type === t && !used.has(n));
+      for (const c of cands.slice(0, 2)) { chain.push(c); used.add(c); }
     }
+    // origin 和 goal
+    for (const n of allNodes) {
+      if (n === "origin" || n === "goal") { chain.push(n); used.add(n); }
+    }
+    if (!chain.length) {
+      // 无类型信息时取前 20 个
+      return allNodes.slice(0, 20);
+    }
+    return chain;
   }
 
-  // 当前绘制节点集：收缩时按 BFS 连通采样（保持上下游连通，边不断裂）
-  let drawNodes = nodeList;
-  let aggregated = null;
-
-  function buildDrawSets() {
-    if (fullMode) {
-      drawNodes = nodeList;
-      aggregated = null;
-      return;
-    }
-    // BFS 连通采样：从 root 出发沿边取每层前 MAX_PER_LEVEL 个连通节点。
-    // 比按层截断更优——保证节点间连线完整（按层截断会导致 99% 边断裂）。
-    const shown = new Set();
-    const agg = {};
-    // 构建邻接表（from → [to]）
-    const adj = {};
-    for (const e of edges) {
-      if (!adj[e.from]) adj[e.from] = [];
-      adj[e.from].push(e.to);
-    }
-    // BFS：按层遍历，每层取前 MAX_PER_LEVEL 个
-    let frontier = roots.slice();
-    const visited = new Set();
-    for (const r of roots) { visited.add(r); shown.add(r); }
-    while (frontier.length) {
-      const next = [];
-      for (const cur of frontier) {
-        for (const tgt of (adj[cur] || [])) {
-          if (!visited.has(tgt)) {
-            visited.add(tgt);
-            next.push(tgt);
-          }
-        }
-      }
-      // 按层分组
-      if (next.length <= MAX_PER_LEVEL) {
-        for (const n of next) shown.add(n);
-      } else {
-        for (const n of next.slice(0, MAX_PER_LEVEL)) shown.add(n);
-        const lv = level[next[0]] === 99 ? Math.max(...Object.values(level)) + 1 : level[next[0]];
-        agg[lv] = {
-          id: "__agg_" + lv,
-          count: next.length - MAX_PER_LEVEL,
-        };
-      }
-      frontier = next.slice(0, MAX_PER_LEVEL);
-    }
-    drawNodes = Array.from(shown);
-    aggregated = Object.keys(agg).length ? agg : null;
-  }
-  buildDrawSets();
-
-  function computeLayout() {
-    const dByLevel = {};
-    for (const n of drawNodes) {
-      const lv = level[n] === 99 ? Math.max(...Object.values(level)) + 1 : level[n];
-      (dByLevel[lv] = dByLevel[lv] || []).push(n);
-    }
-    const allLevels = Object.keys(dByLevel).map(Number).sort((a, b) => a - b);
-    for (const lv of Object.keys(aggregated || {})) {
-      const lvNum = Number(lv);
-      if (!dByLevel[lvNum]) dByLevel[lvNum] = [];
-    }
-    const sortedLevels = Object.keys(dByLevel).map(Number).sort((a, b) => a - b);
-    const maxPerCol = Math.max(...sortedLevels.map(lv => (dByLevel[lv] || []).length + ((aggregated && aggregated[lv]) ? 1 : 0)));
-    const H = maxPerCol * (nodeH + rowGap) + padY * 2;
-    const W = sortedLevels.length * colW + padX * 2;
-    const pos = {};
-    for (const lv of sortedLevels) {
-      const nodes = dByLevel[lv] || [];
-      const list = aggregated && aggregated[lv] ? [...nodes, "__agg_" + lv] : nodes;
-      const totalH = list.length * (nodeH + rowGap) - rowGap;
-      const startY = (H - totalH) / 2;
-      const x = padX + sortedLevels.indexOf(lv) * colW;
-      list.forEach((id, i) => {
-        pos[id] = { x: x, y: startY + i * (nodeH + rowGap) };
-      });
-    }
-    return { pos, H, W };
-  }
-  let layout = computeLayout();
-  const pos = layout.pos, H = layout.H, W = layout.W;
-
-  // 点击选中态
+  // 可见节点（渐进展开）
+  let visibleNodes = buildMainChain();
+  let focusHighlight = null;
   let selectedId = "";
 
-  // 选中节点的上下游节点集合
-  function relatedOf(id) {
-    const nodes = new Set([id]);
-    const relEdges = new Set();
-    for (const e of edges) {
-      if (e.from === id || e.to === id) {
-        relEdges.add(e.from + "|" + e.to);
-        nodes.add(e.from); nodes.add(e.to);
-      }
-    }
-    // 再扩展一跳：沿边传播
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const e of edges) {
-        const key = e.from + "|" + e.to;
-        if (relEdges.has(key)) continue;
-        if (nodes.has(e.from) || nodes.has(e.to)) {
-          // 只扩展与选中同侧方向的关联
-          if (selectedId === id) {
-            relEdges.add(key);
-            nodes.add(e.from); nodes.add(e.to);
-            changed = true;
-          }
-        }
-      }
-    }
-    return { nodes, relEdges };
-  }
-
-  function buildSvg() {
-    let relNodes = null, relEdges = null;
-    if (selectedId) {
-      const r = relatedOf(selectedId);
-      relNodes = r.nodes; relEdges = r.relEdges;
-    }
-    // 选中时只显示关联节点和边，不相关的不画（隐藏而非变淡）
-    // 边（只画两端都在当前绘制集或指向聚合节点的）
-    let lines = "";
-    for (const e of edges) {
-      const a = pos[e.from], b = pos[e.to];
-      if (!a || !b) continue;
-      const lvFrom = level[e.from] === 99 ? Math.max(...Object.values(level)) + 1 : level[e.from];
-      const lvTo = level[e.to] === 99 ? Math.max(...Object.values(level)) + 1 : level[e.to];
-      const fromShown = drawNodes.includes(e.from) || (aggregated && aggregated[lvFrom]);
-      const toShown = drawNodes.includes(e.to) || (aggregated && aggregated[lvTo]);
-      if (!fromShown || !toShown) continue;
-      // 选中时只画关联边
+  function computeVisible() {
+    const vis = new Set(visibleNodes);
+    // 边：两端都可见的才画
+    const visEdges = edges.filter(e => e.from !== e.to && vis.has(e.from) && vis.has(e.to));
+    // dagre 布局
+    const g = new dagre.graphlib.Graph();
+    g.setGraph({ rankdir: "LR", nodesep: 24, ranksep: 80, edgesep: 20, marginx: 24, marginy: 24 });
+    g.setDefaultEdgeLabel(function() { return {}; });
+    for (const n of vis) g.setNode(n, { width: NODE_W, height: NODE_H });
+    const seenE = new Set();
+    for (const e of visEdges) {
       const key = e.from + "|" + e.to;
-      if (selectedId && relEdges && !relEdges.has(key) && !(focusHighlight && (focusHighlight.has(e.from) || focusHighlight.has(e.to)))) continue;
-      const color = EDGE_COLOR[e.task_type] || "#95a5a6";
-      const edgeInFocus = focusHighlight && (focusHighlight.has(e.from) || focusHighlight.has(e.to));
-      const active = (selectedId && relEdges && relEdges.has(key)) || edgeInFocus;
-      const dim = selectedId && relEdges && !relEdges.has(key) && !edgeInFocus;
-      const midX = (a.x + nodeW) + (b.x - (a.x + nodeW)) / 2;
-      lines += `<path d="M${a.x + nodeW},${a.y + nodeH / 2} C${midX},${a.y + nodeH / 2} ${midX},${b.y + nodeH / 2} ${b.x},${b.y + nodeH / 2}" `
-        + `fill="none" stroke="${color}" stroke-opacity="${active ? 0.95 : (dim ? 0.06 : 0.45)}" stroke-width="${active ? 2.5 : 1.3}"/>`;
+      if (seenE.has(key)) continue;
+      seenE.add(key);
+      g.setEdge(e.from, e.to, { taskType: e.task_type });
     }
-    // 节点（选中时只显示关联节点，不相关的不画）
-    let nodes = "";
-    for (const n of drawNodes) {
-      const p = pos[n];
-      if (!p) continue;
-      const inFocus = focusHighlight && focusHighlight.has(n);
-      const active = (selectedId && relNodes && relNodes.has(n)) || inFocus;
-      const sel = selectedId === n;
-      // 选中时隐藏非关联节点
-      if (selectedId && !active && !sel) continue;
-      const st = FACT_STYLE[(facts[n] || {}).type] || DEFAULT_STYLE;
-      const fillOp = sel ? 0.5 : (active ? 0.3 : 0.15);
-      const sid = factSid[n] || "—";
-      const ftype = (facts[n] || {}).type || "";
-      nodes += `<g style="cursor:pointer" data-id="${esc(n)}">`
-        + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="${st.color}" fill-opacity="${fillOp}" stroke="${st.color}" stroke-width="${sel ? 3 : (active ? 2 : 1)}"/>`
-        + `<text x="${p.x + 6}" y="${p.y + 11}" font-size="11" fill="#333" font-weight="${sel ? "bold" : "normal"}" style="user-select:none">${esc(n)} <tspan fill="#888">${esc(ftype)}</tspan></text>`
-        + `<text x="${p.x + 6}" y="${p.y + 22}" font-size="10" fill="#888" style="user-select:none">${esc(sid)}</text>`
-        + `</g>`;
+    dagre.layout(g);
+    const graph = g.graph();
+    const pos = {};
+    for (const n of vis) {
+      const node = g.node(n);
+      if (node) pos[n] = { x: node.x - NODE_W / 2, y: node.y - NODE_H / 2 };
     }
-    // 聚合节点（收缩模式每层超出部分）
-    if (aggregated) {
-      for (const lv of Object.keys(aggregated)) {
-        const agg = aggregated[lv];
-        const p = pos[agg.id];
-        if (!p) continue;
-        nodes += `<g style="cursor:pointer" data-id="${esc(agg.id)}">`
-          + `<rect x="${p.x}" y="${p.y}" width="${nodeW}" height="${nodeH}" rx="5" fill="#95a5a6" fill-opacity="0.2" stroke="#95a5a6" stroke-width="1" stroke-dasharray="4,3"/>`
-          + `<text x="${p.x + 6}" y="${p.y + 17}" font-size="11" fill="#888" style="user-select:none">... 另有 ${agg.count} 个（点击展开全量）</text>`
-          + `</g>`;
+    return { vis, visEdges, pos, W: (graph.width || 800) + 40, H: (graph.height || 600) + 40 };
+  }
+  let layout = computeVisible();
+
+  // d3 渲染
+  function renderD3() {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    layout = computeVisible();
+    box.innerHTML = "";
+    const svg = d3.select(box).append("svg")
+      .attr("width", "100%").attr("height", "100%")
+      .attr("style", "display:block;background:#fafafd;border:1px solid #eee;border-radius:6px");
+    const gWrap = svg.append("g");
+    svg.call(d3.zoom().scaleExtent([0.2, 4]).on("zoom", (ev) => {
+      gWrap.attr("transform", ev.transform);
+    }));
+
+    const { vis, visEdges, pos, W, H } = layout;
+
+    // 边
+    gWrap.append("g").selectAll("path")
+      .data(visEdges)
+      .enter().append("path")
+      .attr("d", function(e) {
+        const a = pos[e.from], b = pos[e.to];
+        if (!a || !b) return "";
+        const ax = a.x + NODE_W, ay = a.y + NODE_H / 2;
+        const bx = b.x, by = b.y + NODE_H / 2;
+        const mx = (ax + bx) / 2;
+        return "M" + ax + "," + ay + " C" + mx + "," + ay + " " + mx + "," + by + " " + bx + "," + by;
+      })
+      .attr("fill", "none")
+      .attr("stroke", function(e) {
+        const k = e.from + "|" + e.to;
+        if (selectedId && (e.from === selectedId || e.to === selectedId)) return "#f39c12";
+        return EDGE_COLOR[e.task_type] || DEFAULT_EDGE;
+      })
+      .attr("stroke-opacity", 0.6)
+      .attr("stroke-width", function(e) {
+        const k = e.from + "|" + e.to;
+        if (selectedId && (e.from === selectedId || e.to === selectedId)) return 2.5;
+        return 1.2;
+      });
+
+    // 节点
+    gWrap.append("g").selectAll("g.node")
+      .data(vis)
+      .enter().append("g")
+      .attr("class", "node")
+      .attr("transform", function(n) { return "translate(" + pos[n].x + "," + pos[n].y + ")"; })
+      .style("cursor", "pointer")
+      .on("click", function(ev, n) { onNodeClick(n); })
+      .each(function(n) {
+        const gEl = d3.select(this);
+        const fd = labels[n];
+        const st = FACT_STYLE[fd.type] || DEFAULT_COLOR;
+        const inFocus = focusHighlight && focusHighlight.has(n);
+        const sel = selectedId === n;
+        gEl.append("title").text(fd.full);
+        gEl.append("rect")
+          .attr("width", NODE_W).attr("height", NODE_H)
+          .attr("rx", 6)
+          .attr("fill", st).attr("fill-opacity", sel ? 0.5 : (inFocus ? 0.35 : 0.12))
+          .attr("stroke", st).attr("stroke-width", sel ? 3 : 1);
+        gEl.append("text")
+          .attr("x", 6).attr("y", NODE_H / 2 + 4)
+          .attr("font-size", 11).attr("fill", "#333")
+          .attr("font-weight", sel ? "bold" : "normal")
+          .attr("style", "user-select:none")
+          .text(fd.short);
+      });
+
+    // 缩放适配可见图尺寸
+    const contentW = W, contentH = H;
+    const boxW = box.clientWidth || 800, boxH = box.clientHeight || 600;
+    if (contentW > boxW || contentH > boxH) {
+      const scale = Math.min(boxW / contentW, boxH / contentH, 1);
+      if (scale < 1) {
+        gWrap.attr("transform", "translate(" + (boxW - contentW * scale) / 2 + "," + (boxH - contentH * scale) / 2 + ") scale(" + scale + ")");
       }
     }
-    return `<svg width="${W}" height="${H}" style="background:#fafafd;border:1px solid #eee;border-radius:6px;display:block">`
-      + lines + nodes + `</svg>`;
   }
 
+  // 点击：渐进展开该节点上下游（1 跳），再点收缩
   function onNodeClick(id) {
-    // 聚合节点点击 → 切换全量模式
-    if (id && id.startsWith("__agg_")) {
-      fullMode = true;
-      buildDrawSets();
-      layout = computeLayout();
-      const box = document.getElementById("factGraph-" + taskRunId);
-      if (box) box.innerHTML = buildSvg();
-      return;
+    if (selectedId === id) {
+      selectedId = "";
+      visibleNodes = buildMainChain();
+      focusHighlight = null;
+    } else {
+      selectedId = id;
+      const add = new Set(visibleNodes);
+      for (const t of (outAdj[id] || [])) add.add(t);
+      for (const s of (inAdj[id] || [])) add.add(s);
+      add.add(id);
+      visibleNodes = Array.from(add);
     }
-    if (selectedId === id) selectedId = "";
-    else selectedId = id;
-    const box = document.getElementById("factGraph-" + taskRunId);
-    if (box) box.innerHTML = buildSvg();
+    renderD3();
   }
 
-  // 全量/收缩切换按钮
-  function toggleFull() {
-    fullMode = !fullMode;
-    buildDrawSets();
-    layout = computeLayout();
-    selectedId = "";
-    const box = document.getElementById("factGraph-" + taskRunId);
-    if (box) box.innerHTML = buildSvg();
-  }
-
-  // 按 session_id 搜索：找到该 session 对应的 intent，聚焦其 from/outputs
-  // fact 链并高亮关联边。support 前缀匹配。
   function searchSession(q) {
     const query = (q || "").trim();
     if (!query) return;
@@ -617,73 +539,52 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       }
     }
     if (!found) {
+      const tip = document.createElement("div");
+      tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
+      tip.textContent = "未找到 session_id: " + query;
       const box = document.getElementById(containerId);
-      if (box) {
-        const tip = document.createElement("div");
-        tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
-        tip.textContent = "未找到 session_id: " + query;
-        box.parentNode.insertBefore(tip, box.nextSibling);
-        setTimeout(() => tip.remove(), 4000);
-      }
+      if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 4000); }
       return;
-    }
-    // 自动切全量模式，确保目标节点可见
-    if (!fullMode) {
-      fullMode = true;
-      buildDrawSets();
-      layout = computeLayout();
     }
     const focus = new Set();
     for (const f of (found.from || [])) focus.add(f);
     for (const f of (found.outputs || [])) focus.add(f);
-    selectedId = focus.size ? Array.from(focus)[0] : "";
-    // 高亮焦点链：selectedId 之外，把 focus 集合也作为高亮
     focusHighlight = focus;
-    const box = document.getElementById(containerId);
-    if (box) box.innerHTML = buildSvg();
+    // 展开聚焦节点
+    const add = new Set(visibleNodes);
+    for (const f of focus) { add.add(f); for (const t of (outAdj[f] || [])) add.add(t); for (const s of (inAdj[f] || [])) add.add(s); }
+    visibleNodes = Array.from(add);
+    selectedId = focus.size ? Array.from(focus)[0] : "";
+    renderD3();
   }
 
   const containerId = "factGraph-" + taskRunId;
-  // 搜索聚焦的 fact 集合（除 selectedId 外也高亮）
-  let focusHighlight = null;
+
   const typeCount = {};
-  for (const n of nodeList) {
+  for (const n of allNodes) {
     const t = (facts[n] || {}).type || "?";
     typeCount[t] = (typeCount[t] || 0) + 1;
   }
   const typeSummary = Object.entries(typeCount)
-    .map(([t, c]) => `${t}:${c}`).join(", ");
+    .map(([t, c]) => t + ":" + c).join(", ");
 
   const html = `<details style="margin-bottom:12px" open>`
     + `<summary style="cursor:pointer;color:#00a8ff;font-size:14px;font-weight:600;">`
-    + `Fact 依赖图（${nodeList.length} 节点 / ${edges.length} 边 / ${intents.length} intent）`
+    + `Fact 依赖图（共 ${allNodes.length} 节点 / ${edges.length} 边 / ${intents.length} intent）`
     + ` — ${esc(typeSummary)}</summary>`
     + `<div style="margin:6px 0;">`
-    + `<button type="button" id="factToggle-${taskRunId}" style="font-size:13px;padding:2px 10px;cursor:pointer;">`
-    + `${fullMode ? "收缩视图" : "展开全量"}</button>`
-    + ` <input type="text" id="factSearch-${taskRunId}" placeholder="输入 session_id 定位节点" style="font-size:13px;padding:2px 6px;width:240px;margin-left:8px;" />`
+    + `<input type="text" id="factSearch-${taskRunId}" placeholder="输入 session_id 定位节点" style="font-size:13px;padding:2px 6px;width:240px;margin-right:4px;" />`
     + `<button type="button" id="factSearchBtn-${taskRunId}" style="font-size:13px;padding:2px 8px;cursor:pointer;">定位</button>`
-    + ` <span style="color:#888;font-size:12px;">${fullMode ? "全量" : "每层最多 " + MAX_PER_LEVEL + " 个，点击聚合节点展开"}</span></div>`
-    + `<div style="margin-top:8px;overflow:auto;max-width:100%" id="${containerId}">${buildSvg()}</div>`
+    + ` <span style="color:#888;font-size:12px;">默认主链，点击节点展开上下游（再点收缩），滚轮缩放</span></div>`
+    + `<div style="margin-top:8px;height:calc(100vh - 220px);overflow:hidden" id="${containerId}"></div>`
     + `</details>`;
 
   _pendingSankeyClick.push(function() {
-    const box = document.getElementById(containerId);
-    if (!box) return;
-    box.onclick = function(ev) {
-      const g = ev.target.closest ? ev.target.closest("g[data-id]") : null;
-      if (g && g.dataset.id) onNodeClick(g.dataset.id);
-    };
-    const btn = document.getElementById("factToggle-" + taskRunId);
-    if (btn) btn.onclick = toggleFull;
     const inp = document.getElementById("factSearch-" + taskRunId);
     const sbtn = document.getElementById("factSearchBtn-" + taskRunId);
-    if (inp) inp.addEventListener("keydown", function(ev) {
-      if (ev.key === "Enter") searchSession(inp.value);
-    });
-    if (sbtn) sbtn.onclick = function() {
-      if (inp) searchSession(inp.value);
-    };
+    if (inp) inp.addEventListener("keydown", function(ev) { if (ev.key === "Enter") searchSession(inp.value); });
+    if (sbtn) sbtn.onclick = function() { if (inp) searchSession(inp.value); };
+    renderD3();
   });
 
   return html;
