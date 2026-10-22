@@ -365,8 +365,8 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     inAdj[e.to].push(e.from);
   }
 
-  // 节点标签（description 截断 + 生产者 session_id）
-  const NODE_W = 260, NODE_H = 40;
+  // 节点标签（fxxx + description + 生产者 session_id 三行）
+  const NODE_W = 280, NODE_H = 52;
   // fact_id → 生产该 fact 的 intent 的 session_id（节点显示用）
   const factSid = {};
   for (const it of intents) {
@@ -379,11 +379,14 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     const fd = facts[n] || {};
     const desc = fd.description || n;
     const sid = factSid[n] || "";
-    const sidShort = sid.length > 34 ? sid.slice(0, 32) + "…" : sid;
+    const sidShort = sid.length > 30 ? sid.slice(0, 28) + "…" : sid;
+    // 节点第一行：fxxx + type 前缀，第二行 description，第三行 session_id
+    const head = n + " [" + (fd.type || "?") + "]";
     return { id: n, type: fd.type || "?", desc: desc,
-             short: desc.length > 24 ? desc.slice(0, 22) + "…" : desc,
+             head: head,
+             short: desc.length > 26 ? desc.slice(0, 24) + "…" : desc,
              sid: sidShort || "—",
-             full: n + " [" + (fd.type || "?") + "] " + desc + (sid ? " | session: " + sid : "") };
+             full: head + " " + desc + (sid ? " | session: " + sid : "") };
   }
   const labels = {};
   for (const n of allNodes) labels[n] = nodeLabel(n);
@@ -509,57 +512,78 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
           .attr("fill", st).attr("fill-opacity", sel ? 0.5 : (inFocus ? 0.35 : 0.12))
           .attr("stroke", st).attr("stroke-width", sel ? 3 : 1);
         gEl.append("text")
-          .attr("x", 6).attr("y", 13)
-          .attr("font-size", 10.5).attr("fill", "#333")
+          .attr("x", 6).attr("y", 12)
+          .attr("font-size", 10).attr("fill", st)
+          .attr("font-weight", "bold")
+          .attr("style", "user-select:none")
+          .text(fd.head);
+        gEl.append("text")
+          .attr("x", 6).attr("y", 27)
+          .attr("font-size", 10).attr("fill", "#333")
           .attr("font-weight", sel ? "bold" : "normal")
           .attr("style", "user-select:none")
           .text(fd.short);
         gEl.append("text")
-          .attr("x", 6).attr("y", 28)
+          .attr("x", 6).attr("y", 41)
           .attr("font-size", 9).attr("fill", "#888")
           .attr("style", "user-select:none")
           .text(fd.sid);
       });
 
-    // 缩放适配：首次用 fit（缩小到容器），点击展开后保持 zoomState 且聚焦选中节点
+    // 缩放适配：每次渲染 fit 整个可见图（含点击展开的子图），
+    // 用户手动滚轮缩放后（zoomState 非 null 且未选中）保持用户视角。
     const contentW = W, contentH = H;
     const boxW = box.clientWidth || 800, boxH = box.clientHeight || 600;
-    if (selectedId && pos[selectedId]) {
-      // 聚焦选中节点：计算其屏幕位置并平移视角到中心（保持当前缩放级别）
-      const k = zoomState ? zoomState.k : 1;
-      const nx = pos[selectedId].x + NODE_W / 2;
-      const ny = pos[selectedId].y + NODE_H / 2;
-      const tx = boxW / 2 - k * nx;
-      const ty = boxH / 2 - k * ny;
-      const t = d3.zoomIdentity.translate(tx, ty).scale(k);
-      zoomState = t;
-      svg.call(zoom.transform, t);
-    } else if (zoomState) {
-      svg.call(zoom.transform, zoomState);
-    } else if (contentW > boxW || contentH > boxH) {
+    if (contentW <= 0 || contentH <= 0) {
+      gWrap.attr("transform", "translate(20,20)");
+    } else if (!zoomState || selectedId) {
+      // 首次渲染或点击展开后：fit 整个可见图到容器
       const scale = Math.min(boxW / contentW, boxH / contentH, 1);
-      if (scale < 1) {
-        const t = d3.zoomIdentity.translate((boxW - contentW * scale) / 2, (boxH - contentH * scale) / 2).scale(scale);
-        zoomState = t;
-        gWrap.attr("transform", t);
-      }
+      const t = d3.zoomIdentity
+        .translate((boxW - contentW * scale) / 2, (boxH - contentH * scale) / 2)
+        .scale(scale);
+      zoomState = t;
+      gWrap.attr("transform", t);
+    } else {
+      // 用户手动缩放过且未选中：保持用户视角
+      gWrap.attr("transform", zoomState);
     }
   }
 
   // 点击：渐进展开该节点上下游（1 跳），再点收缩
+  // 展开上限保护：避免 visibleNodes 无限增长导致 dagre 布局卡死/画布空白
+  const MAX_EXPAND_NODES = 200;
   function onNodeClick(id) {
     if (selectedId === id) {
       selectedId = "";
       visibleNodes = buildMainChain();
       focusHighlight = null;
+      renderD3();
+      return;
+    }
+    const add = new Set(visibleNodes);
+    for (const t of (outAdj[id] || [])) add.add(t);
+    for (const s of (inAdj[id] || [])) add.add(s);
+    add.add(id);
+    if (add.size > MAX_EXPAND_NODES) {
+      // 超上限：只取选中节点 + 直接上下游（不累加历史），并提示
+      const focused = new Set([id]);
+      for (const t of (outAdj[id] || [])) focused.add(t);
+      for (const s of (inAdj[id] || [])) focused.add(s);
+      if (focused.size > MAX_EXPAND_NODES) {
+        const tip = document.createElement("div");
+        tip.style.cssText = "color:#e74c3c;font-size:12px;margin-top:4px;";
+        tip.textContent = "该节点上下游过多（" + focused.size + " 个），仅显示直接邻居";
+        const box = document.getElementById(containerId);
+        if (box) { box.parentNode.insertBefore(tip, box.nextSibling); setTimeout(() => tip.remove(), 4000); }
+        visibleNodes = Array.from(focused).slice(0, MAX_EXPAND_NODES);
+      } else {
+        visibleNodes = Array.from(focused);
+      }
     } else {
-      selectedId = id;
-      const add = new Set(visibleNodes);
-      for (const t of (outAdj[id] || [])) add.add(t);
-      for (const s of (inAdj[id] || [])) add.add(s);
-      add.add(id);
       visibleNodes = Array.from(add);
     }
+    selectedId = id;
     renderD3();
   }
 
