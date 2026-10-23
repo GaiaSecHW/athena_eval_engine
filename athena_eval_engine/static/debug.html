@@ -300,13 +300,15 @@ RENDERERS.parsing = function(el, data) {
     const sessions = p.sessions || [];
     if (sessions.length > 0) {
       // fact 依赖图（节点=Fact，边=Intent，多跳网络）
+      // 有 fact 图时不显示调用树——fact 图是主视图，调用树是辅助
       const factDeps = p.fact_deps || {};
       const hasFactGraph = factDeps.edges && factDeps.edges.length > 0;
       if (hasFactGraph) {
         html += renderFactDepsGraph(factDeps, sessions, p.task_run_id);
+      } else {
+        // session 调用树（文本缩进格式）——fact 图缺失时兜底
+        html += renderSessionTree(sessions, factDeps);
       }
-      // session 调用树（文本缩进格式）
-      html += renderSessionTree(sessions, factDeps);
     }
     html += `</details>`;
   }
