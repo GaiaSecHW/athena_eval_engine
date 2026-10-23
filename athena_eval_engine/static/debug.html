@@ -771,35 +771,17 @@ function renderSessionTree(sessions, factDeps) {
     isolated = isolated.filter(r => !factSids.has(r.session_id));
   }
 
-  // 调用树只在有真实层级时显示：存在深度 ≥ 3 的树（根→子→孙）。
-  // argo 等平级协作平台 parent_id 只是"根 session + 子 agent 文件"的
-  // 扁平目录关系（全深度 2），不构成调用链，渲染调用树无信息量。
-  let hasRealTree = false;
-  if (treeRoots.length > 0) {
-    for (const r of treeRoots) {
-      let maxDepth = 1;
-      const q = [r.session_id];
-      const depthMap = { [r.session_id]: 1 };
-      while (q.length) {
-        const cur = q.shift();
-        const dep = depthMap[cur] || 1;
-        for (const kid of (childrenMap[cur] || [])) {
-          depthMap[kid.session_id] = dep + 1;
-          maxDepth = Math.max(maxDepth, dep + 1);
-          q.push(kid.session_id);
-        }
-      }
-      if (maxDepth >= 3) { hasRealTree = true; break; }
-    }
-  }
+  // 调用树：有树根（有子节点的根）就显示。
+  // 不再限制深度 ≥ 3——WebVulnVerify 的 analyze→verify 是真实调用关系
+  // （深度 2），应显示；argo 的扁平目录关系也可显示（信息量低但不遗漏）。
+  const hasTree = treeRoots.length > 0;
 
   let html = `<div style="margin-bottom:8px;color:#888;font-size:14px;">`
     + `孤立节点: ${isolated.length}`
-    + (hasRealTree ? `, 调用树: ${treeRoots.length} 棵` : "")
+    + (hasTree ? `, 调用树: ${treeRoots.length} 棵` : "")
     + `</div>`;
 
-  // 用 jstree 渲染有真实层级（深度 ≥ 3）的树
-  if (hasRealTree) {
+  if (hasTree) {
     _jstreeSeq++;
     const containerId = `jstree-${_jstreeSeq}`;
     html += `<details style="margin-bottom:12px" open>`;

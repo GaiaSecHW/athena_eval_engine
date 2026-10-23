@@ -477,10 +477,15 @@ class ArgoParser(BaseParser):
                                 # 保存 finding description（供 case↔session 匹配）
                                 # 运行态下 finding 由挖掘 agent 上报漏洞中心，
                                 # description 成为漏洞中心 case 的 vuln_title。
+                                # 注意：key 可能无效（(,,) 当 finding 缺 cwe/file/line_range），
+                                # 但 description 必须无条件存储——否则有上报却匹配不到。
                                 fdesc = f.get("description") or ""
                                 if fdesc:
                                     if key and key != "(,,)":
                                         sg['finding_descs'][key] = fdesc
+                                    else:
+                                        # key 无效时用 description 前缀作索引键兜底
+                                        sg['finding_descs'][f"desc:{fdesc[:40]}"] = fdesc
                         # verify verdict: 存 verdict description 用于后续匹配 verified_finding
                         if "verdict" in data:
                             sg['session_type'] = 'verify'

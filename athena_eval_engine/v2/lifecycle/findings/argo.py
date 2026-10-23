@@ -25,12 +25,21 @@ class ArgoFindingExtractor(FindingExtractor):
             sessions = (dp.session_graph or {}).get("sessions", {}) if isinstance(dp.session_graph, dict) else {}
             for sid, sdata in sessions.items():
                 sdata_d = sdata if isinstance(sdata, dict) else {}
+                # 只提取 investigate（挖掘）session 的 finding——只有 investigate
+                # 上报漏洞（accepted data.findings），verify 的 finding_descs 是
+                # queue prompt 里"要验证的 finding"，不是上报，不应进索引。
+                st = sdata_d.get("session_type") or sdata_d.get("task_type") or ""
+                if str(st).lower() == "verify":
+                    continue
                 fdescs = sdata_d.get("finding_descs", {})
                 if not fdescs:
                     continue
                 for fkey, fdesc in fdescs.items():
                     fdesc = str(fdesc or "").strip()
                     if not fdesc:
+                        continue
+                    # 跳过 verify 前缀 key（verify queue Description，非上报）
+                    if str(fkey).startswith("verify:"):
                         continue
                     entry = (sid, fkey, dp.agent_type)
                     if entry not in self._index[fdesc]:

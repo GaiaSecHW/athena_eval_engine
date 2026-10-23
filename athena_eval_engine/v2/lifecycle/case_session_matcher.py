@@ -81,6 +81,14 @@ class CaseSessionMatcher:
             - match_method: "matched" / "unmatched"
             - match_detail: 匹配细节
         """
+        # 场景区分：运行态误报 vs 开发态漏报
+        # - 运行态（runtime）：误报 FP 用 session_type 分类（verify session 不该
+        #   进 mining_sessions——修复一个 case 匹配多个 mining session）
+        # - 开发态（dev）/漏报 FN：查所有 session（漏报是 agent 没上报，需要
+        #   查全部接触过 sink/相关代码的 session，包括 verify 类型）
+        #   注意：开发态基线来自预置集，漏报分析要全量 session。
+        self._use_session_type = (eval_mode == "runtime")
+
         # 构建 session_id → session_type 查找表（investigate/verify/reason/None）
         # 用于 _classify_session 按 session 实际类型分类，而不是只看 agent_type。
         # argo 的 DataPack agent_type=argo，但一个 pack 内同时含 investigate 和
@@ -407,22 +415,29 @@ class CaseSessionMatcher:
     ):
         """按 session 实际类型分类到挖掘或验证列表。
 
+        分类策略由 _use_session_type 决定（match() 设置）：
+        - 运行态误报（runtime）：用 session_type 优先分类
+          （verify session 不进 mining——修复一个 case 匹配多个 mining session）
+        - 开发态漏报（dev）：查所有 session，只用 agent_type 分类
+          （漏报是 agent 没上报，需查全部接触过相关代码的 session）
+
         优先级：
-        1. session_type（investigate/verify）——session 级真实类型
-           （argo 一个 pack 混合挖掘+验证 session，仅靠 agent_type 会误分类）
+        1. session_type（investigate/verify）——仅运行态启用
         2. agent_type 兜底（cvuln_verify/webvuln_verify → 验证）
         """
-        st = (self._session_type_map or {}).get(sid, "") \
-            if hasattr(self, "_session_type_map") else ""
-        if st == "verify":
-            if sid not in verify_sessions:
-                verify_sessions.append(sid)
-            return
-        if st == "investigate":
-            if sid not in mining_sessions:
-                mining_sessions.append(sid)
-            return
-        # 无 session_type 信息时按 agent_type 兜底
+        use_st = getattr(self, "_use_session_type", False)
+        if use_st:
+            st = (self._session_type_map or {}).get(sid, "") \
+                if hasattr(self, "_session_type_map") else ""
+            if st == "verify":
+                if sid not in verify_sessions:
+                    verify_sessions.append(sid)
+                return
+            if st == "investigate":
+                if sid not in mining_sessions:
+                    mining_sessions.append(sid)
+                return
+        # 无 session_type 信息（或开发态）时按 agent_type 兜底
         if agent_type in CaseSessionMatcher._VERIFY_AGENT_TYPES:
             if sid not in verify_sessions:
                 verify_sessions.append(sid)
@@ -705,6 +720,14 @@ class CaseSessionMatcher:
             agent_type = mining_session_to_agent.get(sid, "")
             if not agent_type:
                 continue
+            # 运行态：反推到的 session 若实际类型是 verify，跳过（不是挖掘 session，
+            # 加进 mining 后会被 _classify_session 吞掉导致结果空）。
+            # 开发态漏报：查所有 session（不跳过 verify）。
+            use_st = getattr(self, "_use_session_type", False)
+            if use_st:
+                st = (self._session_type_map or {}).get(sid, "")
+                if st == "verify":
+                    continue
             self._classify_session(sid, agent_type,
                                    mining_sessions, verify_sessions)
 
@@ -734,11 +757,22 @@ class CaseSessionMatcher:
             诊断描述字符串。空字符串表示未找到。
         """
         # 收集所有挖掘 agent 的 finding 条目
-        mining_entries: list[tuple[str, str, str]] = []  # (sid, desc, agent_type)
+        # 注意：运行态下只收集 investigate 类型 session（排除 verify 类型）——
+        # argo finding_index 中 verify session 也贡献 description（verify: 前缀 key），
+        # 但挖掘匹配必须只找挖掘 session，否则 _classify_session 会把 verify
+        # session 加进局部空列表导致 mining_sessions 空（匹配"成功"但结果空）。
+        # 开发态漏报查所有 session（不排除 verify——漏报需全量排查）。
+        use_st = getattr(self, "_use_session_type", False)
+        mining_entries: list[tuple[str, str, str]] = []  # (title, sid, desc, agent_type)
         for title, entries in finding_index.items():
             for sid, desc, agent_type in entries:
-                if agent_type in self._MINING_AGENT_TYPES:
-                    mining_entries.append((title, sid, desc, agent_type))
+                if agent_type not in self._MINING_AGENT_TYPES:
+                    continue
+                if use_st:
+                    st = (self._session_type_map or {}).get(sid, "")
+                    if st == "verify":
+                        continue  # 运行态：verify session 不是挖掘 session
+                mining_entries.append((title, sid, desc, agent_type))
 
         if not mining_entries:
             return ""
