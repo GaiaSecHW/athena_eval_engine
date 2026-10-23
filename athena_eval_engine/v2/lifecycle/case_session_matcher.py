@@ -249,7 +249,7 @@ class CaseSessionMatcher:
                         # 只保留根 session（parent_id 为空或不在集合中的），
                         # 与挖掘链处理方式一致——_analyze_chain 只压缩命中的
                         # 根 session，不展开子 session。
-                        sids = self._filter_root_sessions(sids, dp)
+                        sids = self._filter_child_sessions(sids, dp)
                         for sid in sids:
                             self._classify_session(sid, dp.agent_type,
                                                    mining_sessions, verify_sessions)
@@ -429,23 +429,24 @@ class CaseSessionMatcher:
                 mining_sessions.append(sid)
 
     @staticmethod
-    def _filter_root_sessions(
+    def _filter_child_sessions(
         sids, dp: "DataPack",
     ) -> list[str]:
-        """从 session 集合中只保留根 session（去除父子关系中的子 session）。
+        """从 session 集合中优先保留子 session（verify），没有子 session 才保留根 session（analyze）。
 
-        同一 vuln_id 可能关联多个 session，其中存在父子关系
-        （如 WebVulnVerify 的 analyze + verify session，verify 的
-        parent_id 指向 analyze）。只保留根 session——parent_id 为空
-        或 parent_id 不在集合中的 session——与挖掘链处理方式一致：
-        _analyze_chain 只压缩命中的根 session，不展开子 session。
+        WebVulnVerify 一个 case 有两个 session：
+        - analyze session（无 parent_id，根节点）
+        - verify session（parent_id 指向 analyze session，子节点）
+
+        verify_sessions 应该取 verify session（子节点），但如果 analyze
+        session 无子节点（只有 analyze，没有 verify），则取 analyze session。
 
         Args:
             sids: vuln_id_to_sessions 返回的 session 集合（set 或 list）。
             dp: 所属 DataPack，用于取 parent_map。
 
         Returns:
-            根 session_id 列表（保留原顺序，如 sids 是 list）。
+            session_id 列表——优先子节点（verify），无子节点时取根节点（analyze）。
         """
         sid_list = list(sids) if not isinstance(sids, (list, tuple)) else list(sids)
         sid_set = set(sid_list)
@@ -455,19 +456,22 @@ class CaseSessionMatcher:
         sg = dp.session_graph or {}
         parent_map = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
 
+        # 子 session：parent_id 在集合中的 session（verify session）
+        children: list[str] = []
         roots: list[str] = []
         for sid in sid_list:
             pid = parent_map.get(sid, "")
-            # parent_id 为空，或 parent_id 不在集合中（父 session 不属于此 vuln）→ 根
-            if not pid or pid not in sid_set:
+            if pid and pid in sid_set:
+                # 有 parent_id 且 parent 在集合中 → 子节点（verify session）
+                if sid not in children:
+                    children.append(sid)
+            else:
+                # 无 parent_id 或 parent 不在集合中 → 根节点（analyze session）
                 if sid not in roots:
                     roots.append(sid)
 
-        # 极端情况：所有 session 都有父子关系形成环（不应发生），回退返回原列表
-        if not roots:
-            return sid_list
-
-        return roots
+        # 优先返回子节点（verify session），没有子节点才返回根节点（analyze session）
+        return children if children else roots
 
     def _diagnose_verify_gap(
         self,
