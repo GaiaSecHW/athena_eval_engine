@@ -717,7 +717,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   const typeSummary = Object.entries(typeCount)
     .map(([t, c]) => t + ":" + c).join(", ");
 
-  const html = '<details style="margin-bottom:12px" open>'
+  const html = '<details id="factDetails-' + taskRunId + '" style="margin-bottom:12px" open>'
     + '<summary style="cursor:pointer;color:#00a8ff;font-size:14px;font-weight:600;">'
     + 'Fact \u4f9d\u8d56\u56fe\uff08' + allNodes.length + ' \u8282\u70b9 / ' + edges.length + ' \u8fb9 / ' + intents.length + ' intent\uff09'
     + ' \u2014 ' + esc(typeSummary) + '</summary>'
@@ -737,18 +737,23 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
   window._factGraphRender[taskRunId] = renderD3;
 
   function toggleFactFullscreen() {
+    const details = document.getElementById("factDetails-" + taskRunId);
     const box = document.getElementById(containerId);
-    if (!box) return;
+    if (!box || !details) return;
     const isFs = window._factGraphFullscreen[taskRunId];
     if (!isFs) {
-      // 进入全屏：fixed 覆盖视口，加关闭按钮
-      box._origStyle = box.getAttribute("style");
-      box.setAttribute("style",
+      // 进入全屏：整个 details 块（含工具栏+容器）fixed 覆盖视口，
+      // 保证搜索/还原/全屏按钮在全屏后仍可见
+      details._origStyle = details.getAttribute("style");
+      details.setAttribute("style",
         "position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;"
-        + "z-index:9999;background:#fff;overflow:hidden;margin:0;");
+        + "z-index:9999;background:#fff;overflow:hidden;margin:0;padding:16px;");
+      box._origStyle = box.getAttribute("style");
+      box.setAttribute("style", "margin-top:8px;height:calc(100vh - 60px);overflow:hidden;");
       window._factGraphFullscreen[taskRunId] = true;
     } else {
       // 退出全屏：恢复原样式
+      details.setAttribute("style", details._origStyle || "margin-bottom:12px;");
       box.setAttribute("style", box._origStyle || "margin-top:8px;height:calc(100vh - 220px);overflow:hidden;");
       window._factGraphFullscreen[taskRunId] = false;
     }
