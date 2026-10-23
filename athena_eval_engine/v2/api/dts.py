@@ -44,11 +44,13 @@ class DTSUpdate(BaseModel):
 class RegressionVerifyRequest(BaseModel):
     """回归验证请求体。
 
-    输入原始数据的任务 ID 和问题单 ID，以及对应漏洞的描述、标题和是否漏洞判定，
-    判断该问题单对应的误报是否已消除。
+    输入原始数据的任务 ID，以及问题单 ID（dts_id）或 case_id 之一定位问题单，
+    以及对应漏洞的描述、标题和是否漏洞判定，判断该问题单对应的误报是否已消除。
+    dts_id 与 case_id 二选一即可，同时填写时优先 dts_id。
     """
     task_id: str
-    dts_id: str
+    dts_id: str = ""
+    case_id: str = ""
     vuln_title: str = ""
     vuln_description: str = ""
     is_vulnerable: bool
@@ -184,6 +186,7 @@ def list_by_task(task_id: str):
             raw_report_cache[case_id] = raw_report
         simplified.append({
             "dts_id": i.get("dts_id", ""),
+            "case_id": i.get("case_id", ""),
             "vuln_title": i.get("vuln_title", ""),
             "case_type": i.get("case_type", ""),
             "raw_report": raw_report_cache.get(case_id, ""),
@@ -191,23 +194,171 @@ def list_by_task(task_id: str):
     return {"issues": simplified, "count": len(simplified)}
 
 
+def _match_issue_by_llm(task_id: str, vuln_title: str,
+                        vuln_description: str) -> dict | None:
+    """用 LLM 在 task_id 下全部问题单中匹配与提交漏洞对应的问题单。
+
+    当调用方未提供 dts_id/case_id（或提供但匹配不上）时，从该任务下所有
+    问题单中，用 LLM 语义比对选出一个与提交的漏洞描述最匹配的问题单。
+
+    Args:
+        task_id: 原始数据任务 ID。
+        vuln_title: 提交的漏洞标题。
+        vuln_description: 提交的漏洞描述。
+
+    Returns:
+        匹配到的问题单 dict；无候选或 LLM 失败时返回 None。
+    """
+    from ...infrastructure.log_util import log
+    try:
+        candidates = list_dts_by_task(task_id)
+    except Exception as e:
+        log("DTS_API", f"regression LLM 匹配: 查询问题单失败: {str(e)[:200]}")
+        return None
+    if not candidates:
+        return None
+
+    # 构建候选列表供 LLM 选择
+    cand_lines = []
+    for i, c in enumerate(candidates):
+        cand_lines.append(
+            f"{i}. dts_id={c.get('dts_id')} | case_id={c.get('case_id')} "
+            f"| case_type={c.get('case_type')} | title={c.get('vuln_title')}"
+        )
+    cand_prompt = "\n".join(cand_lines)
+
+    sys_prompt = (
+        "你是漏洞回归验证助手。给定一个待回归的漏洞，以及同一任务下的一组"
+        "候选问题单（每条含 dts_id/case_id/case_type/title）。请从候选中选出"
+        "与该漏洞语义最匹配的问题单（漏洞点、接口、根因一致）。"
+        "只输出一个 JSON 对象：{\"dts_id\": \"...\"}，不要输出其他内容。"
+        "如果没有匹配项，输出 {\"dts_id\": \"\"}。"
+    )
+    user_prompt = (
+        f"待回归漏洞标题: {vuln_title or '（空）'}\n"
+        f"待回归漏洞描述: {vuln_description or '（空）'}\n\n"
+        f"候选问题单:\n{cand_prompt}"
+    )
+
+    try:
+        from ..infra import llm as llm_mod
+        result = llm_mod.chat_json(
+            [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        dts_id = str(result.get("dts_id", "") or "").strip()
+        if not dts_id:
+            return None
+        matched = get_dts_issue(dts_id)
+        return matched
+    except Exception as e:
+        log("DTS_API", f"regression LLM 匹配失败: {str(e)[:200]}")
+        return None
+
+
+def _is_same_vulnerability(vuln_title: str, vuln_description: str,
+                           issue_vuln_title: str) -> bool:
+    """用 LLM 判断提交的漏洞与问题单的漏洞是否为同一个。
+
+    当调用方提供了 vuln_title/vuln_description 时，用 LLM 语义比对：
+    - 是同一个漏洞 → 允许回归确认
+    - 不是同一个漏洞 → 回归不通过（判定失败）
+
+    Args:
+        vuln_title: 提交的漏洞标题。
+        vuln_description: 提交的漏洞描述。
+        issue_vuln_title: 问题单记录的漏洞标题。
+
+    Returns:
+        True=同一漏洞，False=不同漏洞。LLM 失败时返回 True（保守放行）。
+    """
+    from ...infrastructure.log_util import log
+    sys_prompt = (
+        "你是漏洞一致性判断助手。给定两个漏洞描述（A=提交待回归的漏洞，"
+        "B=问题单记录的漏洞），判断它们是否为同一个漏洞（漏洞点、接口、"
+        "根因一致，即语义相同）。只输出一个 JSON 对象："
+        "{\"same\": true 或 false}，不要输出其他内容。"
+    )
+    user_prompt = (
+        f"漏洞A（提交待回归）标题: {vuln_title or '（空）'}\n"
+        f"漏洞A描述: {vuln_description or '（空）'}\n\n"
+        f"漏洞B（问题单记录）标题: {issue_vuln_title or '（空）'}"
+    )
+    try:
+        from ..infra import llm as llm_mod
+        result = llm_mod.chat_json(
+            [
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": user_prompt},
+            ],
+        )
+        same = result.get("same")
+        return bool(same)
+    except Exception as e:
+        log("DTS_API", f"regression 漏洞一致性判断失败: {str(e)[:200]}")
+        return True  # LLM 失败保守放行
+
+
 @router.post("/regression-verify")
 def regression_verify(req: RegressionVerifyRequest):
     """回归验证：判断误报是否消除。
 
-    输入原始数据的任务 ID、问题单 ID，以及对应漏洞的标题、描述和是否漏洞判定。
-    系统根据提交的 is_vulnerable 判断该问题单对应的误报是否已消除：
+    输入原始数据的任务 ID、问题单 ID（或 case_id），以及对应漏洞的标题、
+    描述和是否漏洞判定。系统根据提交的 is_vulnerable 判断该问题单对应的
+    误报是否已消除：
     - is_vulnerable=false：漏洞已被消除（误报已修复）→ 问题单状态设为 passed（关闭）
     - is_vulnerable=true：漏洞仍然存在（误报未修复）→ 问题单状态设为 failed（未关闭，可再次回归）
 
+    定位问题单：dts_id 与 case_id 二选一，同时填写时优先 dts_id；
+    两者都未填或都匹配不上时，用 LLM 在 task_id 下全部问题单中比对匹配。
+
     同时更新问题单的 replay_eval_id 和 replay_result 字段。
     """
-    issue = get_dts_issue(req.dts_id)
+    from ...infrastructure.log_util import log
+    # 定位问题单：dts_id 与 case_id 二选一，同时填写时优先 dts_id
+    issue = None
+    match_failed = False
+    used_llm_match = False
+    if req.dts_id:
+        issue = get_dts_issue(req.dts_id)
+        if issue is None:
+            match_failed = True
+    elif req.case_id:
+        issues = list_dts_by_case(req.case_id)
+        if not issues:
+            match_failed = True
+        else:
+            # 同 case 可能多条问题单，取最新一条（list_dts_by_case 按 created_at ASC）
+            issue = issues[-1]
+            req.dts_id = issue.get("dts_id", "")  # 回填 dts_id 供后续使用
+
+    # dts_id/case_id 未提供或匹配不上 → 用 LLM 在 task_id 下全部问题单中匹配
     if issue is None:
-        raise HTTPException(
-            status_code=404,
-            detail=f"问题单 '{req.dts_id}' 不存在",
-        )
+        log("DTS_API",
+            f"regression_verify: dts_id/case_id 未命中，LLM 匹配 "
+            f"task_id={req.task_id} (dts_id={req.dts_id or ''}, case_id={req.case_id or ''})")
+        issue = _match_issue_by_llm(
+            req.task_id, req.vuln_title, req.vuln_description)
+        if issue is None:
+            if match_failed:
+                raise HTTPException(
+                    status_code=404,
+                    detail=(
+                        f"问题单定位失败：dts_id='{req.dts_id or ''}' / "
+                        f"case_id='{req.case_id or ''}' 均未命中，且 task_id "
+                        f"'{req.task_id}' 下无匹配问题单"
+                    ),
+                )
+            raise HTTPException(
+                status_code=400,
+                detail="dts_id 与 case_id 至少填一个（或提供可匹配的漏洞信息）",
+            )
+        used_llm_match = True
+        req.dts_id = issue.get("dts_id", "")  # 回填 LLM 匹配到的 dts_id
+        log("DTS_API",
+            f"regression_verify: LLM 匹配到 dts_id={req.dts_id}")
 
     # 校验 task_id 匹配
     if issue.get("task_id", "") != req.task_id:
@@ -216,6 +367,60 @@ def regression_verify(req: RegressionVerifyRequest):
             detail=f"task_id 不匹配：问题单的 task_id='{issue.get('task_id', '')}' "
                   f"≠ 请求的 task_id='{req.task_id}'",
         )
+
+    # 校验 case_id 匹配（请求传了 case_id 且用 dts_id 定位时；LLM 匹配场景跳过）
+    if req.dts_id and req.case_id and issue.get("case_id", "") != req.case_id \
+            and not used_llm_match:
+        raise HTTPException(
+            status_code=400,
+            detail=f"case_id 不匹配：问题单的 case_id='{issue.get('case_id', '')}' "
+                  f"≠ 请求的 case_id='{req.case_id}'",
+        )
+
+    # 漏洞一致性判断：提交的 vuln_title/vuln_description 非空时，
+    # 用 LLM 判断与问题单的漏洞是否为同一个。
+    # 是同一个 → 继续回归确认；不是同一个 → 回归不通过（failed）。
+    if req.vuln_title or req.vuln_description:
+        same = _is_same_vulnerability(
+            req.vuln_title, req.vuln_description,
+            issue.get("vuln_title", ""),
+        )
+        if not same:
+            new_status = "failed"
+            replay_result = "still_vulnerable"
+            message = "提交的漏洞与问题单漏洞不一致，回归不通过"
+            _json = __import__("json")
+            replay_data = _json.dumps({
+                "task_id": req.task_id,
+                "case_id": req.case_id,
+                "vuln_title": req.vuln_title,
+                "vuln_description": req.vuln_description,
+                "is_vulnerable": req.is_vulnerable,
+                "result": replay_result,
+                "message": message,
+                "same_vulnerability": False,
+            }, ensure_ascii=False)
+            success = update_dts_issue(req.dts_id, {
+                "status": new_status,
+                "replay_eval_id": req.task_id,
+                "replay_result": replay_result,
+                "replay_data": replay_data,
+            })
+            updated = get_dts_issue(req.dts_id) if success else None
+            from ...infrastructure.log_util import log as _log
+            _log("DTS_API",
+                 f"regression_verify: 漏洞不一致，回归不通过 dts_id={req.dts_id}")
+            return {
+                "dts_id": req.dts_id,
+                "task_id": req.task_id,
+                "vuln_title": req.vuln_title,
+                "vuln_description": req.vuln_description,
+                "is_vulnerable": req.is_vulnerable,
+                "result": replay_result,
+                "status": new_status,
+                "message": message,
+                "issue": updated,
+            }
 
     # 判断误报是否消除
     if req.is_vulnerable:
@@ -233,6 +438,7 @@ def regression_verify(req: RegressionVerifyRequest):
     import json as _json
     replay_data = _json.dumps({
         "task_id": req.task_id,
+        "case_id": req.case_id,
         "vuln_title": req.vuln_title,
         "vuln_description": req.vuln_description,
         "is_vulnerable": req.is_vulnerable,

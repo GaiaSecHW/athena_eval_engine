@@ -50,12 +50,14 @@ GET /api/v2/dts/by-task/{task_id}
   "issues": [
     {
       "dts_id": "DTS-6294DF09",
+      "case_id": "case-20260730-143025-ae39a48a98",
       "vuln_title": "GitCode Actions 接口 limit 参数无上限校验导致数据库 DoS",
       "case_type": "FP",
       "raw_report": "# 漏洞报告\n\n## 漏洞描述\n接口 /v8/actions/workflow/list 的 limit 参数缺少上限校验..."
     },
     {
       "dts_id": "DTS-A1B2C3D4",
+      "case_id": "case-20260730-135907-3c1747758c",
       "vuln_title": "用户输入未过滤导致 XSS",
       "case_type": "FN",
       "raw_report": "# 漏洞报告\n\n## 漏洞描述\n用户输入未经过滤直接输出到页面..."
@@ -69,6 +71,7 @@ GET /api/v2/dts/by-task/{task_id}
 |------|------|------|
 | `issues` | array | 问题单列表（精简版） |
 | `issues[].dts_id` | string | 问题单 ID，用于后续回归验证 |
+| `issues[].case_id` | string | 基线 case ID（提单按 case_id 生成问题单，每条 dts_id 对应唯一 case_id） |
 | `issues[].vuln_title` | string | 漏洞标题 |
 | `issues[].case_type` | string | 问题单类型：`FP`=误报单 / `FN`=漏报单 |
 | `issues[].raw_report` | string | 基线对应原始漏洞报告（Markdown 格式，从 `analysis_data_path` 指向的 JSON 文件 `description` 字段读取） |
@@ -97,6 +100,7 @@ Content-Type: application/json
 {
   "task_id": "ae6ae5567f984d0eb05f1f09",
   "dts_id": "DTS-6294DF09",
+  "case_id": "case-20260730-143025-ae39a48a98",
   "vuln_title": "GitCode Actions 接口 limit 参数无上限校验导致数据库 DoS",
   "vuln_description": "接口 /v8/actions/workflow/list 的 limit 参数缺少上限校验...",
   "is_vulnerable": false
@@ -106,10 +110,30 @@ Content-Type: application/json
 | 字段 | 类型 | 必填 | 说明 |
 |------|------|------|------|
 | `task_id` | string | 是 | 原始数据任务 ID，必须与问题单的 task_id 匹配 |
-| `dts_id` | string | 是 | 问题单 ID（从接口 1 获取） |
+| `dts_id` | string | 二选一 | 问题单 ID（从接口 1 获取）；与 `case_id` 二选一，同时填写时优先 `dts_id` |
+| `case_id` | string | 二选一 | 基线 case ID（从接口 1 获取）；仅填 `case_id` 时按 case 定位最新问题单，与 `dts_id` 二选一 |
 | `vuln_title` | string | 否 | 漏洞标题（默认空字符串） |
 | `vuln_description` | string | 否 | 漏洞描述（默认空字符串） |
 | `is_vulnerable` | bool | 是 | 漏洞是否仍然存在 |
+
+#### 问题单定位规则
+
+问题单通过 `dts_id` 或 `case_id` 二选一定位（同时填写时优先 `dts_id`）：
+
+1. **`dts_id`** — 按问题单 ID 精确定位
+2. **`case_id`** — 按 case ID 定位该 case 的最新一条问题单
+3. **都为空或定位失败** — 用 LLM 在 `task_id` 下全部问题单中语义比对，选出与提交漏洞最匹配的问题单
+   - 候选按 `vuln_title/case_type/case_id` 提供给 LLM，返回匹配的 `dts_id`
+   - LLM 未匹配到 → 404「问题单定位失败」
+
+#### 漏洞一致性判断
+
+当 `vuln_title` 或 `vuln_description` 非空时，用 LLM 判断**提交的漏洞与定位到的问题单记录的漏洞是否为同一个**：
+
+| 判断结果 | 处理 |
+|---------|------|
+| **同一漏洞** | 继续按 `is_vulnerable` 执行回归确认 |
+| **不是同一漏洞** | 回归不通过：问题单状态设为 `failed`，`replay_result=still_vulnerable`，message=「提交的漏洞与问题单漏洞不一致，回归不通过」 |
 
 #### `is_vulnerable` 判定规则
 
@@ -184,11 +208,27 @@ Content-Type: application/json
 }
 ```
 
+**400 — dts_id 与 case_id 都未填写**
+
+```json
+{
+  "detail": "dts_id 与 case_id 至少填一个"
+}
+```
+
 **400 — task_id 不匹配**
 
 ```json
 {
   "detail": "task_id 不匹配：问题单的 task_id='aaa' ≠ 请求的 task_id='bbb'"
+}
+```
+
+**404 — case_id 无对应问题单**
+
+```json
+{
+  "detail": "case_id 'case-xxx' 无对应问题单"
 }
 ```
 
