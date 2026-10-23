@@ -328,8 +328,8 @@ def generate_dts_issues(
         resp_order = {"agent": 0, "knowledge": 1, "external_data_source": 2, "eval_process": 3}
         responsibility = ",".join(sorted(resp_set, key=lambda r: resp_order.get(r, 99)))
 
-        # DTS-{8位随机hex}，不可猜测、无规律
-        dts_id = f"DTS-{uuid.uuid4().hex[:8].upper()}"
+        # {12位随机hex}，不可猜测、无规律（48 位随机，碰撞概率可忽略）
+        dts_id = uuid.uuid4().hex[:12].upper()
 
         # 完整根因分析数据存文件（遵循 Large Payload File Storage Over DB 原则）
         analysis_data_path = None

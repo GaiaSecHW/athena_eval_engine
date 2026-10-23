@@ -139,6 +139,11 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
     因此这里改为：先删除该 evaluation 下全部旧单，再插入新单——
     保证 (evaluation_id, case_id) 恒唯一，重跑只保留最新一轮。
 
+    跨 evaluation 的 dts_id 碰撞：12 位随机 hex（48 位）碰撞概率可忽略，
+    但 ON DUPLICATE KEY UPDATE 会在碰撞时误更新其他 evaluation 的行。
+    因此插入前批量检查 dts_id 是否已存在（其他 evaluation），
+    已存在的重新生成后再插。
+
     Args:
         issues: 问题单 dict 列表，每条含 dts_id、evaluation_id 等。
         evaluation_id: 评测 ID（仅用于日志）。
@@ -154,6 +159,22 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
         # 先删旧单（同 evaluation 全量重建），避免随机 dts_id 主键导致重复
         cur.execute("DELETE FROM dts_issue WHERE evaluation_id=%s", (evaluation_id,))
         args = [tuple(iss.get(k) for k in _FIELD_ORDER) for iss in issues]
+        # 跨 evaluation 碰撞检查：已存在的 dts_id 重新生成
+        import uuid as _uuid
+        retry = 0
+        while retry < 3:
+            ids = [a[0] for a in args]
+            ph = ",".join(["%s"] * len(ids)) if ids else "NULL"
+            cur.execute(f"SELECT dts_id FROM dts_issue WHERE dts_id IN ({ph})", ids) if ids else None
+            existing = {r[0] for r in cur.fetchall()} if ids else set()
+            if not existing:
+                break
+            # 有碰撞：重新生成碰撞的 dts_id
+            for i, a in enumerate(args):
+                if a[0] in existing:
+                    new_id = _uuid.uuid4().hex[:12].upper()
+                    args[i] = (new_id,) + a[1:]
+            retry += 1
         cur.executemany(_INSERT_SQL, args)
         return len(args)
 
