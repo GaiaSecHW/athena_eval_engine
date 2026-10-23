@@ -721,15 +721,43 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     + '<div style="margin:6px 0;">'
     + '<input type="text" id="factSearch-' + taskRunId + '" placeholder="\u641c\u7d22 session_id \u6216 fact_id" style="font-size:13px;padding:2px 6px;width:240px;margin-right:4px;" />'
     + '<button type="button" id="factSearchBtn-' + taskRunId + '" style="font-size:13px;padding:2px 8px;cursor:pointer;">\u5b9a\u4f4d</button>'
+    + '<button type="button" id="factFullscreenBtn-' + taskRunId + '" style="font-size:13px;padding:2px 8px;margin-left:4px;cursor:pointer;" title="\u5168\u5c4f/\u9000\u51fa">\u26f6 \u5168\u5c4f</button>'
     + ' <span style="color:#888;font-size:12px;">\u9ed8\u8ba4\u663e\u793a\u6700\u65b02\u5c42\uff0c\u53cc\u51fb\u8282\u70b9\u5c55\u5f00\u7956\u5148+\u4e0b\u7ea7\uff0c\u53f6\u5b50\u8282\u70b9\u865a\u7ebf\u6846</span></div>'
     + '<div style="margin-top:8px;height:calc(100vh - 220px);overflow:hidden" id="' + containerId + '"></div>'
     + '</details>';
 
+  // 全屏切换：容器覆盖整个视口并重渲染（fit 新尺寸）
+  window._factGraphFullscreen = window._factGraphFullscreen || {};
+  window._factGraphRender = window._factGraphRender || {};
+  window._factGraphFullscreen[taskRunId] = false;
+  window._factGraphRender[taskRunId] = renderD3;
+
+  function toggleFactFullscreen() {
+    const box = document.getElementById(containerId);
+    if (!box) return;
+    const isFs = window._factGraphFullscreen[taskRunId];
+    if (!isFs) {
+      // 进入全屏：fixed 覆盖视口，加关闭按钮
+      box._origStyle = box.getAttribute("style");
+      box.setAttribute("style",
+        "position:fixed;top:0;left:0;right:0;bottom:0;width:100vw;height:100vh;"
+        + "z-index:9999;background:#fff;overflow:hidden;margin:0;");
+      window._factGraphFullscreen[taskRunId] = true;
+    } else {
+      // 退出全屏：恢复原样式
+      box.setAttribute("style", box._origStyle || "margin-top:8px;height:calc(100vh - 220px);overflow:hidden;");
+      window._factGraphFullscreen[taskRunId] = false;
+    }
+    renderD3();
+  }
+
   _pendingSankeyClick.push(function() {
     const inp = document.getElementById("factSearch-" + taskRunId);
     const sbtn = document.getElementById("factSearchBtn-" + taskRunId);
+    const fsbtn = document.getElementById("factFullscreenBtn-" + taskRunId);
     if (inp) inp.addEventListener("keydown", function(ev) { if (ev.key === "Enter") search(inp.value); });
     if (sbtn) sbtn.onclick = function() { if (inp) search(inp.value); };
+    if (fsbtn) fsbtn.onclick = toggleFactFullscreen;
     renderD3();
   });
 
