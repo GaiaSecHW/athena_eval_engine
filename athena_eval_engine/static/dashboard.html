@@ -176,13 +176,6 @@ input,select{width:100%;background:var(--p2);border:1px solid var(--bd);color:va
 .rc-value{font-size:28px;font-weight:700;font-family:'SF Mono',Consolas,monospace;margin-bottom:4px}
 .rc-label{font-size:12px;color:var(--sub);font-weight:500}
 
-.recent-evals-list{display:flex;flex-direction:column;gap:10px}
-.recent-eval-item{display:flex;justify-content:space-between;align-items:center;padding:14px 16px;border-radius:10px;background:var(--p2);transition:all .2s;cursor:pointer}
-.recent-eval-item:hover{background:var(--acc);transform:translateX(4px)}
-.recent-eval-item:hover *{color:#fff!important}
-.recent-eval-name{font-size:14px;font-weight:500;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.recent-eval-meta{display:flex;align-items:center;gap:10px;font-size:12px;color:var(--sub)}
-.recent-eval-time{font-family:'SF Mono',Consolas,monospace;font-size:11px}
 
 /* 首页指标表（交叉表 / agent 明细） */
 .matrix-card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:22px;margin-bottom:20px;overflow-x:auto}
@@ -322,24 +315,11 @@ async function renderHome(){
   var totalFnr=overall.total_fnr;
   var postFpr=overall.post_fpr;
   var postFnr=overall.post_fnr;
-  // 开发态/运行态分组（默认运行态）
-  var homeMode = window._homeMode||'runtime';
-  var overallByMode = overall.runtime||{};
-  if(homeMode==='dev')overallByMode = overall.dev||{};
-  var mFpr=overallByMode.total_fpr, mFnr=overallByMode.total_fnr;
-  var mPostFpr=overallByMode.post_fpr, mPostFnr=overallByMode.post_fnr;
-  var mCount=overallByMode.report_count||0;
-
-  // 最近评测
-  var recentEvals=evals.slice(0,6);
-  var recentHtml=recentEvals.length?recentEvals.map(function(e){
-    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
-    var phaseLabel=_phaseLabelsHome[e.status]||e.status||'-';
-    return '<div class="recent-eval-item" onclick="Router.navigate(\'/evaluations/'+e.evaluation_id+'\')">'+
-      '<div class="recent-eval-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
-      '<div class="recent-eval-meta"><span class="bdg b-'+badge+'">'+phaseLabel+'</span><span class="recent-eval-time">'+fmtDate(e.created_at)+'</span></div>'+
-      '</div>';
-  }).join(''):'<div style="padding:24px;text-align:center;color:var(--sub)">暂无评测</div>';
+  // 开发态/运行态分组（两行分别显示，不做切换）
+  var rtOverall=overall.runtime||{};
+  var devOverall=overall.dev||{};
+  var rtAgent=(dash.agent_detail||{}).runtime||[];
+  var devAgent=(dash.agent_detail||{}).dev||[];
 
   // 更新时间
   var now=new Date();
@@ -354,46 +334,28 @@ async function renderHome(){
     +'<button class="home-refresh-btn" onclick="refreshDashboard()"><span class="home-refresh-icon"></span>刷新</button></div>'
     +'</div>'
 
-    // KPI 卡片
+    // KPI 卡片（全局指标）
     +'<div class="kpi-grid">'
     +renderKPICard('评测总数',total,'📊','linear-gradient(135deg,#2563eb,#3b82f6)','var(--acc)')
     +renderKPICard('已完成',completed,'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
     +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
     +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)','var(--acc)')
-    +renderModeKpiTab(homeMode)
     +'</div>'
-    // 误报/漏报 KPI（按运行态/开发态切换）
+    // 误报/漏报 KPI——第一行：运行态
     +'<div class="kpi-grid">'
-    +renderKPICard(homeMode==='dev'?'开发态·总体误报率':'运行态·总体误报率',fmtPct(mFpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
-    +renderKPICard(homeMode==='dev'?'开发态·总体漏报率':'运行态·总体漏报率',fmtPct(mFnr),'○','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
-    +renderKPICard(homeMode==='dev'?'开发态·回归后误报率':'运行态·回归后误报率',fmtPct(mPostFpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
-    +renderKPICard(homeMode==='dev'?'开发态·回归后漏报率':'运行态·回归后漏报率',fmtPct(mPostFnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +renderKPICard('运行态·总体误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
+    +renderKPICard('运行态·总体漏报率',fmtPct(rtOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +renderKPICard('运行态·回归后误报率',fmtPct(rtOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
+    +renderKPICard('运行态·回归后漏报率',fmtPct(rtOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
     +'</div>'
-
-    // 问题单状态流水线
-    +(dtsTotal>0?'<div class="section-card"><div class="section-title">问题单状态<span class="section-badge">'+dtsTotal+' 张</span></div>'
-      +'<div class="pipeline-flow">'
-      +Object.keys(DTS_STATUS_LABELS).map(function(s){
-        var v=dtsByStatus[s]||0;
-        var pct=dtsTotal>0?(v/dtsTotal*100).toFixed(1):'0';
-        var color=DTS_STATUS_COLORS[s]||'var(--gray)';
-        return '<div class="pipeline-node" style="--node-color:'+color+'">'
-          +'<div class="pipeline-count" style="color:'+color+'" data-target="'+v+'">'+v+'</div>'
-          +'<div class="pipeline-label">'+DTS_STATUS_LABELS[s]+'</div>'
-          +'<div class="pipeline-pct">'+pct+'%</div>'
-          +'</div>';
-      }).join('')
-      +'</div></div>':'')
-
-    // 成因分布 A-K
-    +(dtsTotal>0?'<div class="section-card"><div class="section-title">成因分布<span class="section-badge">A-K</span></div>'
-      +'<div class="cause-chips">'
-      +Object.keys(DTS_CAUSE_LABELS||{}).map(function(c){
-        var v=(dtsStats.by_cause_code||{})[c]||0;
-        return v>0?'<div class="cause-chip"><span class="cause-code">'+c+'</span><span class="cause-count" style="color:var(--acc)">'+v+'</span></div>':'';
-      }).join('')
-      +'</div></div>':'')
+    // 误报/漏报 KPI——第二行：开发态
+    +'<div class="kpi-grid">'
+    +renderKPICard('开发态·总体误报率',fmtPct(devOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
+    +renderKPICard('开发态·总体漏报率',fmtPct(devOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +renderKPICard('开发态·回归后误报率',fmtPct(devOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
+    +renderKPICard('开发态·回归后漏报率',fmtPct(devOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +'</div>'
 
     // FP/FN 分布
     +(dtsTotal>0?'<div class="fp-fn-row">'
@@ -401,29 +363,15 @@ async function renderHome(){
       +'<div class="fp-fn-box fn-box"><div class="fp-fn-value" style="color:var(--amber)">'+((dtsStats.by_case_type||{}).FN||0)+'</div><div class="fp-fn-label">漏报 FN</div></div>'
       +'</div>':'')
 
-    // A-K × agent 交叉表
-    +(renderCauseAgentMatrix(dash.cause_agent_matrix||{},dash.dts||{}))
-
-    // agent 维度明细表（各 agent 误报率/漏报率，按运行态/开发态分组）
-    +renderAgentDetail((dash.agent_detail||{})[homeMode]||[], homeMode)
-
-    // 责任方分布
-    +(dtsTotal>0&&dtsStats.by_responsibility?'<div class="section-card"><div class="section-title">责任方分布</div>'
-      +'<div class="responsibility-list">'
-      +Object.entries(dtsStats.by_responsibility).map(function(e){
-        return '<div class="responsibility-item"><span class="responsibility-name">'+e[0]+'</span><span class="responsibility-count">'+e[1]+'</span></div>';
-      }).join('')
-      +'</div></div>':'')
+    // agent 维度明细表（运行态 + 开发态两行分别显示）
+    +renderAgentDetail(rtAgent, 'runtime')
+    +renderAgentDetail(devAgent, 'dev')
 
     // 根因确认
     +(dtsTotal>0&&dtsStats.root_confirmation?'<div class="root-confirm-row">'
       +'<div class="root-confirm-box rc-confirmed"><div class="rc-value" style="color:var(--green)">'+(dtsStats.root_confirmation.confirmed_root||0)+'</div><div class="rc-label">确认为根因</div></div>'
       +'<div class="root-confirm-box rc-not-confirmed"><div class="rc-value" style="color:var(--red)">'+(dtsStats.root_confirmation.confirmed_not_root||0)+'</div><div class="rc-label">确认为非根因</div></div>'
       +'</div>':'')
-
-    // 最近评测
-    +'<div class="section-card"><div class="section-title">最近评测<span class="section-badge">'+recentEvals.length+' 条</span></div>'
-    +'<div class="recent-evals-list">'+recentHtml+'</div></div>'
 
     +'</div>';
 
@@ -437,59 +385,9 @@ function renderKPICard(label,value,icon,gradient,color){
     +'</div>';
 }
 
-// 运行态/开发态 tab 切换按钮
-function renderModeKpiTab(cur){
-  var btn=function(mode,label){
-    var active=mode===cur;
-    return '<button onclick="switchHomeMode(\''+mode+'\')" style="'
-      +'font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--bd);'
-      +(active?'background:var(--acc);color:#fff;border-color:var(--acc)':'background:var(--p2);color:var(--sub)')
-      +'">'+label+'</button>';
-  };
-  return '<div class="kpi-card" style="display:flex;align-items:center;justify-content:center;gap:6px;flex-direction:row">'
-    +btn('runtime','运行态')
-    +btn('dev','开发态')
-    +'</div>';
-}
-function switchHomeMode(mode){
-  window._homeMode=mode;
-  refreshDashboard();
-}
-
 function fmtPct(v){
   if(v===null||v===undefined)return '<span class="na">NA</span>';
   return (v*100).toFixed(1)+'%';
-}
-
-// A-K × agent 交叉表：行为 cause_code（A-K），列为 agent
-function renderCauseAgentMatrix(matrix,dts){
-  var causeCodes=['A','B','C','D','E','F','G','H','I','J','K'];
-  var causeLabels={'A':'该查没查','B':'查询太泛','C':'查了没得','D':'链路问题','E':'查到没用','F':'用了没推动','G':'导致误判','H':'挖掘方向偏差','I':'调用链中断','J':'模型幻觉','K':'验证否定真漏洞'};
-  var agentTypes=AGENT_TYPES,agentLabels=AGENT_LABELS;
-  var hasData=false;
-  for(var c in causeCodes){for(var i=0;i<agentTypes.length;i++){if((matrix[causeCodes[c]]||{})[agentTypes[i]]>0)hasData=true;}}
-  if(!hasData)return '';
-  // 列合计
-  var colSum={};
-  agentTypes.forEach(function(at){colSum[at]=0;});
-  causeCodes.forEach(function(c){
-    var row=matrix[c]||{};
-    agentTypes.forEach(function(at){colSum[at]+=(row[at]||0);});
-  });
-  var rows=causeCodes.map(function(c){
-    var row=matrix[c]||{};
-    var rowSum=agentTypes.reduce(function(s,at){return s+(row[at]||0);},0);
-    if(rowSum===0)return '';
-    var cells=agentTypes.map(function(at){
-      var v=row[at]||0;
-      return '<td class="matrix-cell'+(v===0?' matrix-zero':'')+'">'+(v>0?v:'-')+'</td>';
-    }).join('');
-    return '<tr><td class="row-label"><span class="cause-code">'+c+'</span>'+(causeLabels[c]||c)+'</td>'+cells+'<td class="matrix-cell" style="font-weight:800">'+rowSum+'</td></tr>';
-  }).join('');
-  var head='<tr><th>成因 \\ Agent</th>'+agentTypes.map(function(at){return'<th>'+agentLabels[at]+'</th>';}).join('')+'<th>合计</th></tr>';
-  var totalRow='<tr class="total-row"><td>合计</td>'+agentTypes.map(function(at){return'<td class="matrix-cell">'+colSum[at]+'</td>';}).join('')+'<td class="matrix-cell">'+(dts.total||0)+'</td></tr>';
-  return '<div class="matrix-card"><div class="section-title">成因 × Agent 交叉表<span class="section-badge">A-K</span></div>'
-    +'<table class="matrix-table"><thead>'+head+'</thead><tbody>'+rows+totalRow+'</tbody></table></div>';
 }
 
 // agent 维度明细表：各 agent 上报数(TP/FP)、误报率 FP/(TP+FP)、回归验证
