@@ -215,6 +215,13 @@ class CaseSessionMatcher:
                         match_method_used = (match_method_used +
                             "+mining_vuln_title" if match_method_used
                             else "mining_vuln_title")
+                        # 检查是否有 session 丢失的 fallback entry（sid 为空）
+                        has_lost = any(
+                            not sid for sid, _, at in entries
+                            if at in self._MINING_AGENT_TYPES
+                        )
+                        if has_lost:
+                            match_method_used += "+session_lost(上报session文件丢失)"
 
             # 验证 agent 回退：用 session_graph.vuln_id_to_sessions 匹配
             # WebVulnVerify/CVulnVerify 的 session metadata 含 chimera_vuln_id（= case_id）
@@ -421,6 +428,9 @@ class CaseSessionMatcher:
           是挖掘 agent 内部的验证阶段，不是验证 agent 的 session）
         - 验证 agent（WebVulnVerify/CVulnVerify）的 session → verify_sessions
         """
+        # 空 sid（上报 session 丢失的 fallback entry）不加入任何列表
+        if not sid:
+            return
         if agent_type in CaseSessionMatcher._VERIFY_AGENT_TYPES:
             if sid not in verify_sessions:
                 verify_sessions.append(sid)

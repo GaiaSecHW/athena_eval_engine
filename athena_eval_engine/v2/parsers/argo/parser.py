@@ -393,6 +393,8 @@ class ArgoParser(BaseParser):
             'edges': _dd(set),
             'parent_map': {},
             'fact_deps': [],  # [{investigate_sid, fact_id, verify_sid}, ...] 多对多依赖
+            'project_id': self._project_id,  # argo 的 project_id（proj_xxx），供下游查 facts 表
+            'task_id': self._task_id,        # 原始数据任务 ID
         }
 
         _n = len(events)
