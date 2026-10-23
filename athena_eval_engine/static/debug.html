@@ -507,15 +507,27 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     });
     svg.call(zoom);
 
-    // fit 到容器
+    // fit 到容器（搜索定位时聚焦目标节点居中放大，其余情况 fit 整个图）
     const boxW = box.clientWidth || 800, boxH = box.clientHeight || 600;
     const scale = Math.min(boxW / W, boxH / H, 1) * 0.9;
     const initT = d3.zoomIdentity
       .translate((boxW - W * scale) / 2, (boxH - H * scale) / 2)
       .scale(scale);
-    zoomState = initT;
-    gWrap.attr("transform", initT);
-    // 保存 svg/zoom/initT 供还原按钮使用
+    let appliedT = initT;
+    // 搜索定位（selectedId + focusHighlight 只含一个）→ 聚焦目标节点
+    if (selectedId && focusHighlight && focusHighlight.size === 1 && pos[selectedId]) {
+      const p = pos[selectedId];
+      const cx = p.x + NODE_W / 2;
+      const cy = p.y + NODE_H / 2;
+      // 缩放级别：目标节点 + 其邻居可见（2 倍 fit 缩放，最小 0.5）
+      const focusScale = Math.max(scale * 2, 0.5);
+      appliedT = d3.zoomIdentity
+        .translate(boxW / 2 - focusScale * cx, boxH / 2 - focusScale * cy)
+        .scale(focusScale);
+    }
+    zoomState = appliedT;
+    gWrap.attr("transform", appliedT);
+    // 保存 svg/zoom/initT 供还原按钮使用（还原按钮恢复到 initT 全图）
     window._factGraphZoomCtx = window._factGraphZoomCtx || {};
     window._factGraphZoomCtx[taskRunId] = { svg: svg, zoom: zoom, initT: initT };
 
