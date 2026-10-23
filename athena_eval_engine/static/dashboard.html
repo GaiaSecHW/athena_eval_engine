@@ -322,6 +322,13 @@ async function renderHome(){
   var totalFnr=overall.total_fnr;
   var postFpr=overall.post_fpr;
   var postFnr=overall.post_fnr;
+  // 开发态/运行态分组（默认运行态）
+  var homeMode = window._homeMode||'runtime';
+  var overallByMode = overall.runtime||{};
+  if(homeMode==='dev')overallByMode = overall.dev||{};
+  var mFpr=overallByMode.total_fpr, mFnr=overallByMode.total_fnr;
+  var mPostFpr=overallByMode.post_fpr, mPostFnr=overallByMode.post_fnr;
+  var mCount=overallByMode.report_count||0;
 
   // 最近评测
   var recentEvals=evals.slice(0,6);
@@ -354,10 +361,14 @@ async function renderHome(){
     +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
     +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)','var(--acc)')
-    +renderKPICard('总体误报率',fmtPct(totalFpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
-    +renderKPICard('总体漏报率',fmtPct(totalFnr),'○','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
-    +renderKPICard('回归后误报率',fmtPct(postFpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
-    +renderKPICard('回归后漏报率',fmtPct(postFnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +renderModeKpiTab(homeMode)
+    +'</div>'
+    // 误报/漏报 KPI（按运行态/开发态切换）
+    +'<div class="kpi-grid">'
+    +renderKPICard(homeMode==='dev'?'开发态·总体误报率':'运行态·总体误报率',fmtPct(mFpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)','var(--red)')
+    +renderKPICard(homeMode==='dev'?'开发态·总体漏报率':'运行态·总体漏报率',fmtPct(mFnr),'○','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
+    +renderKPICard(homeMode==='dev'?'开发态·回归后误报率':'运行态·回归后误报率',fmtPct(mPostFpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)','var(--green)')
+    +renderKPICard(homeMode==='dev'?'开发态·回归后漏报率':'运行态·回归后漏报率',fmtPct(mPostFnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)','var(--amber)')
     +'</div>'
 
     // 问题单状态流水线
@@ -393,8 +404,8 @@ async function renderHome(){
     // A-K × agent 交叉表
     +(renderCauseAgentMatrix(dash.cause_agent_matrix||{},dash.dts||{}))
 
-    // agent 维度明细表（各 agent 误报率 / 回归后误报率）
-    +renderAgentDetail(dash.agent_detail||[])
+    // agent 维度明细表（各 agent 误报率/漏报率，按运行态/开发态分组）
+    +renderAgentDetail((dash.agent_detail||{})[homeMode]||[], homeMode)
 
     // 责任方分布
     +(dtsTotal>0&&dtsStats.by_responsibility?'<div class="section-card"><div class="section-title">责任方分布</div>'
@@ -424,6 +435,25 @@ function renderKPICard(label,value,icon,gradient,color){
     +'<div class="kpi-label"><span class="kpi-icon">'+icon+'</span>'+label+'</div>'
     +'<div class="kpi-value" style="--kpi-gradient:'+gradient+'">'+value+'</div>'
     +'</div>';
+}
+
+// 运行态/开发态 tab 切换按钮
+function renderModeKpiTab(cur){
+  var btn=function(mode,label){
+    var active=mode===cur;
+    return '<button onclick="switchHomeMode(\''+mode+'\')" style="'
+      +'font-size:13px;padding:6px 14px;border-radius:8px;cursor:pointer;border:1px solid var(--bd);'
+      +(active?'background:var(--acc);color:#fff;border-color:var(--acc)':'background:var(--p2);color:var(--sub)')
+      +'">'+label+'</button>';
+  };
+  return '<div class="kpi-card" style="display:flex;align-items:center;justify-content:center;gap:6px;flex-direction:row">'
+    +btn('runtime','运行态')
+    +btn('dev','开发态')
+    +'</div>';
+}
+function switchHomeMode(mode){
+  window._homeMode=mode;
+  refreshDashboard();
 }
 
 function fmtPct(v){
@@ -463,7 +493,7 @@ function renderCauseAgentMatrix(matrix,dts){
 }
 
 // agent 维度明细表：各 agent 上报数(TP/FP)、误报率 FP/(TP+FP)、回归验证
-function renderAgentDetail(detail){
+function renderAgentDetail(detail, mode){
   if(!detail||!detail.length)return '';
   var agentLabels=AGENT_LABELS;
   function pctClass(v){
@@ -495,7 +525,8 @@ function renderAgentDetail(detail){
   var totFnrDenom=sumTp+sumFn;
   var totFnr=totFnrDenom>0?((sumFn/totFnrDenom)*100).toFixed(1)+'%':'NA';
   var totPost=(sumRp+sumRf)>0?((sumRf/(sumRp+sumRf))*100).toFixed(1)+'%':'NA';
-  return '<div class="matrix-card"><div class="section-title">Agent 误报/漏报率明细<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
+  var modeLabel = (mode==='dev')?'开发态':'运行态';
+  return '<div class="matrix-card"><div class="section-title">Agent 误报/漏报率明细（'+modeLabel+'）<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
     +'<table class="matrix-table agent-table"><thead><tr>'
     +'<th>Agent</th><th>case数</th><th>正确 TP</th><th>误报 FP</th><th>漏报 FN</th><th>误报率</th><th>漏报率</th><th>回归通过</th><th>回归不通过</th><th>回归后误报率</th>'
     +'</tr></thead><tbody>'+rows
