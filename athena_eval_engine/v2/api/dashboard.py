@@ -79,6 +79,106 @@ def _read_eval_reports() -> list[dict]:
     return results
 
 
+def _read_agent_fpr() -> dict:
+    """反推各 agent 的 TP/FP（来自完成评测的 case_matching + parsing）。
+
+    口径与总体误报率一致：agent 误报率 = FP / (TP + FP)。
+
+    数据来源：
+    - {eid}_debug_case_matching.json：每个 case 的 outcome（TP/FP）+
+      mining_sessions（挖掘 agent 命中的 session）
+    - {eid}_debug_parsing.json：session_id → agent_type 映射
+
+    每个 match：
+    - outcome=TP → 该 case 的挖掘 agent +1 TP
+    - outcome=FP → 该 case 的挖掘 agent +1 FP
+    mining_sessions 的 session 通过 parsing 反查 agent_type。
+
+    Returns:
+        {"turing": {"tp": N, "fp": N}, "argo": {...}, ...}
+    """
+    agent_stats: dict[str, dict] = {}
+
+    def _bump(agent: str, key: str):
+        if not agent:
+            return
+        a = agent_stats.setdefault(agent, {"tp": 0, "fp": 0})
+        a[key] = a.get(key, 0) + 1
+
+    # 复用已完成评测列表
+    def _query(cur):
+        cur.execute(
+            "SELECT evaluation_id FROM evaluation "
+            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    try:
+        eids = _db_query(_query)
+    except Exception as e:
+        log("DASHBOARD", f"查询已完成评测失败(agent_fpr): {str(e)[:200]}")
+        return agent_stats
+
+    for eid in eids:
+        cm_path = os.path.join(REPORTS_DIR, f"{eid}_debug_case_matching.json")
+        if not os.path.isfile(cm_path):
+            continue
+        try:
+            with open(cm_path, "r", encoding="utf-8") as f:
+                cm = json.loads(f.read())
+        except Exception as e:
+            log("DASHBOARD", f"读取 case_matching 失败 {eid}: {str(e)[:200]}")
+            continue
+
+        # 优先用 agent_outcomes（含 TP/FP/FN——新 dump 字段，直接统计各 agent）
+        ao = cm.get("agent_outcomes", {}) or {}
+        for agent, st in ao.items():
+            tp = st.get("tp", 0) or 0
+            fp = st.get("fp", 0) or 0
+            fn = st.get("fn", 0) or 0
+            a = agent_stats.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
+            a["tp"] += tp
+            a["fp"] += fp
+            a["fn"] += fn
+        if ao:
+            continue
+
+        # 回退：旧 dump 无 agent_outcomes，从 matches（仅 FP/FN）+ parsing 反推
+        # session_id → agent_type 映射（从 parsing 数据）
+        sid_to_agent: dict[str, str] = {}
+        ps_path = os.path.join(REPORTS_DIR, f"{eid}_debug_parsing.json")
+        if os.path.isfile(ps_path):
+            try:
+                with open(ps_path, "r", encoding="utf-8") as f:
+                    ps = json.loads(f.read())
+                for pack in ps.get("data_packs", []):
+                    at = pack.get("agent_type", "")
+                    for s in (pack.get("sessions", []) or []):
+                        sid = s.get("session_id", "")
+                        if sid and at:
+                            sid_to_agent[sid] = at
+            except Exception as e:
+                log("DASHBOARD", f"读取 parsing 失败 {eid}: {str(e)[:200]}")
+
+        for m in (cm.get("matches", []) or []):
+            outcome = m.get("outcome", "")
+            if outcome not in ("TP", "FP"):
+                continue
+            key = "tp" if outcome == "TP" else "fp"
+            mining = m.get("mining_sessions", []) or []
+            if not mining:
+                continue
+            # 该 case 的挖掘 agent：取第一个 mining session 的 agent（
+            # 多个 session 同 agent 时只算一次，避免重复计数）
+            bumped = set()
+            for sid in mining:
+                agent = sid_to_agent.get(sid, "")
+                if agent and agent not in bumped:
+                    bumped.add(agent)
+                    _bump(agent, key)
+    return agent_stats
+
+
 def _query_dts_aggregate() -> dict:
     """从 dts_issue 表聚合：交叉矩阵、agent 明细、回归统计、全局统计。
 
@@ -234,25 +334,54 @@ def get_dashboard_overview():
     fn_denom = fn_post.get("passed", 0) + fn_post.get("failed", 0)
     post_fnr = (fn_post.get("failed", 0) / fn_denom) if fn_denom > 0 else None
 
-    # 3. agent 明细：补误报率/回归后误报率（只读已有数据，无数据为 None）
+    # 3. agent 明细：误报率/漏报率用同口径（来自 case_matching 反推），
+    #    问题单/回归数据来自 dts_issue。
+    agent_fpr_stats = _read_agent_fpr()
     agent_detail = []
     for a in agg.get("agent_detail", []):
-        fpr_denom = a.get("fp", 0) + (a.get("issues", 0) - a.get("fp", 0) - a.get("fn", 0))
-        # 误报率按 agent 上报数：FP / (TP+FP)，但 agent 级无 TP 直接数据。
-        # 用问题单口径：FP / 全部问题单（含 FP+FN），近似 agent 误报占比。
-        total_issues = a.get("issues", 0)
-        a_fpr = (a.get("fp", 0) / total_issues) if total_issues > 0 else None
+        agent = a.get("agent", "")
+        st = agent_fpr_stats.get(agent, {}) or {}
+        tp = st.get("tp", 0)
+        fp = st.get("fp", 0)
+        fn = st.get("fn", 0)
+        denom = tp + fp
+        a_fpr = (fp / denom) if denom > 0 else None
+        fnr_denom = tp + fn
+        a_fnr = (fn / fnr_denom) if fnr_denom > 0 else None
         reg_denom = a.get("reg_passed", 0) + a.get("reg_failed", 0)
         a_post_fpr = (a.get("reg_failed", 0) / reg_denom) if reg_denom > 0 else None
         agent_detail.append({
-            "agent": a.get("agent", ""),
+            "agent": agent,
             "issues": a.get("issues", 0),
-            "fp": a.get("fp", 0),
-            "fn": a.get("fn", 0),
-            "fpr": round(a_fpr, 4) if a_fpr is not None else None,
+            "fp": fp,                      # 误报数（case_matching 反推）
+            "tp": tp,                      # 正确上报数（case_matching 反推）
+            "fn": fn,                      # 漏报数（case_matching 反推）
+            "fpr": round(a_fpr, 4) if a_fpr is not None else None,  # FP/(TP+FP)
+            "fnr": round(a_fnr, 4) if a_fnr is not None else None,  # FN/(TP+FN)
             "reg_passed": a.get("reg_passed", 0),
             "reg_failed": a.get("reg_failed", 0),
             "post_fpr": round(a_post_fpr, 4) if a_post_fpr is not None else None,
+        })
+    # 补充：case_matching 反推有数据但 dts 无问题单的 agent（如纯 TP agent）
+    for agent, st in agent_fpr_stats.items():
+        if any(d["agent"] == agent for d in agent_detail):
+            continue
+        tp, fp, fn = st.get("tp", 0), st.get("fp", 0), st.get("fn", 0)
+        denom = tp + fp
+        a_fpr = (fp / denom) if denom > 0 else None
+        fnr_denom = tp + fn
+        a_fnr = (fn / fnr_denom) if fnr_denom > 0 else None
+        agent_detail.append({
+            "agent": agent,
+            "issues": 0,
+            "fp": fp,
+            "tp": tp,
+            "fn": fn,
+            "fpr": round(a_fpr, 4) if a_fpr is not None else None,
+            "fnr": round(a_fnr, 4) if a_fnr is not None else None,
+            "reg_passed": 0,
+            "reg_failed": 0,
+            "post_fpr": None,
         })
 
     now_cst = datetime.now(timezone(timedelta(hours=8)))

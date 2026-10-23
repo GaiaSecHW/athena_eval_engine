@@ -462,7 +462,7 @@ function renderCauseAgentMatrix(matrix,dts){
     +'<table class="matrix-table"><thead>'+head+'</thead><tbody>'+rows+totalRow+'</tbody></table></div>';
 }
 
-// agent 维度明细表：各 agent 问题单数、FP/FN、误报率、回归验证、回归后误报率
+// agent 维度明细表：各 agent 上报数(TP/FP)、误报率 FP/(TP+FP)、回归验证
 function renderAgentDetail(detail){
   if(!detail||!detail.length)return '';
   var agentLabels=AGENT_LABELS;
@@ -472,28 +472,34 @@ function renderAgentDetail(detail){
   }
   var rows=detail.map(function(a){
     var fprTxt=a.fpr===null||a.fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fpr)+'">'+(a.fpr*100).toFixed(1)+'%</span>';
+    var fnrTxt=a.fnr===null||a.fnr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fnr)+'">'+(a.fnr*100).toFixed(1)+'%</span>';
     var postTxt=a.post_fpr===null||a.post_fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.post_fpr)+'">'+(a.post_fpr*100).toFixed(1)+'%</span>';
     return '<tr><td>'+(agentLabels[a.agent]||a.agent)+'</td>'
-      +'<td class="num">'+a.issues+'</td>'
-      +'<td class="num" style="color:var(--red)">'+a.fp+'</td>'
-      +'<td class="num" style="color:var(--amber)">'+a.fn+'</td>'
+      +'<td class="num">'+((a.tp||0)+(a.fp||0)+(a.fn||0))+'</td>'
+      +'<td class="num" style="color:var(--green)">'+(a.tp||0)+'</td>'
+      +'<td class="num" style="color:var(--red)">'+(a.fp||0)+'</td>'
+      +'<td class="num" style="color:var(--amber)">'+(a.fn||0)+'</td>'
       +'<td class="num">'+fprTxt+'</td>'
+      +'<td class="num">'+fnrTxt+'</td>'
       +'<td class="num">'+(a.reg_passed||0)+'</td>'
       +'<td class="num">'+(a.reg_failed||0)+'</td>'
       +'<td class="num">'+postTxt+'</td></tr>';
   }).join('');
-  var total=detail.reduce(function(s,a){return s+a.issues;},0);
-  var sumFp=detail.reduce(function(s,a){return s+a.fp;},0);
-  var sumFn=detail.reduce(function(s,a){return s+a.fn;},0);
-  var sumRp=detail.reduce(function(s,a){return s+a.reg_passed;},0);
-  var sumRf=detail.reduce(function(s,a){return s+a.reg_failed;},0);
-  var totFpr=total>0?(sumFp/total*100).toFixed(1)+'%':'NA';
+  var sumTp=detail.reduce(function(s,a){return s+(a.tp||0);},0);
+  var sumFp=detail.reduce(function(s,a){return s+(a.fp||0);},0);
+  var sumFn=detail.reduce(function(s,a){return s+(a.fn||0);},0);
+  var sumRp=detail.reduce(function(s,a){return s+(a.reg_passed||0);},0);
+  var sumRf=detail.reduce(function(s,a){return s+(a.reg_failed||0);},0);
+  var totDenom=sumTp+sumFp;
+  var totFpr=totDenom>0?((sumFp/totDenom)*100).toFixed(1)+'%':'NA';
+  var totFnrDenom=sumTp+sumFn;
+  var totFnr=totFnrDenom>0?((sumFn/totFnrDenom)*100).toFixed(1)+'%':'NA';
   var totPost=(sumRp+sumRf)>0?((sumRf/(sumRp+sumRf))*100).toFixed(1)+'%':'NA';
-  return '<div class="matrix-card"><div class="section-title">Agent 误报率明细<span class="section-badge">'+total+' 单</span></div>'
+  return '<div class="matrix-card"><div class="section-title">Agent 误报/漏报率明细<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
     +'<table class="matrix-table agent-table"><thead><tr>'
-    +'<th>Agent</th><th>问题单</th><th>误报 FP</th><th>漏报 FN</th><th>误报率</th><th>回归通过</th><th>回归不通过</th><th>回归后误报率</th>'
+    +'<th>Agent</th><th>case数</th><th>正确 TP</th><th>误报 FP</th><th>漏报 FN</th><th>误报率</th><th>漏报率</th><th>回归通过</th><th>回归不通过</th><th>回归后误报率</th>'
     +'</tr></thead><tbody>'+rows
-    +'<tr class="total-row"><td>合计</td><td class="num">'+total+'</td><td class="num">'+sumFp+'</td><td class="num">'+sumFn+'</td><td class="num">'+totFpr+'</td><td class="num">'+sumRp+'</td><td class="num">'+sumRf+'</td><td class="num">'+totPost+'</td></tr>'
+    +'<tr class="total-row"><td>合计</td><td class="num">'+(sumTp+sumFp+sumFn)+'</td><td class="num">'+sumTp+'</td><td class="num">'+sumFp+'</td><td class="num">'+sumFn+'</td><td class="num">'+totFpr+'</td><td class="num">'+totFnr+'</td><td class="num">'+sumRp+'</td><td class="num">'+sumRf+'</td><td class="num">'+totPost+'</td></tr>'
     +'</tbody></table></div>';
 }
 

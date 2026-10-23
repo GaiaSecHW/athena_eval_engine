@@ -527,6 +527,12 @@ class Orchestrator:
                     "FP": sum(1 for r in fn_match_cases if r["outcome"] == "FP"),
                     "FN": sum(1 for r in fn_match_cases if r["outcome"] == "FN"),
                 },
+                # 各 agent 的 TP/FP 统计（从完整 case_session_matches 反推，
+                # 供看板计算各 agent 误报率 FP/(TP+FP) 同口径）。
+                # 注：matches 仍只含 FP/FN（TP/TN 不进 matches 避免展示影响），
+                # 但 agent 级统计必须含 TP——否则误报率无法计算。
+                "agent_outcomes": self._calc_agent_outcomes(
+                    case_session_matches, data_packs),
                 "matches": fn_match_cases,
             }
             self._dump_debug(reports_dir, evaluation_id, "case_matching",
@@ -1667,6 +1673,58 @@ class Orchestrator:
             log("DEBUG", f"dump {step}: {path}")
         except Exception as e:
             log("DEBUG", f"dump {step} 失败: {e}")
+
+    def _calc_agent_outcomes(
+        self,
+        case_session_matches: list[dict],
+        data_packs: list,
+    ) -> dict:
+        """从完整 case_session_matches 统计各 agent 的 TP/FP。
+
+        case_session_matches 含全部 outcome（TP/FP/FN/TN），但 debug matches
+        只 dump FP/FN。看板计算各 agent 误报率 FP/(TP+FP) 需要 TP，
+        故在 dump 时单独统计 agent 级 outcome。
+
+        Returns:
+            {"turing": {"tp": N, "fp": N}, "argo": {...}, ...}
+        """
+        # session_id → agent_type 映射（从 data_packs 的 session_graph）
+        sid_to_agent: dict[str, str] = {}
+        for dp in data_packs:
+            at = getattr(dp, "agent_type", "") or ""
+            if not at:
+                continue
+            sg = getattr(dp, "session_graph", None) or {}
+            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
+            if isinstance(sessions, dict):
+                for sid in sessions:
+                    if sid:
+                        sid_to_agent[sid] = at
+
+        agent_stats: dict[str, dict] = {}
+
+        def _bump(agent: str, key: str):
+            if not agent:
+                return
+            a = agent_stats.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
+            a[key] = a.get(key, 0) + 1
+
+        for r in (case_session_matches or []):
+            outcome = r.get("outcome", "")
+            if outcome not in ("TP", "FP", "FN"):
+                continue
+            key = {"TP": "tp", "FP": "fp", "FN": "fn"}[outcome]
+            # 该 case 的挖掘 agent：mining_sessions 涉及的 agent。
+            # FN（漏报）时挖掘 session 可能为空（没上报），此时无法归因到
+            # 具体 agent——跳过（漏报率分母只统计有挖掘 session 的 FN）。
+            mining = r.get("mining_sessions", []) or []
+            bumped = set()
+            for sid in mining:
+                agent = sid_to_agent.get(sid, "")
+                if agent and agent not in bumped:
+                    bumped.add(agent)
+                    _bump(agent, key)
+        return agent_stats
 
     def _summarize_data_pack(self, dp) -> dict:
         """将 DataPack 序列化为 debug 可展示的摘要（含 session 关系图）。"""
