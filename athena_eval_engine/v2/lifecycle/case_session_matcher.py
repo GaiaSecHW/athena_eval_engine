@@ -413,31 +413,14 @@ class CaseSessionMatcher:
         mining_sessions: list[str],
         verify_sessions: list[str],
     ):
-        """按 session 实际类型分类到挖掘或验证列表。
+        """按 agent_type 分类到挖掘或验证列表。
 
-        分类策略由 _use_session_type 决定（match() 设置）：
-        - 运行态误报（runtime）：用 session_type 优先分类
-          （verify session 不进 mining——修复一个 case 匹配多个 mining session）
-        - 开发态漏报（dev）：查所有 session，只用 agent_type 分类
-          （漏报是 agent 没上报，需查全部接触过相关代码的 session）
-
-        优先级：
-        1. session_type（investigate/verify）——仅运行态启用
-        2. agent_type 兜底（cvuln_verify/webvuln_verify → 验证）
+        每个 agent 的 session 只在自己的体系内：
+        - 挖掘 agent（argo/turing/secmate/dataflow）的 session → mining_sessions
+          （不管 session_type 是 investigate 还是 verify——argo 的 verify session
+          是挖掘 agent 内部的验证阶段，不是验证 agent 的 session）
+        - 验证 agent（WebVulnVerify/CVulnVerify）的 session → verify_sessions
         """
-        use_st = getattr(self, "_use_session_type", False)
-        if use_st:
-            st = (self._session_type_map or {}).get(sid, "") \
-                if hasattr(self, "_session_type_map") else ""
-            if st == "verify":
-                if sid not in verify_sessions:
-                    verify_sessions.append(sid)
-                return
-            if st == "investigate":
-                if sid not in mining_sessions:
-                    mining_sessions.append(sid)
-                return
-        # 无 session_type 信息（或开发态）时按 agent_type 兜底
         if agent_type in CaseSessionMatcher._VERIFY_AGENT_TYPES:
             if sid not in verify_sessions:
                 verify_sessions.append(sid)
