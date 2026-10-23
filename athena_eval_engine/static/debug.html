@@ -513,6 +513,9 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
       .scale(scale);
     zoomState = initT;
     gWrap.attr("transform", initT);
+    // 保存 svg/zoom/initT 供还原按钮使用
+    window._factGraphZoomCtx = window._factGraphZoomCtx || {};
+    window._factGraphZoomCtx[taskRunId] = { svg: svg, zoom: zoom, initT: initT };
 
     // 选中节点的关联边
     let relEdges = null;
@@ -721,6 +724,7 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     + '<div style="margin:6px 0;">'
     + '<input type="text" id="factSearch-' + taskRunId + '" placeholder="\u641c\u7d22 session_id \u6216 fact_id" style="font-size:13px;padding:2px 6px;width:240px;margin-right:4px;" />'
     + '<button type="button" id="factSearchBtn-' + taskRunId + '" style="font-size:13px;padding:2px 8px;cursor:pointer;">\u5b9a\u4f4d</button>'
+    + '<button type="button" id="factResetBtn-' + taskRunId + '" style="font-size:13px;padding:2px 8px;margin-left:4px;cursor:pointer;" title="\u8fd8\u539f\u89c6\u56fe">\u21ba \u8fd8\u539f</button>'
     + '<button type="button" id="factFullscreenBtn-' + taskRunId + '" style="font-size:13px;padding:2px 8px;margin-left:4px;cursor:pointer;" title="\u5168\u5c4f/\u9000\u51fa">\u26f6 \u5168\u5c4f</button>'
     + ' <span style="color:#888;font-size:12px;">\u9ed8\u8ba4\u663e\u793a\u6700\u65b02\u5c42\uff0c\u53cc\u51fb\u8282\u70b9\u5c55\u5f00\u7956\u5148+\u4e0b\u7ea7\uff0c\u53f6\u5b50\u8282\u70b9\u865a\u7ebf\u6846</span></div>'
     + '<div style="margin-top:8px;height:calc(100vh - 220px);overflow:hidden" id="' + containerId + '"></div>'
@@ -755,9 +759,17 @@ function renderFactDepsGraph(factDeps, sessions, taskRunId) {
     const inp = document.getElementById("factSearch-" + taskRunId);
     const sbtn = document.getElementById("factSearchBtn-" + taskRunId);
     const fsbtn = document.getElementById("factFullscreenBtn-" + taskRunId);
+    const resetBtn = document.getElementById("factResetBtn-" + taskRunId);
     if (inp) inp.addEventListener("keydown", function(ev) { if (ev.key === "Enter") search(inp.value); });
     if (sbtn) sbtn.onclick = function() { if (inp) search(inp.value); };
     if (fsbtn) fsbtn.onclick = toggleFactFullscreen;
+    if (resetBtn) resetBtn.onclick = function() {
+      const ctx = (window._factGraphZoomCtx || {})[taskRunId];
+      if (ctx && ctx.svg && ctx.zoom && ctx.initT) {
+        ctx.svg.transition().duration(300).call(ctx.zoom.transform, ctx.initT);
+        zoomState = ctx.initT;
+      }
+    };
     renderD3();
   });
 
