@@ -799,12 +799,21 @@ class RootCauseAnalyzer:
 
         # hypotheses 中每个假设的 cause_code 同步到断点列表
         # （用于因果链统计按假设维度聚合）
+        # 按 cause_code → L 级别映射（与 causal_chain analyzer.CAUSE_TO_LEVEL
+        # 一致）：A→L2, B→L3, C→L4, D→L5, E→L6, F/G→L7, H/I/J/K→L8。
+        # 原代码一律加 L8 断点，导致 A-G 也被算成 L8（与 cause_code 不匹配，
+        # effect_label 分布错误：A=42 但实际出现在 L8）。
+        _HYP_CAUSE_TO_LEVEL = {
+            "A": "L2", "B": "L3", "C": "L4", "D": "L5",
+            "E": "L6", "F": "L7", "G": "L7",
+            "H": "L8", "I": "L8", "J": "L8", "K": "L8",
+        }
         for h in merge_hypotheses:
             cc = h.get("cause_code", "")
             if cc:
                 all_breakpoints.append({
                     "session_id": "hypothesis",
-                    "breakpoint": "L8",
+                    "breakpoint": _HYP_CAUSE_TO_LEVEL.get(cc, "L8"),
                     "cause_code": cc,
                     "query_content": h.get("hypothesis", ""),
                     "returned_content": "",
