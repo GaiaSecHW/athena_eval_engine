@@ -558,7 +558,7 @@ class WebVulnVerifyParser(BaseParser):
 
         # ── Step 2: 调 gaiasec-server API 拿权威 case→session 映射 ──
         # API 失败重试 3 次（gaiasec_client 内部），耗尽抛 RuntimeError
-        from ...infrastructure.gaiasec_client import fetch_case_session_map_batch
+        from ....infrastructure.gaiasec_client import fetch_case_session_map_batch
         _log.debug("WebVulnVerify build_session_graph: 查询 %d 个 case 的 API 映射",
                    len(case_ids))
         session_map = fetch_case_session_map_batch(case_ids)
