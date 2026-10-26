@@ -327,9 +327,14 @@ class CausalChainAnalyzer:
         """统计 effect_label 的分布。
 
         effect_label 从 l7_influenced 字段映射：
-        - "positive" → POSITIVE
-        - "negative" → NEGATIVE
-        - None/null → NULL（证据不足）
+        - "positive" → POSITIVE（知识正向影响结论）
+        - "negative" → NEGATIVE（知识负向影响结论）
+        - "neutral"  → NEUTRAL（知识未影响结论）
+        - None/null  → 视断点级别判定：
+          * L8 断点（合成断点，cause_code H/I/J/K）→ NEUTRAL
+            （L8 是知识链路之外的问题，l7_influenced 默认 None 是合理的——
+            不是"证据不足"，是"L8 不在 L7 范畴"）
+          * L2-L7 断点 l7_influenced=None → NULL（证据不足）
         """
         counter: Counter = Counter()
         for rec in flat_breakpoints:
@@ -341,8 +346,16 @@ class CausalChainAnalyzer:
             elif l7 == "neutral":
                 counter["NEUTRAL"] += 1
             else:
-                # None 或 "null" 字符串 → NULL（证据不足）
-                counter["NULL"] += 1
+                # l7_influenced 是 None/"null"——按断点级别判定
+                breakpoint_level = rec.get("breakpoint", "")
+                if breakpoint_level == "L8":
+                    # L8 是知识链路之外的 agent 流程问题（H/I/J/K），
+                    # l7_influenced=None 是合成断点的默认值，不是"证据不足"，
+                    # 映射为 NEUTRAL（知识未影响结论——L8 本就不在 L7 范畴）
+                    counter["NEUTRAL"] += 1
+                else:
+                    # L2-L7 断点 l7_influenced=None → 真正的证据不足
+                    counter["NULL"] += 1
 
         return {label: counter.get(label, 0) for label in _ALL_EFFECTS}
 
