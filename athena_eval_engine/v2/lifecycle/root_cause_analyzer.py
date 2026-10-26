@@ -852,11 +852,11 @@ class RootCauseAnalyzer:
                     f"case {case_id}: {chain_type} 重复上报归因修正："
                     f"{corrected} 个知识链路假设修正为 H/agent"
                     f"（重复上报是流程去重缺陷，非知识问题）")
-            # 同步修正断点列表中的 C/E/G 断点
-            for bp in all_breakpoints:
-                if bp.get("cause_code") in ("C", "E", "G", "D"):
-                    bp["cause_code"] = "H"
-                    bp["breakpoint"] = "L8"
+            # 注意：不改 session 压缩阶段产出的 L2-L7 断点（保留原断点级别）。
+            # 重复上报归因 H/L8 只针对 hypothesis 阶段产出的合成 L8 断点
+            # （上面循环已改），session 级的 C/E/G/D 断点保留原 breakpoint 级别
+            # ——改了会导致 H/L8 断点数膨胀（如 case-20260920-031946 的 mining
+            # 5 个 L2-L7 C 断点全部被改成 L8/H，H 总数从合理值膨胀到 357）。
 
         # ── L4 独立验证（扩展：知识缺失假设也触发）──
         l4_verification = self._verify_l4_independently(
