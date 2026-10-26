@@ -229,51 +229,11 @@ class CaseSessionMatcher:
             # 用基线 case_id（cid）或 LLM 匹配的原始 case_id（ac_case_id）查找。
             # CVulnVerify 用 finding_to_session（case_id → session），v2s 为空时兜底。
             #
-            # ── WebVulnVerify 优先用 gaiasec-server API 权威映射 ──
-            # WebVulnVerify 的 AI session 父子关系不在它自己的 postgres（
-            # vuln_verify_task/attempt 无 session 字段），由 gaiasec-server
-            # API 提供：每个 case 的 ai_analysis_session_id（分析，父）+
-            # ai_verification_session_id（验证，子）。WebVulnVerify 是验证 agent，
-            # 内部又分分析/验证两阶段，两个 session 都进 verify_sessions。
-            # 用基线 case_id（cid）或 LLM 匹配的原始 case_id（ac_case_id）查 API 映射。
+            # WebVulnVerify 的 case↔session 父子关系权威源：gaiasec-server API
+            # 在 PARSING 阶段（parser.build_session_graph）调用，构建到
+            # session_graph.sessions/parent_map。case_session_matcher 直接读
+            # session_graph（与 trace 解析同源，调用链一套规则），不再单独调 API。
             verify_match_detail = ""
-            if not verify_sessions:
-                webvuln_map = (alert_center_data or {}).get(
-                    "webvuln_session_map") or {}
-                api_hit = False
-                for key in (cid, ac_case_id):
-                    if not key:
-                        continue
-                    info = webvuln_map.get(key)
-                    if not info:
-                        continue
-                    analysis_sid = info.get("ai_analysis_session_id") or ""
-                    verification_sid = info.get("ai_verification_session_id") or ""
-                    # analysis 必须，verification 可空（分析判定 NOT_VULNERABLE 时
-                    # 不启动验证，验证 status=PENDING）
-                    if analysis_sid:
-                        # 两个 session 都属于 webvuln_verify，都进 verify_sessions
-                        # （verification 为空时只取 analysis）
-                        for sid in (analysis_sid, verification_sid):
-                            if not sid:
-                                continue
-                            self._classify_session(sid, "webvuln_verify",
-                                                   mining_sessions, verify_sessions)
-                        match_method_used = (match_method_used +
-                            "+webvuln_api" if match_method_used
-                            else "webvuln_api")
-                        verify_match_detail = (
-                            f"API 权威: analysis={analysis_sid}"
-                            + (f" → verification={verification_sid}"
-                               if verification_sid else " (无验证 session)"))
-                        api_hit = True
-                        break
-                if not api_hit and webvuln_map:
-                    # API 映射存在但此 case 未命中 → 数据不完整，按铁律抛异常
-                    raise RuntimeError(
-                        f"WebVulnVerify API 映射存在但 case 未命中: "
-                        f"cid={cid} ac_case_id={ac_case_id} "
-                        f"(webvuln_map 共 {len(webvuln_map)} 个 case)")
             if not verify_sessions:
                 for dp in verify_packs:
                     sg = dp.session_graph or {}

@@ -411,20 +411,6 @@ class Orchestrator:
                         for c in alert_center_data.get("cases", [])
                     ],
                 },
-                "webvuln_session_map": {
-                    "total": len(alert_center_data.get("webvuln_session_map") or {}),
-                    "cases": [
-                        {
-                            "case_id": v.get("case_id"),
-                            "ai_analysis_session_id": v.get("ai_analysis_session_id"),
-                            "ai_verification_session_id": v.get("ai_verification_session_id"),
-                            "ai_analysis_status": v.get("ai_analysis_status"),
-                            "ai_verification_status": v.get("ai_verification_status"),
-                            "title": v.get("title"),
-                        }
-                        for v in (alert_center_data.get("webvuln_session_map") or {}).values()
-                    ],
-                },
                 "baseline": {
                     "total": len(case_details),
                     "cases": [
@@ -1031,21 +1017,6 @@ class Orchestrator:
             else:
                 log("ORCH", "开发态：原始数据与基线同项目，跳过 LLM 匹配")
 
-        # ── WebVulnVerify 权威 case↔session 关系（gaiasec-server API）──
-        # WebVulnVerify 无数据库，AI session 父子关系由 gaiasec-server API
-        # 提供：每个 case 的 ai_analysis_session_id（分析阶段，父）+
-        # ai_verification_session_id（验证阶段，子）。WebVulnVerify 是验证 agent，
-        # 内部又分分析/验证两阶段，两个 session 都进 verify_sessions。
-        # API 失败抛异常 → 评测 FAILED（不降级、不跳过——铁律）。
-        webvuln_session_map = self._fetch_webvuln_session_map(
-            evaluation_id, alert_center_data, case_matches,
-        )
-        if webvuln_session_map:
-            alert_center_data["webvuln_session_map"] = webvuln_session_map
-            log("INGEST",
-                f"WebVulnVerify session 关系: {len(webvuln_session_map)} 个 case "
-                f"已从 gaiasec-server API 取得权威映射")
-
         return benchmark_items, case_details, alert_center_data, case_matches
 
     def _ingest(self, evaluation_id: str) -> tuple:
@@ -1224,62 +1195,6 @@ class Orchestrator:
         from ...infrastructure.vuln_center_client import get_alert_center_summary
         project_id, task_id = pair
         return get_alert_center_summary(project_id, task_id)
-
-    def _fetch_webvuln_session_map(
-        self,
-        evaluation_id: str,
-        alert_center_data: dict,
-        case_matches: list[dict],
-    ) -> dict[str, dict]:
-        """从 gaiasec-server API 取 WebVulnVerify 权威 case↔session 映射。
-
-        WebVulnVerify 的 AI session 父子关系（分析→验证）由 gaiasec-server
-        API 提供——每个 case 返回 ``ai_analysis_session_id``（分析，父）+
-        ``ai_verification_session_id``（验证，子）。
-
-        Args:
-            evaluation_id: 评测 ID。
-            alert_center_data: 告警中心数据（含 cases 列表）。
-            case_matches: LLM 匹配结果（含 raw_case_id；非必需，主要用于
-                          扩展查询原始 case_id）。
-
-        Returns:
-            ``{case_id: {ai_analysis_session_id, ai_verification_session_id, ...}}``。
-            case_id 为空（无原始 case）时不查询。
-
-        Raises:
-            RuntimeError: API 调用失败 → 评测 FAILED（不降级、不跳过）。
-        """
-        # 收集所有需要查询的 case_id（去重）
-        # case_id 来源：
-        # 1. alert_center_data.cases[].id（原始数据的 case_id）
-        # 2. case_matches[].raw_case_id（开发态 LLM 匹配的原始 case_id）
-        # 3. case_details 的 case_id（基线 case_id）
-        # WebVulnVerify 的 case→session 关系由原始 case_id 决定，所以
-        # 必须查全部 case_id（原始 + 基线），保证匹配能命中。
-        case_ids: list[str] = []
-        seen: set[str] = set()
-        for c in (alert_center_data.get("cases") or []):
-            cid = str(c.get("id") or c.get("case_id") or "")
-            if cid and cid not in seen:
-                seen.add(cid)
-                case_ids.append(cid)
-        for m in (case_matches or []):
-            raw_id = str(m.get("raw_case_id") or "")
-            if raw_id and raw_id not in seen:
-                seen.add(raw_id)
-                case_ids.append(raw_id)
-
-        if not case_ids:
-            log("INGEST", "无 case_id，跳过 webvuln API 查询")
-            return {}
-
-        from ...infrastructure.gaiasec_client import (
-            fetch_case_session_map_batch,
-        )
-        # API 失败直接抛异常，被 run() try/except 捕获 → 评测 FAILED
-        return fetch_case_session_map_batch(case_ids)
-
 
     # ── PARSING ──────────────────────────────────────
 

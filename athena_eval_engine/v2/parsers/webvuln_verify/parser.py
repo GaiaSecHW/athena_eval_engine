@@ -94,6 +94,10 @@ class WebVulnVerifyParser(BaseParser):
 
     def __init__(self, parser_version: str = "webvulnverify-1.0"):
         self.parser_version = parser_version
+        # 当前解析的 trace source_uri（parse() 时存，build_session_graph() 用）
+        # WebVulnVerify 的调用链权威源 = gaiasec-server API，按 API 给的
+        # session_id 在 trace 目录里精确取对应 .jsonl 文件，缺失即报错。
+        self._source_uri: str = ""
 
     # ------------------------------------------------------------------
     # BaseParser 抽象属性
@@ -110,6 +114,8 @@ class WebVulnVerifyParser(BaseParser):
     def parse(self, trace_source) -> list[RawEvent]:
         """trace_source: {source_uri: 目录路径或单 .jsonl 文件, trace_id?, session_id?}"""
         uri = trace_source["source_uri"]
+        # 存到实例属性，build_session_graph 用（API 权威 session 校验 .jsonl 文件存在）
+        self._source_uri = uri
         trace_id = trace_source.get("trace_id", uri)
         session_id = trace_source.get("turing_session_id") or trace_source.get("session_id") or ""
 
@@ -479,79 +485,168 @@ class WebVulnVerifyParser(BaseParser):
     # ------------------------------------------------------------------
 
     def build_session_graph(self, events: list[RawEvent]) -> dict:
-        """构建 session 关系图。
+        """构建 session 关系图（调用链权威源 = gaiasec-server API）。
 
-        WebVulnVerify session 关联机制：
-        1. vulnerability_id 共享（三层来源）：
-           a. session_meta.metadata.vulnerability_id — 所有 session 都有
-           b. vulnerability_analyze/verify/cvss 工具调用中的 vulnerability_id
-        2. 共享文件（与基类默认实现相同）
+        WebVulnVerify 是验证 agent，内部又分"分析"与"验证"两个阶段。每个 case
+        的权威 session 关系由 gaiasec-server API 提供：
+        - ai_analysis_session_id（分析阶段 session，父）
+        - ai_verification_session_id（验证阶段 session，子）
 
-        关联结构：
-        - vuln_id_to_sessions: vid → {analyze_session, verify_session, ...}
-          （debug 诊断用，主匹配已改用 gaiasec-server API 权威映射）
+        调用链一套规则——trace 解析与根因分析共用本方法构建的 session_graph。
+        parent_map 直接由 API 权威建：verification 的父 = analysis。
+        trace 的 session_meta.parent_id 不再用（数据不可靠：同 case 第 1 轮
+        带 parent_id、第 2 轮漏写）。
 
-        parent_map 不在此构建——WebVulnVerify 的 AI session 父子关系（分析→
-        验证）由 gaiasec-server API 提供（``ai_analysis_session_id`` →
-        ``ai_verification_session_id``），case_session_matcher 在 INGESTING
-        阶段已查到权威映射，用 API 数据建 parent_map。**trace 的
-        session_meta.parent_id 不可靠**（同 case 的两个验证 session，第 1 轮
-        带 parent_id、第 2 轮漏写），不再用作父子关系来源。
+        API 给的每个 session_id 必须在 trace 目录里能找到对应 .jsonl 文件——
+        找不到即数据缺失，抛异常（不降级、不跳过——铁律）。
+
+        Args:
+            events: trace 解析的全部 RawEvent（按 session_id 分组）
+
+        Returns:
+            session_graph dict：
+            - sessions: {session_id: {files, vuln_ids, phase}}（API 给的 session）
+            - edges: 双向父子边
+            - parent_map: {verification_session_id: analysis_session_id}
+            - vuln_id_to_sessions: {case_id: {analysis_session, verification_session}}
+              （debug 诊断 + case_session_matcher 兜底用）
+            - file_to_sessions: {basename: {session_id, ...}}
+
+        Raises:
+            RuntimeError: API 调用失败（重试耗尽）或 trace 文件缺失。
         """
         graph = {
             'sessions': {}, 'file_to_sessions': {},
             'vuln_id_to_sessions': {},
             'edges': {},
-            'parent_map': {},  # 保留字段（API 映射由 matcher 注入），parser 不建
+            'parent_map': {},
         }
         from collections import defaultdict as _dd
         graph['file_to_sessions'] = _dd(set)
         graph['vuln_id_to_sessions'] = _dd(set)
         graph['edges'] = _dd(set)
-        _n = len(events)
-        _start = time.time()
-        for idx, ev in enumerate(events):
-            if _n > 10000 and idx > 0 and idx % 50000 == 0:
-                _log.debug("WebVulnVerify build_session_graph %d/%d events "
-                           "elapsed=%ds sessions=%d",
-                           idx, _n, int(time.time() - _start), len(graph['sessions']))
-            sid = ev.session_id
-            if not sid:
-                continue
-            if sid not in graph['sessions']:
-                graph['sessions'][sid] = {'files': set(), 'vuln_ids': set()}
-            sg = graph['sessions'][sid]
 
-            # SESSION_START (session_meta): 提取 metadata.vulnerability_id
-            # parent_id 不再建边——见 build_session_graph docstring（数据不可靠）
+        # ── Step 1: 从 events 提取 case_id 列表（session_meta.metadata.chimera_vuln_id）──
+        # case_id 来自 trace 的 session_meta 行；每个 session_meta 行对应一个 case
+        # （session 的 metadata.vulnerability_id 数字 ID + chimera_vuln_id case_id）
+        case_ids: list[str] = []
+        seen_cases: set[str] = set()
+        # 同时收集 events 里每个 session 的 metadata（供后续填 files/vuln_ids）
+        session_meta_by_sid: dict[str, dict] = {}
+        for ev in events:
             if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
+                sid = ev.session_id
                 sess = ev.input_json
-                # metadata.vulnerability_id 或 metadata.chimera_vuln_id — 所有 session 都有
-                # 双 key 注册：vulnerability_id（数字 59734）与 chimera_vuln_id（case_id
-                # case-20260918-xxx）都作为 vuln_id_to_sessions 的 key——
-                # case_session_matcher 用基线/原始 case_id 查 v2s 才能命中。
-                meta = sess.get("metadata", {})
-                if isinstance(meta, dict):
-                    num_vid = str(meta.get("vulnerability_id", "") or "")
-                    case_vid = str(meta.get("chimera_vuln_id", "") or "")
-                    for vid in (num_vid, case_vid):
-                        if vid:
-                            sg['vuln_ids'].add(vid)
-                            graph['vuln_id_to_sessions'][vid].add(sid)
+                meta = sess.get("metadata", {}) if isinstance(sess, dict) else {}
+                if not isinstance(meta, dict):
+                    meta = {}
+                session_meta_by_sid[sid] = {
+                    "session": sess,
+                    "metadata": meta,
+                }
+                num_vid = str(meta.get("vulnerability_id", "") or "")
+                case_vid = str(meta.get("chimera_vuln_id", "") or "")
+                for vid in (num_vid, case_vid):
+                    if vid and vid not in seen_cases:
+                        seen_cases.add(vid)
+                        case_ids.append(vid)
 
+        if not case_ids:
+            _log.warning("WebVulnVerify build_session_graph: events 无 case_id "
+                         "(session_meta.metadata.chimera_vuln_id 缺失)")
+            return graph
+
+        # ── Step 2: 调 gaiasec-server API 拿权威 case→session 映射 ──
+        # API 失败重试 3 次（gaiasec_client 内部），耗尽抛 RuntimeError
+        from ...infrastructure.gaiasec_client import fetch_case_session_map_batch
+        _log.debug("WebVulnVerify build_session_graph: 查询 %d 个 case 的 API 映射",
+                   len(case_ids))
+        session_map = fetch_case_session_map_batch(case_ids)
+
+        # ── Step 3: 校验 API 给的每个 session_id 对应 .jsonl 文件存在 ──
+        # API 是权威——API 给的 session 必须在 trace 目录里有对应 .jsonl 文件
+        # 找不到文件即数据缺失，抛异常（铁律：不降级、不跳过）
+        uri = self._source_uri
+        if not uri:
+            raise RuntimeError(
+                "WebVulnVerify build_session_graph: 无 _source_uri（parse() 未存）")
+        trace_dir = uri if os.path.isdir(uri) else os.path.dirname(uri)
+
+        # 收集所有 API 给的 session_id（去重）
+        api_sessions: dict[str, dict] = {}  # session_id -> {case_id, phase, ...}
+        for case_id, info in session_map.items():
+            analysis_sid = info.get("ai_analysis_session_id") or ""
+            verification_sid = info.get("ai_verification_session_id") or ""
+            for sid, phase in ((analysis_sid, "analysis"),
+                               (verification_sid, "verification")):
+                if not sid:
+                    continue
+                if sid not in api_sessions:
+                    api_sessions[sid] = {
+                        "case_id": case_id,
+                        "phase": phase,
+                    }
+
+        # 校验每个 API session_id 对应 .jsonl 文件存在
+        missing_files: list[str] = []
+        for sid in api_sessions:
+            fpath = os.path.join(trace_dir, f"{sid}.jsonl")
+            if not os.path.isfile(fpath):
+                missing_files.append(sid)
+        if missing_files:
+            raise RuntimeError(
+                f"WebVulnVerify API 权威 session 在 trace 目录缺失 .jsonl 文件: "
+                f"{missing_files[:5]}{'...' if len(missing_files) > 5 else ''} "
+                f"(trace_dir={trace_dir}, 共 {len(missing_files)}/"
+                f"{len(api_sessions)} 个 API session 缺文件)")
+
+        # ── Step 4: 构建调用链（API 权威）──
+        # sessions 字典：API 给的 session 都进 sessions，附 case_id + phase
+        # parent_map：verification_session 的父 = analysis_session
+        # edges：双向父子边
+        # vuln_id_to_sessions：case_id → {analysis, verification}（debug + 兜底）
+        for case_id, info in session_map.items():
+            analysis_sid = info.get("ai_analysis_session_id") or ""
+            verification_sid = info.get("ai_verification_session_id") or ""
+            for sid, phase in ((analysis_sid, "analysis"),
+                               (verification_sid, "verification")):
+                if not sid:
+                    continue
+                if sid not in graph['sessions']:
+                    graph['sessions'][sid] = {
+                        'files': set(),
+                        'vuln_ids': set(),
+                        'phase': phase,
+                    }
+                sg = graph['sessions'][sid]
+                sg['vuln_ids'].add(case_id)
+                graph['vuln_id_to_sessions'][case_id].add(sid)
+                # 从 events 的 session_meta 补 files 等信息
+                meta_info = session_meta_by_sid.get(sid)
+                if meta_info:
+                    meta = meta_info.get("metadata", {})
+                    num_vid = str(meta.get("vulnerability_id", "") or "")
+                    if num_vid:
+                        sg['vuln_ids'].add(num_vid)
+                        graph['vuln_id_to_sessions'][num_vid].add(sid)
+
+            # 建 parent_map + edges（API 权威：verification 的父 = analysis）
+            if analysis_sid and verification_sid and analysis_sid != verification_sid:
+                graph['parent_map'][verification_sid] = analysis_sid
+                graph['edges'][verification_sid].add(analysis_sid)
+                graph['edges'][analysis_sid].add(verification_sid)
+
+        # ── Step 5: 从 events 提取每个 session 的 files（共享文件索引）──
+        # 仅对 graph['sessions'] 里的 session 提取 files（API 权威过滤）
+        for ev in events:
+            sid = ev.session_id
+            if not sid or sid not in graph['sessions']:
+                continue
+            sg = graph['sessions'][sid]
             if not ev.is_tool_call():
                 continue
             tool = ev.tool_name or ""
             inp = ev.input_json or {}
-
-            # vulnerability_analyze/verify/cvss：提取 vulnerability_id
-            if tool in ("vulnerability_analyze", "vulnerability_verify", "vulnerability_cvss"):
-                vid = str(inp.get("vulnerability_id", ""))
-                if vid:
-                    sg['vuln_ids'].add(vid)
-                    graph['vuln_id_to_sessions'][vid].add(sid)
-
-            # 共享文件（与基类默认实现相同）
             if tool == "bash":
                 cmd = str(inp.get("command", ""))
                 for fm in re.findall(r'[\w\-./]+\.[a-zA-Z]{1,6}', cmd):
@@ -567,7 +662,10 @@ class WebVulnVerifyParser(BaseParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # parent_map 不在此构建——见 docstring（API 权威映射由 matcher 注入）
+        _log.debug("WebVulnVerify build_session_graph: API 权威 sessions=%d, "
+                   "parent_map=%d, vuln_id_to_sessions=%d",
+                   len(graph['sessions']), len(graph['parent_map']),
+                   len(graph['vuln_id_to_sessions']))
         return graph
 
     # ------------------------------------------------------------------
