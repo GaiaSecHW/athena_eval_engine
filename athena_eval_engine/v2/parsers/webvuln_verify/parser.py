@@ -481,29 +481,33 @@ class WebVulnVerifyParser(BaseParser):
     def build_session_graph(self, events: list[RawEvent]) -> dict:
         """构建 session 关系图。
 
-        WebVulnVerify session 关联机制（从 trace 数据论证, 82 sessions）：
+        WebVulnVerify session 关联机制：
         1. vulnerability_id 共享（三层来源）：
-           a. session_meta.metadata.vulnerability_id — 所有 82 个 session 都有
+           a. session_meta.metadata.vulnerability_id — 所有 session 都有
            b. vulnerability_analyze/verify/cvss 工具调用中的 vulnerability_id
-           c. 同一漏洞的 analyze session 和 verify session 是不同 session（100%）
-        2. parent_id 父子边（session_meta.session.parent_id）— 37 个 session 有
-        3. 共享文件（与基类默认实现相同）
+        2. 共享文件（与基类默认实现相同）
 
-        关联结构（类似 Argo 的 finding_to_investigate/finding_to_verify）：
+        关联结构：
         - vuln_id_to_sessions: vid → {analyze_session, verify_session, ...}
-        - 通过共享 vid 的 session 互相关联
+          （debug 诊断用，主匹配已改用 gaiasec-server API 权威映射）
+
+        parent_map 不在此构建——WebVulnVerify 的 AI session 父子关系（分析→
+        验证）由 gaiasec-server API 提供（``ai_analysis_session_id`` →
+        ``ai_verification_session_id``），case_session_matcher 在 INGESTING
+        阶段已查到权威映射，用 API 数据建 parent_map。**trace 的
+        session_meta.parent_id 不可靠**（同 case 的两个验证 session，第 1 轮
+        带 parent_id、第 2 轮漏写），不再用作父子关系来源。
         """
         graph = {
             'sessions': {}, 'file_to_sessions': {},
             'vuln_id_to_sessions': {},
             'edges': {},
-            'parent_map': {},
+            'parent_map': {},  # 保留字段（API 映射由 matcher 注入），parser 不建
         }
         from collections import defaultdict as _dd
         graph['file_to_sessions'] = _dd(set)
         graph['vuln_id_to_sessions'] = _dd(set)
         graph['edges'] = _dd(set)
-        _MAX_SESSIONS_PER_LINK = 5
         _n = len(events)
         _start = time.time()
         for idx, ev in enumerate(events):
@@ -518,17 +522,10 @@ class WebVulnVerifyParser(BaseParser):
                 graph['sessions'][sid] = {'files': set(), 'vuln_ids': set()}
             sg = graph['sessions'][sid]
 
-            # SESSION_START (session_meta): 提取 metadata.vulnerability_id + parent_id
+            # SESSION_START (session_meta): 提取 metadata.vulnerability_id
+            # parent_id 不再建边——见 build_session_graph docstring（数据不可靠）
             if ev.event_type == "SESSION_START" and isinstance(ev.input_json, dict):
                 sess = ev.input_json
-                # parent_id 父子边
-                pid = sess.get("parent_id", "")
-                if pid:
-                    if pid not in graph['sessions']:
-                        graph['sessions'][pid] = {'files': set(), 'vuln_ids': set()}
-                    graph['edges'][sid].add(pid)
-                    graph['edges'][pid].add(sid)
-                    graph['parent_map'][sid] = pid
                 # metadata.vulnerability_id 或 metadata.chimera_vuln_id — 所有 session 都有
                 # 双 key 注册：vulnerability_id（数字 59734）与 chimera_vuln_id（case_id
                 # case-20260918-xxx）都作为 vuln_id_to_sessions 的 key——
@@ -570,9 +567,7 @@ class WebVulnVerifyParser(BaseParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：只建真实调用关系边
-        # 不建共享 vulnerability_id/文件 边——共享不是调用关系，会导致 BFS 误连
-        # parent_id 父子边已在 SESSION_START 处理中建立
+        # parent_map 不在此构建——见 docstring（API 权威映射由 matcher 注入）
         return graph
 
     # ------------------------------------------------------------------

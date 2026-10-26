@@ -307,117 +307,142 @@ class TuringParser(BaseParser):
                 _log.warning("Turing build_session_graph SQLite query failed: %s", e)
 
         # Turing MySQL turing_task 表 — 以 task_id 为主键建树
+        # 权威父子关系源：turing_app_security.turing_task.parent_task_id。
+        # 失败必须抛异常 → 评测 FAILED（不降级、不静默吞错——铁律）。
         session_ids = set(graph['sessions'].keys())
-        if session_ids:
-            try:
-                mgr = AgentDBManager()
-                conn = mgr.get_connection("turing")
-                if conn is not None:
-                    try:
-                        cur = conn.cursor()
+        if not session_ids:
+            return graph
 
-                        # 第一步：用当前 session_ids 查到对应的 task，拿到 project_id + job_id
-                        placeholders = ",".join(["%s"] * len(session_ids))
-                        cur.execute(
-                            f"SELECT agent_session_id, agent_name, parent_task_id, "
-                            f"id, project_id, job_id, task_type, status "
-                            f"FROM turing_task "
-                            f"WHERE agent_session_id IN ({placeholders})",
-                            tuple(session_ids),
-                        )
-                        seed_rows = cur.fetchall()
+        mgr = AgentDBManager()
+        conn = mgr.get_connection("turing")
+        if conn is None:
+            raise RuntimeError(
+                "Turing build_session_graph: AgentDBManager.get_connection('turing') "
+                "返回 None（DB 配置缺失或 disabled）")
+        try:
+            cur = conn.cursor()
 
-                        # 收集 job_id，用于查全量 task 树
-                        job_ids: set[str] = set()
-                        for row in seed_rows:
-                            jid = row[5] or ""
-                            if jid:
-                                job_ids.add(jid)
+            # 第一步：用当前 session_ids 查到对应的 task，拿到 project_id + job_id
+            placeholders = ",".join(["%s"] * len(session_ids))
+            cur.execute(
+                f"SELECT agent_session_id, agent_name, parent_task_id, "
+                f"id, project_id, job_id, task_type, status "
+                f"FROM turing_task "
+                f"WHERE agent_session_id IN ({placeholders})",
+                tuple(session_ids),
+            )
+            seed_rows = cur.fetchall()
 
-                        if not job_ids:
-                            return graph
+            # 收集 job_id，用于查全量 task 树
+            job_ids: set[str] = set()
+            for row in seed_rows:
+                jid = row[5] or ""
+                if jid:
+                    job_ids.add(jid)
 
-                        # 第二步：按 job_id 查全量 task——拿到完整调用链
-                        # 与官方 buildTraceForest 一致：全量 task（含 FAILED）
-                        jid_placeholders = ",".join(["%s"] * len(job_ids))
-                        cur.execute(
-                            f"SELECT agent_session_id, agent_name, parent_task_id, "
-                            f"id, project_id, job_id, task_type, status "
-                            f"FROM turing_task "
-                            f"WHERE job_id IN ({jid_placeholders}) "
-                            f"ORDER BY created_at",
-                            tuple(job_ids),
-                        )
-                        all_tasks = cur.fetchall()
+            if not job_ids:
+                return graph
 
-                        # 以 task_id 为主键建图
-                        # task_id -> {agent_session_id, agent_name, parent_task_id, ...}
-                        task_nodes: dict[str, dict] = {}
-                        for row in all_tasks:
-                            sid = row[0] or ""
-                            agent_name = row[1] or ""
-                            parent_task = row[2] or ""
-                            task_id = row[3] or ""
-                            task_type = row[6] or ""
-                            status = row[7] or ""
-                            if not task_id:
-                                continue
-                            task_nodes[task_id] = {
-                                'task_id': task_id,
-                                'agent_session_id': sid,
-                                'agent_name': agent_name,
-                                'parent_task_id': parent_task,
-                                'task_type': task_type,
-                                'status': status,
-                            }
-                            # 同时把 agent_session_id 关联到 sessions dict
-                            if sid:
-                                if sid not in graph['sessions']:
-                                    graph['sessions'][sid] = {
-                                        'files': set(), 'facts': set(), 'athena_qs': [],
-                                    }
-                                if agent_name:
-                                    graph['sessions'][sid]['agent'] = agent_name
-                                graph['sessions'][sid]['task_id'] = task_id
-                                graph['sessions'][sid]['task_type'] = task_type
-                                graph['sessions'][sid]['status'] = status
+            # 第二步：按 job_id 查全量 task——拿到完整调用链
+            # 与官方 buildTraceForest 一致：全量 task（含 FAILED）
+            # 按 project_id 过滤（避免串到其他项目的 task——铁律）
+            # project_id 从 seed_rows 取（同一评测的 task 同 project_id）
+            project_ids: set[str] = set()
+            for row in seed_rows:
+                pid = row[4] or ""
+                if pid:
+                    project_ids.add(pid)
 
-                        # 用 parent_task_id 建边（以 task_id 为键）
-                        for tid, node in task_nodes.items():
-                            ptid = node.get('parent_task_id', '')
-                            if ptid and ptid in task_nodes:
-                                parent_node = task_nodes[ptid]
-                                parent_sid = parent_node.get('agent_session_id', '')
-                                child_sid = node.get('agent_session_id', '')
-                                # 用 task_id 建边（即使没有 agent_session_id 也能建边）
-                                graph['edges'][tid].add(ptid)
-                                graph['edges'][ptid].add(tid)
-                                graph['parent_map'][tid] = ptid
-                                # 同时在 sessions 维度建边（兼容下游）
-                                if child_sid and parent_sid and child_sid != parent_sid:
-                                    graph['edges'][child_sid].add(parent_sid)
-                                    graph['edges'][parent_sid].add(child_sid)
-                                    if child_sid not in graph['parent_map']:
-                                        graph['parent_map'][child_sid] = parent_sid
+            jid_placeholders = ",".join(["%s"] * len(job_ids))
+            pid_placeholders = ",".join(["%s"] * len(project_ids)) if project_ids else None
+            # 同时按 job_id + project_id 过滤——避免跨项目串数据
+            if pid_placeholders:
+                cur.execute(
+                    f"SELECT agent_session_id, agent_name, parent_task_id, "
+                    f"id, project_id, job_id, task_type, status "
+                    f"FROM turing_task "
+                    f"WHERE job_id IN ({jid_placeholders}) "
+                    f"AND project_id IN ({pid_placeholders}) "
+                    f"ORDER BY created_at",
+                    tuple(job_ids) + tuple(project_ids),
+                )
+            else:
+                cur.execute(
+                    f"SELECT agent_session_id, agent_name, parent_task_id, "
+                    f"id, project_id, job_id, task_type, status "
+                    f"FROM turing_task "
+                    f"WHERE job_id IN ({jid_placeholders}) "
+                    f"ORDER BY created_at",
+                    tuple(job_ids),
+                )
+            all_tasks = cur.fetchall()
 
-                        # 把无 agent_session_id 的 FAILED task 也加入 sessions dict
-                        # 这样 debug 展示能看到它们
-                        for tid, node in task_nodes.items():
-                            sid = node.get('agent_session_id', '')
-                            if not sid:
-                                # FAILED task 没有 session，用 task_id 作为伪 session_id
-                                graph['sessions'][tid] = {
-                                    'files': set(), 'facts': set(), 'athena_qs': [],
-                                    'agent': node.get('agent_name', ''),
-                                    'task_id': tid,
-                                    'task_type': node.get('task_type', ''),
-                                    'status': node.get('status', ''),
-                                    'is_failed_task': True,
-                                }
-                    finally:
-                        conn.close()
-            except Exception as e:
-                _log.warning("Turing build_session_graph turing_task query failed: %s", e)
+            # 以 task_id 为主键建图
+            # task_id -> {agent_session_id, agent_name, parent_task_id, ...}
+            task_nodes: dict[str, dict] = {}
+            for row in all_tasks:
+                sid = row[0] or ""
+                agent_name = row[1] or ""
+                parent_task = row[2] or ""
+                task_id = row[3] or ""
+                task_type = row[6] or ""
+                status = row[7] or ""
+                if not task_id:
+                    continue
+                task_nodes[task_id] = {
+                    'task_id': task_id,
+                    'agent_session_id': sid,
+                    'agent_name': agent_name,
+                    'parent_task_id': parent_task,
+                    'task_type': task_type,
+                    'status': status,
+                }
+                # 同时把 agent_session_id 关联到 sessions dict
+                if sid:
+                    if sid not in graph['sessions']:
+                        graph['sessions'][sid] = {
+                            'files': set(), 'facts': set(), 'athena_qs': [],
+                        }
+                    if agent_name:
+                        graph['sessions'][sid]['agent'] = agent_name
+                    graph['sessions'][sid]['task_id'] = task_id
+                    graph['sessions'][sid]['task_type'] = task_type
+                    graph['sessions'][sid]['status'] = status
+
+            # 用 parent_task_id 建边（以 task_id 为键）
+            for tid, node in task_nodes.items():
+                ptid = node.get('parent_task_id', '')
+                if ptid and ptid in task_nodes:
+                    parent_node = task_nodes[ptid]
+                    parent_sid = parent_node.get('agent_session_id', '')
+                    child_sid = node.get('agent_session_id', '')
+                    # 用 task_id 建边（即使没有 agent_session_id 也能建边）
+                    graph['edges'][tid].add(ptid)
+                    graph['edges'][ptid].add(tid)
+                    graph['parent_map'][tid] = ptid
+                    # 同时在 sessions 维度建边（兼容下游）
+                    if child_sid and parent_sid and child_sid != parent_sid:
+                        graph['edges'][child_sid].add(parent_sid)
+                        graph['edges'][parent_sid].add(child_sid)
+                        if child_sid not in graph['parent_map']:
+                            graph['parent_map'][child_sid] = parent_sid
+
+            # 把无 agent_session_id 的 FAILED task 也加入 sessions dict
+            # 这样 debug 展示能看到它们
+            for tid, node in task_nodes.items():
+                sid = node.get('agent_session_id', '')
+                if not sid:
+                    # FAILED task 没有 session，用 task_id 作为伪 session_id
+                    graph['sessions'][tid] = {
+                        'files': set(), 'facts': set(), 'athena_qs': [],
+                        'agent': node.get('agent_name', ''),
+                        'task_id': tid,
+                        'task_type': node.get('task_type', ''),
+                        'status': node.get('status', ''),
+                        'is_failed_task': True,
+                    }
+        finally:
+            conn.close()
 
         return graph
 

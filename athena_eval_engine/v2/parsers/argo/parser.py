@@ -538,19 +538,15 @@ class ArgoParser(BaseParser):
                         sg['files'].add(basename)
                         graph['file_to_sessions'][basename].add(sid)
 
-        # 构建边：从 JSONL session 数据推断真实调用关系
-        # 来源 1: sessionId 字段（子 agent → 父 session）
-        for child_sid, parent_sid in self._session_parents.items():
-            if child_sid not in graph['parent_map']:
-                graph['parent_map'][child_sid] = parent_sid
-            graph['edges'][child_sid].add(parent_sid)
-            graph['edges'][parent_sid].add(child_sid)
+        # 构建边：Argo MySQL 权威关系（intents + intent_sources/outputs）
+        # parent_map 来源：intents 的 fact 依赖链——investigate session 产出
+        # finding fact，verify session 消费该 fact。verify 的父 = investigate
+        # （产出该 finding 的 session）。按 project_id 过滤。
+        # DB 失败抛异常 → 评测 FAILED（不降级、不静默吞错——铁律）。
+        self._build_parent_map_from_intents_db(graph)
 
-        # 来源 2（修正）: Argo MySQL 权威 fact 依赖（intent_sources / intent_outputs）
-        # investigate 输出 fact → verify 消费该 fact。这是**多对多依赖关系**，
-        # 独立存于 graph['fact_deps']，**不作为 parent_map**——fact 引用 ≠ 父子调用。
-        # 原实现用 JSONL 内容推断 fact→creator 并错误设为 parent（导致 16 条
-        # 凭空父子关系、挖掘 session 被挂到 verify 下），现改为 MySQL 权威数据。
+        # Argo MySQL 权威 fact 依赖图（intent_sources/outputs → 多对多 fact→fact 边）
+        # 独立存于 graph['fact_deps']，不作为 parent_map——fact 引用 ≠ 父子调用。
         graph['fact_deps'] = self._query_fact_deps_from_db()
 
         return graph
@@ -900,6 +896,137 @@ class ArgoParser(BaseParser):
         except Exception as e:
             _log.debug("Argo _query_task_type_from_db failed: %s", str(e)[:200])
             return {}
+
+    def _build_parent_map_from_intents_db(self, graph: dict) -> None:
+        """从 Argo MySQL intents + intent_sources/outputs 建权威 session 父子。
+
+        Argo 的 session 父子关系实质是 intents 的 fact 依赖链：
+        - investigate intent 在某 session 执行，产出 finding fact
+        - verify intent 在另一 session 执行，消费同一 finding fact
+        → verify session 的父 = investigate session（产出该 finding 的 session）
+
+        每个 intent 的 session_id 是它的执行载体。intents 表通过
+        intent_outputs（intent 产出 fact）+ intent_sources（intent 消费 fact）
+        建立 fact 依赖：A 产出 fact → B 消费 fact，A 是 B 的父。
+
+        过滤：按 project_id（从 self._task_id 查 projects.task_id 拿 proj_xxx）。
+        DB 失败抛异常 → 评测 FAILED（铁律）。
+        """
+        mgr = AgentDBManager()
+        conn = mgr.get_connection("argo")
+        if conn is None:
+            raise RuntimeError(
+                "Argo _build_parent_map_from_intents_db: "
+                "AgentDBManager.get_connection('argo') 返回 None"
+                "（DB 配置缺失或 disabled）")
+        try:
+            cur = conn.cursor()
+            # 0. 用 task_id 查 projects 拿 argo project_id（proj_xxx）
+            project_id = self._project_id
+            if self._task_id:
+                cur.execute(
+                    "SELECT id FROM projects WHERE task_id = %s LIMIT 1",
+                    (self._task_id,),
+                )
+                prow = cur.fetchone()
+                if prow:
+                    project_id = prow[0]
+            if not project_id:
+                raise RuntimeError(
+                    "Argo _build_parent_map_from_intents_db: 无 project_id "
+                    f"(task_id={self._task_id!r}, source_uri project_id="
+                    f"{self._project_id!r})")
+            # 1. 查 project 全部 intents（id, task_type, session_id）
+            cur.execute(
+                "SELECT id, task_type, session_id FROM intents "
+                "WHERE project_id = %s AND session_id IS NOT NULL",
+                (project_id,),
+            )
+            intent_rows = cur.fetchall()
+            # intent_id -> {task_type, session_id}
+            intent_meta: dict[str, dict] = {}
+            # session_id -> intent_id（session 执行的 intent）
+            session_to_intent: dict[str, str] = {}
+            for iid, itype, isid in intent_rows:
+                if not isid:
+                    continue
+                intent_meta[iid] = {
+                    "task_type": (itype or "investigate"),
+                    "session_id": isid,
+                }
+                session_to_intent[isid] = iid
+
+            # 2. 查 project 全部 intent_outputs（intent 产出 fact）
+            cur.execute(
+                "SELECT intent_id, fact_id FROM intent_outputs "
+                "WHERE project_id = %s",
+                (project_id,),
+            )
+            outputs: dict[str, list[str]] = {}
+            for iid, fid in cur.fetchall():
+                outputs.setdefault(iid, []).append(fid)
+
+            # 3. 查 project 全部 intent_sources（intent 消费 fact）
+            cur.execute(
+                "SELECT intent_id, fact_id FROM intent_sources "
+                "WHERE project_id = %s",
+                (project_id,),
+            )
+            sources: dict[str, list[str]] = {}
+            for iid, fid in cur.fetchall():
+                sources.setdefault(iid, []).append(fid)
+
+            cur.close()
+
+            # 4. 建 fact → 产出它的 intent_id 映射（fact 产出方）
+            fact_to_producer_intent: dict[str, str] = {}
+            for iid, fids in outputs.items():
+                for fid in fids:
+                    fact_to_producer_intent[fid] = iid
+
+            # 5. 对每个消费 fact 的 intent，建 session 父子：
+            #    消费 intent 的 session → 父 = 产出 intent 的 session
+            for consumer_iid, src_fids in sources.items():
+                consumer_meta = intent_meta.get(consumer_iid)
+                if not consumer_meta:
+                    continue
+                consumer_sid = consumer_meta["session_id"]
+                for src_fid in src_fids:
+                    producer_iid = fact_to_producer_intent.get(src_fid)
+                    if not producer_iid or producer_iid == consumer_iid:
+                        continue
+                    producer_meta = intent_meta.get(producer_iid)
+                    if not producer_meta:
+                        continue
+                    producer_sid = producer_meta["session_id"]
+                    if producer_sid == consumer_sid:
+                        continue
+                    # 建 parent_map：consumer 的父 = producer
+                    if consumer_sid not in graph['parent_map']:
+                        graph['parent_map'][consumer_sid] = producer_sid
+                    graph['edges'][consumer_sid].add(producer_sid)
+                    graph['edges'][producer_sid].add(consumer_sid)
+                    # 确保 sessions 字典里两个 session 都存在
+                    for sid in (producer_sid, consumer_sid):
+                        if sid not in graph['sessions']:
+                            graph['sessions'][sid] = {
+                                'files': set(), 'facts': set(),
+                                'athena_qs': [], 'session_type': None,
+                                'task_type': (intent_meta.get(
+                                    session_to_intent.get(sid, ""), {})
+                                    .get("task_type")),
+                                'finding_keys': set(),
+                                'finding_descs': {},
+                                'time_created': None, 'time_updated': None,
+                            }
+
+            _log.debug(
+                "Argo _build_parent_map_from_intents_db: "
+                "intents=%d, parent_map=%d edges",
+                len(intent_meta), len(graph['parent_map']),
+            )
+        finally:
+            conn.close()
 
     def _query_fact_deps_from_db(self) -> dict:
         """从 Argo MySQL 读取权威的 fact 依赖图（对齐 argo 前端 FullGraph 模型）。

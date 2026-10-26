@@ -228,7 +228,48 @@ class CaseSessionMatcher:
             # 和 vulnerability_id（数字）。v2s 双 key（数字 ID + case_id）——
             # 用基线 case_id（cid）或 LLM 匹配的原始 case_id（ac_case_id）查找。
             # CVulnVerify 用 finding_to_session（case_id → session），v2s 为空时兜底。
+            #
+            # ── WebVulnVerify 优先用 gaiasec-server API 权威映射 ──
+            # WebVulnVerify 的 AI session 父子关系不在它自己的 postgres（
+            # vuln_verify_task/attempt 无 session 字段），由 gaiasec-server
+            # API 提供：每个 case 的 ai_analysis_session_id（分析，父）+
+            # ai_verification_session_id（验证，子）。WebVulnVerify 是验证 agent，
+            # 内部又分分析/验证两阶段，两个 session 都进 verify_sessions。
+            # 用基线 case_id（cid）或 LLM 匹配的原始 case_id（ac_case_id）查 API 映射。
             verify_match_detail = ""
+            if not verify_sessions:
+                webvuln_map = (alert_center_data or {}).get(
+                    "webvuln_session_map") or {}
+                api_hit = False
+                for key in (cid, ac_case_id):
+                    if not key:
+                        continue
+                    info = webvuln_map.get(key)
+                    if not info:
+                        continue
+                    analysis_sid = info.get("ai_analysis_session_id") or ""
+                    verification_sid = info.get("ai_verification_session_id") or ""
+                    if analysis_sid and verification_sid:
+                        # 两个 session 都属于 webvuln_verify，都进 verify_sessions
+                        for sid in (analysis_sid, verification_sid):
+                            self._classify_session(sid, "webvuln_verify",
+                                                   mining_sessions, verify_sessions)
+                        # API 权威：verification 的父 = analysis
+                        # （webvuln 内部"分析→验证"两阶段）
+                        match_method_used = (match_method_used +
+                            "+webvuln_api" if match_method_used
+                            else "webvuln_api")
+                        verify_match_detail = (
+                            f"API 权威: analysis={analysis_sid} → "
+                            f"verification={verification_sid}")
+                        api_hit = True
+                        break
+                if not api_hit and webvuln_map:
+                    # API 映射存在但此 case 未命中 → 数据不完整，按铁律抛异常
+                    raise RuntimeError(
+                        f"WebVulnVerify API 映射存在但 case 未命中: "
+                        f"cid={cid} ac_case_id={ac_case_id} "
+                        f"(webvuln_map 共 {len(webvuln_map)} 个 case)")
             if not verify_sessions:
                 for dp in verify_packs:
                     sg = dp.session_graph or {}
