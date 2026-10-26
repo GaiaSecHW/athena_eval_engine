@@ -35,6 +35,7 @@ from ...infrastructure.log_util import (
 )
 from .state_machine import assert_transition
 from . import stages
+from ..core.agents import MINING_AGENT_SET
 
 # ── 报告目录 ──────────────────────────────────────────
 
@@ -80,6 +81,24 @@ def _json_dumps(obj, **kw):
 def _get_reports_dir() -> str:
     """获取报告输出目录（EVAL_REPORTS_DIR 或默认 /app/reports）。"""
     return os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+
+
+def _mining_agent_type(data_packs: list) -> str:
+    """推导该评测实际运行的挖掘 agent 类型。
+
+    sink_not_found 漏报 case 的 mining_sessions 为空（trace 无精确命中），
+    root_cause_analyzer 无法从 session 反查 agent_type。此处从 data_packs
+    的 agent_type 推导唯一的挖掘 agent 类型，供漏报断点归因兜底。
+    多个挖掘 agent 并存时（少见）返回空，交由下游保持现状。
+    """
+    mining_types: set[str] = set()
+    for dp in (data_packs or []):
+        at = getattr(dp, "agent_type", "") or ""
+        if at and at in MINING_AGENT_SET:
+            mining_types.add(at)
+    if len(mining_types) == 1:
+        return next(iter(mining_types))
+    return ""
 
 
 # ── 取消异常 ──────────────────────────────────────────
@@ -503,6 +522,7 @@ class Orchestrator:
                         "expected_label": "VULNERABLE",
                         "mining_sessions": mining_sessions,
                         "verify_sessions": [],
+                        "agent_type": _mining_agent_type(data_packs),
                         "outcome": "FN",
                         "match_method": "unmatched" if not mining_sessions
                         else "matched",
@@ -594,6 +614,7 @@ class Orchestrator:
                     "expected_label": "VULNERABLE",
                     "mining_sessions": all_precise_sids,
                     "verify_sessions": [],
+                    "agent_type": _mining_agent_type(data_packs),
                     "outcome": "FN",
                     "match_method": "unmatched",
                     "match_detail": "LLM 未匹配原始数据，按漏报进入根因分析",

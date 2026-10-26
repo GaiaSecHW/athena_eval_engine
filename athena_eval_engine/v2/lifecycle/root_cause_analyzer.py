@@ -527,12 +527,17 @@ class RootCauseAnalyzer:
             )
 
             # 从 session_chain 推导 agent_type（取第一个 session 的 agent_type）
+            # FN 漏报 case（sink_not_found）mining_sessions 可能为空——
+            # 此时用 case 构造时推导的 agent_type 兜底（orchestrator 从
+            # data_packs 推导实际挖掘 agent，见 _mining_agent_type）
             mining_agent_type = ""
             for sid in mining_chain:
                 at = session_agent_type.get(sid, "")
                 if at:
                     mining_agent_type = at
                     break
+            if not mining_agent_type:
+                mining_agent_type = case.get("agent_type", "")
             verify_agent_type = ""
             for sid in verify_chain:
                 at = session_agent_type.get(sid, "")
