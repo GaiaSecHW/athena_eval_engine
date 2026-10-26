@@ -97,15 +97,18 @@ def fetch_case_session_map(case_id: str) -> dict:
                 continue
             analysis_sid = payload.get("ai_analysis_session_id") or ""
             verification_sid = payload.get("ai_verification_session_id") or ""
-            # API 权威契约：每个 case 必须有 analysis_session（分析阶段已启动），
-            # verification_session 可为空（分析判定为非漏洞时不启动验证，
-            # verification_status=PENDING；此时只返回 analysis_session）。
-            # analysis_session 缺失即数据不完整，按铁律抛异常不降级。
+            # API 权威契约：API 调用成功（200 + success=True）即视为权威数据，
+            # 即使 analysis_session 为空也返回记录（case 数据本身的状态——
+            # 如 analysis_status=UNDETERMINED/PENDING 时 analysis_session 为空，
+            # 表示该 case 的分析未启动或被 stopped）。
+            # 这种"数据不完整"不是 API 失败，不抛异常、不中止评测。
+            # 调用方（matcher）按 analysis_session 是否为空决定是否用此映射。
             if not analysis_sid:
-                raise RuntimeError(
-                    f"API 返回 case={case_id} 缺 ai_analysis_session_id: "
-                    f"analysis={analysis_sid!r} verification={verification_sid!r}"
-                )
+                log("GAISEC_API",
+                    f"case={case_id} API 返回 analysis_session 为空 "
+                    f"(analysis_status={payload.get('ai_analysis_status')}, "
+                    f"verification_status={payload.get('ai_verification_status')})"
+                    f"—— case 数据状态不完整（如分析被 stopped），跳过 verify_sessions")
             return {
                 "case_id": case_id,
                 "ai_analysis_session_id": analysis_sid,
