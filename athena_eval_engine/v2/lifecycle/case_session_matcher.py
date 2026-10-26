@@ -249,19 +249,23 @@ class CaseSessionMatcher:
                         continue
                     analysis_sid = info.get("ai_analysis_session_id") or ""
                     verification_sid = info.get("ai_verification_session_id") or ""
-                    if analysis_sid and verification_sid:
+                    # analysis 必须，verification 可空（分析判定 NOT_VULNERABLE 时
+                    # 不启动验证，验证 status=PENDING）
+                    if analysis_sid:
                         # 两个 session 都属于 webvuln_verify，都进 verify_sessions
+                        # （verification 为空时只取 analysis）
                         for sid in (analysis_sid, verification_sid):
+                            if not sid:
+                                continue
                             self._classify_session(sid, "webvuln_verify",
                                                    mining_sessions, verify_sessions)
-                        # API 权威：verification 的父 = analysis
-                        # （webvuln 内部"分析→验证"两阶段）
                         match_method_used = (match_method_used +
                             "+webvuln_api" if match_method_used
                             else "webvuln_api")
                         verify_match_detail = (
-                            f"API 权威: analysis={analysis_sid} → "
-                            f"verification={verification_sid}")
+                            f"API 权威: analysis={analysis_sid}"
+                            + (f" → verification={verification_sid}"
+                               if verification_sid else " (无验证 session)"))
                         api_hit = True
                         break
                 if not api_hit and webvuln_map:

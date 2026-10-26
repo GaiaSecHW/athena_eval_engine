@@ -97,11 +97,13 @@ def fetch_case_session_map(case_id: str) -> dict:
                 continue
             analysis_sid = payload.get("ai_analysis_session_id") or ""
             verification_sid = payload.get("ai_verification_session_id") or ""
-            # API 权威契约：每个 case 应同时登记 analysis + verification session
-            # （任一缺失即数据不完整，按铁律抛异常不降级）
-            if not analysis_sid or not verification_sid:
+            # API 权威契约：每个 case 必须有 analysis_session（分析阶段已启动），
+            # verification_session 可为空（分析判定为非漏洞时不启动验证，
+            # verification_status=PENDING；此时只返回 analysis_session）。
+            # analysis_session 缺失即数据不完整，按铁律抛异常不降级。
+            if not analysis_sid:
                 raise RuntimeError(
-                    f"API 返回 case={case_id} 缺 session 字段: "
+                    f"API 返回 case={case_id} 缺 ai_analysis_session_id: "
                     f"analysis={analysis_sid!r} verification={verification_sid!r}"
                 )
             return {
