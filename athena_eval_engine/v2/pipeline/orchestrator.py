@@ -1585,9 +1585,6 @@ class Orchestrator:
             },
             "causal_chain_summary": {
                 "cause_summary": causal_chain.get("cause_summary", {}),
-                "effect_label_distribution": causal_chain.get(
-                    "effect_label_distribution", {},
-                ),
             },
         }
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")

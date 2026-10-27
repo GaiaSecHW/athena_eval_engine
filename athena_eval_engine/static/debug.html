@@ -1437,7 +1437,6 @@ RENDERERS.resolving = function(el, data) {
 
   const causalChain = data.causal_chain || {};
   const causeSummary = causalChain.cause_summary || {};
-  const effectDist = causalChain.effect_label_distribution || {};
   const perCase = causalChain.per_case_breakpoints || [];
 
   // 统计
@@ -1454,16 +1453,6 @@ RENDERERS.resolving = function(el, data) {
     html += `<div class="stats">`;
     for (const [code, cnt] of Object.entries(causeSummary).sort()) {
       html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
-    }
-    html += `</div>`;
-  }
-
-  // 效果标签分布
-  if (Object.keys(effectDist).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:14px;">效果标签分布：</div>`;
-    html += `<div class="stats">`;
-    for (const [label, cnt] of Object.entries(effectDist)) {
-      html += `<div class="stat"><div class="num">${cnt}</div><div class="label">${label}</div></div>`;
     }
     html += `</div>`;
   }

@@ -2,7 +2,7 @@
 
 新增报告段（§4.6）：
 - {eid}_lifecycle.json — 生命周期分析段（L0 原始来源分布 + L2-L7 断点分布 +
-  成因汇总 + 效果标签分布 + 召回率/准确率 + per_case_details）
+  成因汇总 + 召回率/准确率 + per_case_details）
 
 大字段处理：per_case_details 中 evidence 字段可能很大，遵循"大 payload 存文件
 DB 存路径"模式——超过 64KB 的 evidence 写入 {reports_dir}/{eid}_lifecycle_data/
@@ -47,9 +47,6 @@ _LARGE_FIELD_THRESHOLD = 64 * 1024  # 64KB
 # 所有 cause_code（A-G）
 _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
 
-# 所有 effect_label（含 NULL）
-_ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
-
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
@@ -85,7 +82,7 @@ class ReportAssembler:
                                 含 mining/verification 的 l0_l7_breakpoints。
             causal_chain_result: CausalChainAnalyzer.analyze() 的输出 dict，
                                  含 cross_attribution_matrix、cause_summary、
-                                 effect_label_distribution、per_case_breakpoints。
+                                 per_case_breakpoints。
             recall_precision: 召回率/准确率计算结果 dict，含 recall_rate、
                               precision_rate、tp_count、fn_count、fp_count。
             reports_dir: 报告输出目录。
@@ -110,10 +107,6 @@ class ReportAssembler:
             "cause_summary": causal_chain_result.get(
                 "cause_summary",
                 {code: 0 for code in _ALL_CAUSES},
-            ),
-            "effect_label_distribution": causal_chain_result.get(
-                "effect_label_distribution",
-                {label: 0 for label in _ALL_EFFECTS},
             ),
             "recall_precision": recall_precision,
             "per_case_details": self._build_per_case_details(

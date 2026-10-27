@@ -9,7 +9,6 @@ L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不
   - 成因汇总（cause_code A-H 计数，断点维度）
   - 假设维度统计（hypothesis_summary，按 responsibility 分组）
   - 人工标注质量分布（label_quality_summary，precise/imprecise）
-  - 效果标签分布（POSITIVE/NEGATIVE/NEUTRAL/NULL）
   - 每 case 的断点清单（含多假设）
 """
 from __future__ import annotations
@@ -59,9 +58,6 @@ _ALL_AGENT_TYPES = ALL_AGENT_TYPES
 
 # 所有 cause_code
 _ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
-
-# 所有 effect_label（含 NULL——无 effect 时表示证据不足）
-_ALL_EFFECTS = ["POSITIVE", "NEGATIVE", "NEUTRAL", "NULL"]
 
 # 所有 responsibility（假设维度）
 _ALL_RESPONSIBILITIES = ["agent", "knowledge", "external_data_source", "eval_process"]
@@ -113,8 +109,6 @@ class CausalChainAnalyzer:
         cross_attribution_matrix = self._build_cross_attribution_matrix(
             flat_breakpoints)
         cause_summary = self._build_cause_summary(flat_breakpoints)
-        effect_label_distribution = self._build_effect_label_distribution(
-            flat_breakpoints)
         hypothesis_summary = self._build_hypothesis_summary(
             root_cause_results)
         label_quality_summary = self._build_label_quality_summary(
@@ -126,7 +120,6 @@ class CausalChainAnalyzer:
             "evaluation_id": evaluation_id,
             "cross_attribution_matrix": cross_attribution_matrix,
             "cause_summary": cause_summary,
-            "effect_label_distribution": effect_label_distribution,
             "hypothesis_summary": hypothesis_summary,
             "label_quality_summary": label_quality_summary,
             "per_case_breakpoints": per_case_breakpoints,
@@ -319,48 +312,6 @@ class CausalChainAnalyzer:
                 counter[cause_code] += 1
 
         return {code: counter.get(code, 0) for code in _ALL_CAUSES}
-
-    # ── 效果标签分布 ──
-
-    def _build_effect_label_distribution(
-        self, flat_breakpoints: list[dict],
-    ) -> dict:
-        """统计 effect_label 的分布。
-
-        effect_label 从 l7_influenced 字段映射：
-        - "positive" → POSITIVE（知识正向影响结论）
-        - "negative" → NEGATIVE（知识负向影响结论）
-        - "neutral"  → NEUTRAL（知识未影响结论）
-        - None/null  → 视断点来源判定：
-          * 合成断点（session_id=hypothesis，来自 root_cause_analyzer 的
-            hypothesis 合成）→ NEUTRAL
-            （合成断点不在 L7 范畴，l7_influenced 默认 None 不是"证据不足"）
-          * L8 断点（合成断点，cause_code H/I/J/K）→ NEUTRAL
-            （L8 是知识链路之外的 agent 流程问题）
-          * L2-L7 断点 l7_influenced=None → NULL（证据不足）
-        """
-        counter: Counter = Counter()
-        for rec in flat_breakpoints:
-            l7 = rec.get("l7_influenced")
-            if l7 == "positive":
-                counter["POSITIVE"] += 1
-            elif l7 == "negative":
-                counter["NEGATIVE"] += 1
-            elif l7 == "neutral":
-                counter["NEUTRAL"] += 1
-            else:
-                # l7_influenced 是 None/"null"——按断点来源/级别判定
-                breakpoint_level = rec.get("breakpoint", "")
-                session_id = rec.get("session_id", "")
-                if session_id == "hypothesis" or breakpoint_level == "L8":
-                    # 合成断点（hypothesis）或 L8 断点不在 L7 范畴，
-                    # l7_influenced=None 是默认值，不是"证据不足"，归 NEUTRAL
-                    counter["NEUTRAL"] += 1
-                else:
-                    # L2-L7 断点 l7_influenced=None → 真正的证据不足
-                    counter["NULL"] += 1
-
-        return {label: counter.get(label, 0) for label in _ALL_EFFECTS}
 
     # ── 假设维度统计 ──
 
@@ -666,7 +617,6 @@ class CausalChainAnalyzer:
                 for agent_type in _ALL_AGENT_TYPES
             },
             "cause_summary": {code: 0 for code in _ALL_CAUSES},
-            "effect_label_distribution": {label: 0 for label in _ALL_EFFECTS},
             "hypothesis_summary": {
                 "by_responsibility": {r: 0 for r in _ALL_RESPONSIBILITIES},
                 "by_cause_code": {c: 0 for c in _ALL_CAUSES},

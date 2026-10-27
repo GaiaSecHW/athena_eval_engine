@@ -773,17 +773,11 @@ function renderV2Report(d){
 
   // 因果链汇总
   var causeSum=ccSum.cause_summary||{};
-  var effectSum=ccSum.effect_label_distribution||{};
   var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
   var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
   var causeBars=Object.keys(causeLabels).map(function(c){
     var v=causeSum[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
-  }).join('');
-  var effectTotal=(effectSum.POSITIVE||0)+(effectSum.NEGATIVE||0)+(effectSum.NEUTRAL||0)+(effectSum.NULL||0);
-  var effectBars=[['POSITIVE','正向(推动判定)','var(--green)'],['NEGATIVE','负向(导致误判)','var(--red)'],['NEUTRAL','中性(未推动)','var(--amber)'],['NULL','证据不足','var(--gray)']].map(function(e){
-    var v=effectSum[e[0]]||0;var pct=effectTotal>0?(v/effectTotal*100).toFixed(1):'0.0';
-    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+e[1]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+e[2]+'"></div></div><span class="bar-v">'+v+'</span></div>';
   }).join('');
 
   // 评测元信息
@@ -818,11 +812,9 @@ function renderV2Report(d){
   </div>
 
   <!-- 因果链汇总 -->
-  ${(causeTotal>0||effectTotal>0)?`<div class="card" style="margin-bottom:16px"><h3>因果链汇总</h3>
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:20px">
-      <div><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>${causeBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：${causeTotal}</div></div>
-      <div><h4 style="font-size:16px;margin-bottom:8px">效果标签分布</h4>${effectBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总记录数：${effectTotal}</div></div>
-    </div></div>`:''}
+  ${causeTotal>0?`<div class="card" style="margin-bottom:16px"><h3>因果链汇总</h3>
+    <div><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>${causeBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：${causeTotal}</div></div>
+    </div>`:''}
 
   <!-- 生命周期分析段 -->
   ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
