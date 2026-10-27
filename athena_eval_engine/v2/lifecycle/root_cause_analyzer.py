@@ -378,6 +378,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
       "responsibility": "agent|knowledge|external_data_source|eval_process",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
       "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
+      "session_id": "该假设主要基于的 session_id（从上方 Session 摘要中引用，可逗号分隔多个；若证据来自多个 session 的合并判断则列全，禁止编造不存在的 session_id）",
       "agent_can_resolve": true/false,
       "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
       "needed_external_data": ["如果 agent_can_resolve=false，列出需要的外部数据（如'网关配置'、'Ingress 路由'）；如果 true 则填空数组"],

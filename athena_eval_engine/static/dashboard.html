@@ -1287,6 +1287,7 @@ async function renderDtsDetailPage(dtsId){
           var causeLabel=DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
           var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
           var probColor=prob>=0.6?'var(--red)':prob>=0.3?'var(--amber)':'var(--gray)';
+          var hypSid=hdata.session_id||'';
           html+='<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
             +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">假设 '+(idx+1)+'</span>';
@@ -1294,6 +1295,9 @@ async function renderDtsDetailPage(dtsId){
           html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">P='+prob+'</span>'
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';
+          if(hypSid){
+            html+=' <span class="knd" style="background:rgba(16,185,129,.12);color:var(--green);font-family:monospace;font-size:12px">基于 '+String(hypSid).replace(/</g,'&lt;')+'</span>';
+          }
           if(canResolve===false){
             html+=' <span class="knd" style="background:rgba(251,191,36,.18);color:var(--amber)">Agent无法自行解决</span>';
           }else if(canResolve===true){
