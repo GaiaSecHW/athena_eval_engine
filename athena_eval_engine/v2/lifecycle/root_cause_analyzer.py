@@ -853,6 +853,26 @@ class RootCauseAnalyzer:
             hypotheses=merge_hypotheses,
         )
 
+        # ── 假设可信度筛选 ──
+        # 只保留 P>=0.6 的假设；若全部 <0.6，保留 P 最高的那条。
+        # top 假设（merge_root_cause 用的）一定被保留，故 merge_root_cause 不变。
+        high_conf = [h for h in merge_hypotheses
+                     if (h.get("probability") or 0) >= 0.6]
+        if high_conf:
+            merge_hypotheses = high_conf
+        elif merge_hypotheses:
+            top_h = max(merge_hypotheses,
+                        key=lambda h: h.get("probability") or 0)
+            merge_hypotheses = [top_h]
+        else:
+            merge_hypotheses = []
+        # 重算 fix_suggestion（只保留筛选后假设的修复建议）
+        merge_fix = []
+        for h in merge_hypotheses:
+            fs = h.get("fix_suggestion")
+            if isinstance(fs, dict):
+                merge_fix.append(fs)
+
         return {
             "session_chain": chain,
             "root_cause": merge_root_cause,
