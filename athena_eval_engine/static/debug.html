@@ -1068,6 +1068,7 @@ RENDERERS.root_cause = function(el, data) {
     const causeLabels = {
       "A": "A 该查没查", "B": "B 查询太泛", "C": "C 查了没得",
       "D": "D 链路问题", "E": "E 查到没用", "F": "F 用了没推动", "G": "G 导致误判",
+      "H": "H 流程缺陷/其他", "I": "I 调用链中断", "J": "J 模型幻觉", "K": "K 验证否定真漏洞",
     };
     for (const [code, cnt] of Object.entries(causeCounts).sort()) {
       html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
@@ -1447,7 +1448,7 @@ RENDERERS.resolving = function(el, data) {
   html += `</div>`;
 
   // 成因分布
-  const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判"};
+  const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判","H":"H 流程缺陷/其他","I":"I 调用链中断","J":"J 模型幻觉","K":"K 验证否定真漏洞"};
   if (Object.keys(causeSummary).length > 0) {
     html += `<div style="margin:8px 0;color:#888;font-size:14px;">成因分布：</div>`;
     html += `<div class="stats">`;
@@ -1496,16 +1497,19 @@ RENDERERS.resolving = function(el, data) {
     // 断点表
     if (bps.length > 0) {
       html += `<table><thead><tr>`;
-      html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>证据</th>`;
+      html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>Session</th><th>证据</th>`;
       html += `</tr></thead><tbody>`;
       for (const bp of bps) {
         const code = bp.cause_code || "—";
         const bpColor = code !== "—" ? "#e74c3c" : "#888";
+        const sid = bp.session_id || "";
+        const sidLabel = sid ? (sid === "hypothesis" ? "[合成] 假设" : (sid === "merge" ? "[合并] 综合" : sid)) : "—";
         html += `<tr>`;
         html += `<td>${esc(bp.agent_type || "—")}</td>`;
         html += `<td>${esc(bp.chain_type || "—")}</td>`;
         html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(bp.break_level || "—")}</td>`;
         html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(code)}</td>`;
+        html += `<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;color:#888" title="${esc(sid)}">${esc(sidLabel)}</td>`;
         html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bp.evidence || "")}">${esc(bp.evidence || "—")}</td>`;
         html += `</tr>`;
       }

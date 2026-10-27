@@ -686,7 +686,7 @@ function renderLifecycle(lc){
 
   const agents=AGENT_TYPES,agentLabels=AGENT_LABELS;
   const levels=['L2','L3','L4','L5','L6','L7','L8'];
-  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
+  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(流程缺陷)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
 
   let matrixRows=agents.map(function(a){
     var row=bp[a]||{};
@@ -701,13 +701,15 @@ function renderLifecycle(lc){
   // Per-case 断点详情
   var pcHtml='';
   if(pc.length){
-    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">逐 Case 断点详情 <span style="font-size:12px;color:var(--gray)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
+    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">逐 Case 断点详情 <span style="font-size:12px;color:var(--acc)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
     pc.forEach(function(c){
       var bps=c.breakpoints||[];
       if(!bps.length)return;
-      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>证据</th></tr></thead><tbody>';
+      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>证据</th></tr></thead><tbody>';
       bps.forEach(function(b){
-        pcHtml+='<tr><td style="font-size:14px">'+(agentLabels[b.agent_type]||b.agent_type||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;color:var(--sub);max-width:400px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
+        var sid=b.session_id||'';
+        var sidLabel=sid?('hypothesis'===sid?'[合成] 假设':('merge'===sid?'[合并] 综合':sid)):'-';
+        pcHtml+='<tr><td style="font-size:14px">'+(agentLabels[b.agent_type]||b.agent_type||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;font-family:monospace;color:var(--sub);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+String(sid).replace(/"/g,'&quot;')+'">'+sidLabel+'</td><td style="font-size:12px;color:var(--sub);max-width:400px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
       });
       pcHtml+='</tbody></table></div>';
     });
@@ -781,7 +783,7 @@ function renderV2Report(d){
   // 因果链汇总
   var causeSum=ccSum.cause_summary||{};
   var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
-  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(其他)'};
+  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(流程缺陷)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
   var causeBars=Object.keys(causeLabels).map(function(c){
     var v=causeSum[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
     return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
@@ -985,7 +987,7 @@ const DTS_STATUS_COLORS={'open':'var(--gray)','passed':'var(--green)','failed':'
 const DTS_RESP_LABELS={'agent':'Agent','knowledge':'知识/记忆','knowledge_base':'知识库','memory':'记忆','external_data_source':'外部数据源','eval_process':'评测流程'};
 const DTS_CASE_TYPE_LABELS={'FP':'误报','FN':'漏报'};
 const DTS_AGENT_LABELS=AGENT_LABELS;  // 复用全局集中配置
-const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(知识误导)','H':'L8断(挖掘方向偏差)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
+const DTS_CAUSE_LABELS={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(知识误导)','H':'L8断(流程缺陷)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
 function dtsAgentLabel(at){
   if(!at)return '-';
   return at.split(',').map(function(a){return DTS_AGENT_LABELS[a]||a;}).join(', ');

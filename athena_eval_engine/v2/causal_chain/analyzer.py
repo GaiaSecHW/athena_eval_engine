@@ -28,7 +28,7 @@ CAUSE_TO_LEVEL = {
     "E": "L6",   # 查到没用——L6 断（召回了但推理没引用）
     "F": "L7",   # 用了没推动——L7 断（未影响结论）
     "G": "L7",   # 知识误导——L7 负向（知识推动了判定但方向错了）
-    "H": "L8",   # 挖掘方向偏差——L8 断（范围/路径未覆盖 sink 点）
+    "H": "L8",   # 流程缺陷/其他——L8 断（挖掘方向偏差、重复上报未识别等 agent 流程问题）
     "I": "L8",   # 调用链中断——L8 断（找到 sink 未追踪到 source）
     "J": "L8",   # 模型幻觉——L8 断（虚构不存在的防护/漏洞逻辑）
     "K": "L8",   # 验证否定真漏洞——L8 断（挖掘 CONFIRMED 但验证否定）
@@ -188,7 +188,7 @@ class CausalChainAnalyzer:
                     fn_agent_type = _CHAIN_DEFAULT_AGENT_TYPE["mining"]
                 if fn_category:
                     # 细分漏报成因 → cause_code 映射（与 A-K 体系对齐）
-                    # 挖掘方向偏差→H，调用链中断→I，知识误导→G，幻觉→J，
+                    # 流程缺陷/挖掘方向偏差→H，调用链中断→I，知识误导→G，幻觉→J，
                     # 验证否定→K，其他 agent 侧问题→H
                     fn_cause_code = _FN_SUB_TO_CAUSE.get(
                         fn_sub, "H")
@@ -527,6 +527,7 @@ class CausalChainAnalyzer:
                     "chain_type": rec.get("chain_type", ""),
                     "break_level": level,
                     "cause_code": cause_code,
+                    "session_id": rec.get("session_id", ""),
                     "evidence": evidence,
                 })
 
@@ -604,7 +605,7 @@ class CausalChainAnalyzer:
             "E": "查到没用（死知识，推理未引用）",
             "F": "用了没推动（未影响结论）",
             "G": "导致误判（知识推动但方向错）",
-            "H": "其他（知识访问链路无问题，其他原因导致误报/漏报）",
+            "H": "流程缺陷/其他（挖掘方向偏差、重复上报未识别等 agent 流程问题）",
         }
         return descriptions.get(cause_code, "")
 

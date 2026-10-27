@@ -309,6 +309,7 @@ class ReportAssembler:
                     "chain_type": bp.get("chain_type", ""),
                     "break_level": bp.get("break_level", ""),
                     "cause_code": bp.get("cause_code", ""),
+                    "session_id": bp.get("session_id", ""),
                     "evidence": self._handle_large_evidence(
                         evaluation_id, case_id, idx,
                         bp.get("evidence", ""),
