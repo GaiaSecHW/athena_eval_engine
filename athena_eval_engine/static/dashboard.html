@@ -707,8 +707,10 @@ function renderLifecycle(lc){
       if(!bps.length)return;
       pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th></tr></thead><tbody>';
       bps.forEach(function(b){
+        // 不再展示假设合成断点——断点必须可回溯到真实 session
+        if(b.session_id==='hypothesis')return;
         var sid=b.session_id||'';
-        var sidLabel=sid?('hypothesis'===sid?'[合成] 假设':('merge'===sid?'[合并] 综合':sid)):'-';
+        var sidLabel=sid?('merge'===sid?'[合并] 综合':sid):'-';
         var fix=b.fix_suggestion||[];
         if(fix&&!Array.isArray(fix))fix=[fix];
         var fixLabel=fix.map(function(fs){

@@ -170,7 +170,8 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
       "query_content": "agent 实际执行的查询命令或参数（从 session 文本提取，不要概括）",
-      "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）"
+      "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）",
+      "fix_suggestion": "基于本 session 具体问题的修复建议：哪个命令/查询有问题就改哪里。如查询太泛→改为按当前漏洞类型聚焦查询；知识缺失→明确指出知识库缺什么；返回错误→指出返回了什么错误/异常。必须可定位到本 session 的具体位置，禁止空泛建议（如'增加去重逻辑'必须说明在哪个命令/步骤加）"
     }
   ]
 }
@@ -797,32 +798,11 @@ class RootCauseAnalyzer:
             if isinstance(fs, dict):
                 merge_fix.append(fs)
 
-        # hypotheses 中每个假设的 cause_code 同步到断点列表
-        # （用于因果链统计按假设维度聚合）
-        # 按 cause_code → L 级别映射（与 causal_chain analyzer.CAUSE_TO_LEVEL
-        # 一致）：A→L2, B→L3, C→L4, D→L5, E→L6, F/G→L7, H/I/J/K→L8。
-        # 原代码一律加 L8 断点，导致 A-G 也被算成 L8（与 cause_code 不匹配，
-        # effect_label 分布错误：A=42 但实际出现在 L8）。
-        _HYP_CAUSE_TO_LEVEL = {
-            "A": "L2", "B": "L3", "C": "L4", "D": "L5",
-            "E": "L6", "F": "L7", "G": "L7",
-            "H": "L8", "I": "L8", "J": "L8", "K": "L8",
-        }
-        for h in merge_hypotheses:
-            cc = h.get("cause_code", "")
-            if cc:
-                all_breakpoints.append({
-                    "session_id": "hypothesis",
-                    "breakpoint": _HYP_CAUSE_TO_LEVEL.get(cc, "L8"),
-                    "cause_code": cc,
-                    "query_content": h.get("hypothesis", ""),
-                    "returned_content": "",
-                    "responsibility": h.get("responsibility", ""),
-                    "probability": h.get("probability", 0),
-                    # 假设自带修复建议（target/location/action），合成断点
-                    # 一并携带——断点要有对应的具体修改点才可执行
-                    "fix_suggestion": h.get("fix_suggestion") or [],
-                })
+        # 注意：不再将 hypotheses 的 cause_code 合成为断点（session_id="hypothesis"）。
+        # 合成断点是 LLM 假设推理的产物，修复点找不到对应 session 文件，
+        # 无法定位到具体修改位置。断点只保留 session 级/merge 级——它们带真实
+        # 查询命令与返回内容，修复建议可回溯到具体 session。
+        # 假设体系（hypotheses）单独在多假设卡片展示，不进断点统计。
 
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 合并压缩完成 "
