@@ -705,11 +705,20 @@ function renderLifecycle(lc){
     pc.forEach(function(c){
       var bps=c.breakpoints||[];
       if(!bps.length)return;
-      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>证据</th></tr></thead><tbody>';
+      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th></tr></thead><tbody>';
       bps.forEach(function(b){
         var sid=b.session_id||'';
         var sidLabel=sid?('hypothesis'===sid?'[合成] 假设':('merge'===sid?'[合并] 综合':sid)):'-';
-        pcHtml+='<tr><td style="font-size:14px">'+(agentLabels[b.agent_type]||b.agent_type||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;font-family:monospace;color:var(--sub);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+String(sid).replace(/"/g,'&quot;')+'">'+sidLabel+'</td><td style="font-size:12px;color:var(--sub);max-width:400px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
+        var fix=b.fix_suggestion||[];
+        if(fix&&!Array.isArray(fix))fix=[fix];
+        var fixLabel=fix.map(function(fs){
+          var bits=[];
+          if(fs&&fs.target)bits.push(fs.target);
+          if(fs&&fs.location)bits.push(fs.location);
+          if(fs&&fs.action)bits.push(fs.action);
+          return bits.join(' · ');
+        }).filter(function(x){return x;}).join('<br>');
+        pcHtml+='<tr><td style="font-size:14px">'+(agentLabels[b.agent_type]||b.agent_type||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;font-family:monospace;color:var(--sub);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+String(sid).replace(/"/g,'&quot;')+'">'+sidLabel+'</td><td style="font-size:12px;color:var(--acc);max-width:240px;overflow:hidden;text-overflow:ellipsis" title="'+String(fixLabel||'').replace(/"/g,'&quot;')+'">'+(fixLabel||'-')+'</td><td style="font-size:12px;color:var(--sub);max-width:320px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
       });
       pcHtml+='</tbody></table></div>';
     });

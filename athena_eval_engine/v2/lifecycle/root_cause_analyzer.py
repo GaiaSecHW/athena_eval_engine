@@ -819,6 +819,9 @@ class RootCauseAnalyzer:
                     "returned_content": "",
                     "responsibility": h.get("responsibility", ""),
                     "probability": h.get("probability", 0),
+                    # 假设自带修复建议（target/location/action），合成断点
+                    # 一并携带——断点要有对应的具体修改点才可执行
+                    "fix_suggestion": h.get("fix_suggestion") or [],
                 })
 
         log("ROOT_CAUSE",

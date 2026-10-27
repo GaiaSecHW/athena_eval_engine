@@ -1497,19 +1497,23 @@ RENDERERS.resolving = function(el, data) {
     // 断点表
     if (bps.length > 0) {
       html += `<table><thead><tr>`;
-      html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>Session</th><th>证据</th>`;
+      html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th>`;
       html += `</tr></thead><tbody>`;
       for (const bp of bps) {
         const code = bp.cause_code || "—";
         const bpColor = code !== "—" ? "#e74c3c" : "#888";
         const sid = bp.session_id || "";
         const sidLabel = sid ? (sid === "hypothesis" ? "[合成] 假设" : (sid === "merge" ? "[合并] 综合" : sid)) : "—";
+        let fix = bp.fix_suggestion || [];
+        if (!Array.isArray(fix)) fix = [fix];
+        const fixLabel = fix.map(fs => [fs && fs.target, fs && fs.location, fs && fs.action].filter(Boolean).join(" · ")).filter(Boolean).join("<br>");
         html += `<tr>`;
         html += `<td>${esc(bp.agent_type || "—")}</td>`;
         html += `<td>${esc(bp.chain_type || "—")}</td>`;
         html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(bp.break_level || "—")}</td>`;
         html += `<td style="color:${bpColor};font-weight:bold;text-align:center">${esc(code)}</td>`;
         html += `<td style="max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-family:monospace;color:#888" title="${esc(sid)}">${esc(sidLabel)}</td>`;
+        html += `<td style="max-width:240px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#2563eb" title="${esc(fixLabel)}">${fixLabel || "—"}</td>`;
         html += `<td style="max-width:400px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(bp.evidence || "")}">${esc(bp.evidence || "—")}</td>`;
         html += `</tr>`;
       }

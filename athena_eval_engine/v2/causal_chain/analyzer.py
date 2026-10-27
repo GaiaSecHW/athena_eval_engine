@@ -260,7 +260,11 @@ class CausalChainAnalyzer:
                         "l7_influenced": bp.get("l7_influenced"),
                         "session_id": bp.get("session_id", ""),
                         "root_cause": chain_data.get("root_cause", {}),
-                        "fix_suggestion": chain_data.get("fix_suggestion") or [],
+                        # 只取断点自身携带的修复建议（合成断点带假设的
+                        # fix_suggestion）。不回退 chain 级 fix_suggestion——
+                        # 链级修复点是整链假设的修复建议（case 级 solution 用），
+                        # 回退会让 session 级断点显示与合成断点相同的修复点，重复混淆。
+                        "fix_suggestion": bp.get("fix_suggestion") or [],
                     })
 
         return flat
@@ -528,6 +532,7 @@ class CausalChainAnalyzer:
                     "break_level": level,
                     "cause_code": cause_code,
                     "session_id": rec.get("session_id", ""),
+                    "fix_suggestion": rec.get("fix_suggestion") or [],
                     "evidence": evidence,
                 })
 
@@ -592,6 +597,32 @@ class CausalChainAnalyzer:
         l0 = rec.get("l0_source", "")
         if l0:
             parts.append(f"知识来源: {l0}")
+
+        # 修复建议（断点要有具体的修改点才可执行）
+        fix = rec.get("fix_suggestion") or []
+        if isinstance(fix, dict):
+            fix = [fix]
+        if fix:
+            fix_parts: list[str] = []
+            for fs in fix:
+                if not isinstance(fs, dict):
+                    continue
+                target = fs.get("target", "")
+                location = fs.get("location", "")
+                action = fs.get("action", "")
+                if not (target or location or action):
+                    continue
+                bits = []
+                if target:
+                    bits.append(f"修复方: {target}")
+                if location:
+                    bits.append(f"位置: {location}")
+                if action:
+                    bits.append(f"修改: {action}")
+                if bits:
+                    fix_parts.append(" | ".join(bits))
+            if fix_parts:
+                parts.append("修复点: " + "; ".join(fix_parts))
 
         return "\n".join(parts) if parts else ""
 

@@ -310,6 +310,7 @@ class ReportAssembler:
                     "break_level": bp.get("break_level", ""),
                     "cause_code": bp.get("cause_code", ""),
                     "session_id": bp.get("session_id", ""),
+                    "fix_suggestion": bp.get("fix_suggestion") or [],
                     "evidence": self._handle_large_evidence(
                         evaluation_id, case_id, idx,
                         bp.get("evidence", ""),
