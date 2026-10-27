@@ -1500,12 +1500,12 @@ RENDERERS.resolving = function(el, data) {
       html += `<th>Agent</th><th>链类型</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th>`;
       html += `</tr></thead><tbody>`;
       for (const bp of bps) {
-        // 不再展示假设合成断点——断点必须可回溯到真实 session
-        if (bp.session_id === "hypothesis") continue;
+        // 不再展示合成断点（hypothesis/merge）——断点必须可回溯到真实 session
+        if (bp.session_id === "hypothesis" || bp.session_id === "merge") continue;
         const code = bp.cause_code || "—";
         const bpColor = code !== "—" ? "#e74c3c" : "#888";
         const sid = bp.session_id || "";
-        const sidLabel = sid ? (sid === "merge" ? "[合并] 综合" : sid) : "—";
+        const sidLabel = sid || "—";
         let fix = bp.fix_suggestion || [];
         if (!Array.isArray(fix)) fix = [fix];
         const fixLabel = fix.map(fs => [fs && fs.target, fs && fs.location, fs && fs.action].filter(Boolean).join(" · ")).filter(Boolean).join("<br>");

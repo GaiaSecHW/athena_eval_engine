@@ -707,10 +707,10 @@ function renderLifecycle(lc){
       if(!bps.length)return;
       pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th></tr></thead><tbody>';
       bps.forEach(function(b){
-        // 不再展示假设合成断点——断点必须可回溯到真实 session
-        if(b.session_id==='hypothesis')return;
+        // 不再展示合成断点（hypothesis/merge）——断点必须可回溯到真实 session
+        if(b.session_id==='hypothesis'||b.session_id==='merge')return;
         var sid=b.session_id||'';
-        var sidLabel=sid?('merge'===sid?'[合并] 综合':sid):'-';
+        var sidLabel=sid||'-';
         var fix=b.fix_suggestion||[];
         if(fix&&!Array.isArray(fix))fix=[fix];
         var fixLabel=fix.map(function(fs){
@@ -762,17 +762,15 @@ function renderV2Report(d){
   var postFn=postFprData.by_case_type&&postFprData.by_case_type.FN||{};
   var baseMetrics='';
   if(evalMode==='runtime'){
-    // 运行态：基线=告警中心，显示 误报率+漏报率+准确率 + 回归后误报率/漏报率
+    // 运行态：基线=告警中心，无完整 ground truth，FN（漏报）无定义——
+    // 只显示误报率+准确率+回归后误报率，不显示任何漏报指标。
     var fprVal=(tpCnt+fpCnt)>0?(fpCnt/(tpCnt+fpCnt)):null;
-    var fnrVal=(tpCnt+fnCnt)>0?(fnCnt/(tpCnt+fnCnt)):null;
     baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(TP+FP) = '+fpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
-    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">漏报率 (FNR)</div><div class="mc-val" style="color:var(--amber)">'+(fnrVal!=null?(fnrVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FN/(TP+FN) = '+fnCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
     if(tpCnt+fpCnt>0){
       var precisionVal=tpCnt/(tpCnt+fpCnt);
       baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
     }
     baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFp.verified_total>0?('未消除 '+postFp.failed+'/'+postFp.verified_total):'暂无回归验证数据')+'</div></div>';
-    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后漏报率</div><div class="mc-val" style="color:var(--amber)">'+(postFnr!=null?(postFnr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFn.verified_total>0?('未消除 '+postFn.failed+'/'+postFn.verified_total):'暂无回归验证数据')+'</div></div>';
   }else{
     // 开发态：基线=外部 ground truth，完整 TP/FN/FP/TN
     var fprVal=(tpCnt+fpCnt)>0?(fpCnt/(tpCnt+fpCnt)):null;

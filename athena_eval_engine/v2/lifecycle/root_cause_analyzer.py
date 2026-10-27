@@ -762,7 +762,6 @@ class RootCauseAnalyzer:
             "reason": "",
             "follow_up_questions": [],
         })
-        merge_l0_l7 = merge_result.get("l0_l7") or []
         merge_km_summary = merge_result.get("knowledge_memory_summary") or {
             "access_count": 0,
             "accesses": [],
@@ -770,14 +769,10 @@ class RootCauseAnalyzer:
             "impact_on_conclusion": "",
         }
 
-        # 合并后的 L0-L7 断点也收集
-        for kp in merge_l0_l7:
-            if isinstance(kp, dict) and kp.get("breakpoint") \
-                    and kp.get("breakpoint") != "null":
-                all_breakpoints.append({
-                    "session_id": "merge",
-                    **kp,
-                })
+        # 注意：不再收集合并 LLM 输出的 L0-L7 断点（session_id="merge"）。
+        # merge 断点是合并阶段对同一知识访问的重复判定，与 session 压缩级断点
+        # 内容重复，且修复点无法定位到真实 session。断点只保留 session 级——
+        # 它们带真实查询命令与返回内容，可回溯到具体 session。
 
         # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
         # 取最高概率假设作为 root_cause（向后兼容）
