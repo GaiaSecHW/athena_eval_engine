@@ -103,15 +103,16 @@ def get_stats(evaluation_id: str | None = None):
 
 @router.get("/post-regression-fpr/{evaluation_id}")
 def get_post_fpr(evaluation_id: str):
-    """获取回归后误报率。
+    """获取回归后误报率/漏报率。
 
-    根据问题单的回归验证状态计算：
-    - passed：误报已消除（回归验证后漏洞不存在）
-    - failed：误报未消除（回归验证后漏洞仍存在）
+    根据问题单的回归验证状态计算，按 case_type 拆分：
+    - passed：问题已消除（回归验证后漏洞不存在）
+    - failed：问题未消除（回归验证后漏洞仍存在）
     - open：未参与回归验证
 
-    回归后误报率 = failed / (passed + failed)。
-    无回归验证数据时返回 None。
+    回归后误报率（FP 单）= failed / (passed + failed)。
+    回归后漏报率（FN 单）= failed / (passed + failed)。
+    无对应回归数据时返回 None。
     """
     try:
         return get_post_regression_fpr(evaluation_id)
@@ -120,11 +121,16 @@ def get_post_fpr(evaluation_id: str):
         log("DTS_API", f"get_post_fpr 查询失败: {str(e)[:200]}")
         return {
             "post_regression_fpr": None,
+            "post_regression_fnr": None,
             "passed_count": 0,
             "failed_count": 0,
             "verified_total": 0,
             "open_count": 0,
             "total": 0,
+            "by_case_type": {
+                "FP": {"passed": 0, "failed": 0, "verified_total": 0},
+                "FN": {"passed": 0, "failed": 0, "verified_total": 0},
+            },
         }
 
 

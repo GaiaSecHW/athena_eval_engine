@@ -654,52 +654,95 @@ def list_dts_by_task(task_id: str) -> list[dict]:
 
 
 def get_post_regression_fpr(evaluation_id: str) -> dict:
-    """计算回归后误报率。
+    """计算回归后误报率/漏报率（按 case_type 分组）。
 
-    回归验证后，passed 表示误报已消除，failed 表示误报未消除。
-    回归后误报率 = failed 数 / (passed + failed 数)。
+    回归验证后，passed 表示问题已消除，failed 表示问题未消除。
     open 状态的问题单未参与回归验证，不计入分母。
+
+    按 case_type 拆分口径：
+    - FP（误报单）failed/(passed+failed) → post_regression_fpr（回归后误报率）
+    - FN（漏报单）failed/(passed+failed) → post_regression_fnr（回归后漏报率）
 
     Args:
         evaluation_id: 评测 ID。
 
     Returns:
         {
-            "post_regression_fpr": float | None,  # 0.0-1.0，无回归数据时 None
-            "passed_count": int,
-            "failed_count": int,
-            "verified_total": int,  # passed + failed
-            "open_count": int,       # 未参与回归验证
-            "total": int,            # 全部问题单
+            "post_regression_fpr": float | None,  # FP 单回归后误报率，无数据时 None
+            "post_regression_fnr": float | None,  # FN 单回归后漏报率，无数据时 None
+            "passed_count": int,   # 全部问题单 passed
+            "failed_count": int,   # 全部问题单 failed
+            "verified_total": int, # passed + failed
+            "open_count": int,     # 未参与回归验证
+            "total": int,          # 全部问题单
+            "by_case_type": {
+                "FP": {"passed": int, "failed": int, "verified_total": int},
+                "FN": {"passed": int, "failed": int, "verified_total": int},
+            },
         }
     """
     where_clause = " WHERE d.evaluation_id = %s"
     params = (evaluation_id,)
 
     def _do_query(cur):
+        # 按 (case_type, status) 分组统计
         cur.execute(
-            f"SELECT d.status, COUNT(*) FROM dts_issue d{where_clause}"
-            f" GROUP BY d.status",
+            f"SELECT d.case_type, d.status, COUNT(*) FROM dts_issue d{where_clause}"
+            f" GROUP BY d.case_type, d.status",
             params,
         )
         return cur.fetchall()
 
     rows = _db_query(_do_query)
-    by_status = {row[0]: row[1] for row in rows} if rows else {}
+    # by_case_type[case_type][status] = count
+    by_case_type: dict[str, dict[str, int]] = {"FP": {}, "FN": {}}
+    if rows:
+        for case_type, status, cnt in rows:
+            bucket = by_case_type.setdefault(case_type or "", {})
+            bucket[status] = bucket.get(status, 0) + cnt
 
-    passed_count = by_status.get("passed", 0)
-    failed_count = by_status.get("failed", 0)
-    open_count = by_status.get("open", 0)
-    total = passed_count + failed_count + open_count
+    def _rate(case_type: str) -> float | None:
+        bucket = by_case_type.get(case_type, {})
+        passed = bucket.get("passed", 0)
+        failed = bucket.get("failed", 0)
+        verified = passed + failed
+        if verified <= 0:
+            return None
+        return round(failed / verified, 4)
+
+    fp_rate = _rate("FP")
+    fn_rate = _rate("FN")
+
+    fp_passed = by_case_type.get("FP", {}).get("passed", 0)
+    fp_failed = by_case_type.get("FP", {}).get("failed", 0)
+    fn_passed = by_case_type.get("FN", {}).get("passed", 0)
+    fn_failed = by_case_type.get("FN", {}).get("failed", 0)
+
+    passed_count = fp_passed + fn_passed
+    failed_count = fp_failed + fn_failed
     verified_total = passed_count + failed_count
-
-    post_fpr = (failed_count / verified_total) if verified_total > 0 else None
+    total = sum(
+        sum(bucket.values()) for bucket in by_case_type.values()
+    )
 
     return {
-        "post_regression_fpr": round(post_fpr, 4) if post_fpr is not None else None,
+        "post_regression_fpr": fp_rate,
+        "post_regression_fnr": fn_rate,
         "passed_count": passed_count,
         "failed_count": failed_count,
         "verified_total": verified_total,
-        "open_count": open_count,
+        "open_count": total - verified_total,
         "total": total,
+        "by_case_type": {
+            "FP": {
+                "passed": fp_passed,
+                "failed": fp_failed,
+                "verified_total": fp_passed + fp_failed,
+            },
+            "FN": {
+                "passed": fn_passed,
+                "failed": fn_failed,
+                "verified_total": fn_passed + fn_failed,
+            },
+        },
     }
