@@ -103,7 +103,7 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 | L5 | 成功取回？ | 返回内容是否有效（无 error/timeout/exception） | D 链路问题 | Agent + 知识方 |
 | L6 | 被使用？ | agent 推理文本是否引用了知识返回内容 | E 查到没用 | Agent |
 | L7 | 影响结论？ | 知识是否影响了判定结论 | F 用了没推动 / G 导致误判 | F: Agent/知识方, G: 知识方 |
-| L8 | 其他问题？ | 知识访问链路全程通过（L7=positive）后，agent 仍误报。分析是否存在知识访问之外的问题导致误报 | H 挖掘方向偏差 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 | Agent |
+| L8 | 其他问题？ | 知识访问链路全程通过（L7=positive）后，agent 仍误报。分析是否存在知识访问之外的问题导致误报 | H 流程缺陷/其他 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 | Agent |
 
 ## L6 判定关键规则
 
@@ -228,7 +228,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 | E | 查到没用（死知识，推理未引用） | agent | FP/FN |
 | F | 用了没推动（未影响结论） | agent | FP/FN |
 | G | 知识误导（知识内容有误/过时/不适用） | knowledge | FP/FN |
-| H | 挖掘方向偏差（范围/路径未覆盖 sink 点） | agent | FN |
+| H | 流程缺陷/其他（挖掘方向偏差、重复上报未识别等 agent 流程问题） | agent | FP/FN |
 | I | 调用链中断（找到 sink 未追踪到 source 入口） | agent | FN |
 | J | 模型幻觉（虚构不存在的防护措施/漏洞逻辑） | agent | FP/FN |
 | K | 验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定） | agent | FN |
@@ -245,7 +245,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 **FN（漏报）常用维度**——为什么 agent 漏报了真实漏洞：
 - A 该查没查【agent】：agent 不知道这类漏洞模式，需改 prompt 增加知识查询意识
 - C 查了没得【knowledge】：知识库缺少漏洞模式判定方法
-- H 挖掘方向偏差【agent】：挖掘范围/路径未覆盖 sink 点（如只查查询端点没查删除端点）
+- H 流程缺陷/其他【agent】：挖掘方向偏差（范围/路径未覆盖 sink 点）、重复上报未识别（未比对历史记录）等 agent 流程问题
 - I 调用链中断【agent】：找到 sink 但未追踪到 source 入口（数据流不可达）
 - G 知识误导【knowledge】：知识/记忆返回内容错误/过时，误导了判定
 - J 模型幻觉【agent】：虚构了不存在的防护措施，导致认为不是漏洞
@@ -333,7 +333,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
   - L8 断点表示知识访问链路无问题，但存在其他非知识访问的原因导致误报/漏报
   - cause_code 从非知识访问维度选（与 A-K 体系一致）：
-    * H（挖掘方向偏差）— 挖掘范围/路径未覆盖
+    * H（流程缺陷/其他）— 挖掘方向偏差、重复上报未识别等 agent 流程问题
     * I（调用链中断）— 找到 sink 未追踪到 source
     * J（模型幻觉）— 虚构不存在的防护/漏洞逻辑
     * K（验证否定真漏洞）— 挖掘 CONFIRMED 但验证否定
@@ -903,7 +903,7 @@ class RootCauseAnalyzer:
             "E": "reasoning_flaw",       # 查到没用（agent 推理未引用）
             "F": "reasoning_flaw",       # 用了没推动（agent 未受影响）
             "G": "knowledge_error",      # 知识误导（knowledge 责任）
-            "H": "verification_dimension_missing",  # 挖掘方向偏差/其他 agent 侧
+            "H": "verification_dimension_missing",  # 流程缺陷/其他 agent 侧
             "I": "reasoning_flaw",       # 调用链中断（agent 数据流分析不足）
             "J": "reasoning_flaw",       # 模型幻觉（agent 推理虚构）
             "K": "verification_dimension_missing",  # 验证否定真漏洞（agent 侧）
