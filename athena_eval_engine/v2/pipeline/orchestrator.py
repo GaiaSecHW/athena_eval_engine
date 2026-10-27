@@ -1672,14 +1672,31 @@ class Orchestrator:
                 raise
 
     def _clear_debug_files(self, reports_dir: str, evaluation_id: str):
-        """清除该评测的所有 debug 数据文件（重试时清理历史数据）。"""
+        """清除该评测的所有报告与 debug 数据文件（重跑时清理历史数据）。
+
+        重跑必须全量重建报告——旧报告文件不删会导致：
+        - REPORTING 阶段 `_has_lifecycle_report` 短路跳过组装，旧报告永不更新
+        - 重跑中途失败时页面仍显示旧报告（状态 FAILED 但数据是旧的）
+
+        删除范围：{eid}_debug_*.json、{eid}.json、{eid}_lifecycle.json、
+        {eid}_fpr.json、{eid}_kg.json、{eid}.html、{eid}_dts_*.json。
+        """
         import glob
-        pattern = os.path.join(reports_dir, f"{evaluation_id}_debug_*.json")
-        for f in glob.glob(pattern):
-            try:
-                os.remove(f)
-            except Exception:
-                pass
+        patterns = [
+            f"{evaluation_id}_debug_*.json",
+            f"{evaluation_id}.json",
+            f"{evaluation_id}_lifecycle.json",
+            f"{evaluation_id}_fpr.json",
+            f"{evaluation_id}_kg.json",
+            f"{evaluation_id}.html",
+            f"{evaluation_id}_dts_*.json",
+        ]
+        for pattern in patterns:
+            for f in glob.glob(os.path.join(reports_dir, pattern)):
+                try:
+                    os.remove(f)
+                except Exception:
+                    pass
 
     def _dump_debug(self, reports_dir: str, evaluation_id: str,
                     step: str, data: dict):
