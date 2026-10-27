@@ -1033,10 +1033,23 @@ class RootCauseAnalyzer:
                         bp["breakpoint"] = "L4"
                         bp["cause_code"] = "C"
                         bp["l4_exists"] = False
-                        # 补充 query_content 说明知识库覆盖度缺口
+                        # 改写 query_content 消除矛盾：C（查了没得）的语义是
+                        # 知识库缺知识，不能保留 L2 的"agent 未发起访问"表述。
+                        # 提取"推理任务需要什么知识"部分，改为知识库缺口的描述。
                         old_qc = bp.get("query_content", "")
+                        need_part = old_qc
+                        import re as _re
+                        m = _re.search(r"[（(](.*?)[)）]", old_qc)
+                        if m:
+                            need_part = m.group(1).strip()
+                            for pre in ("具体说明需要什么知识：",
+                                        "需要", "需"):
+                                if need_part.startswith(pre):
+                                    need_part = need_part[len(pre):].strip()
+                                    break
                         bp["query_content"] = (
-                            f"{old_qc} | L4 独立验证：知识库中未找到"
+                            f"知识库缺少该知识（推理任务需要：{need_part}）"
+                            f" | L4 独立验证：知识库中未找到"
                             f"能消减此误报的知识"
                             f"（{result.get('summary', '')}）"
                         )
