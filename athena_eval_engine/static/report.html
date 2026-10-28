@@ -90,6 +90,7 @@ function renderReport(){
       <div class="pt-kpi"><div class="v" id="k-task">-</div><div class="l">任务数</div></div>
       <div class="pt-kpi"><div class="v" id="k-total">-</div><div class="l">漏洞总数</div></div>
       <div class="pt-kpi"><div class="v" id="k-vuln" style="color:var(--green)">-</div><div class="l">确认漏洞</div></div>
+      <div class="pt-kpi"><div class="v" id="k-nonfp">-</div><div class="l">确认非误报</div></div>
       <div class="pt-kpi"><div class="v" id="k-fp" style="color:var(--red)">-</div><div class="l">确认误报</div></div>
       <div class="pt-kpi"><div class="v" id="k-fpr" style="color:var(--acc)">-</div><div class="l">误报率 FP/(TP+FP)</div></div>
     </div>
@@ -164,6 +165,7 @@ function render(d){
   $("k-task").textContent=kpi.task_count||0;
   $("k-total").textContent=kpi.vuln_total||0;
   $("k-vuln").textContent=kpi.confirmed_vulnerable||0;
+  $("k-nonfp").textContent=kpi.confirmed_not_vulnerable||0;
   $("k-fp").textContent=kpi.confirmed_fp||0;
   const kFp=kpi.confirmed_fp||0, kVuln=kpi.confirmed_vulnerable||0;
   const kFpr=(kFp+kVuln)>0?((kFp/(kFp+kVuln))*100).toFixed(1)+'%':'NA';

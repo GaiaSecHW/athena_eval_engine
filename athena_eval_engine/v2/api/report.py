@@ -56,13 +56,14 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         cur.execute("SELECT MAX(updated_at) FROM project_task_summary")
         row = cur.fetchone()
         updated_at = row[0]
-        # 过滤后全量 KPI 聚合（项目数/任务数/漏洞总数/确认漏洞/确认误报）
+        # 过滤后全量 KPI 聚合（项目数/任务数/漏洞总数/确认漏洞/确认非误报/确认误报）
         # 任务数只统计 task_id 非空行——无任务项目补的 0 行（task_id=''）不算任务
         kpi_sql = (
             "SELECT COUNT(DISTINCT project_id), "
             "COUNT(CASE WHEN task_id != '' THEN 1 END), "
             "COALESCE(SUM(vuln_total),0), "
             "COALESCE(SUM(confirmed_vulnerable),0), "
+            "COALESCE(SUM(confirmed_not_vulnerable),0), "
             "COALESCE(SUM(confirmed_fp),0) "
             "FROM project_task_summary"
         )
@@ -75,7 +76,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             "task_count": kpi_row[1],
             "vuln_total": kpi_row[2],
             "confirmed_vulnerable": kpi_row[3],
-            "confirmed_fp": kpi_row[4],
+            "confirmed_not_vulnerable": kpi_row[4],
+            "confirmed_fp": kpi_row[5],
         }
         # 总数（不含无任务项目补的 0 行）
         count_sql = "SELECT COUNT(*) FROM project_task_summary WHERE task_id != ''"
@@ -135,7 +137,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         return {"updated_at": None, "total": 0, "page": page,
                 "page_size": page_size, "items": [], "all_agents": [],
                 "kpi": {"project_count": 0, "task_count": 0, "vuln_total": 0,
-                        "confirmed_vulnerable": 0, "confirmed_fp": 0}}
+                        "confirmed_vulnerable": 0, "confirmed_not_vulnerable": 0,
+                        "confirmed_fp": 0}}
 
     # 关联评测：task_id → 最新评测（从 evaluation.task_id 直接反查，
     # 一个任务可能有多个评测取最新）
