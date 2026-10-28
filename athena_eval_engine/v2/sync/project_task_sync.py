@@ -168,26 +168,24 @@ def sync_all() -> dict:
                                           confirmation_status="not_vulnerable")
             fp_stats = vc.list_stats(pid, source_task_id=tid,
                                      false_positive_group="confirmed_fp")
-            nonfp_stats = vc.list_stats(pid, source_task_id=tid,
-                                        false_positive_group="non_fp")
             analyzing_stats = vc.list_stats(pid, source_task_id=tid,
                                             confirmation_status="analyzing")
         except Exception as e:
             log("SYNC", f"任务 {tid} 拉统计失败: {str(e)[:200]}")
             return None
 
-        # 字段映射（口径已与漏洞中心对齐）：
-        # - vuln_total = 总量（list-stats 无过滤 total）
-        # - confirmed_vulnerable = 人工确认漏洞（confirmation_status=vulnerable）
-        # - confirmed_not_vulnerable = 确认非漏洞且非误报（false_positive_group=non_fp 的 ruled_out）
-        # - confirmed_fp = 确认误报（false_positive_group=confirmed_fp）
-        #   —— 注意：not_vulnerable 的 ruled_out 同时包含误报与非误报，
-        #      故 non_fp 必须单独拉取，不能再用 not_vulnerable 口径
-        # - unconfirmed_count = 未确认（无过滤 inconclusive）
+        # 字段映射（口径与漏洞中心一致）：
+        # - vuln_total = 全部漏洞（list-stats 无过滤 total）
+        # - confirmed_vulnerable = 是漏洞（confirmation_status=vulnerable 的 confirmed）
+        # - confirmed_not_vulnerable = 不是漏洞（confirmation_status=not_vulnerable 的
+        #     ruled_out，整体含误报与非误报）
+        # - confirmed_fp = 拆分出的误报（false_positive_group=confirmed_fp），
+        #     用于计算误报率 FP/(TP+FP)
+        # - unconfirmed_count = 待人工确认（无过滤 inconclusive）
         # - analyzing_count = 待人工确认（confirmation_status=analyzing）
         vuln_total = stats.get("total") or 0
         confirmed_vuln = vuln_stats.get("confirmed") or 0
-        confirmed_nonvuln = nonfp_stats.get("ruled_out") or 0
+        confirmed_nonvuln = nonvuln_stats.get("ruled_out") or 0
         confirmed_fp = fp_stats.get("total") or 0
         unconfirmed = stats.get("inconclusive") or 0
         analyzing = analyzing_stats.get("total") or 0
