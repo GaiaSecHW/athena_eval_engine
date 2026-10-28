@@ -4,7 +4,17 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>奇美拉平台测评看板</title>
-<link rel="stylesheet" href="/static/lib/app.css">
+<script>
+(function(){
+  var _p=location.pathname;
+  var _ing=(_p==='/eval'||_p.indexOf('/eval/')===0)?'/eval':'';
+  var _lib=_ing+'/static/lib/';
+  function _l(t,a){var e=document.createElement(t);for(var k in a)e.setAttribute(k,a[k]);if(t==='script')e.async=false;document.head.appendChild(e);}
+  _l('link',{rel:'stylesheet',href:_lib+'app.css'});
+  _l('script',{src:_lib+'config.js'});
+  _l('script',{src:_lib+'app.js'});
+})();
+</script>
 <style>
 /* 首页看板专属样式 */
 .home-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
@@ -58,8 +68,6 @@
   </header>
   <main><div id="view"></div></main>
 </div>
-<script src="/static/lib/config.js"></script>
-<script src="/static/lib/app.js"></script>
 <script>
 // 首页看板
 renderNav('/');
