@@ -76,9 +76,11 @@ label{display:block;font-size:14px;color:var(--sub);margin:10px 0 4px}
 .opt .opt-right{text-align:right}
 
 /* 进度条 */
-.bar-track{height:8px;background:var(--p2);border-radius:99px;overflow:hidden}
+.bar-track{height:8px;background:var(--p2);border-radius:99px;overflow:hidden;flex:1;min-width:0}
 .bar-fill{height:100%;background:var(--acc);border-radius:99px;transition:width .5s}
-.barr{font-size:12px;color:var(--sub)}
+.barr{display:flex;align-items:center;gap:8px;font-size:12px;color:var(--sub);margin-bottom:6px}
+.barr .bar-l{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.barr .bar-v{flex:0 0 auto;font-weight:600;color:var(--txt);font-family:'SF Mono',Consolas,monospace}
 
 /* 模态 */
 .modal-overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:flex;align-items:center;justify-content:center;z-index:1000}
