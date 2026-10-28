@@ -24,16 +24,17 @@
 .pt-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
 .pt-updated{font-size:12px;color:var(--sub)}
 .pt-updated .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
-.pt-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
-.pt-kpi{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:14px;text-align:center}
-.pt-kpi .v{font-size:26px;font-weight:800;letter-spacing:-.5px;font-family:'SF Mono',Consolas,monospace}
-.pt-kpi .l{font-size:12px;color:var(--sub);margin-top:3px}
+.pt-kpis{display:grid;grid-template-columns:repeat(7,1fr);gap:10px;margin-bottom:18px}
+.pt-kpi{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:12px 8px;text-align:center}
+.pt-kpi .v{font-size:22px;font-weight:800;letter-spacing:-.5px;font-family:'SF Mono',Consolas,monospace}
+.pt-kpi .l{font-size:11px;color:var(--sub);margin-top:3px;white-space:nowrap}
 .pt-err{color:var(--red);font-size:13px;margin:10px 0;display:none}
 .pt-empty{padding:40px;text-align:center;color:var(--sub)}
 .pt-badge{background:#eef2ff;color:#4f46e5;padding:2px 8px;border-radius:8px;font-size:12px;font-weight:600}
 .proj{font-weight:600}
 .task{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-@media(max-width:900px){.pt-kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:1100px){.pt-kpis{grid-template-columns:repeat(4,1fr)}}
+@media(max-width:640px){.pt-kpis{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
