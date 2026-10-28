@@ -113,16 +113,16 @@ def sync_all() -> dict:
                     " task_type, agent_type, task_created_at, task_updated_at, "
                     " task_started_at, task_finished_at,"
                     " vuln_total, unconfirmed_count, confirmed_vulnerable, "
-                    " confirmed_not_vulnerable, confirmed_fp, analyzing_count, "
+                    " confirmed_not_vulnerable, confirmed_fp, "
                     " updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(3))",
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(3))",
                     (r["project_id"], r["task_id"], r["project_name"], r["task_name"],
                      r["project_owner"], r.get("task_type", ""), r.get("agent_type", ""),
                      r.get("task_created_at", ""), r.get("task_updated_at", ""),
                      r.get("task_started_at", ""), r.get("task_finished_at", ""),
                      r["vuln_total"], r["unconfirmed_count"],
                      r["confirmed_vulnerable"], r["confirmed_not_vulnerable"],
-                     r["confirmed_fp"], r.get("analyzing_count", 0)),
+                     r["confirmed_fp"]),
                 )
             # case 明细表停用：不拉全量 case，不再写入 vuln_case_snapshot
         return _db_query(_do)
@@ -168,28 +168,23 @@ def sync_all() -> dict:
                                      false_positive_group="confirmed_fp")
             nonfp_stats = vc.list_stats(pid, source_task_id=tid,
                                         false_positive_group="non_fp")
-            analyzing_stats = vc.list_stats(pid, source_task_id=tid,
-                                            confirmation_status="analyzing")
         except Exception as e:
             log("SYNC", f"任务 {tid} 拉统计失败: {str(e)[:200]}")
             return None
 
-        # 字段映射（口径与漏洞中心一致）：
+        # 字段映射（口径与漏洞中心一致，每任务 4 次查询）：
         # - vuln_total = 全部漏洞（list-stats 无过滤 total）
         # - confirmed_vulnerable = 是漏洞（confirmation_status=vulnerable 的 confirmed）
-        # - confirmed_not_vulnerable = 不是漏洞非误报（false_positive_group=non_fp 的 ruled_out）
+        # - confirmed_not_vulnerable = 确认非误报（false_positive_group=non_fp 的 ruled_out）
         # - confirmed_fp = 误报（false_positive_group=confirmed_fp 的 total），
         #     用于计算误报率 FP/(TP+FP)
-        # - "不是漏洞"整体 = confirmed_not_vulnerable + confirmed_fp（误报+非误报），
-        #     不再单独查 not_vulnerable（冗余）
-        # - unconfirmed_count = 待人工确认（无过滤 inconclusive）
-        # - analyzing_count = 待人工确认（confirmation_status=analyzing）
+        # - 未确认 = vuln_total - confirmed_vulnerable - confirmed_fp
+        #     - confirmed_not_vulnerable（前端计算，含 analyzing）
         vuln_total = stats.get("total") or 0
         confirmed_vuln = vuln_stats.get("confirmed") or 0
         confirmed_nonvuln = nonfp_stats.get("ruled_out") or 0
         confirmed_fp = fp_stats.get("total") or 0
         unconfirmed = stats.get("inconclusive") or 0
-        analyzing = analyzing_stats.get("total") or 0
 
         task_type = item.get("task_type") or ""
         return {
@@ -210,7 +205,6 @@ def sync_all() -> dict:
                 "confirmed_vulnerable": confirmed_vuln,
                 "confirmed_not_vulnerable": confirmed_nonvuln,
                 "confirmed_fp": confirmed_fp,
-                "analyzing_count": analyzing,
             },
             "cases": [],
         }
@@ -249,7 +243,6 @@ def sync_all() -> dict:
                 "confirmed_vulnerable": 0,
                 "confirmed_not_vulnerable": 0,
                 "confirmed_fp": 0,
-                "analyzing_count": 0,
             })
 
     # 4. 写库
