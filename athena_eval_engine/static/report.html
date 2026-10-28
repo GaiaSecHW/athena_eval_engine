@@ -95,6 +95,17 @@ let _data=null;
 let curPage=1;
 const PAGE_SIZE=20;
 
+// 格式化采集时间：MySQL UTC → 北京时间，年月日时分
+function fmtUpdated(t){
+  if(!t)return "从未采集";
+  const s=String(t).replace("T"," ").slice(0,19); // 2026-10-28 04:12:28
+  const d=new Date(s.replace(/-/g,"/")+" UTC");   // 按 UTC 解析
+  if(isNaN(d.getTime()))return String(t).slice(0,16); // 解析失败回退截断
+  const b=new Date(d.getTime()+8*3600000);          // +8h 北京时间
+  const p=n=>String(n).padStart(2,"0");
+  return `${b.getUTCFullYear()}-${p(b.getUTCMonth()+1)}-${p(b.getUTCDate())} ${p(b.getUTCHours())}:${p(b.getUTCMinutes())}`;
+}
+
 function showErr(m){const e=document.getElementById("err");e.style.display="block";e.textContent=m;}
 function clearErr(){document.getElementById("err").style.display="none";}
 
@@ -119,7 +130,7 @@ async function load(page){
 
 function render(d){
   const items=d.items||[];
-  document.getElementById("updated").innerHTML=`<span class="dot"></span>最近采集：${d.updated_at||"从未采集"}`;
+  document.getElementById("updated").innerHTML=`<span class="dot"></span>最近采集：${fmtUpdated(d.updated_at)}`;
   // KPI（过滤后全量，与表格过滤条件一致）
   const kpi=d.kpi||{};
   document.getElementById("k-proj").textContent=kpi.project_count||0;
@@ -197,7 +208,7 @@ async function syncNow(){
         if(s.updated_at){
           clearInterval(timer);
           btn.textContent="采集完成";
-          document.getElementById("updated").innerHTML='<span class="dot"></span>最近采集：'+s.updated_at;
+          document.getElementById("updated").innerHTML='<span class="dot"></span>最近采集：'+fmtUpdated(s.updated_at);
           await load(1);
         }else if(tries>40){ // 2 分钟无结果
           clearInterval(timer);
