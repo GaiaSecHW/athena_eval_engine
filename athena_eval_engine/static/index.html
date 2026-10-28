@@ -9,10 +9,9 @@
   var _p=location.pathname;
   var _ing=(_p==='/eval'||_p.indexOf('/eval/')===0)?'/eval':'';
   var _lib=_ing+'/static/lib/';
-  function _l(t,a){var e=document.createElement(t);for(var k in a)e.setAttribute(k,a[k]);if(t==='script')e.async=false;document.head.appendChild(e);}
-  _l('link',{rel:'stylesheet',href:_lib+'app.css'});
-  _l('script',{src:_lib+'config.js'});
-  _l('script',{src:_lib+'app.js'});
+  document.write('<link rel="stylesheet" href="'+_lib+'app.css">');
+  document.write('<script src="'+_lib+'config.js"><\/script>');
+  document.write('<script src="'+_lib+'app.js"><\/script>');
 })();
 </script>
 <style>
