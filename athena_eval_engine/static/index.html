@@ -16,6 +16,9 @@
 </script>
 <style>
 /* 首页看板专属样式 */
+.kpi-6{grid-template-columns:repeat(6,1fr)!important}
+@media(max-width:1200px){.kpi-6{grid-template-columns:repeat(3,1fr)!important}}
+@media(max-width:640px){.kpi-6{grid-template-columns:repeat(2,1fr)!important}}
 .home-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
 .home-title-group{display:flex;align-items:center;gap:12px}
 .home-logo-box{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#3475eb,#8871e8);display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px}
@@ -113,13 +116,9 @@ async function renderHome(){
     +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)')
     +'</div>'
-    +'<div class="kpi-grid">'
+    +'<div class="kpi-grid kpi-6">'
     +renderKPICard('运行态·总体误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
-    +renderKPICard('运行态·总体漏报率',fmtPct(rtOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('运行态·回归后误报率',fmtPct(rtOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
-    +renderKPICard('运行态·回归后漏报率',fmtPct(rtOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)')
-    +'</div>'
-    +'<div class="kpi-grid">'
     +renderKPICard('开发态·总体误报率',fmtPct(devOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('开发态·总体漏报率',fmtPct(devOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('开发态·回归后误报率',fmtPct(devOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
