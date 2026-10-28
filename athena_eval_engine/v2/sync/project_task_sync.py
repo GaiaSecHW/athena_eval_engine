@@ -228,8 +228,7 @@ def sync_all() -> dict:
     _write(summaries)
 
     elapsed = time.time() - t0
-    global _sync_running
-    _sync_running = False
+    _sync_running = False  # global 已在函数开头（99 行）声明
     log("SYNC", f"采集完成: 项目={len(projects)}, 任务={len(summaries)}, "
                 f"耗时={elapsed:.1f}s")
     return {
