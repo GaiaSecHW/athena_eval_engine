@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问题单</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+.ef-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:5px 10px;border-radius:8px;cursor:pointer;font-size:14px;flex:1}
+.ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+renderNav('/dts');
+
+let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',q:''};
+let _dtsPage=1;
+let _dtsPageSize=20;
+let _dtsTotal=0;
+let _dtsData=null;
+
+async function renderDtsList(){
+  _dtsPage=1;
+  _dtsData=null;
+  $("view").innerHTML=`
+    <div class="page-body">
+    <div class="card" style="margin-bottom:16px">
+      <h3>问题单</h3>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
+        <input id="dts-search" placeholder="搜索问题单 ID / 任务 ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
+        <select id="dts-f-status" onchange="_dtsFilter.status=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
+          <option value="">全部状态</option>
+          <option value="open">未关闭</option>
+          <option value="passed">回归通过</option>
+          <option value="failed">回归不通过</option>
+        </select>
+        <select id="dts-f-agent" onchange="_dtsFilter.agent_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
+          <option value="">全部 Agent</option>
+        </select>
+        <select id="dts-f-case" onchange="_dtsFilter.case_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:120px">
+          <option value="">全部类型</option>
+          <option value="FP">误报</option>
+          <option value="FN">漏报</option>
+        </select>
+        <select id="dts-f-resp" onchange="_dtsFilter.responsibility=this.value;renderDtsTable()" style="width:auto;max-width:140px">
+          <option value="">全部责任方</option>
+          <option value="agent">Agent</option>
+          <option value="knowledge">知识/记忆</option>
+          <option value="external_data_source">外部数据源</option>
+          <option value="eval_process">评测流程</option>
+        </select>
+        <button class="btn g" style="font-size:14px;padding:6px 14px" onclick="loadDtsPage()">🔄 刷新</button>
+      </div>
+      <div id="dts-stats" style="margin-bottom:12px"></div>
+      <div id="dts-table" style="overflow-x:auto"><div style="color:var(--sub);padding:20px;text-align:center">加载中…</div></div>
+      <div id="dts-pager" style="margin-top:12px"></div>
+    </div></div>`;
+  var _agentSel=$('dts-f-agent');
+  if(_agentSel){
+    var _cur=_dtsFilter.agent_type||'';
+    AGENT_TYPES.forEach(function(at){
+      var o=document.createElement('option');o.value=at;o.textContent=AGENT_LABELS[at]||at;_agentSel.appendChild(o);
+      if(at===_cur)o.selected=true;
+    });
+  }
+  loadDtsPage();
+}
+
+async function loadDtsPage(){
+  var params=['limit='+_dtsPageSize,'offset='+((_dtsPage-1)*_dtsPageSize)];
+  if(_dtsFilter.status)params.push('status='+encodeURIComponent(_dtsFilter.status));
+  if(_dtsFilter.agent_type)params.push('agent_type='+encodeURIComponent(_dtsFilter.agent_type));
+  if(_dtsFilter.case_type)params.push('case_type='+encodeURIComponent(_dtsFilter.case_type));
+  var url='/api/v2/dts?'+params.join('&');
+  try{
+    var d=await jget(url);
+    _dtsData=d.issues||[];
+    _dtsTotal=d.total||0;
+    var stats=d.stats||{};
+    renderDtsStats(stats);
+    renderDtsTable();
+    renderDtsPager();
+  }catch(e){
+    $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">加载失败: '+e+'</div>';
+    $("dts-pager").innerHTML='';
+  }
+}
+
+function renderDtsPager(){
+  var totalPages=Math.ceil(_dtsTotal/_dtsPageSize);
+  var el=$("dts-pager");if(!el)return;
+  if(totalPages<=1){el.innerHTML='<div style="color:var(--sub);font-size:14px;text-align:center">共 '+_dtsTotal+' 条</div>';return;}
+  var html='<div style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px">';
+  html+='<button class="btn g" style="font-size:13px;padding:4px 12px"'+(_dtsPage<=1?' disabled':'')+' onclick="_dtsPage--;loadDtsPage()">上一页</button>';
+  html+='<span style="color:var(--sub)">第 '+_dtsPage+' / '+totalPages+' 页（共 '+_dtsTotal+' 条）</span>';
+  html+='<button class="btn g" style="font-size:13px;padding:4px 12px"'+(_dtsPage>=totalPages?' disabled':'')+' onclick="_dtsPage++;loadDtsPage()">下一页</button>';
+  html+='</div>';
+  el.innerHTML=html;
+}
+
+function renderDtsTable(){
+  if(!_dtsData){return;}
+  var filtered=_dtsData.filter(function(i){
+    if(_dtsFilter.responsibility&&!dtsRespMatches(i.responsibility,_dtsFilter.responsibility))return false;
+    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_name||'')+' '+(i.evaluation_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
+    return true;
+  });
+  if(!filtered.length){
+    $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
+    return;
+  }
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  filtered.forEach(function(i){
+    var lqPrecision='',lqColor='var(--gray)',lqLabel='-';
+    try{
+      var lqObj=typeof i.label_quality==='string'?JSON.parse(i.label_quality):i.label_quality;
+      if(lqObj&&lqObj.precision){
+        lqPrecision=lqObj.precision;
+        if(lqPrecision==='precise'){lqColor='var(--green)';lqLabel='精确';}
+        else if(lqPrecision==='imprecise'){lqColor='var(--amber)';lqLabel='不精确';}
+        else{lqLabel=lqPrecision;}
+      }
+    }catch(e){}
+    html+='<tr>'
+      +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
+      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
+      +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="go(\'/evals/\'+encodeURIComponent(\''+(i.evaluation_id||'')+'\'))">'+(i.evaluation_name||i.evaluation_id||'-')+'</td>'
+      +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
+      +'<td style="font-size:14px">'+dtsAgentLabel(i.agent_type)+'</td>'
+      +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
+      +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
+      +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
+      +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+lqLabel+'</span>':'-')+'</td>'
+      +'<td style="font-size:13px;color:var(--sub)">'+fmtDate(i.created_at)+'</td>'
+      +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="go(\'/dts/\'+encodeURIComponent(\''+i.dts_id+'\'))">详情</button></td>'
+      +'</tr>';
+  });
+  html+='</tbody></table>';
+  $("dts-table").innerHTML=html;
+}
+
+function renderDtsStats(stats){
+  var byStatus=stats.by_status||{};
+  var total=stats.total||0;
+  var html='<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(120px,1fr));gap:10px">';
+  html+='<div class="mcard"><div class="mc-label">总问题单</div><div class="mc-val">'+total+'</div></div>';
+  Object.keys(DTS_STATUS_LABELS).forEach(function(s){
+    var v=byStatus[s]||0;
+    html+='<div class="mcard" style="border-color:'+(DTS_STATUS_COLORS[s]||'var(--gray)')+'33"><div class="mc-label">'+DTS_STATUS_LABELS[s]+'</div><div class="mc-val" style="color:'+(DTS_STATUS_COLORS[s]||'var(--gray)')+';font-size:20px">'+v+'</div></div>';
+  });
+  html+='</div>';
+  $("dts-stats").innerHTML=html;
+}
+
+renderDtsList();
+</script>
+</body>
+</html>

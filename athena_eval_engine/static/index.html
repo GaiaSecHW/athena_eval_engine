@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>奇美拉平台测评看板</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+/* 首页看板专属样式 */
+.home-header{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:22px;padding-bottom:16px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.home-title-group{display:flex;align-items:center;gap:12px}
+.home-logo-box{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#3475eb,#8871e8);display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px}
+.home-title{font-size:20px;font-weight:700}
+.home-subtitle{font-size:12px;color:var(--sub);margin-top:2px}
+.home-refresh-info{display:flex;align-items:center;gap:10px;font-size:13px;color:var(--sub)}
+.home-live-dot{width:8px;height:8px;border-radius:50%;background:var(--green);box-shadow:0 0 0 0 rgba(22,163,74,.7);animation:pulse 2s infinite}
+@keyframes pulse{0%{box-shadow:0 0 0 0 rgba(22,163,74,.7)}70%{box-shadow:0 0 0 8px rgba(22,163,74,0)}100%{box-shadow:0 0 0 0 rgba(22,163,74,0)}}
+.home-refresh-btn{background:var(--p2);border:1px solid var(--bd);color:var(--sub);padding:6px 12px;border-radius:8px;cursor:pointer;font-size:12px;transition:all .2s;display:flex;align-items:center;gap:6px;font-family:inherit}
+.home-refresh-btn:hover{background:var(--acc);color:#fff}
+.home-refresh-icon{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%}
+.home-refresh-btn.refreshing .home-refresh-icon{animation:spin 1s linear infinite}
+.fp-fn-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
+.fp-fn-box{padding:16px;border-radius:12px;background:var(--p2);border:2px solid transparent;transition:all .3s;text-align:center}
+.fp-box{border-color:rgba(220,38,38,.2)}.fn-box{border-color:rgba(217,119,6,.2)}
+.fp-fn-value{font-size:26px;font-weight:700;font-family:'SF Mono',Consolas,monospace;margin-bottom:2px}
+.fp-fn-label{font-size:13px;color:var(--sub);font-weight:500}
+.matrix-card{background:var(--panel);border:1px solid var(--bd);border-radius:14px;padding:18px;margin-bottom:18px;overflow-x:auto}
+.matrix-table{border-collapse:collapse;width:100%;font-size:12px;min-width:700px}
+.matrix-table th{font-size:11px;text-align:center;padding:8px 6px;background:var(--p2)}
+.matrix-table td{padding:8px 6px;border-bottom:1px solid var(--bd);text-align:center}
+.matrix-table tr:hover td{background:var(--p2)}
+.matrix-table tr.total-row td{font-weight:800;background:var(--p2);border-top:1px solid var(--bd)}
+.agent-table th:not(:first-child),.agent-table td:not(:first-child){text-align:right}
+.agent-table td:first-child{font-weight:700}
+.pct-good{color:var(--green);font-weight:700}.pct-warn{color:var(--amber);font-weight:700}.pct-bad{color:var(--red);font-weight:700}.pct-na{color:var(--gray)}
+.root-confirm-row{display:grid;grid-template-columns:1fr 1fr;gap:16px}
+.root-confirm-box{padding:16px;border-radius:12px;text-align:center;transition:all .3s}
+.rc-confirmed{background:linear-gradient(135deg,rgba(22,163,74,.08),rgba(22,163,74,.02));border:1px solid rgba(22,163,74,.2)}
+.rc-not-confirmed{background:linear-gradient(135deg,rgba(220,38,38,.08),rgba(220,38,38,.02));border:1px solid rgba(220,38,38,.2)}
+.rc-value{font-size:26px;font-weight:700;font-family:'SF Mono',Consolas,monospace;margin-bottom:2px}
+.rc-label{font-size:12px;color:var(--sub);font-weight:500}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+// 首页看板
+renderNav('/');
+
+async function renderHome(){
+  $("view").innerHTML='<div class="home-dashboard"><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>加载看板…</h3></div></div>';
+  var evals=[],dtsStats={},dash={};
+  try{evals=(await jget("/api/v1/evaluations?page_size=9999")).evaluations||[];}catch(e){}
+  try{dtsStats=await jget("/api/v2/dts/stats");}catch(e){}
+  try{dash=await jget("/api/v2/dashboard/overview");}catch(e){}
+
+  var total=evals.length;
+  var completed=evals.filter(function(e){return e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS';}).length;
+  var running=evals.filter(function(e){return ['RUNNING','VALIDATING','INGESTING','PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS','RESOLVING','REPORTING','FINALIZING'].indexOf(e.status)>=0;}).length;
+  var failed=evals.filter(function(e){return e.status==='FAILED';}).length;
+
+  var dtsTotal=dtsStats.total||0;
+  var dtsByStatus=dtsStats.by_status||{};
+  var dtsOpen=dtsByStatus.open||0;
+  var dtsPassed=dtsByStatus.passed||0;
+  var dtsFailed=dtsByStatus.failed||0;
+
+  var overall=dash.overall||{};
+  var rtOverall=overall.runtime||{};
+  var devOverall=overall.dev||{};
+  var rtAgent=(dash.agent_detail||{}).runtime||[];
+  var devAgent=(dash.agent_detail||{}).dev||[];
+
+  var now=new Date();
+  var updateStr=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0')+':'+now.getSeconds().toString().padStart(2,'0');
+
+  var html='<div class="home-dashboard">'
+    +'<div class="home-header">'
+    +'<div class="home-title-group"><div class="home-logo-box">奇</div>'
+    +'<div><div class="home-title">奇美拉平台测评看板</div><div class="home-subtitle">Chimera Security Testing Analytics Dashboard</div></div></div>'
+    +'<div class="home-refresh-info"><span class="home-live-dot"></span><span id="home-refresh-time">最后更新：'+updateStr+'</span>'
+    +'<button class="home-refresh-btn" onclick="refreshDashboard()"><span class="home-refresh-icon"></span>刷新</button></div>'
+    +'</div>'
+
+    +'<div class="kpi-grid">'
+    +renderKPICard('评测总数',total,'📊','linear-gradient(135deg,#2563eb,#3b82f6)')
+    +renderKPICard('已完成',completed,'✓','linear-gradient(135deg,#16a34a,#22c55e)')
+    +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)')
+    +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)')
+    +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)')
+    +'</div>'
+    +'<div class="kpi-grid">'
+    +renderKPICard('运行态·总体误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
+    +renderKPICard('运行态·总体漏报率',fmtPct(rtOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
+    +renderKPICard('运行态·回归后误报率',fmtPct(rtOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
+    +renderKPICard('运行态·回归后漏报率',fmtPct(rtOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)')
+    +'</div>'
+    +'<div class="kpi-grid">'
+    +renderKPICard('开发态·总体误报率',fmtPct(devOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
+    +renderKPICard('开发态·总体漏报率',fmtPct(devOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
+    +renderKPICard('开发态·回归后误报率',fmtPct(devOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
+    +renderKPICard('开发态·回归后漏报率',fmtPct(devOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)')
+    +'</div>'
+
+    +(dtsTotal>0?'<div class="fp-fn-row">'
+      +'<div class="fp-fn-box fp-box"><div class="fp-fn-value" style="color:var(--red)">'+((dtsStats.by_case_type||{}).FP||0)+'</div><div class="fp-fn-label">误报 FP</div></div>'
+      +'<div class="fp-fn-box fn-box"><div class="fp-fn-value" style="color:var(--amber)">'+((dtsStats.by_case_type||{}).FN||0)+'</div><div class="fp-fn-label">漏报 FN</div></div>'
+      +'</div>':'')
+
+    +renderAgentDetail(rtAgent, 'runtime')
+    +renderAgentDetail(devAgent, 'dev')
+
+    +(dtsTotal>0&&dtsStats.root_confirmation?'<div class="root-confirm-row">'
+      +'<div class="root-confirm-box rc-confirmed"><div class="rc-value" style="color:var(--green)">'+(dtsStats.root_confirmation.confirmed_root||0)+'</div><div class="rc-label">确认为根因</div></div>'
+      +'<div class="root-confirm-box rc-not-confirmed"><div class="rc-value" style="color:var(--red)">'+(dtsStats.root_confirmation.confirmed_not_root||0)+'</div><div class="rc-label">确认为非根因</div></div>'
+      +'</div>':'')
+
+    +'</div>';
+  $("view").innerHTML=html;
+}
+
+function renderKPICard(label,value,icon,gradient){
+  return '<div class="kpi-card" style="--kpi-gradient:'+gradient+'">'
+    +'<div class="kpi-label"><span class="kpi-icon">'+icon+'</span>'+label+'</div>'
+    +'<div class="kpi-value" style="--kpi-gradient:'+gradient+'">'+value+'</div>'
+    +'</div>';
+}
+
+function renderAgentDetail(detail, mode){
+  if(!detail||!detail.length)return '';
+  var agentLabels=AGENT_LABELS;
+  function pctClass(v){if(v===null||v===undefined)return 'pct-na';return v>0.5?'pct-bad':(v>0.2?'pct-warn':'pct-good');}
+  var rows=detail.map(function(a){
+    var fprTxt=a.fpr===null||a.fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fpr)+'">'+(a.fpr*100).toFixed(1)+'%</span>';
+    var fnrTxt=a.fnr===null||a.fnr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fnr)+'">'+(a.fnr*100).toFixed(1)+'%</span>';
+    var postTxt=a.post_fpr===null||a.post_fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.post_fpr)+'">'+(a.post_fpr*100).toFixed(1)+'%</span>';
+    return '<tr><td>'+(agentLabels[a.agent]||a.agent)+'</td>'
+      +'<td class="num">'+((a.tp||0)+(a.fp||0)+(a.fn||0))+'</td>'
+      +'<td class="num" style="color:var(--green)">'+(a.tp||0)+'</td>'
+      +'<td class="num" style="color:var(--red)">'+(a.fp||0)+'</td>'
+      +'<td class="num" style="color:var(--amber)">'+(a.fn||0)+'</td>'
+      +'<td class="num">'+fprTxt+'</td><td class="num">'+fnrTxt+'</td>'
+      +'<td class="num">'+(a.reg_passed||0)+'</td><td class="num">'+(a.reg_failed||0)+'</td>'
+      +'<td class="num">'+postTxt+'</td></tr>';
+  }).join('');
+  var sumTp=detail.reduce(function(s,a){return s+(a.tp||0);},0);
+  var sumFp=detail.reduce(function(s,a){return s+(a.fp||0);},0);
+  var sumFn=detail.reduce(function(s,a){return s+(a.fn||0);},0);
+  var sumRp=detail.reduce(function(s,a){return s+(a.reg_passed||0);},0);
+  var sumRf=detail.reduce(function(s,a){return s+(a.reg_failed||0);},0);
+  var totFpr=(sumTp+sumFp)>0?((sumFp/(sumTp+sumFp))*100).toFixed(1)+'%':'NA';
+  var totFnr=(sumTp+sumFn)>0?((sumFn/(sumTp+sumFn))*100).toFixed(1)+'%':'NA';
+  var totPost=(sumRp+sumRf)>0?((sumRf/(sumRp+sumRf))*100).toFixed(1)+'%':'NA';
+  var modeLabel=(mode==='dev')?'开发态':'运行态';
+  return '<div class="matrix-card"><div class="section-title">Agent 误报/漏报率明细（'+modeLabel+'）<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
+    +'<table class="matrix-table agent-table"><thead><tr><th>Agent</th><th>case数</th><th>正确 TP</th><th>误报 FP</th><th>漏报 FN</th><th>误报率</th><th>漏报率</th><th>回归通过</th><th>回归不通过</th><th>回归后误报率</th></tr></thead><tbody>'+rows
+    +'<tr class="total-row"><td>合计</td><td class="num">'+(sumTp+sumFp+sumFn)+'</td><td class="num">'+sumTp+'</td><td class="num">'+sumFp+'</td><td class="num">'+sumFn+'</td><td class="num">'+totFpr+'</td><td class="num">'+totFnr+'</td><td class="num">'+sumRp+'</td><td class="num">'+sumRf+'</td><td class="num">'+totPost+'</td></tr>'
+    +'</tbody></table></div>';
+}
+
+async function refreshDashboard(){
+  var btn=document.querySelector('.home-refresh-btn');
+  if(btn){btn.classList.add('refreshing');btn.disabled=true;}
+  await renderHome();
+  if(btn){btn.classList.remove('refreshing');btn.disabled=false;}
+}
+
+renderHome();
+</script>
+</body>
+</html>

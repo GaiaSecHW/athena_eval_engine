@@ -1,0 +1,118 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>评测列表</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+.ef-btn{padding:6px 12px;font-size:13px;border:1px solid var(--bd);background:var(--p2);color:var(--txt);border-radius:8px;cursor:pointer;font-family:inherit;transition:.15s}
+.ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
+.ev-actions{display:inline-flex;gap:4px;margin-left:6px}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+renderNav('/evals');
+
+let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";
+
+async function renderEvals(){
+  const d=await jget("/api/v1/evaluations?page_size=9999");
+  _evData=d.evaluations||[];_evPage=1;
+  $("view").innerHTML=`<div class="page-body">
+    <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:280px" value="${_evQ}">
+      <button class="ef-btn${_evFilter==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
+      <button class="ef-btn${_evFilter==='dev'?' active':''}" onclick="setEvFilter('dev',this)">开发态</button>
+      <button class="ef-btn${_evFilter==='runtime'?' active':''}" onclick="setEvFilter('runtime',this)">运行态</button>
+      <button class="ef-btn${_evFilter==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
+      <button class="ef-btn${_evFilter==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
+      <button class="ef-btn${_evFilter==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
+      <span style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evData.length} 条</span>
+      <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="renderEvals()">🔄 刷新</button>
+    </div>
+    <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>
+  </div>`;
+  renderEvList();
+}
+function setEvFilter(f,btn){_evFilter=f;_evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
+function filterEvals(){_evQ=$("ev-search").value.toLowerCase();_evPage=1;renderEvList();}
+function evPage(p){_evPage=p;renderEvList();}
+const EV_PAGE_SIZE=12;
+
+function renderEvList(){
+  let filtered=_evData;
+  if(_evFilter==='dev'||_evFilter==='runtime')filtered=filtered.filter(e=>(e.eval_mode||'dev')===_evFilter);
+  else if(_evFilter!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(_evFilter));
+  if(_evQ)filtered=filtered.filter(e=>(e.evaluation_id+e.name).toLowerCase().includes(_evQ));
+  const total=filtered.length;
+  const pages=Math.ceil(total/EV_PAGE_SIZE)||1;
+  const page=Math.min(_evPage,pages);
+  const start=(page-1)*EV_PAGE_SIZE;
+  const pageItems=filtered.slice(start,start+EV_PAGE_SIZE);
+  const el=$("ev-list-body");
+  if(!el)return;
+  let html=pageItems.length?pageItems.map(function(e){
+    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
+    var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
+    var phaseLabel=_phaseLabel(e.status);
+    if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
+    var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
+    var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
+      '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
+      '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--acc)" onclick="window.open(U(\'/api/v2/evaluations/'+e.evaluation_id+'/debug\'))">调试</button>'+
+      (!isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--amber)" onclick="cancelEval(\''+e.evaluation_id+'\')">取消</button>':'')+
+      (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
+      '</span>':'';
+    return '<div class="ev-card" onclick="go(\'/evals/'+e.evaluation_id+'\')">'+
+      '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
+      '<div class="ev-meta">'+_statusBadge(e.status)+'<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
+      '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
+        '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
+        (e.eval_mode==='runtime'?'':'<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>')+
+      '</div>'+
+      '</div>';
+  }).join(""):'<div style="padding:48px;text-align:center;color:var(--sub);font-size:16px;grid-column:1/-1">无匹配评测</div>';
+  if(pages>1){
+    let pgHtml='<div style="display:flex;justify-content:center;align-items:center;gap:6px;padding:16px 0 0;grid-column:1/-1">';
+    pgHtml+=`<button class="ef-btn" ${page<=1?'disabled':''} onclick="evPage(${page-1})" style="padding:6px 12px">‹ 上一页</button>`;
+    for(let i=1;i<=pages;i++){
+      if(i===1||i===pages||(i>=page-1&&i<=page+1))pgHtml+=`<button class="ef-btn ${i===page?'active':''}" onclick="evPage(${i})" style="padding:6px 10px;min-width:32px">${i}</button>`;
+      else if(i===page-2||i===page+2)pgHtml+='<span style="color:var(--sub)">…</span>';
+    }
+    pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:6px 12px">下一页 ›</button>`;
+    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:8px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span></div>`;
+    html+=pgHtml;
+  }
+  el.innerHTML=html;
+}
+
+// 评测操作
+async function retryEval(eid){if(!confirm(`确认重跑评测 ${eid}？`))return;try{await jpost("/api/v1/evaluations/"+eid+"/retry?force=true",{});alert("已触发重跑");renderEvals();}catch(e){alert("重跑失败: "+e);}}
+async function cancelEval(eid){if(!confirm(`确认取消评测 ${eid}？`))return;try{await jpost("/api/v1/evaluations/"+eid+"/cancel",{});alert("已请求取消");renderEvals();}catch(e){alert("取消失败: "+e);}}
+async function deleteEval(eid,name){if(!confirm(`确认删除评测「${name||eid}」？此操作不可恢复！`))return;try{await jdel("/api/v1/evaluations/"+eid);alert("已删除");renderEvals();}catch(e){alert("删除失败: "+e);}}
+
+renderEvals();
+</script>
+</body>
+</html>

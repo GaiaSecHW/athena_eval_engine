@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>问题单详情</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+.confirm-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:.2px;transition:all .18s cubic-bezier(.4,0,.2,1);position:relative;user-select:none}
+.confirm-btn:active{transform:translateY(1px)}
+.confirm-btn-yes{background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;box-shadow:0 3px 10px rgba(22,163,74,.35),inset 0 1px 0 rgba(255,255,255,.2)}
+.confirm-btn-yes:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(22,163,74,.45),inset 0 1px 0 rgba(255,255,255,.25);filter:brightness(1.05)}
+.confirm-btn-no{background:linear-gradient(135deg,#fff,#f8fafc);color:#dc2626;border:2px solid #dc2626;box-shadow:0 3px 10px rgba(220,38,38,.15)}
+.confirm-btn-no:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,.25);background:linear-gradient(135deg,#fef2f2,#fff)}
+.confirm-btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+const DTS_ID=decodeURIComponent(location.pathname.split('/').pop()||'');
+renderNav('/dts/'+DTS_ID);
+
+// 知识/记忆使用情况卡片渲染
+function renderKMSummary(km,title){
+  if(!km||typeof km!=='object'){return '';}
+  var accessCount=km.access_count||0;
+  var overall=km.overall_effect||'none';
+  var impact=km.impact_on_conclusion||'';
+  var accesses=km.accesses||[];
+  if(accessCount===0&&overall==='none'&&!impact){return '';}
+  var overallLabels={
+    positive:{t:'正向（知识正确推动结论）',c:'var(--green)',bg:'rgba(34,197,94,.12)'},
+    negative:{t:'负向（知识误导结论）',c:'var(--red)',bg:'rgba(220,38,38,.12)'},
+    neutral:{t:'中性（访问但未影响结论）',c:'var(--amber)',bg:'rgba(251,191,36,.12)'},
+    none:{t:'无知识/记忆访问',c:'var(--gray)',bg:'rgba(107,114,128,.12)'}
+  };
+  var ov=overallLabels[overall]||overallLabels.none;
+  var sourceLabels={knowledge_base:'知识库',memory:'记忆',unknown:'未知'};
+  var effectLabels={positive:'正向',negative:'负向',neutral:'中性',none:'无'};
+  var html='<div style="margin-top:8px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+    +'<div style="padding:8px 12px;background:'+ov.bg+';border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:13px;font-weight:600;color:'+ov.c+'">'+(title||'知识/记忆使用情况')+'</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">访问 '+accessCount+' 次</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">'+ov.t+'</span>'
+    +'</div>';
+  if(accesses&&accesses.length){
+    html+='<div style="padding:8px 12px">';
+    accesses.forEach(function(a,idx){
+      var src=sourceLabels[a.source]||a.source||'-';
+      var eff=a.effect||'none';
+      var effInfo=overallLabels[eff]||overallLabels.none;
+      var used=a.used_in_reasoning;
+      var usedLabel=used===true?'推理引用':used===false?'推理未引用':'-';
+      var usedColor=used===true?'var(--green)':used===false?'var(--red)':'var(--gray)';
+      html+='<div style="margin-bottom:8px;padding:8px 10px;background:var(--p2);border-radius:8px;font-size:13px">'
+        +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px">'
+        +'<span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+src+'</span>'
+        +'<span class="knd" style="background:'+effInfo.bg+';color:'+effInfo.c+'">'+effInfo.t+'</span>'
+        +'<span class="knd" style="background:'+ov.bg+';color:'+usedColor+'">'+usedLabel+'</span>';
+      html+='</div>';
+      if(a.query){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">查询：</b>'+String(a.query).replace(/</g,'&lt;')+'</div>';}
+      if(a.returned){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">返回：</b>'+String(a.returned).replace(/</g,'&lt;')+'</div>';}
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  if(impact){
+    html+='<div style="padding:8px 12px;border-top:1px solid var(--bd);font-size:13px">'
+      +'<div style="color:var(--sub);margin-bottom:4px">对结论的影响</div>'
+      +'<div style="white-space:pre-wrap">'+String(impact).replace(/</g,'&lt;')+'</div>'
+      +'</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+async function renderDtsDetailPage(dtsId){
+  document.title="问题单详情 — "+dtsId;
+  var view=$("view");if(!view)return;
+  view.innerHTML='<div style="padding:20px;height:100%;overflow-y:auto"><div style="display:flex;align-items:center;gap:12px;margin-bottom:20px"><button class="btn" style="font-size:14px;padding:6px 16px" onclick="go(\'/dts\')">← 返回列表</button><h2 style="font-size:20px">问题单详情</h2></div><div id="dts-detail-body" style="color:var(--sub)">加载中…</div></div>';
+  try{
+    var d=await jget(`/api/v2/dts/${dtsId}`);
+    var caseData=d.analysis_data||null;
+    var causeLabel=DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
+    var respLabel=dtsRespLabel(d.responsibility);
+    var caseTypeLabel=DTS_CASE_TYPE_LABELS[d.case_type]||d.case_type||'-';
+    var statusLabel=DTS_STATUS_LABELS[d.status]||d.status||'-';
+    var statusColor=DTS_STATUS_COLORS[d.status]||'var(--gray)';
+    var agentLabel=dtsAgentLabel(d.agent_type);
+
+    var html='';
+    html+='<div class="card" style="margin-bottom:16px">'
+      +'<h3>基本信息</h3>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
+      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+d.dts_id+'</b></div>'
+      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+statusLabel+'</span></div>'
+      +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+(d.task_id||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">类型：</span><b>'+caseTypeLabel+'</b></div>'
+      +'<div><span style="color:var(--gray)">Agent：</span><b>'+agentLabel+'</b></div>'
+      +'<div><span style="color:var(--gray)">责任方：</span><b>'+respLabel+'</b></div>'
+      +'<div><span style="color:var(--gray)">成因：</span><b>'+causeLabel+'</b></div>'
+      +'<div><span style="color:var(--gray)">断点级别：</span><b>'+(d.breakpoint_level||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+(d.case_id||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace;font-size:12px">'+(d.evaluation_id||'-')+'</b></div>'
+      +'</div>';
+    if(caseData){
+      html+='<div style="margin-top:8px;padding:8px 0;border-top:1px solid var(--bd)">'
+        +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞标题</div>'
+        +'<div style="font-size:15px;font-weight:600">'+(caseData.vuln_title||'-')+'</div>';
+      if(caseData.summary){
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div>'
+          +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div>';
+      }
+      if(caseData.human_confirmation_summary){
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>'
+          +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+String(caseData.human_confirmation_summary).replace(/</g,'&lt;')+'</div>';
+      }
+      html+='</div>';
+    }
+    html+='</div>';
+
+    if(caseData){
+      var chainsForRC=[
+        {label:'挖掘',data:caseData.mining||{}},
+        {label:'验证',data:caseData.verification||{}}
+      ];
+      var TARGET_LABELS={agent_prompt:'Agent提示词',agent_code:'Agent代码',knowledge:'知识/记忆',knowledge_base:'知识库',memory:'记忆模块',external_data_source:'外部数据源',eval_process:'评测流程'};
+      var allHypotheses=[];
+      var allLabelQuality=[];
+      var legacyRootCauses=[];
+      var legacyFixSuggestions=[];
+      var projectId=(d.project_id||d.task_id||'').split(':')[0];
+      var projectName=d.evaluation_name||'';
+      chainsForRC.forEach(function(ch){
+        var hypList=ch.data.hypotheses||[];
+        if(Array.isArray(hypList)&&hypList.length){
+          hypList.forEach(function(h){
+            if(h&&typeof h==='object'){
+              allHypotheses.push({label:ch.label,chainType:ch.label,agentType:ch.data.agent_type||'',data:h});
+            }
+          });
+        }else{
+          var rc=ch.data.root_cause||{};
+          if(rc&&Object.keys(rc).length){
+            legacyRootCauses.push({label:ch.label,category:rc.category||'',description:rc.description||''});
+          }
+          var fsList=ch.data.fix_suggestion||[];
+          if(typeof fsList==='string'){fsList=[{action:fsList}];}
+          if(Array.isArray(fsList)){
+            fsList.forEach(function(fs){
+              if(fs&&typeof fs==='object'){legacyFixSuggestions.push({label:ch.label,items:fs});}
+            });
+          }
+        }
+        var lq=ch.data.label_quality||{};
+        if(lq&&Object.keys(lq).length){allLabelQuality.push({label:ch.label,data:lq});}
+      });
+
+      var impreciseItems=allLabelQuality.filter(function(lq){return lq.data.precision==='imprecise';});
+      if(impreciseItems.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)">'
+          +'<h3>人工标注质量评估</h3>';
+        impreciseItems.forEach(function(lq){
+          var d=lq.data||{};
+          html+='<div style="margin-bottom:12px;padding:10px 12px;background:rgba(251,191,36,.08);border-radius:8px">'
+            +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">标注不精确';
+          if(lq.label){html+=' <span class="knd">'+lq.label+'</span>';}
+          html+='</div>';
+          if(d.reason){html+='<div style="font-size:14px;margin-bottom:6px"><b style="color:var(--sub)">理由：</b>'+String(d.reason).replace(/</g,'&lt;')+'</div>';}
+          if(d.follow_up_questions&&d.follow_up_questions.length){
+            html+='<div style="font-size:14px"><b style="color:var(--sub)">需追问：</b><ul style="margin:4px 0 0 18px">';
+            d.follow_up_questions.forEach(function(q){html+='<li>'+String(q).replace(/</g,'&lt;')+'</li>';});
+            html+='</ul></div>';
+          }
+          html+='</div>';
+        });
+        html+='</div>';
+      }
+
+      if(allHypotheses.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
+          +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>';
+        allHypotheses.sort(function(a,b){return (b.data.probability||0)-(a.data.probability||0);});
+        allHypotheses.forEach(function(h,idx){
+          var hdata=h.data||{};
+          var prob=hdata.probability||0;
+          var resp=hdata.responsibility||'';
+          var causeCode=hdata.cause_code||'';
+          var chainType=h.chainType||h.label||'chain';
+          var agentType=h.agentType||'';
+          var hypDesc=hdata.hypothesis||'';
+          var evidence=hdata.evidence||'';
+          var canResolve=hdata.agent_can_resolve;
+          var blockedBy=hdata.blocked_by||'';
+          var neededData=hdata.needed_external_data||[];
+          var fs=hdata.fix_suggestion||{};
+          var target=TARGET_LABELS[fs.target]||fs.target||'';
+          var location=fs.location||'';
+          var action=fs.action||'';
+          var expected=fs.expected_effect||'';
+          var causeLabel=DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
+          var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
+          var probColor=prob>=0.6?'var(--red)':prob>=0.3?'var(--amber)':'var(--gray)';
+          var hypSid=hdata.session_id||'';
+          html+='<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+            +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+            +'<span style="font-weight:600;font-size:14px">假设 '+(idx+1)+'</span>';
+          if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
+          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">P='+prob+'</span>'
+            +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
+            +' <span class="knd">'+causeLabel+'</span>';
+          if(hypSid){
+            html+=' <span class="knd" style="background:rgba(16,185,129,.12);color:var(--green);font-family:monospace;font-size:12px">基于 '+String(hypSid).replace(/</g,'&lt;')+'</span>';
+          }
+          if(canResolve===false){
+            html+=' <span class="knd" style="background:rgba(251,191,36,.18);color:var(--amber)">Agent无法自行解决</span>';
+          }else if(canResolve===true){
+            html+=' <span class="knd" style="background:rgba(34,197,94,.15);color:var(--green)">Agent可解决</span>';
+          }
+          html+='</div>';
+          if(hypDesc){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">假设：</b>'+String(hypDesc).replace(/</g,'&lt;')+'</div>';
+          }
+          if(evidence){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+String(evidence).replace(/</g,'&lt;')+'</div>';
+          }
+          if(canResolve===false){
+            if(blockedBy){html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">阻塞：</b>'+String(blockedBy).replace(/</g,'&lt;')+'</div>';}
+            if(neededData&&neededData.length){
+              html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">需外部数据：</b>'+neededData.map(function(x){return String(x).replace(/</g,'&lt;');}).join('、')+'</div>';
+            }
+          }
+          if(target||location||action||expected){
+            html+='<div style="padding:10px 12px;background:rgba(37,99,235,.04);border-top:1px solid var(--bd)"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">修复建议';
+            if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
+            html+='</div>';
+            if(location){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
+            if(action){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
+            if(expected){html+='<div style="font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+            var hk=(chainType||'chain')+':hyp'+(idx+1);
+            var hcInfo=(d.hypothesis_confirmations||{})[hk]||{};
+            html+='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--bd);display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+            html+='<span style="font-size:13px;color:var(--sub);font-weight:500">根因确认：</span>';
+            if(hcInfo.is_root===true){
+              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(34,197,94,.2)">✓ 确认为根因</span>';
+            }else if(hcInfo.is_root===false){
+              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
+            }else{
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
+            }
+            html+='</div>';
+            html+='</div>';
+          }else{
+            var hk2=(chainType||'chain')+':hyp'+(idx+1);
+            var hcInfo2=(d.hypothesis_confirmations||{})[hk2]||{};
+            html+='<div style="padding:10px 12px;border-top:1px solid var(--bd)"><div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
+            html+='<span style="font-size:13px;color:var(--sub);font-weight:500">根因确认：</span>';
+            if(hcInfo2.is_root===true){
+              html+='<span class="knd" style="background:rgba(34,197,94,.15);color:var(--green);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(34,197,94,.2)">✓ 确认为根因</span>';
+            }else if(hcInfo2.is_root===false){
+              html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
+            }else{
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
+            }
+            html+='</div></div>';
+          }
+          html+='</div>';
+        });
+        html+='</div>';
+      }else if(legacyRootCauses.length||legacyFixSuggestions.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
+          +'<h3>根因分析与修复建议</h3>';
+        legacyRootCauses.forEach(function(rc){
+          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
+          if(rc.label){html+=' <span class="knd">'+rc.label+'</span>';}
+          if(rc.category){html+=' <span class="knd">'+rc.category+'</span>';}
+          html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rc.description||'(无)').replace(/</g,'&lt;')+'</div></div>';
+        });
+        legacyFixSuggestions.forEach(function(fs){
+          var fi=fs.items||{};
+          var target=TARGET_LABELS[fi.target]||fi.target||'';
+          var location=fi.location||'';
+          var action=fi.action||'';
+          var expected=fi.expected_effect||'';
+          html+='<div style="margin-bottom:12px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+            +'<div style="font-size:14px;color:var(--sub);padding:8px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:6px;flex-wrap:wrap">'
+            +'修复建议';
+          if(fs.label){html+=' <span class="knd">'+fs.label+'</span>';}
+          if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
+          html+='</div>';
+          if(location){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
+          if(action){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
+          if(expected){html+='<div style="padding:8px 12px;font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+          html+='</div>';
+        });
+        html+='</div>';
+      }
+    }
+
+    var _hasHypotheses=typeof allHypotheses!=='undefined'&&allHypotheses&&allHypotheses.length>0;
+    if(d.breakpoint_desc&&!_hasHypotheses){
+      var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
+      html+='<div class="card" style="margin-bottom:16px">'
+        +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
+        +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div>'
+        +'</details>';
+      if(d.evidence_uri){
+        html+='<div style="margin-top:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+String(d.evidence_uri).replace(/</g,'&lt;')+'</div></div>';
+      }
+      html+='</div>';
+    }
+
+    var sessionChains=d.session_chains||{mining:[],verification:[],parent_map:{}};
+    if(caseData){
+      var chains=[
+        {type:'mining',label:'挖掘链',data:caseData.mining||{},sessions:sessionChains.mining||[]},
+        {type:'verification',label:'验证链',data:caseData.verification||{},sessions:sessionChains.verification||[]}
+      ];
+      chains.forEach(function(ch){
+        if(!ch.data||!Object.keys(ch.data).length){return;}
+        var sessionChain=ch.data.session_chain||[];
+        var agentType=ch.data.agent_type||'';
+        var agentLbl=AGENT_LABELS[agentType]||agentType||'-';
+        var summaries=ch.data.compressed_summaries||[];
+        var chainSessions=ch.sessions||[];
+        var parentMap=sessionChains.parent_map||{};
+
+        html+='<div class="card" style="margin-bottom:16px">'
+          +'<h3>'+ch.label+' ('+agentLbl+')</h3>';
+
+        if(chainSessions.length){
+          html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">Session 调用链 ('+chainSessions.length+' 个)</div>';
+          html+='<div style="font-family:monospace;font-size:13px;line-height:1.8;white-space:pre-wrap;padding:10px 12px;background:var(--p2);border-radius:8px">';
+          var smap={};
+          chainSessions.forEach(function(s){smap[s.session_id]=s;});
+          var chainSet={};
+          chainSessions.forEach(function(s){chainSet[s.session_id]=true;});
+          var roots=chainSessions.filter(function(s){
+            var pid=s.parent_id||'';
+            return !pid||!chainSet[pid];
+          });
+          var visited={};
+          function renderNode(sid,depth){
+            if(visited[sid]){return'';}
+            visited[sid]=true;
+            var s=smap[sid]||{};
+            var agent=s.agent||s.session_type||'?';
+            var taskType=s.task_type?' ['+s.task_type+']':'';
+            var status=s.status?' ('+s.status+')':'';
+            var indent='  '.repeat(depth);
+            var arrow=depth>0?'└─ ':'';
+            var line=indent+arrow+'<span style="color:var(--acc)">'+agent+'</span>'+taskType+status+' <span style="color:var(--gray);font-size:11px">'+sid+'</span>\n';
+            var kids=chainSessions.filter(function(cs){return cs.parent_id===sid;});
+            kids.forEach(function(kid){line+=renderNode(kid.session_id,depth+1);});
+            return line;
+          }
+          if(roots.length){
+            roots.forEach(function(s){html+=renderNode(s.session_id,0);});
+          }else{
+            chainSessions.forEach(function(s,idx){
+              var agent=s.agent||s.session_type||'?';
+              html+=(idx>0?'→ ':'')+agent+' <span style="color:var(--gray);font-size:11px">'+s.session_id+'</span>\n';
+            });
+          }
+          html+='</div></div>';
+        }
+
+        if(summaries.length){
+          html+='<details style="margin-bottom:12px"><summary style="font-size:14px;color:var(--sub);cursor:pointer">压缩摘要 ('+summaries.length+' 个)</summary>';
+          summaries.forEach(function(s,idx){
+            var sumText=s.summary||s.compressed_summary||'';
+            if(sumText){
+              html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px;white-space:pre-wrap">'+String(sumText).replace(/</g,'&lt;')+'</div>';
+            }
+          });
+          html+='</details>';
+        }
+
+        var mergeKM=ch.data.knowledge_memory_summary;
+        if(mergeKM&&(mergeKM.access_count>0||mergeKM.overall_effect||mergeKM.impact_on_conclusion)){
+          html+=renderKMSummary(mergeKM,ch.label+' 综合');
+        }
+
+        html+='</div>';
+      });
+    }
+
+    if(d.replay_result){
+      var replayColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
+      var replayLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
+      html+='<div class="card" style="margin-bottom:16px"><h3>回归验证</h3>'
+        +'<div style="font-size:14px"><span style="color:var(--gray)">回归结果：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+replayColor+'">'+replayLabel+'</span></div>';
+      if(d.replay_eval_id){
+        html+='<div style="margin-top:8px;font-size:14px"><span style="color:var(--gray)">回归任务 ID：</span><b style="font-family:monospace;font-size:12px">'+d.replay_eval_id+'</b></div>';
+      }
+      if(d.replay_data){
+        try{
+          var rd=JSON.parse(d.replay_data);
+          html+='<div style="margin-top:12px;font-size:14px">';
+          if(rd.vuln_title){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+String(rd.vuln_title).replace(/</g,'&lt;')+'</div>';}
+          if(rd.vuln_description){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span><div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+String(rd.vuln_description).replace(/</g,'&lt;')+'</div></div>';}
+          if(rd.is_vulnerable!==undefined){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">是否仍有漏洞：</span><b>'+(rd.is_vulnerable?'是':'否')+'</b></div>';}
+          if(rd.message){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">结论：</span>'+String(rd.message).replace(/</g,'&lt;')+'</div>';}
+          html+='</div>';
+        }catch(e){}
+      }
+      html+='</div>';
+    }
+
+    $("dts-detail-body").innerHTML=html;
+  }catch(e){
+    $("dts-detail-body").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';
+  }
+}
+
+// 假设根因确认
+async function confirmHypothesis(dtsId,hypKey,isRoot,causeCode,agentType,projectId,projectName,btn){
+  if(!dtsId||!hypKey)return;
+  var body={hypothesis_key:hypKey,is_root:isRoot,cause_code:causeCode||'',agent_type:agentType||'',project_id:projectId||'',project_name:projectName||''};
+  btn.disabled=true;
+  try{
+    var res=await jpost('/api/v2/dts/'+encodeURIComponent(dtsId)+'/confirm-hypothesis',body);
+    if(res&&res.error){alert('确认失败: '+(res.error||''));btn.disabled=false;return;}
+    renderDtsDetailPage(dtsId);
+  }catch(e){
+    alert('确认失败: '+e);
+    btn.disabled=false;
+  }
+}
+
+renderDtsDetailPage(DTS_ID);
+</script>
+</body>
+</html>

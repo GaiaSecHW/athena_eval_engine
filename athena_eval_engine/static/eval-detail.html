@@ -1,0 +1,439 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>评测详情</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+.confirm-btn{display:inline-flex;align-items:center;gap:6px;padding:8px 16px;border-radius:9px;border:none;cursor:pointer;font-size:13px;font-weight:600;letter-spacing:.2px;transition:all .18s cubic-bezier(.4,0,.2,1);position:relative;user-select:none}
+.confirm-btn:active{transform:translateY(1px)}
+.confirm-btn-yes{background:linear-gradient(135deg,#16a34a,#22c55e);color:#fff;box-shadow:0 3px 10px rgba(22,163,74,.35),inset 0 1px 0 rgba(255,255,255,.2)}
+.confirm-btn-yes:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(22,163,74,.45),inset 0 1px 0 rgba(255,255,255,.25);filter:brightness(1.05)}
+.confirm-btn-no{background:linear-gradient(135deg,#fff,#f8fafc);color:#dc2626;border:2px solid #dc2626;box-shadow:0 3px 10px rgba(220,38,38,.15)}
+.confirm-btn-no:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,.25);background:linear-gradient(135deg,#fef2f2,#fff)}
+.confirm-btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important;box-shadow:none!important}
+.ci{color:var(--sub);font-size:14px;font-family:"SF Mono",Consolas,monospace}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+renderNav('/evals/'+(location.pathname.split('/').pop()||''));
+
+// ===== 评测详情 =====
+let activeId=null;
+const EV_ID=decodeURIComponent(location.pathname.split('/').pop()||'');
+
+async function selEv(id){
+  activeId=id;
+  $("view").innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>加载评测…</h3></div>';
+  try{const s=await jget(`/api/v2/evaluations/${id}`);
+    if(s.status==="FAILED"){
+      var errMsg=s.error_message||"无详细错误信息";
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
+      var rb=$("retry-btn");if(rb)rb.onclick=function(){retryEval(id);};
+      return;
+    }
+    if(s.status!=="COMPLETED"&&s.status!=="COMPLETED_WITH_WARNINGS"&&s.status!=="FAILED"&&s.status!=="CANCELLED"&&s.status!=="CANCEL"){
+      var phases=[{key:"INGESTING",label:"数据采集"},{key:"PARSING",label:"解析 Trace"},{key:"CASE_MATCHING",label:"Case 匹配"},{key:"ROOT_CAUSE_ANALYSIS",label:"根因分析"},{key:"RESOLVING",label:"事实写入"},{key:"REPORTING",label:"生成报告"},{key:"FINALIZING",label:"完成"}];
+      var phaseMap={"CREATED":0,"QUEUED":0,"RUNNING":0,"VALIDATING":0,"INGESTING":1,"PARSING":2,"CASE_MATCHING":3,"ROOT_CAUSE_ANALYSIS":4,"RESOLVING":5,"REPORTING":6,"FINALIZING":7};
+      var curStep=phaseMap[s.status]||0;
+      var totalSteps=phases.length;
+      var progressPct=Math.round((curStep/(totalSteps+1))*100);
+      var stepsHtml='<div style="margin:12px 0">';
+      stepsHtml+='<div style="height:4px;background:var(--p2);border-radius:5px;margin-bottom:12px;overflow:hidden"><div style="height:100%;width:'+progressPct+'%;background:linear-gradient(90deg,var(--acc),#7c3aed);transition:width .5s;border-radius:5px"></div></div>';
+      phases.forEach(function(p,i){
+        var done=curStep>i+1;var active=curStep===i+1;var stepNum=i+1;
+        var bg=done?"rgba(74,222,128,.12)":active?"rgba(124,58,237,.12)":"var(--p2)";
+        var borderC=done?"rgba(74,222,128,.4)":active?"rgba(124,58,237,.4)":"transparent";
+        var color=done?"var(--green)":active?"var(--acc)":"var(--gray)";
+        var icon=done?"✅":(active?"⏳":"⏸");
+        stepsHtml+='<div style="display:flex;align-items:center;gap:12px;padding:7px 10px;margin-bottom:5px;background:'+bg+';border:1px solid '+borderC+';border-radius:8px;transition:all .3s">';
+        stepsHtml+='<span style="width:30px;height:30px;border-radius:50%;background:'+(done?"rgba(74,222,128,.2)":active?"rgba(124,58,237,.2)":"rgba(107,114,128,.1)")+';display:flex;align-items:center;justify-content:center;color:'+color+';font-size:14px;flex-shrink:0">'+icon+'</span>';
+        stepsHtml+='<div><div style="font-size:14px;color:'+color+';font-weight:'+(active?'700':'400')+'">'+stepNum+'. '+p.label+(active?'…':'')+'</div>';
+        if(done){stepsHtml+='<div style="font-size:11px;color:var(--sub)">已完成</div>';}
+        else if(active){stepsHtml+='<div style="font-size:11px;color:var(--acc)">进行中</div>';}
+        else{stepsHtml+='<div style="font-size:11px;color:var(--gray)">等待中</div>';}
+        stepsHtml+='</div></div>';
+      });
+      stepsHtml+='</div>';
+      if(DEBUG) stepsHtml+='<div style="text-align:center;margin-top:16px"><button class="btn g" id="force-retry-btn" style="font-size:14px;padding:8px 20px">强制重跑</button> <button class="btn" id="cancel-btn" style="font-size:14px;padding:8px 20px;background:var(--amber)">取消任务</button></div>';
+      var progressHtml='<div id="eval-progress" style="text-align:center;font-size:14px;color:var(--acc);margin-top:10px;font-weight:600'+(s.progress?'':';display:none')+'">'+(s.progress||'')+'</div>';
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div style="padding:20px 20px;flex:1;overflow-y:auto"><div style="text-align:center;margin-bottom:8px"><span style="font-size:22px">⚙️</span> <span style="font-size:17px;font-weight:700;color:var(--txt)">评测运行中</span><div style="font-size:13px;color:var(--sub);margin-top:2px">'+(s.name||'')+'</div><div style="font-size:11px;color:var(--gray)">'+id+'</div></div>'+stepsHtml+progressHtml+'<div style="text-align:center;font-size:12px;color:var(--sub);margin-top:6px">'+s.status+' · '+progressPct+'%</div></div>';
+      var frb=$("force-retry-btn");if(frb)frb.onclick=function(){retryEval(id);};
+      var cb=$("cancel-btn");if(cb)cb.onclick=function(){cancelEval(id);};
+      let cnt=0;let _partialLoaded=false;const poll=async()=>{cnt++;if(cnt>14400)return;
+        if(activeId!==id)return;
+        try{const st=await jget(`/api/v2/evaluations/${id}`);
+          if(st.status==="COMPLETED"||st.status==="COMPLETED_WITH_WARNINGS"){selEv(id);return;}
+          else if(st.status==="FAILED"){selEv(id);return;}
+          else{
+            try{
+              const rs=await jget(`/api/v2/evaluations/${id}/report/status`);
+              if(rs.base&&!_partialLoaded){_partialLoaded=true;loadV2Report(id,st,rs);return;}
+            }catch(e){}
+            var pe=$("eval-progress");
+            if(pe){if(st.progress){pe.textContent=st.progress;pe.style.display='block';}else{pe.style.display='none';}}
+            if(st.status!==s.status){if(!_partialLoaded){selEv(id);return;}}
+            setTimeout(poll,20000);
+          }
+        }catch(e){}};
+      setTimeout(poll,20000);return;
+    }
+  }catch(e){}
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic">⏳</div><h3>加载报告…</h3></div>';
+  try{
+    const rs=await jget(`/api/v2/evaluations/${id}/report/status`);
+    const st=await jget(`/api/v2/evaluations/${id}`);
+    loadV2Report(id,st,rs);
+  }catch(e){
+    $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>报告未就绪</h3><p>'+e+'</p></div>';
+  }
+}
+
+// ===== v2 报告加载 + 渲染 =====
+async function loadV2Report(id,st,rs){
+  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info};
+  if(rs.base){
+    try{d.base=await jget(`/api/v2/evaluations/${id}/report`);}catch(e){d.base={};}
+  }
+  if(rs.lifecycle){
+    try{d.lifecycle=await jget(`/api/v2/evaluations/${id}/report/lifecycle`);}catch(e){}
+  }
+  renderV2Report(d);
+  if(!d.lifecycle){
+    jget(`/api/v2/evaluations/${id}/report/lifecycle`).then(lc=>{if(lc&&!lc.error){d.lifecycle=lc;renderV2Report(d);}}).catch(()=>{});
+  }
+  jget(`/api/v2/dts/post-regression-fpr/${id}`).then(f=>{if(f&&!f.error){d.postRegressionFpr=f;renderV2Report(d);}}).catch(()=>{});
+}
+
+// 生命周期报告段渲染
+function renderLifecycle(lc){
+  if(!lc)return'';
+  const bp=lc.breakpoint_distribution||{};
+  const pc=lc.per_case_details||[];
+  const agents=AGENT_TYPES,agentLabels=AGENT_LABELS;
+  const levels=['L2','L3','L4','L5','L6','L7','L8'];
+  const causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(流程缺陷)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
+  let matrixRows=agents.map(function(a){
+    var row=bp[a]||{};
+    var cells=levels.map(function(l){
+      var v=row[l]||0;
+      return '<td class="num">'+(v>0?'<b style="color:var(--red)">'+v+'</b>':'<span style="color:var(--gray)">0</span>')+'</td>';
+    }).join('');
+    var rowTotal=levels.reduce(function(s,l){return s+(row[l]||0);},0);
+    return {label:agentLabels[a]||a,html:'<tr><td style="font-size:14px">'+(agentLabels[a]||a)+'</td>'+cells+'</tr>',total:rowTotal};
+  }).filter(function(r){return r.total>0;}).map(function(r){return r.html;}).join('');
+  var pcHtml='';
+  if(pc.length){
+    pcHtml='<details class="card" style="margin-bottom:16px"><summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">逐 Case 断点详情 <span style="font-size:12px;color:var(--acc)">（'+pc.length+' 个 case，点击展开）</span></summary><div style="margin-top:16px">';
+    pc.forEach(function(c){
+      var bps=c.breakpoints||[];
+      if(!bps.length)return;
+      pcHtml+='<div style="margin-bottom:12px;padding:12px;border:1px solid var(--bd);border-radius:10px"><b style="font-family:monospace">'+c.case_id+'</b><table style="margin-top:8px"><thead><tr><th>Agent</th><th>断点级别</th><th>成因</th><th>Session</th><th>修复点</th><th>证据</th></tr></thead><tbody>';
+      bps.forEach(function(b){
+        if(b.session_id==='hypothesis'||b.session_id==='merge')return;
+        var sid=b.session_id||'';
+        var sidLabel=sid||'-';
+        var fix=b.fix_suggestion||[];
+        if(fix&&!Array.isArray(fix))fix=[fix];
+        var fixLabel=fix.map(function(fs){
+          var bits=[];
+          if(fs&&fs.target)bits.push(fs.target);
+          if(fs&&fs.action)bits.push(fs.action);
+          return bits.join(' · ');
+        }).filter(function(x){return x;}).join('<br>');
+        pcHtml+='<tr><td style="font-size:14px">'+(agentLabels[b.agent_type]||b.agent_type||'-')+'</td><td>'+(b.break_level||'-')+'</td><td>'+(causeLabels[b.cause_code]||b.cause_code||'-')+'</td><td style="font-size:12px;font-family:monospace;color:var(--sub);max-width:180px;overflow:hidden;text-overflow:ellipsis" title="'+String(sid).replace(/"/g,'&quot;')+'">'+sidLabel+'</td><td style="font-size:12px;color:var(--acc);max-width:240px;overflow:hidden;text-overflow:ellipsis" title="'+String(fixLabel||'').replace(/"/g,'&quot;')+'">'+(fixLabel||'-')+'</td><td style="font-size:12px;color:var(--sub);max-width:320px;overflow:hidden;text-overflow:ellipsis">'+String(b.evidence||'').replace(/</g,'&lt;')+'</td></tr>';
+      });
+      pcHtml+='</tbody></table></div>';
+    });
+    pcHtml+='</div></details>';
+  }
+  return '<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3>'
+    +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（Agent × 级别）</h4>'
+    +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
+    +matrixRows+'</tbody></table></div></div>'
+    +pcHtml;
+}
+
+// 知识/记忆使用情况卡片渲染
+function renderKMSummary(km,title){
+  if(!km||typeof km!=='object'){return '';}
+  var accessCount=km.access_count||0;
+  var overall=km.overall_effect||'none';
+  var impact=km.impact_on_conclusion||'';
+  var accesses=km.accesses||[];
+  if(accessCount===0&&overall==='none'&&!impact){return '';}
+  var overallLabels={
+    positive:{t:'正向（知识正确推动结论）',c:'var(--green)',bg:'rgba(34,197,94,.12)'},
+    negative:{t:'负向（知识误导结论）',c:'var(--red)',bg:'rgba(220,38,38,.12)'},
+    neutral:{t:'中性（访问但未影响结论）',c:'var(--amber)',bg:'rgba(251,191,36,.12)'},
+    none:{t:'无知识/记忆访问',c:'var(--gray)',bg:'rgba(107,114,128,.12)'}
+  };
+  var ov=overallLabels[overall]||overallLabels.none;
+  var sourceLabels={knowledge_base:'知识库',memory:'记忆',unknown:'未知'};
+  var html='<div style="margin-top:8px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+    +'<div style="padding:8px 12px;background:'+ov.bg+';border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+    +'<span style="font-size:13px;font-weight:600;color:'+ov.c+'">'+(title||'知识/记忆使用情况')+'</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">访问 '+accessCount+' 次</span>'
+    +'<span class="knd" style="background:'+ov.bg+';color:'+ov.c+'">'+ov.t+'</span>'
+    +'</div>';
+  if(accesses&&accesses.length){
+    html+='<div style="padding:8px 12px">';
+    accesses.forEach(function(a,idx){
+      var src=sourceLabels[a.source]||a.source||'-';
+      var eff=a.effect||'none';
+      var effInfo=overallLabels[eff]||overallLabels.none;
+      var used=a.used_in_reasoning;
+      var usedLabel=used===true?'推理引用':used===false?'推理未引用':'-';
+      var usedColor=used===true?'var(--green)':used===false?'var(--red)':'var(--gray)';
+      html+='<div style="margin-bottom:8px;padding:8px 10px;background:var(--p2);border-radius:8px;font-size:13px">'
+        +'<div style="display:flex;align-items:center;gap:6px;flex-wrap:wrap;margin-bottom:4px">'
+        +'<span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+src+'</span>'
+        +'<span class="knd" style="background:'+effInfo.bg+';color:'+effInfo.c+'">'+effInfo.t+'</span>'
+        +'<span class="knd" style="background:'+ov.bg+';color:'+usedColor+'">'+usedLabel+'</span>';
+      html+='</div>';
+      if(a.query){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">查询：</b>'+String(a.query).replace(/</g,'&lt;')+'</div>';}
+      if(a.returned){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">返回：</b>'+String(a.returned).replace(/</g,'&lt;')+'</div>';}
+      html+='</div>';
+    });
+    html+='</div>';
+  }
+  if(impact){
+    html+='<div style="padding:8px 12px;border-top:1px solid var(--bd);font-size:13px">'
+      +'<div style="color:var(--sub);margin-bottom:4px">对结论的影响</div>'
+      +'<div style="white-space:pre-wrap">'+String(impact).replace(/</g,'&lt;')+'</div>'
+      +'</div>';
+  }
+  html+='</div>';
+  return html;
+}
+
+// v2 报告主渲染
+function renderV2Report(d){
+  var _evalId=d.evaluation_id||activeId||'';
+  var _partial=d._partial||null;
+  var base=d.base||{};
+  var metrics=base.metrics||{};
+  var metricResults=metrics.metric_results||[];
+  var ccSum=base.causal_chain_summary||{};
+  var mById={};
+  metricResults.forEach(function(m){mById[m.metric_id]=m;});
+  var evalMode=d.eval_mode||(base.eval_mode||'dev');
+  var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
+  var fpCnt=rpData.fp_count||0;
+  var tpCnt=rpData.tp_count||0;
+  var fnCnt=rpData.fn_count||0;
+  var tnCnt=rpData.tn_count||0;
+  var postFprData=d.postRegressionFpr||{};
+  var postFpr=postFprData.post_regression_fpr;
+  var postFnr=postFprData.post_regression_fnr;
+  var postFp=postFprData.by_case_type&&postFprData.by_case_type.FP||{};
+  var postFn=postFprData.by_case_type&&postFprData.by_case_type.FN||{};
+  var baseMetrics='';
+  if(evalMode==='runtime'){
+    var fprVal=(tpCnt+fpCnt)>0?(fpCnt/(tpCnt+fpCnt)):null;
+    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(TP+FP) = '+fpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    if(tpCnt+fpCnt>0){
+      var precisionVal=tpCnt/(tpCnt+fpCnt);
+      baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    }
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFp.verified_total>0?('未消除 '+postFp.failed+'/'+postFp.verified_total):'暂无回归验证数据')+'</div></div>';
+  }else{
+    var fprVal=(tpCnt+fpCnt)>0?(fpCnt/(tpCnt+fpCnt)):null;
+    var recallVal=(tpCnt+fnCnt)>0?(tpCnt/(tpCnt+fnCnt)):null;
+    var precisionVal=(tpCnt+fpCnt)>0?(tpCnt/(tpCnt+fpCnt)):null;
+    baseMetrics+='<div class="mcard" style="border-color:var(--red)33"><div class="mc-label">误报率 (FPR)</div><div class="mc-val" style="color:var(--red)">'+(fprVal!=null?(fprVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FP/(TP+FP) = '+fpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    if(tpCnt+fnCnt>0){
+      var fnrVal=fnCnt/(tpCnt+fnCnt);
+      baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">漏报率 (FNR)</div><div class="mc-val" style="color:var(--amber)">'+(fnrVal*100).toFixed(1)+'%</div><div style="font-size:12px;color:var(--sub);margin-top:4px">FN/(TP+FN) = '+fnCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
+      baseMetrics+='<div class="mcard" style="border-color:var(--green)33"><div class="mc-label">召回率 (Recall)</div><div class="mc-val" style="color:var(--green)">'+(recallVal!=null?(recallVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FN) = '+tpCnt+'/'+(tpCnt+fnCnt)+'</div></div>';
+    }
+    if(tpCnt+fpCnt>0){
+      baseMetrics+='<div class="mcard" style="border-color:var(--acc)33"><div class="mc-label">准确率 (Precision)</div><div class="mc-val" style="color:var(--acc)">'+(precisionVal!=null?(precisionVal*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">TP/(TP+FP) = '+tpCnt+'/'+(tpCnt+fpCnt)+'</div></div>';
+    }
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFp.verified_total>0?('未消除 '+postFp.failed+'/'+postFp.verified_total):'暂无回归验证数据')+'</div></div>';
+    baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后漏报率</div><div class="mc-val" style="color:var(--amber)">'+(postFnr!=null?(postFnr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFn.verified_total>0?('未消除 '+postFn.failed+'/'+postFn.verified_total):'暂无回归验证数据')+'</div></div>';
+  }
+
+  var causeSum=ccSum.cause_summary||{};
+  var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
+  var causeLabels={'A':'L2断(该查没查)','B':'L3断(查询太泛)','C':'L4断(查了没得)','D':'L5断(链路问题)','E':'L6断(查到没用)','F':'L7断(用了没推动)','G':'L7负向(导致误判)','H':'L8断(流程缺陷)','I':'L8断(调用链中断)','J':'L8断(模型幻觉)','K':'L8断(验证否定真漏洞)'};
+  var causeBars=Object.keys(causeLabels).map(function(c){
+    var v=causeSum[c]||0;var pct=causeTotal>0?(v/causeTotal*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+causeLabels[c]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?'var(--red)':'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+
+  var entriesInfo=d.entries_info||(base.entries_info||[]);
+  var kgInfo=entriesInfo.find(function(e){return e.condition==="KG";})||{};
+  var bsrc=d.benchmark_source||(base.benchmark_source||'vuln_center');
+  var vcProj=d.vc_source_project_name||(base.vc_source_project_name||'');
+  var vcTask=d.vc_source_task_name||(base.vc_source_task_name||'');
+
+  var html=`
+  ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
+    <div style="width:20px;height:20px;border:2px solid var(--acc);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0"></div>
+    <div><b style="color:var(--acc)">评测运行中</b> · <span id="partial-banner-status">${_partial.progress||_partial.status||''}</span><div style="font-size:13px;color:var(--sub);margin-top:2px">以下为已就绪内容${d.lifecycle?'':' · 生命周期分析计算中'}</div></div>
+  </div>`:""}
+  <div style="margin-bottom:22px">
+    <h2 style="font-size:22px;margin-bottom:6px">${d.evaluation_name||d.evaluation_id}</h2>
+    <div style="color:var(--sub);font-size:16px;margin-bottom:8px"><span class="bdg b-${d.status||""}">${_phaseLabel(d.status||"-")}</span></div>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;color:var(--sub);background:var(--p2);border-radius:10px;padding:12px 16px">
+      <div><span style="color:var(--gray)">项目：</span><b>${kgInfo.project_name||"-"}</b> · <span style="color:var(--gray)">任务：</span><b>${kgInfo.task_name||"-"}</b></div>
+      ${evalMode==='runtime'?'':'<div><span style="color:var(--gray)">基线来源：</span><b>'+(bsrc==='vuln_center'?('漏洞中心 · '+vcProj+' / '+vcTask):'测评数据集')+'</b></div>'}
+      <div><span style="color:var(--gray)">评测模式：</span><b style="color:var(--acc)">${evalMode==='dev'?'开发态':'运行态'}</b></div>
+      <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
+    </div>
+  </div>
+
+  <!-- 基础指标 -->
+  <div class="card" style="margin-bottom:16px">
+    <h3>基础效果指标</h3>
+    <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px">
+      ${baseMetrics}
+    </div>
+  </div>
+
+  <!-- 因果链汇总 -->
+  ${causeTotal>0?`<div class="card" style="margin-bottom:16px"><h3>因果链汇总</h3>
+    <div><h4 style="font-size:16px;margin-bottom:8px">成因汇总</h4>${causeBars}<div style="font-size:14px;color:var(--sub);margin-top:8px">总断点数：${causeTotal}</div></div>
+    </div>`:''}
+
+  <!-- 生命周期分析段 -->
+  ${d.lifecycle?renderLifecycle(d.lifecycle):(_partial&&_partial.running?'<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3><div style="color:var(--sub);padding:20px;text-align:center">计算中…</div></div>':'')}
+
+  <!-- 问题单 -->
+  <div id="dts-section"></div>
+
+  `;
+
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto">'+html+'</div>';
+  loadDtsSection(d.evaluation_id||activeId||'');
+}
+
+// ===== 问题单（报告内嵌段）=====
+async function loadDtsSection(evalId){
+  var container=$("dts-section");if(!container)return;
+  if(!evalId){container.innerHTML='';return;}
+  container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>问题单</h3><div style="color:var(--sub);padding:12px">加载中…</div></div>';
+  try{
+    var dts=await jget(`/api/v2/dts?evaluation_id=${evalId}&limit=9999`);
+    var issues=dts.issues||[];
+    var stats=dts.stats||{};
+    renderDtsSection(evalId,issues,stats);
+  }catch(e){
+    container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>问题单</h3><div style="color:var(--sub);padding:12px">暂无问题单</div></div>';
+  }
+}
+
+function renderDtsSection(evalId,issues,stats){
+  var container=$("dts-section");if(!container)return;
+  var total=issues.length;
+  var byStatus={};
+  issues.forEach(function(i){byStatus[i.status]=(byStatus[i.status]||0)+1;});
+  var byResp={agent:0,knowledge:0,external_data_source:0,eval_process:0};
+  issues.forEach(function(i){(i.responsibility||'').split(',').forEach(function(r){if(byResp.hasOwnProperty(r))byResp[r]++;});});
+  var byCaseType={FP:0,FN:0};
+  issues.forEach(function(i){var t=i.case_type||'';if(byCaseType.hasOwnProperty(t))byCaseType[t]++;});
+
+  var statusBars=Object.keys(DTS_STATUS_LABELS).map(function(s){
+    var v=byStatus[s]||0;var pct=total>0?(v/total*100).toFixed(1):'0.0';
+    return '<div class="barr"><span class="bar-l" style="font-size:13px">'+DTS_STATUS_LABELS[s]+'</span><div class="bar-track"><div class="bar-fill" style="width:'+pct+'%;background:'+(v>0?DTS_STATUS_COLORS[s]:'var(--p2)')+'"></div></div><span class="bar-v">'+v+'</span></div>';
+  }).join('');
+
+  var summaryHtml='<div class="card" style="margin-bottom:16px"><h3>问题单</h3>'
+    +'<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:12px;margin-bottom:16px">'
+    +'<div class="mcard"><div class="mc-label">总问题单</div><div class="mc-val">'+total+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">误报(FP)</div><div class="mc-val" style="color:var(--red)">'+byCaseType.FP+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">漏报(FN)</div><div class="mc-val" style="color:var(--amber)">'+byCaseType.FN+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">Agent 责任</div><div class="mc-val" style="color:var(--acc)">'+byResp.agent+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">知识/记忆责任</div><div class="mc-val" style="color:var(--amber)">'+byResp.knowledge+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">外部数据源</div><div class="mc-val" style="color:var(--amber)">'+byResp.external_data_source+'</div></div>'
+    +'<div class="mcard"><div class="mc-label">评测流程</div><div class="mc-val" style="color:var(--amber)">'+byResp.eval_process+'</div></div>'
+    +'</div>'
+    +'<h4 style="font-size:16px;margin-bottom:8px">状态流水线</h4>'+statusBars
+    +'</div>';
+
+  var listHtml='';
+  if(issues.length){
+    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>任务 ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    issues.forEach(function(i){
+      listHtml+='<tr>'
+        +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
+        +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
+        +'<td style="font-size:12px;font-family:monospace;max-width:140px;overflow:hidden;text-overflow:ellipsis">'+(i.task_id||'-')+'</td>'
+        +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
+        +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
+        +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
+        +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+DTS_STATUS_COLORS[i.status]+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
+        +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="go(\'/dts/\'+encodeURIComponent(\''+i.dts_id+'\'))">详情</button></td>'
+        +'</tr>';
+    });
+    listHtml+='</tbody></table></div>';
+  }
+  container.innerHTML=summaryHtml+listHtml;
+}
+
+// ===== 通用操作 =====
+function retryEval(eid){
+  showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
+    desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
+    risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
+    confirmText:'重跑',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      activeId=eid;
+      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+        if(d.status==='QUEUED'||d.status==='RUNNING'){
+          var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
+            jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
+          setTimeout(retryPoll,500);
+        }else{alert('重试失败: '+JSON.stringify(d));}
+      }).catch(function(e){alert('重试失败: '+e);});
+    }
+  });
+}
+function deleteEval(eid,name){
+  showConfirm({icon:'🗑️',iconBg:'rgba(248,113,113,.15)',iconColor:'var(--red)',title:'删除评测',
+    desc:'删除将永久清除该评测的全部数据，不可恢复。',
+    risks:['trace 解析结果','指标计算结果','分析报告','基线匹配数据'],
+    confirmText:'永久删除',confirmColor:'var(--red)',
+    onConfirm:function(){
+      F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
+        if(d.status==='ok'){go('/evals');}else{alert('删除失败: '+JSON.stringify(d));}
+      }).catch(e=>alert('删除失败: '+e));
+    }
+  });
+}
+function cancelEval(eid){
+  showConfirm({icon:'⚠️',iconBg:'rgba(245,158,11,.15)',iconColor:'var(--amber)',title:'取消评测',
+    desc:'取消后评测将停止运行，状态设为已取消。此操作不可撤销。',
+    confirmText:'确认取消',confirmColor:'var(--amber)',
+    onConfirm:function(){
+      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.status==='CANCELLED'){go('/evals');}else{alert('取消失败: '+JSON.stringify(d));}}).catch(function(e){alert('取消失败: '+e);});
+    }
+  });
+}
+
+selEv(EV_ID);
+</script>
+</body>
+</html>

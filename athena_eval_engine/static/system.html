@@ -1,0 +1,187 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>系统设置</title>
+<link rel="stylesheet" href="/static/lib/app.css">
+<style>
+.knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
+</div>
+<script src="/static/lib/config.js"></script>
+<script src="/static/lib/app.js"></script>
+<script>
+renderNav('/system');
+
+async function renderSystem(){
+  var c=null;
+  try{c=await jget("/api/v1/system/config");}catch(e){$("view").innerHTML='<div class="page-body"><div class="card">加载失败</div></div>';return;}
+  var llmActive=c.llm_active||0,llmMax=c.llm_max_concurrency||50,rt=c.running_tasks||0;
+  var evalMax=c.max_concurrent_evals||3,queued=c.queued_tasks||0,paused=c.paused_tasks||0;
+  var threadCount=c.thread_count||0;
+  var llmPct=Math.round(llmActive/llmMax*100);
+  var llmColor=llmPct>80?'var(--red)':llmPct>50?'var(--amber)':'var(--green)';
+  var h=`<div class="page-body"><div style="max-width:600px">
+    <div class="card"><h3>系统参数设置</h3>
+    <div style="font-size:13px;color:var(--sub);margin-bottom:16px">修改后立即生效并持久化到数据库，Pod 重启后保留配置。</div>
+    <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;padding:14px;border:1px solid var(--bd);border-radius:8px;background:var(--p2)">
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:var(--acc)">${rt}<span style="font-size:16px;color:var(--sub)">/${evalMax}</span></div><div style="font-size:12px;color:var(--sub);margin-top:2px">运行中任务${queued?`（${queued} 排队${paused?`，${paused} 暂停`:''}）`:(paused?`（${paused} 暂停）`:'')}</div></div>
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:${llmColor}">${llmActive}<span style="font-size:16px;color:var(--sub)">/${llmMax}</span></div><div style="font-size:12px;color:var(--sub);margin-top:2px">LLM 并发</div></div>
+      <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:var(--acc)">${threadCount}</div><div style="font-size:12px;color:var(--sub);margin-top:2px">总线程数</div></div>
+      <div style="flex:1;min-width:120px;display:flex;align-items:center"><div style="width:100%;height:8px;background:var(--bar-bg);border-radius:4px;overflow:hidden"><div style="width:${llmPct}%;height:100%;background:${llmColor};transition:width .3s"></div></div></div>
+    </div>
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div><label style="font-weight:600;font-size:14px">LLM 最大并发量</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 请求的全局信号量上限（1-1000）</div><input id="cfg_llm_conc" type="number" min="1" max="1000" value="${c.llm_max_concurrency}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">同时启动任务数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">评测后台线程池大小（1-10）</div><input id="cfg_max_evals" type="number" min="1" max="10" value="${c.max_concurrent_evals}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">评测线程池上界</label><div style="font-size:12px;color:var(--sub);margin:4px 0">评测线程池固定大小上界（1-50），需 ≥ 同时启动任务数</div><input id="cfg_eval_pool_max" type="number" min="1" max="50" value="${c.eval_pool_max}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Trace 解析并发数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">每个评测的 trace 解析线程池大小（1-50）</div><input id="cfg_parse_workers" type="number" min="1" max="50" value="${c.parse_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Source 补提取并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">INGESTING 阶段 source 补提取 LLM 并行数（1-1000）</div><input id="cfg_source_fill_workers" type="number" min="1" max="1000" value="${c.source_fill_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">告警中心数据获取并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心 HTTP 调用并行数（1-50）</div><input id="cfg_ac_fetch_workers" type="number" min="1" max="50" value="${c.ac_fetch_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">单 Trace 内 resolver 并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">单 trace 内 KN/TA/RS/sink_match 并行线程数（1-1000）</div><input id="cfg_resolver_workers" type="number" min="1" max="1000" value="${c.resolver_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">AI Matcher 并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">告警中心→finding LLM 匹配线程池大小（1-1000）</div><input id="cfg_ai_match_workers" type="number" min="1" max="1000" value="${c.ai_match_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">AC→Finding LLM 识别并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">AC 标题→finding 1:N LLM 识别并行数（1-1000）</div><input id="cfg_ac_llm_workers" type="number" min="1" max="1000" value="${c.ac_llm_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR 并行</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 分析并行线程数（1-10）</div><input id="cfg_fpr_cond_workers" type="number" min="1" max="10" value="${c.fpr_cond_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR 基线匹配并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 LLM 匹配线程池大小（1-1000）</div><input id="cfg_fpr_baseline_workers" type="number" min="1" max="1000" value="${c.fpr_baseline_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">FPR 基线 Batch 并行</label><div style="font-size:12px;color:var(--sub);margin:4px 0">FPR 基线 batch 二轮并行线程数（1-1000）</div><input id="cfg_fpr_baseline_batch" type="number" min="1" max="1000" value="${c.fpr_baseline_batch}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">KG 分析并发数</label><div style="font-size:12px;color:var(--sub);margin:4px 0">报告 KG 分析的 LLM 调用线程池大小（1-1000）</div><input id="cfg_kg_analysis_workers" type="number" min="1" max="1000" value="${c.kg_analysis_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">Bootstrap 统计并发</label><div style="font-size:12px;color:var(--sub);margin:4px 0">M1-M13 bootstrap 统计并行线程数（1-20）</div><input id="cfg_bootstrap_workers" type="number" min="1" max="20" value="${c.bootstrap_workers}" style="width:120px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>
+      <div><label style="font-weight:600;font-size:14px">LLM 思考模式</label><div style="font-size:12px;color:var(--sub);margin:4px 0">控制 LLM 推理深度。关闭=不思考，开启后可选 low/high/max</div><div style="display:flex;align-items:center;gap:12px"><label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--sub);margin:0;cursor:pointer"><input id="cfg_reasoning_enabled" type="checkbox" ${c.reasoning_effort&&c.reasoning_effort!=='none'?'checked':''} onchange="toggleReasoning(this)" style="width:auto"> 是否开启思考</label><select id="cfg_reasoning_effort" style="width:100px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);${c.reasoning_effort&&c.reasoning_effort!=='none'?'':'display:none'}"><option value="low" ${c.reasoning_effort==='low'?'selected':''}>low</option><option value="high" ${c.reasoning_effort==='high'?'selected':''}>high</option><option value="max" ${c.reasoning_effort==='max'?'selected':''}>max</option></select></div></div>
+    </div>
+    <div style="margin-top:20px;display:flex;gap:12px"><button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button><button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button></div>
+    <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
+    </div>
+    <div class="card" style="margin-top:20px"><h3>LLM 网关配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">LLM 网关地址、模型配置与连通性测试。模型修改后立即生效，Pod 重启后保留。</div>
+    <div style="display:flex;flex-direction:column;gap:18px">
+      <div><label style="font-weight:600;font-size:14px">网关地址</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 网关 Base URL（只读，通过环境变量 EVAL_LLM_BASE_URL 配置）</div><input id="cfg_llm_base_url" value="加载中..." readonly style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--sub);font-family:monospace;font-size:13px"></div>
+      <div><label style="font-weight:600;font-size:14px">模型</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 模型名（如 pro、glm-5.2 等，修改后立即生效）</div><div style="display:flex;gap:8px;align-items:center"><input id="cfg_llm_model" value="${c.llm_model||''}" placeholder="如 pro" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"><button class="btn" style="font-size:13px;padding:6px 16px;white-space:nowrap" onclick="saveLlmModel()">切换模型</button></div></div>
+      <div style="border-top:1px solid var(--bd);padding-top:16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button class="btn g" style="font-size:13px;padding:8px 20px" onclick="testLlmConnection()">测试连通性</button><span id="llm_test_status" style="font-size:13px;color:var(--sub)"></span></div><div id="llm_test_result" style="font-size:13px"></div></div>
+    </div>
+    </div>
+    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div></div></div>`;
+  $("view").innerHTML=h;
+  loadDatasources();
+  loadLlmStatus();
+}
+function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
+async function saveSystemConfig(){
+  var body={llm_max_concurrency:parseInt($("cfg_llm_conc").value)||50,max_concurrent_evals:parseInt($("cfg_max_evals").value)||3,eval_pool_max:parseInt($("cfg_eval_pool_max").value)||5,parse_workers:parseInt($("cfg_parse_workers").value)||4,source_fill_workers:parseInt($("cfg_source_fill_workers").value)||10,ac_fetch_workers:parseInt($("cfg_ac_fetch_workers").value)||10,resolver_workers:parseInt($("cfg_resolver_workers").value)||4,ai_match_workers:parseInt($("cfg_ai_match_workers").value)||10,ac_llm_workers:parseInt($("cfg_ac_llm_workers").value)||10,fpr_cond_workers:parseInt($("cfg_fpr_cond_workers").value)||2,fpr_baseline_workers:parseInt($("cfg_fpr_baseline_workers").value)||10,fpr_baseline_batch:parseInt($("cfg_fpr_baseline_batch").value)||5,kg_analysis_workers:parseInt($("cfg_kg_analysis_workers").value)||10,bootstrap_workers:parseInt($("cfg_bootstrap_workers").value)||4};
+  var rcb=$("cfg_reasoning_enabled");
+  if(rcb){body.reasoning_effort=rcb.checked?($("cfg_reasoning_effort").value||'low'):'none';}
+  $("cfg_msg").innerHTML='⏳ 保存中…';
+  try{await jput("/api/v1/system/config",body);$("cfg_msg").innerHTML='<span style="color:var(--green)">✓ 已保存并生效</span>';}
+  catch(e){$("cfg_msg").innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
+}
+async function loadLlmStatus(){
+  try{
+    var s=await jget("/api/v1/system/llm/status");
+    if($("cfg_llm_base_url"))$("cfg_llm_base_url").value=s.base_url||'-';
+    if($("cfg_llm_model"))$("cfg_llm_model").value=s.model||'';
+  }catch(e){}
+}
+async function testLlmConnection(){
+  var st=$("llm_test_status"),rs=$("llm_test_result");
+  if(st)st.innerHTML='⏳ 测试中…';
+  if(rs)rs.innerHTML='';
+  var model='';
+  var mEl=$("cfg_llm_model");
+  if(mEl)model=mEl.value.trim();
+  try{
+    var body={};
+    if(model)body.model=model;
+    var r=await jpost("/api/v1/system/llm/test",body);
+    if(st)st.innerHTML='';
+    if(r.success){
+      if(rs)rs.innerHTML='<div style="padding:10px 14px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green)">✓ 连通正常 — 模型: '+r.model+'，延迟: '+r.latency_ms+'ms，响应: '+(r.response||'').substring(0,50)+'</div>';
+    }else{
+      if(rs)rs.innerHTML='<div style="padding:10px 14px;border-radius:6px;background:rgba(220,38,38,.1);color:var(--red)">✗ 连接失败 — '+r.error+'</div>';
+    }
+  }catch(e){
+    if(st)st.innerHTML='';
+    if(rs)rs.innerHTML='<div style="color:var(--red)">✗ '+e+'</div>';
+  }
+}
+async function saveLlmModel(){
+  var mEl=$("cfg_llm_model");
+  if(!mEl)return;
+  var model=mEl.value.trim();
+  if(!model){alert('请输入模型名');return;}
+  try{
+    await jput("/api/v1/system/llm/model",{model:model});
+    if($("llm_test_result"))$("llm_test_result").innerHTML='<div style="padding:8px 14px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green);font-size:13px">✓ 模型已切换为 '+model+'</div>';
+  }catch(e){
+    if($("llm_test_result"))$("llm_test_result").innerHTML='<div style="color:var(--red)">✗ '+e+'</div>';
+  }
+}
+
+let _dsData=null;
+async function loadDatasources(){
+  try{const d=await jget("/api/v2/datasources");_dsData=d.datasources||d||[];renderDsContainer();}
+  catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';}
+}
+function renderDsContainer(){
+  if(!_dsData||!_dsData.length){$("ds-container").innerHTML='<div style="color:var(--sub)">无配置</div>';return;}
+  $("ds-container").innerHTML=_dsData.map(function(ds,i){
+    var dbType=ds.db_type||'none';
+    var typeBadge=dbType==='mysql'?'<span class="bdg b-COMPLETED">MySQL</span>':dbType==='postgresql'?'<span class="bdg b-RUNNING">PostgreSQL</span>':'<span class="bdg b-CREATED">无独立DB</span>';
+    var statusBadge=ds.last_error?'<span class="bdg b-FAILED">连接异常</span>':ds.last_connected_at?'<span class="bdg b-COMPLETED">已连接</span>':'<span class="bdg b-CREATED">未测试</span>';
+    var enabledBadge=ds.enabled?'<span class="bdg b-COMPLETED">启用</span>':'<span class="bdg b-CREATED">禁用</span>';
+    var connInfo=ds.host?(ds.host+':'+(ds.port||'')):'-';
+    var dbName=ds.database_name||'-';
+    var pidInput=(ds.database_name||'').indexOf('{project_id}')>=0?'<div style="margin-top:10px"><label style="font-size:12px;color:var(--sub);margin:0">测试用 Project ID（数据库名含 {project_id} 占位符）</label><input id="ds_'+i+'_pid" placeholder="如 1ebaa4b2dc204454" style="width:100%;padding:6px 10px;font-size:14px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>':'';
+    return '<div style="border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px">'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:8px"><b style="font-size:16px">'+ds.display_name+'</b>'+typeBadge+enabledBadge+statusBadge+'</div>'+
+      '<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;font-size:14px;color:var(--sub);margin-bottom:10px">'+
+      '<div>主机: <span style="font-family:monospace;color:var(--txt)">'+connInfo+'</span></div>'+
+      '<div>数据库: <span style="font-family:monospace;color:var(--txt)">'+dbName+'</span></div>'+
+      '<div>用户: <span style="font-family:monospace;color:var(--txt)">'+(ds.username||'-')+'</span></div>'+
+      '<div>版本: <span style="font-family:monospace;color:var(--txt)">v'+(ds._version||1)+'</span></div>'+
+      '</div>'+
+      (ds.last_error?'<div style="font-size:13px;color:var(--red);margin-bottom:8px;padding:6px 10px;background:rgba(248,113,113,.08);border-radius:6px">'+ds.last_error+'</div>':'')+
+      pidInput+
+      '<div style="display:flex;gap:8px;margin-top:10px">'+
+      '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="testDatasource('+i+')">测试连接</button>'+
+      '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="toggleDsEnabled('+i+')">'+(ds.enabled?'禁用':'启用')+'</button>'+
+      '</div><div id="ds_'+i+'_msg" style="margin-top:8px;font-size:13px"></div></div>';
+  }).join('');
+}
+async function testDatasource(i){
+  var ds=_dsData[i];if(!ds)return;
+  var msg=$("ds_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">测试中...</span>';
+  var pidEl=$("ds_"+i+"_pid");
+  var pid=pidEl?pidEl.value.trim():'';
+  var url="/api/v2/datasources/"+ds.agent_type+"/test";
+  if(pid)url+="?project_id="+encodeURIComponent(pid);
+  try{
+    var r=await jpost(url,{});
+    if(msg)msg.innerHTML=r.success?'<span style="color:var(--green)">✓ '+r.error+'</span>':'<span style="color:var(--red)">✗ '+r.error+'</span>';
+    loadDatasources();
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
+}
+async function toggleDsEnabled(i){
+  var ds=_dsData[i];if(!ds)return;
+  try{await jput("/api/v2/datasources/"+ds.agent_type,{enabled:!ds.enabled});loadDatasources();}
+  catch(e){alert("切换失败: "+e);}
+}
+
+renderSystem();
+</script>
+</body>
+</html>
