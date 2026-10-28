@@ -272,6 +272,10 @@ def _on_startup():
     # 它会做 schema migration + DB 查询 + 续跑评测，可能耗时数秒
     _resume_thread = threading.Thread(target=resume_stuck_evaluations, name="resume-stuck", daemon=True)
     _resume_thread.start()
+    # 项目/任务漏洞统计定时采集（每天 6:00/12:00/17:00）
+    from ...v2.sync.project_task_sync import schedule_loop as _sync_loop
+    _sync_thread = threading.Thread(target=_sync_loop, name="project-task-sync", daemon=True)
+    _sync_thread.start()
 
 
 @app.on_event("shutdown")

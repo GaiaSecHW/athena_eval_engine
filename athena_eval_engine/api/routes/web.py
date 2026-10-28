@@ -17,6 +17,12 @@ def index():
     return (STATIC / "dashboard.html").read_text(encoding="utf-8")
 
 
+@router.get("/report", response_class=HTMLResponse)
+def report_page():
+    """误报率查询独立页面（选项目/任务 → 漏洞中心人工确认 → 误报率）。"""
+    return (STATIC / "report.html").read_text(encoding="utf-8")
+
+
 def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
     """同步逻辑：查 DB + 解析 config_json + 组装响应。"""
     conn = connect(autocommit=True)

@@ -524,9 +524,10 @@ def create(req: CreateRequest):
             "VALUES (%s,%s,'1.0','hash-bs001')",
             (req.benchmark_set_id, f"name-{req.benchmark_set_id}"))
         cur.execute(
-            "INSERT INTO evaluation (evaluation_id, evaluation_name, benchmark_set_id, agent_name) "
-            "VALUES (%s,%s,%s,'Turing')",
-            (req.evaluation_id, eval_name, req.benchmark_set_id))
+            "INSERT INTO evaluation (evaluation_id, evaluation_name, benchmark_set_id, "
+            "task_id, agent_name) "
+            "VALUES (%s,%s,%s,%s,'Turing')",
+            (req.evaluation_id, eval_name, req.benchmark_set_id, req.kg_task_id))
         cur.execute(
             "INSERT INTO evaluation_snapshot (snapshot_id, evaluation_id, parser_version, resolver_version, "
             "metric_profile_version, statistical_profile, canonical_action_schema, knowledge_rule_version, "

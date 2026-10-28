@@ -405,6 +405,63 @@ MIGRATIONS = [
             "CHECK (cause_code IS NULL OR cause_code IN ('A','B','C','D','E','F','G','H','I','J','K'))",
         ],
     },
+    {
+        "id": "026_project_task_summary",
+        "desc": "项目/任务漏洞统计汇总表 + case 明细快照表（定时采集写入）",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS project_task_summary ("
+            "  project_id VARCHAR(64) NOT NULL,"
+            "  task_id VARCHAR(64) NOT NULL,"
+            "  project_name VARCHAR(256) NOT NULL DEFAULT '',"
+            "  task_name VARCHAR(256) NOT NULL DEFAULT '',"
+            "  project_owner VARCHAR(128) NOT NULL DEFAULT '',"
+            "  vuln_total INT NOT NULL DEFAULT 0,"
+            "  unconfirmed_count INT NOT NULL DEFAULT 0,"
+            "  confirmed_vulnerable INT NOT NULL DEFAULT 0,"
+            "  confirmed_not_vulnerable INT NOT NULL DEFAULT 0,"
+            "  confirmed_fp INT NOT NULL DEFAULT 0,"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  PRIMARY KEY (project_id, task_id)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "CREATE TABLE IF NOT EXISTS vuln_case_snapshot ("
+            "  case_id VARCHAR(64) NOT NULL,"
+            "  project_id VARCHAR(64) NOT NULL,"
+            "  task_id VARCHAR(64) NOT NULL DEFAULT '',"
+            "  title VARCHAR(512) NOT NULL DEFAULT '',"
+            "  confirmation_status VARCHAR(32) NOT NULL DEFAULT '',"
+            "  false_positive_group VARCHAR(32) NOT NULL DEFAULT '',"
+            "  human_confirmation_summary TEXT,"
+            "  snapshot_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  PRIMARY KEY (case_id, project_id, snapshot_at)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
+    {
+        "id": "027_project_task_summary_extend",
+        "desc": "project_task_summary 增加 task_type/agent_type/时间字段",
+        "sql": [
+            "ALTER TABLE project_task_summary ADD COLUMN task_type VARCHAR(64) NOT NULL DEFAULT '' AFTER project_owner",
+            "ALTER TABLE project_task_summary ADD COLUMN agent_type VARCHAR(64) NOT NULL DEFAULT '' AFTER task_type",
+            "ALTER TABLE project_task_summary ADD COLUMN task_created_at VARCHAR(40) NOT NULL DEFAULT '' AFTER agent_type",
+            "ALTER TABLE project_task_summary ADD COLUMN task_updated_at VARCHAR(40) NOT NULL DEFAULT '' AFTER task_created_at",
+            "ALTER TABLE project_task_summary ADD COLUMN task_started_at VARCHAR(40) NOT NULL DEFAULT '' AFTER task_updated_at",
+            "ALTER TABLE project_task_summary ADD COLUMN task_finished_at VARCHAR(40) NOT NULL DEFAULT '' AFTER task_started_at",
+        ],
+    },
+    {
+        "id": "028_evaluation_task_id",
+        "desc": "evaluation 表增加 task_id（保存该评测评测的平台任务 ID）",
+        "sql": [
+            "ALTER TABLE evaluation ADD COLUMN task_id VARCHAR(64) NOT NULL DEFAULT '' AFTER benchmark_set_id",
+        ],
+    },
+    {
+        "id": "029_project_task_summary_analyzing",
+        "desc": "project_task_summary 增加 analyzing_count（待人工确认漏洞数）",
+        "sql": [
+            "ALTER TABLE project_task_summary ADD COLUMN analyzing_count INT NOT NULL DEFAULT 0 AFTER confirmed_not_vulnerable",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

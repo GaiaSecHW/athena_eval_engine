@@ -23,7 +23,7 @@ from .log_util import log
 
 
 def _get(url: str, params: dict | None = None, retries: int = 20,
-         retry_delay: float = 5.0) -> dict | list:
+         retry_delay: float = 5.0, timeout: float = 180) -> dict | list:
     """带 bearer token 的 GET，返回 JSON。沿用 vbench_client 的 urllib 同步风格。
 
     内部 Service 短暂抖动时指数退避重试。
@@ -34,7 +34,7 @@ def _get(url: str, params: dict | None = None, retries: int = 20,
     for attempt in range(retries):
         try:
             req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=180) as r:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
                 return json.loads(r.read().decode("utf-8"))
         except HTTPError as e:
             last_err = e
@@ -69,6 +69,54 @@ def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:
     except Exception as e:
         log("VULN_CENTER", f"获取原始报告失败 case={case_id}: {e}")
     return ""
+
+
+def list_stats(project_id: str, source_task_id: str | None = None,
+               confirmation_status: str | None = None,
+               false_positive_group: str | None = None) -> dict:
+    """获取漏洞中心 case 汇总统计（不拉全量，直接返回计数）。
+
+    调用 ``GET /api/vuln/cases/ops/list-stats``：
+    - 无过滤 → {total, confirmed, ruled_out, inconclusive}
+    - confirmation_status=vulnerable → confirmed=确认漏洞数
+    - confirmation_status=not_vulnerable → ruled_out=确认非漏洞数
+    - false_positive_group=confirmed_fp → 确认误报数（total）
+
+    Args:
+        project_id: 项目 ID。
+        source_task_id: 任务 ID（可选）。
+        confirmation_status: vulnerable/not_vulnerable（可选）。
+        false_positive_group: confirmed_fp/non_fp（可选）。
+
+    Returns:
+        汇总 dict（total/confirmed/ruled_out/inconclusive）。失败返回全 0。
+    """
+    params: dict = {"project_id": project_id, "scope": "vuln_center",
+                    "sort_field": "created_at", "sort_direction": "desc"}
+    if source_task_id:
+        params["source_task_ids"] = source_task_id
+    if confirmation_status:
+        params["confirmation_status"] = confirmation_status
+    if false_positive_group:
+        params["false_positive_group"] = false_positive_group
+    try:
+        data = _get(
+            f"{VULN_CENTER_API_URL}/ops/list-stats",
+            params=params,
+            retries=3,
+            retry_delay=2.0,
+            timeout=15,
+        )
+        if isinstance(data, dict):
+            return {
+                "total": data.get("total") or 0,
+                "confirmed": data.get("confirmed") or 0,
+                "ruled_out": data.get("ruled_out") or 0,
+                "inconclusive": data.get("inconclusive") or 0,
+            }
+    except Exception as e:
+        log("VULN_CENTER", f"list_stats 失败: {str(e)[:200]}")
+    return {"total": 0, "confirmed": 0, "ruled_out": 0, "inconclusive": 0}
 
 
 def list_vuln_cases(project_id: str, source_task_id: str | None = None,

@@ -10,6 +10,7 @@ from .datasources import router as datasources_router
 from .routes import router as evaluations_router
 from .dts import router as dts_router
 from .dashboard import router as dashboard_router
+from .report import router as report_router
 
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "static")
 
@@ -20,6 +21,7 @@ def create_v2_app(app: FastAPI):
     app.include_router(evaluations_router)
     app.include_router(dts_router)
     app.include_router(dashboard_router)
+    app.include_router(report_router)
 
     # 挂载 static/lib 目录（jQuery/jstree 等本地 JS 库）
     lib_dir = os.path.join(_STATIC_DIR, "lib")

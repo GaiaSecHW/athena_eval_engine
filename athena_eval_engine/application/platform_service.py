@@ -113,7 +113,9 @@ def get_projects(page_size: int = 1000):
              "category": p.get("category"),
              "k8s_namespace": p.get("k8s_namespace"),
              "owner_name": p.get("owner_name"),
-             "description": p.get("description")} for p in all_items]
+             "description": p.get("description"),
+             "created_at": p.get("created_at"),
+             "updated_at": p.get("updated_at")} for p in all_items]
 
 
 def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter: str | None = None):
@@ -136,7 +138,11 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
         out.append({"id": t.get("id"), "project_id": t.get("project_id"),
                      "name": t.get("name"), "status": t.get("display_status") or t.get("status"),
                      "task_type": t.get("task_type"),  # 工具（内置枚举或工具注册中心 id）
-                     "test_target": test_target})  # 测试对象（inputs 汇总）
+                     "test_target": test_target,  # 测试对象（inputs 汇总）
+                     "created_at": t.get("created_at"),
+                     "updated_at": t.get("updated_at"),
+                     "started_at": t.get("started_at"),
+                     "finished_at": t.get("finished_at")})
     return out
 
 
