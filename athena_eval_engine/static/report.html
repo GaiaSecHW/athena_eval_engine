@@ -119,14 +119,13 @@ async function load(page){
 function render(d){
   const items=d.items||[];
   document.getElementById("updated").innerHTML=`<span class="dot"></span>最近采集：${d.updated_at||"从未采集"}`;
-  // KPI（当前页）
-  const projs=new Set(items.map(i=>i.project_id));
-  const sum=(k)=>items.reduce((s,i)=>s+(i[k]||0),0);
-  document.getElementById("k-proj").textContent=projs.size;
-  document.getElementById("k-task").textContent=items.length;
-  document.getElementById("k-total").textContent=sum("vuln_total");
-  document.getElementById("k-vuln").textContent=sum("confirmed_vulnerable");
-  document.getElementById("k-fp").textContent=sum("confirmed_fp");
+  // KPI（过滤后全量，与表格过滤条件一致）
+  const kpi=d.kpi||{};
+  document.getElementById("k-proj").textContent=kpi.project_count||0;
+  document.getElementById("k-task").textContent=kpi.task_count||0;
+  document.getElementById("k-total").textContent=kpi.vuln_total||0;
+  document.getElementById("k-vuln").textContent=kpi.confirmed_vulnerable||0;
+  document.getElementById("k-fp").textContent=kpi.confirmed_fp||0;
   // 表格
   const tbody=document.getElementById("tbody");
   if(!items.length){
