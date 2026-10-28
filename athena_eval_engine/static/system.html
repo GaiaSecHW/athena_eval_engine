@@ -133,6 +133,7 @@ async function saveLlmModel(){
 }
 
 let _dsData=null;
+let _dsTestResult={};  // agent_type → {ok, txt}，重渲染后回填测试结果
 async function loadDatasources(){
   try{const d=await jget("/api/v2/datasources");_dsData=d.datasources||d||[];renderDsContainer();}
   catch(e){$("ds-container").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';}
@@ -160,7 +161,9 @@ function renderDsContainer(){
       '<div style="display:flex;gap:8px;margin-top:10px">'+
       '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="testDatasource('+i+')">测试连接</button>'+
       '<button class="btn g" style="font-size:13px;padding:6px 14px" onclick="toggleDsEnabled('+i+')">'+(ds.enabled?'禁用':'启用')+'</button>'+
-      '</div><div id="ds_'+i+'_msg" style="margin-top:8px;font-size:13px"></div></div>';
+      '</div><div id="ds_'+i+'_msg" style="margin-top:8px;font-size:13px">'+
+      (_dsTestResult[ds.agent_type]?'<span style="color:'+(_dsTestResult[ds.agent_type].ok?'var(--green)':'var(--red)')+'">'+_dsTestResult[ds.agent_type].txt+'</span>':'')+
+      '</div></div>';
   }).join('');
 }
 async function testDatasource(i){
@@ -172,9 +175,13 @@ async function testDatasource(i){
   if(pid)url+="?project_id="+encodeURIComponent(pid);
   try{
     var r=await jpost(url,{});
-    if(msg)msg.innerHTML=r.success?'<span style="color:var(--green)">✓ '+r.error+'</span>':'<span style="color:var(--red)">✗ '+r.error+'</span>';
+    var txt=r.success?(r.error?('✓ '+r.error):'✓ 连接成功'):('✗ '+(r.error||'连接失败'));
+    _dsTestResult[ds.agent_type]={ok:r.success,txt:txt};
+    if(msg)msg.innerHTML='<span style="color:'+(r.success?'var(--green)':'var(--red)')+'">'+txt+'</span>';
+    // 刷新状态徽章（last_error/last_connected_at 由后端更新），
+    // 结果已存入 _dsTestResult，重渲染后回填仍可见
     loadDatasources();
-  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
+  }catch(e){_dsTestResult[ds.agent_type]={ok:false,txt:'✗ '+e};if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+e+'</span>';}
 }
 async function toggleDsEnabled(i){
   var ds=_dsData[i];if(!ds)return;

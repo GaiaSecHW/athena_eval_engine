@@ -100,9 +100,11 @@ function renderReport(){
       <input id="f-proj" placeholder="按项目名过滤…" style="max-width:200px">
       <input id="f-task" placeholder="按任务名过滤…" style="max-width:200px">
       <select id="f-agent" style="width:auto;max-width:140px"><option value="">全部 Agent</option></select>
-      <select id="f-sort" style="width:auto;max-width:160px">
+      <select id="f-sort" style="width:auto;max-width:180px">
         <option value="created_at_desc">创建时间 ↓</option>
+        <option value="created_at_asc">创建时间 ↑</option>
         <option value="updated_at_desc">更新时间 ↓</option>
+        <option value="updated_at_asc">更新时间 ↑</option>
         <option value="fpr_desc">误报率 ↓</option>
         <option value="fpr_asc">误报率 ↑</option>
       </select>
