@@ -172,14 +172,26 @@ def summary(project_id: str | None = None, task_id: str | None = None,
 
 @router.post("/sync")
 def sync_now():
-    """手动触发一次采集（全量项目/任务/漏洞统计 → 写库）。"""
-    from ..sync.project_task_sync import sync_all
-    try:
-        result = sync_all()
-        return result
-    except Exception as e:
-        log("REPORT", f"手动采集失败: {str(e)[:200]}")
-        raise HTTPException(500, f"采集失败: {str(e)[:200]}")
+    """手动触发一次采集（全量项目/任务/漏洞统计 → 写库）。
+
+    采集在后台线程执行（同步阻塞会卡住 HTTP 请求——425 项目 × 大量任务
+    × 多次网络调用，可能耗时数分钟）。接口立即返回"采集中"。
+    """
+    import threading
+    from ..sync.project_task_sync import sync_all, is_sync_running
+
+    if is_sync_running():
+        return {"status": "running", "message": "采集已在进行中"}
+
+    def _run():
+        try:
+            sync_all()
+        except Exception as e:
+            log("REPORT", f"后台采集失败: {str(e)[:300]}")
+
+    t = threading.Thread(target=_run, name="report-manual-sync", daemon=True)
+    t.start()
+    return {"status": "started", "message": "采集已启动（后台执行）"}
 
 
 @router.get("/projects")

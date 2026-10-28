@@ -181,12 +181,28 @@ async function syncNow(){
   clearErr();
   const btn=document.querySelector('button.btn:not(.g)');
   const old=btn.textContent;btn.disabled=true;btn.textContent="采集中…";
+  document.getElementById("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集已启动（后台执行），完成后自动刷新';
   try{
     const d=await API("/api/v2/report/sync",{method:"POST"});
-    btn.textContent="采集完成";
-    await load();
-  }catch(e){showErr("采集失败: "+e);btn.textContent=old;}
-  finally{btn.disabled=false;}
+    // 后台采集：轮询 summary，采集中显示状态，完成后刷新
+    let tries=0;
+    const timer=setInterval(async()=>{
+      tries++;
+      try{
+        const s=await API("/api/v2/report/summary?page=1&page_size=20");
+        if(s.updated_at){
+          clearInterval(timer);
+          btn.textContent="采集完成";
+          document.getElementById("updated").innerHTML='<span class="dot"></span>最近采集：'+s.updated_at;
+          await load(1);
+        }else if(tries>40){ // 2 分钟无结果
+          clearInterval(timer);
+          btn.textContent="采集进行中";
+          document.getElementById("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集进行中（425 项目，耗时可能较长）…';
+        }
+      }catch(e){}
+    },3000);
+  }catch(e){showErr("启动采集失败: "+e);btn.textContent=old;btn.disabled=false;}
 }
 
 // 启动测评：创建运行态评测（名称=任务名），跳转评测页

@@ -31,6 +31,14 @@ _FETCH_WORKERS = 8
 # 上次同步时间戳（内存态，进程内防重复触发）
 _last_sync_ts: float = 0.0
 _lock = threading.Lock()
+# 采集运行状态（后台手动触发时置 True，防并发重复采集）
+_sync_running = False
+
+
+def is_sync_running() -> bool:
+    """当前是否有采集在运行（防并发重复触发）。"""
+    global _sync_running
+    return _sync_running
 
 # task_type → agent 映射（平台工具类型 → 评测 agent 名）
 TASK_TYPE_TO_AGENT = {
@@ -88,6 +96,11 @@ def sync_all() -> dict:
     from concurrent.futures import ThreadPoolExecutor
 
     t0 = time.time()
+    global _sync_running
+    if _sync_running:
+        log("SYNC", "采集已在运行，跳过本次触发")
+        return {"status": "running"}
+    _sync_running = True
 
     def _write(rows_summary: list[dict]) -> int:
         """写库：先清空旧汇总（全量重建），再插入汇总。case 明细表已停用。"""
@@ -118,16 +131,27 @@ def sync_all() -> dict:
     projects = ps.get_projects()
     log("SYNC", f"拉取项目: {len(projects)} 个")
 
-    # 2. 每个项目拉任务
+    # 2. 每个项目拉任务（并发 + 进度日志）
     tasks_all: list[dict] = []
     proj_name_map = {p["id"]: p["name"] for p in projects}
     proj_owner_map = {p["id"]: p.get("owner_name") or "" for p in projects}
-    for p in projects:
+    total_proj = len(projects)
+
+    def _fetch_proj_tasks(p: dict) -> list[dict]:
         try:
             tasks = ps.get_tasks(p["id"])
-            tasks_all.extend({"project_id": p["id"], **t} for t in tasks)
+            return [{"project_id": p["id"], **t} for t in tasks]
         except Exception as e:
             log("SYNC", f"项目 {p['id']} 拉任务失败: {str(e)[:200]}")
+            return []
+
+    with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
+        for i, pt in enumerate(pool.map(_fetch_proj_tasks, projects), 1):
+            tasks_all.extend(pt)
+            if i % 50 == 0 or i == total_proj:
+                log("SYNC", f"项目进度: {i}/{total_proj} 个项目, "
+                            f"已获取 {len(tasks_all)} 个任务, "
+                            f"耗时 {time.time()-t0:.0f}s")
 
     log("SYNC", f"拉取任务: {len(tasks_all)} 个")
 
@@ -188,17 +212,24 @@ def sync_all() -> dict:
             "cases": [],
         }
 
+    # 3b. 任务统计（带进度日志——425 项目×多任务×多次网络调用很慢，
+    #     无日志会让用户误以为卡死）
     summaries: list[dict] = []
+    total_tasks = len(tasks_all)
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
-        results = list(pool.map(_fetch_task, tasks_all))
-    for r in results:
-        if r:
-            summaries.append(r["summary"])
+        for i, r in enumerate(pool.map(_fetch_task, tasks_all), 1):
+            if r:
+                summaries.append(r["summary"])
+            if i % 50 == 0 or i == total_tasks:
+                log("SYNC", f"统计进度: {i}/{total_tasks} 个任务 "
+                            f"({i/total_tasks*100:.0f}%), 已耗时 {time.time()-t0:.0f}s")
 
     # 4. 写库
     _write(summaries)
 
     elapsed = time.time() - t0
+    global _sync_running
+    _sync_running = False
     log("SYNC", f"采集完成: 项目={len(projects)}, 任务={len(summaries)}, "
                 f"耗时={elapsed:.1f}s")
     return {
