@@ -22,7 +22,7 @@ router = APIRouter(prefix="/api/v2/report", tags=["report"])
 @router.get("/summary")
 def summary(project_id: str | None = None, task_id: str | None = None,
             keyword: str | None = None, agent: str | None = None,
-            sort_by: str = "fpr", sort_dir: str = "desc",
+            sort_by: str = "created_at", sort_dir: str = "desc",
             page: int = 1, page_size: int = 20):
     """从数据库读取项目/任务漏洞统计汇总（定时采集写入）。
 
@@ -92,12 +92,14 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         )
         if where:
             sql += " WHERE " + " AND ".join(where)
-        # 排序：fpr=误报率 FP/(TP+FP)（SQL 表达式），默认降序
+        # 排序：fpr=误报率 FP/(TP+FP)（SQL 表达式）、created_at/updated_at=任务时间
         order_dir = "DESC" if sort_dir == "desc" else "ASC"
         if sort_by == "fpr":
             sql += (" ORDER BY (CASE WHEN (confirmed_vulnerable + confirmed_fp) > 0 "
                     "THEN confirmed_fp / (confirmed_vulnerable + confirmed_fp) ELSE NULL END) "
                     + order_dir + ", project_name, task_name")
+        elif sort_by in ("created_at", "updated_at"):
+            sql += f" ORDER BY task_{sort_by} {order_dir}, project_name, task_name"
         else:
             sql += " ORDER BY project_name, task_name"
         sql += " LIMIT %s OFFSET %s"

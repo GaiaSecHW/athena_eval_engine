@@ -65,6 +65,12 @@ tr:hover td{background:#f8fafc}
     <select id="f-agent" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit">
       <option value="">全部 Agent</option>
     </select>
+    <select id="f-sort" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit">
+      <option value="created_at_desc">创建时间 ↓</option>
+      <option value="updated_at_desc">更新时间 ↓</option>
+      <option value="fpr_desc">误报率 ↓</option>
+      <option value="fpr_asc">误报率 ↑</option>
+    </select>
     <button class="btn g" onclick="load(1)">查询</button>
   </div>
 
@@ -116,10 +122,15 @@ async function load(page){
   const pj=document.getElementById("f-proj").value.trim();
   const tk=document.getElementById("f-task").value.trim();
   const ag=document.getElementById("f-agent").value;
+  const sortVal=document.getElementById("f-sort").value;
   const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE});
   if(pj)params.set("keyword",pj);
   if(tk)params.set("keyword",tk);
   if(ag)params.set("agent",ag);
+  // 排序：默认创建时间倒序
+  const [sb,sd]=sortVal.split("_");
+  params.set("sort_by",sb);
+  params.set("sort_dir",sd);
   try{
     const d=await API("/api/v2/report/summary?"+params.toString());
     _data=d;
