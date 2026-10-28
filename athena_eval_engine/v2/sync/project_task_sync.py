@@ -168,22 +168,26 @@ def sync_all() -> dict:
                                           confirmation_status="not_vulnerable")
             fp_stats = vc.list_stats(pid, source_task_id=tid,
                                      false_positive_group="confirmed_fp")
+            nonfp_stats = vc.list_stats(pid, source_task_id=tid,
+                                        false_positive_group="non_fp")
             analyzing_stats = vc.list_stats(pid, source_task_id=tid,
                                             confirmation_status="analyzing")
         except Exception as e:
             log("SYNC", f"任务 {tid} 拉统计失败: {str(e)[:200]}")
             return None
 
-        # 字段映射：
+        # 字段映射（口径已与漏洞中心对齐）：
         # - vuln_total = 总量（list-stats 无过滤 total）
         # - confirmed_vulnerable = 人工确认漏洞（confirmation_status=vulnerable）
-        # - confirmed_not_vulnerable = 确认非漏洞（not_vulnerable）
+        # - confirmed_not_vulnerable = 确认非漏洞且非误报（false_positive_group=non_fp 的 ruled_out）
         # - confirmed_fp = 确认误报（false_positive_group=confirmed_fp）
+        #   —— 注意：not_vulnerable 的 ruled_out 同时包含误报与非误报，
+        #      故 non_fp 必须单独拉取，不能再用 not_vulnerable 口径
         # - unconfirmed_count = 未确认（无过滤 inconclusive）
         # - analyzing_count = 待人工确认（confirmation_status=analyzing）
         vuln_total = stats.get("total") or 0
         confirmed_vuln = vuln_stats.get("confirmed") or 0
-        confirmed_nonvuln = nonvuln_stats.get("ruled_out") or 0
+        confirmed_nonvuln = nonfp_stats.get("ruled_out") or 0
         confirmed_fp = fp_stats.get("total") or 0
         unconfirmed = stats.get("inconclusive") or 0
         analyzing = analyzing_stats.get("total") or 0
@@ -223,6 +227,31 @@ def sync_all() -> dict:
             if i % 50 == 0 or i == total_tasks:
                 log("SYNC", f"统计进度: {i}/{total_tasks} 个任务 "
                             f"({i/total_tasks*100:.0f}%), 已耗时 {time.time()-t0:.0f}s")
+
+    # 3c. 无任务项目补 0 行——保证项目数=平台全量（无任务项目不产生 summary）
+    covered_proj = {s["project_id"] for s in summaries}
+    for p in projects:
+        pid = p["id"]
+        if pid not in covered_proj:
+            summaries.append({
+                "project_id": pid,
+                "task_id": "",
+                "project_name": p.get("name") or "",
+                "task_name": "",
+                "project_owner": p.get("owner_name") or "",
+                "task_type": "",
+                "agent_type": "",
+                "task_created_at": "",
+                "task_updated_at": "",
+                "task_started_at": "",
+                "task_finished_at": "",
+                "vuln_total": 0,
+                "unconfirmed_count": 0,
+                "confirmed_vulnerable": 0,
+                "confirmed_not_vulnerable": 0,
+                "confirmed_fp": 0,
+                "analyzing_count": 0,
+            })
 
     # 4. 写库
     _write(summaries)

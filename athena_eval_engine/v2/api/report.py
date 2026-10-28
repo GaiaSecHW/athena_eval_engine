@@ -57,8 +57,10 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         row = cur.fetchone()
         updated_at = row[0]
         # 过滤后全量 KPI 聚合（项目数/任务数/漏洞总数/确认漏洞/确认误报）
+        # 任务数只统计 task_id 非空行——无任务项目补的 0 行（task_id=''）不算任务
         kpi_sql = (
-            "SELECT COUNT(DISTINCT project_id), COUNT(*), "
+            "SELECT COUNT(DISTINCT project_id), "
+            "COUNT(CASE WHEN task_id != '' THEN 1 END), "
             "COALESCE(SUM(vuln_total),0), "
             "COALESCE(SUM(confirmed_vulnerable),0), "
             "COALESCE(SUM(confirmed_fp),0) "
@@ -75,10 +77,10 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             "confirmed_vulnerable": kpi_row[3],
             "confirmed_fp": kpi_row[4],
         }
-        # 总数
-        count_sql = "SELECT COUNT(*) FROM project_task_summary"
+        # 总数（不含无任务项目补的 0 行）
+        count_sql = "SELECT COUNT(*) FROM project_task_summary WHERE task_id != ''"
         if where:
-            count_sql += " WHERE " + " AND ".join(where)
+            count_sql += " AND " + " AND ".join(where)
         cur.execute(count_sql, tuple(params))
         total = cur.fetchone()[0]
         # 分页数据
@@ -88,10 +90,10 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             "task_started_at, task_finished_at, "
             "vuln_total, unconfirmed_count, confirmed_vulnerable, "
             "confirmed_not_vulnerable, confirmed_fp, analyzing_count "
-            "FROM project_task_summary"
+            "FROM project_task_summary WHERE task_id != ''"
         )
         if where:
-            sql += " WHERE " + " AND ".join(where)
+            sql += " AND " + " AND ".join(where)
         # 排序：fpr=误报率 FP/(TP+FP)（SQL 表达式）、created_at/updated_at=任务时间
         order_dir = "DESC" if sort_dir == "desc" else "ASC"
         if sort_by == "fpr":

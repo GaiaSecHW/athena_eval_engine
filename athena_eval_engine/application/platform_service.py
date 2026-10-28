@@ -119,30 +119,38 @@ def get_projects(page_size: int = 1000):
 
 
 def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter: str | None = None):
-    """默认返回全部任务（含各状态）；status_filter 传状态字符串可过滤。"""
+    """返回全部任务（含各状态，自动分页拉全量）；status_filter 传状态字符串可过滤。"""
     if project_id:
-        url = f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/{project_id}/user-tasks?page=1&page_size={page_size}&sort_by=created_at&sort_direction=desc"
+        base_url = f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/{project_id}/user-tasks"
     else:
-        url = f"{SCHEDULE_API}/api/chirmera-platform-schedule/tasks?page=1&page_size={page_size}&sort_by=created_at&sort_direction=desc"
-    d = _get(url)
-    items = d.get("items") or d.get("data", {}).get("items", []) if isinstance(d, dict) else d
+        base_url = f"{SCHEDULE_API}/api/chirmera-platform-schedule/tasks"
     out = []
-    for t in items:
-        st = (t.get("display_status") or t.get("status") or "").lower()
-        if status_filter and st != status_filter:
-            continue
-        # 测试对象：取 inputs 的 display_name/input_label 汇总
-        _inputs = t.get("inputs") or []
-        _labels = [i.get("display_name") or i.get("input_label") or "" for i in _inputs]
-        test_target = "，".join(filter(None, _labels)) or None
-        out.append({"id": t.get("id"), "project_id": t.get("project_id"),
-                     "name": t.get("name"), "status": t.get("display_status") or t.get("status"),
-                     "task_type": t.get("task_type"),  # 工具（内置枚举或工具注册中心 id）
-                     "test_target": test_target,  # 测试对象（inputs 汇总）
-                     "created_at": t.get("created_at"),
-                     "updated_at": t.get("updated_at"),
-                     "started_at": t.get("started_at"),
-                     "finished_at": t.get("finished_at")})
+    page = 1
+    while True:
+        url = f"{base_url}?page={page}&page_size={page_size}&sort_by=created_at&sort_direction=desc"
+        d = _get(url)
+        items = d.get("items") or d.get("data", {}).get("items", []) if isinstance(d, dict) else d
+        if not items:
+            break
+        for t in items:
+            st = (t.get("display_status") or t.get("status") or "").lower()
+            if status_filter and st != status_filter:
+                continue
+            # 测试对象：取 inputs 的 display_name/input_label 汇总
+            _inputs = t.get("inputs") or []
+            _labels = [i.get("display_name") or i.get("input_label") or "" for i in _inputs]
+            test_target = "，".join(filter(None, _labels)) or None
+            out.append({"id": t.get("id"), "project_id": t.get("project_id"),
+                         "name": t.get("name"), "status": t.get("display_status") or t.get("status"),
+                         "task_type": t.get("task_type"),  # 工具（内置枚举或工具注册中心 id）
+                         "test_target": test_target,  # 测试对象（inputs 汇总）
+                         "created_at": t.get("created_at"),
+                         "updated_at": t.get("updated_at"),
+                         "started_at": t.get("started_at"),
+                         "finished_at": t.get("finished_at")})
+        if len(items) < page_size:
+            break
+        page += 1
     return out
 
 
