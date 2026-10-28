@@ -4,176 +4,189 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>平台任务详情</title>
+<script>
+(function(){
+  var _p=location.pathname;
+  var _ing=(_p==='/eval'||_p.indexOf('/eval/')===0)?'/eval':'';
+  var _lib=_ing+'/static/lib/';
+  document.write('<link rel="stylesheet" href="'+_lib+'app.css">');
+  document.write('<script src="'+_lib+'config.js"><\/script>');
+  document.write('<script src="'+_lib+'app.js"><\/script>');
+})();
+</script>
 <style>
-:root{--bg:#f4f7fc;--panel:#fff;--ink:#192842;--muted:#71809a;--line:#e5ebf4;--acc:#3975e8;--green:#16a34a;--red:#dc2626;--amber:#d97706;--purple:#8261d8}
-*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--ink);font:14px/1.55 "Microsoft YaHei","PingFang SC",system-ui,sans-serif}
-.page{max-width:1280px;margin:auto;padding:24px 20px 42px}
-.topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;padding-bottom:18px;border-bottom:1px solid var(--line);flex-wrap:wrap}
-.brand{display:flex;align-items:center;gap:12px}
-.logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#3475eb,#8871e8);display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px}
-h1{font-size:21px;margin:0;font-weight:700}
-.sub{color:var(--muted);font-size:12px;margin-top:2px}
-.actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
-.btn{padding:9px 18px;border:none;border-radius:9px;background:var(--acc);color:#fff;font-size:13px;font-weight:500;cursor:pointer;font-family:inherit}
-.btn:disabled{opacity:.5;cursor:not-allowed}
-.btn.g{background:var(--panel);border:1px solid var(--line);color:var(--muted)}
-.updated{font-size:12px;color:var(--muted)}
-.updated .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
-.kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
-.kpi{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:14px;text-align:center}
-.kpi .v{font-size:26px;font-weight:800;letter-spacing:-.5px}
-.kpi .l{font-size:12px;color:var(--muted);margin-top:3px}
-.card{background:var(--panel);border:1px solid var(--line);border-radius:14px;padding:18px;overflow-x:auto}
-table{width:100%;border-collapse:collapse;font-size:12px;min-width:900px}
-th{text-align:left;padding:9px 8px;border-bottom:2px solid var(--line);color:var(--muted);font-size:11px;font-weight:700;white-space:nowrap;background:#fafbfe;position:sticky;top:0}
-td{padding:9px 8px;border-bottom:1px solid var(--line)}
-tr:hover td{background:#f8fafc}
-.num{font-variant-numeric:tabular-nums;text-align:right}
+/* 平台任务详情专属样式 */
+.pt-topbar{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:20px;padding-bottom:16px;border-bottom:1px solid var(--bd);flex-wrap:wrap}
+.pt-brand{display:flex;align-items:center;gap:12px}
+.pt-logo{width:44px;height:44px;border-radius:13px;background:linear-gradient(135deg,#3475eb,#8871e8);display:grid;place-items:center;color:#fff;font-weight:800;font-size:20px}
+.pt-title{font-size:20px;font-weight:700}
+.pt-sub{color:var(--sub);font-size:12px;margin-top:2px}
+.pt-actions{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.pt-updated{font-size:12px;color:var(--sub)}
+.pt-updated .dot{display:inline-block;width:7px;height:7px;border-radius:50%;background:var(--green);margin-right:6px}
+.pt-kpis{display:grid;grid-template-columns:repeat(6,1fr);gap:12px;margin-bottom:18px}
+.pt-kpi{background:var(--panel);border:1px solid var(--bd);border-radius:12px;padding:14px;text-align:center}
+.pt-kpi .v{font-size:26px;font-weight:800;letter-spacing:-.5px;font-family:'SF Mono',Consolas,monospace}
+.pt-kpi .l{font-size:12px;color:var(--sub);margin-top:3px}
+.pt-err{color:var(--red);font-size:13px;margin:10px 0;display:none}
+.pt-empty{padding:40px;text-align:center;color:var(--sub)}
+.pt-badge{background:#eef2ff;color:#4f46e5;padding:2px 8px;border-radius:8px;font-size:12px;font-weight:600}
 .proj{font-weight:600}
 .task{max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.err{color:var(--red);font-size:13px;margin:10px 0;display:none}
-.empty{padding:40px;text-align:center;color:var(--muted)}
-@media(max-width:900px){.kpis{grid-template-columns:repeat(2,1fr)}}
+@media(max-width:900px){.pt-kpis{grid-template-columns:repeat(2,1fr)}}
 </style>
 </head>
 <body>
-<div class="page">
-  <div class="topbar">
-    <div class="brand"><div class="logo">任</div>
-      <div><h1>平台任务详情</h1><div class="sub">项目/任务漏洞中心人工确认统计（定时采集：每天 6:00 / 12:00 / 17:00）</div></div>
-    </div>
-    <div class="actions">
-      <span class="updated" id="updated"><span class="dot"></span>加载中…</span>
-      <button class="btn g" id="refresh-btn" onclick="load()">刷新</button>
-      <button class="btn" onclick="syncNow()">立即采集</button>
-    </div>
-  </div>
-
-  <div class="err" id="err"></div>
-  <div class="kpis">
-    <div class="kpi"><div class="v" id="k-proj" style="color:var(--acc)">-</div><div class="l">项目数</div></div>
-    <div class="kpi"><div class="v" id="k-task">-</div><div class="l">任务数</div></div>
-    <div class="kpi"><div class="v" id="k-total" style="color:var(--ink)">-</div><div class="l">漏洞总数</div></div>
-    <div class="kpi"><div class="v" id="k-vuln" style="color:var(--green)">-</div><div class="l">确认漏洞</div></div>
-    <div class="kpi"><div class="v" id="k-fp" style="color:var(--red)">-</div><div class="l">确认误报</div></div>
-    <div class="kpi"><div class="v" id="k-fpr" style="color:var(--acc)">-</div><div class="l">误报率 FP/(TP+FP)</div></div>
-  </div>
-
-  <div class="filters" style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-    <input id="f-proj" placeholder="按项目名过滤…" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit;flex:1;min-width:160px">
-    <input id="f-task" placeholder="按任务名过滤…" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit;flex:1;min-width:160px">
-    <select id="f-agent" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit">
-      <option value="">全部 Agent</option>
-    </select>
-    <select id="f-sort" style="padding:9px 12px;border:1px solid var(--line);border-radius:9px;font-size:13px;font-family:inherit">
-      <option value="created_at_desc">创建时间 ↓</option>
-      <option value="updated_at_desc">更新时间 ↓</option>
-      <option value="fpr_desc">误报率 ↓</option>
-      <option value="fpr_asc">误报率 ↑</option>
-    </select>
-    <button class="btn g" onclick="load(1)">查询</button>
-  </div>
-
-  <div class="card">
-    <table>
-      <thead><tr>
-        <th>项目</th><th>任务</th><th>Agent</th><th>评测状态</th><th>负责人</th>
-        <th class="num">漏洞总数</th><th class="num">未确认</th>
-        <th class="num">确认漏洞</th><th class="num">确认非漏洞</th><th class="num">确认误报</th>
-        <th class="num">误报率</th>
-        <th>任务创建时间</th><th>任务更新时间</th><th>操作</th>
-      </tr></thead>
-      <tbody id="tbody"></tbody>
-    </table>
-    <div class="empty" id="empty">暂无数据，点击「立即采集」或等待定时任务</div>
-  </div>
-
-  <div class="pager" style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px">
-    <span id="page-info" style="font-size:12px;color:var(--muted)"></span>
-    <button class="btn g" id="prev-btn" onclick="load(curPage-1)">上一页</button>
-    <button class="btn g" id="next-btn" onclick="load(curPage+1)">下一页</button>
-  </div>
+<div class="wrap">
+  <header>
+    <div class="title" onclick="go('/')">知识效果评测平台</div>
+    <nav>
+      <button class="ghost nav-item" data-route="home" onclick="go('/')">首页</button>
+      <button class="ghost nav-item" data-route="evals" onclick="go('/evals')">评测</button>
+      <button class="ghost nav-item" data-route="dts" onclick="go('/dts')">问题单</button>
+      <button class="ghost nav-item" data-route="report" onclick="go('/report')">平台任务详情</button>
+    </nav>
+    <div class="sp"></div>
+    <button class="ghost" onclick="go('/create')">+ 新建评测</button>
+    <button class="ghost nav-item" id="sys-btn" onclick="go('/system')" style="display:none">系统</button>
+    <button class="ghost" id="theme-btn" onclick="toggleTheme()">🌙</button>
+  </header>
+  <main><div id="view"></div></main>
 </div>
-
 <script>
-const API=(u,opt)=>fetch("/eval"+u,opt).then(r=>{if(!r.ok)throw new Error(r.status);return r.json();});
+renderNav('/report');
+
+const PAGE_SIZE=20;
 let _data=null;
 let curPage=1;
-const PAGE_SIZE=20;
 
 // 格式化采集时间：MySQL UTC → 北京时间，年月日时分
 function fmtUpdated(t){
   if(!t)return "从未采集";
-  const s=String(t).replace("T"," ").slice(0,19); // 2026-10-28 04:12:28
-  const d=new Date(s.replace(/-/g,"/")+" UTC");   // 按 UTC 解析
-  if(isNaN(d.getTime()))return String(t).slice(0,16); // 解析失败回退截断
-  const b=new Date(d.getTime()+8*3600000);          // +8h 北京时间
+  const s=String(t).replace("T"," ").slice(0,19);
+  const d=new Date(s.replace(/-/g,"/")+" UTC");
+  if(isNaN(d.getTime()))return String(t).slice(0,16);
+  const b=new Date(d.getTime()+8*3600000);
   const p=n=>String(n).padStart(2,"0");
   return `${b.getUTCFullYear()}-${p(b.getUTCMonth()+1)}-${p(b.getUTCDate())} ${p(b.getUTCHours())}:${p(b.getUTCMinutes())}`;
 }
 
-function showErr(m){const e=document.getElementById("err");e.style.display="block";e.textContent=m;}
-function clearErr(){document.getElementById("err").style.display="none";}
+function renderReport(){
+  const body=`<div class="page-body">
+    <div class="pt-topbar">
+      <div class="pt-brand"><div class="pt-logo">任</div>
+        <div><div class="pt-title">平台任务详情</div><div class="pt-sub">项目/任务漏洞中心人工确认统计（定时采集：每天 6:00 / 12:00 / 17:00）</div></div>
+      </div>
+      <div class="pt-actions">
+        <span class="pt-updated" id="updated"><span class="dot"></span>加载中…</span>
+        <button class="btn g" id="refresh-btn" onclick="load()">刷新</button>
+        <button class="btn" onclick="syncNow()">立即采集</button>
+      </div>
+    </div>
+
+    <div class="pt-err" id="err"></div>
+    <div class="pt-kpis">
+      <div class="pt-kpi"><div class="v" id="k-proj" style="color:var(--acc)">-</div><div class="l">项目数</div></div>
+      <div class="pt-kpi"><div class="v" id="k-task">-</div><div class="l">任务数</div></div>
+      <div class="pt-kpi"><div class="v" id="k-total">-</div><div class="l">漏洞总数</div></div>
+      <div class="pt-kpi"><div class="v" id="k-vuln" style="color:var(--green)">-</div><div class="l">确认漏洞</div></div>
+      <div class="pt-kpi"><div class="v" id="k-fp" style="color:var(--red)">-</div><div class="l">确认误报</div></div>
+      <div class="pt-kpi"><div class="v" id="k-fpr" style="color:var(--acc)">-</div><div class="l">误报率 FP/(TP+FP)</div></div>
+    </div>
+
+    <div style="display:flex;gap:10px;margin-bottom:14px;flex-wrap:wrap">
+      <input id="f-proj" placeholder="按项目名过滤…" style="max-width:200px">
+      <input id="f-task" placeholder="按任务名过滤…" style="max-width:200px">
+      <select id="f-agent" style="width:auto;max-width:140px"><option value="">全部 Agent</option></select>
+      <select id="f-sort" style="width:auto;max-width:160px">
+        <option value="created_at_desc">创建时间 ↓</option>
+        <option value="updated_at_desc">更新时间 ↓</option>
+        <option value="fpr_desc">误报率 ↓</option>
+        <option value="fpr_asc">误报率 ↑</option>
+      </select>
+      <button class="btn g" onclick="load(1)">查询</button>
+    </div>
+
+    <div class="card">
+      <table>
+        <thead><tr>
+          <th>项目</th><th>任务</th><th>Agent</th><th>评测状态</th><th>负责人</th>
+          <th class="num">漏洞总数</th><th class="num">未确认</th>
+          <th class="num">确认漏洞</th><th class="num">确认非漏洞</th><th class="num">确认误报</th>
+          <th class="num">误报率</th>
+          <th>任务创建时间</th><th>任务更新时间</th><th>操作</th>
+        </tr></thead>
+        <tbody id="tbody"></tbody>
+      </table>
+      <div class="pt-empty" id="empty">暂无数据，点击「立即采集」或等待定时任务</div>
+    </div>
+
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px">
+      <span id="page-info" style="font-size:12px;color:var(--sub)"></span>
+      <button class="btn g" id="prev-btn" onclick="load(curPage-1)">上一页</button>
+      <button class="btn g" id="next-btn" onclick="load(curPage+1)">下一页</button>
+    </div>
+  </div>`;
+  $("view").innerHTML=body;
+}
+
+function showErr(m){const e=$("err");if(e){e.style.display="block";e.textContent=m;}}
+function clearErr(){const e=$("err");if(e)e.style.display="none";}
 
 async function load(page){
   clearErr();
   curPage=Math.max(1,page||1);
-  const btn=document.getElementById("refresh-btn");btn.disabled=true;
-  const pj=document.getElementById("f-proj").value.trim();
-  const tk=document.getElementById("f-task").value.trim();
-  const ag=document.getElementById("f-agent").value;
-  const sortVal=document.getElementById("f-sort").value;
+  const btn=$("refresh-btn");if(btn)btn.disabled=true;
+  const pj=($("f-proj")||{}).value?$("f-proj").value.trim():"";
+  const tk=($("f-task")||{}).value?$("f-task").value.trim():"";
+  const ag=($("f-agent")||{}).value||"";
+  const sortVal=($("f-sort")||{}).value||"created_at_desc";
   const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE});
   if(pj)params.set("keyword",pj);
   if(tk)params.set("keyword",tk);
   if(ag)params.set("agent",ag);
-  // 排序：默认创建时间倒序
   const [sb,sd]=sortVal.split("_");
   params.set("sort_by",sb);
   params.set("sort_dir",sd);
   try{
-    const d=await API("/api/v2/report/summary?"+params.toString());
+    const d=await jget("/api/v2/report/summary?"+params.toString());
     _data=d;
     render(d);
   }catch(e){showErr("加载失败: "+e);}
-  finally{btn.disabled=false;}
+  finally{if(btn)btn.disabled=false;}
 }
 
 function render(d){
   const items=d.items||[];
-  document.getElementById("updated").innerHTML=`<span class="dot"></span>最近采集：${fmtUpdated(d.updated_at)}`;
-  // KPI（过滤后全量，与表格过滤条件一致）
+  $("updated").innerHTML=`<span class="dot"></span>最近采集：${fmtUpdated(d.updated_at)}`;
   const kpi=d.kpi||{};
-  document.getElementById("k-proj").textContent=kpi.project_count||0;
-  document.getElementById("k-task").textContent=kpi.task_count||0;
-  document.getElementById("k-total").textContent=kpi.vuln_total||0;
-  document.getElementById("k-vuln").textContent=kpi.confirmed_vulnerable||0;
-  document.getElementById("k-fp").textContent=kpi.confirmed_fp||0;
-  // 误报率 = 确认误报/(确认漏洞+确认误报)
+  $("k-proj").textContent=kpi.project_count||0;
+  $("k-task").textContent=kpi.task_count||0;
+  $("k-total").textContent=kpi.vuln_total||0;
+  $("k-vuln").textContent=kpi.confirmed_vulnerable||0;
+  $("k-fp").textContent=kpi.confirmed_fp||0;
   const kFp=kpi.confirmed_fp||0, kVuln=kpi.confirmed_vulnerable||0;
   const kFpr=(kFp+kVuln)>0?((kFp/(kFp+kVuln))*100).toFixed(1)+'%':'NA';
-  document.getElementById("k-fpr").textContent=kFpr;
-  // 表格
-  const tbody=document.getElementById("tbody");
+  $("k-fpr").textContent=kFpr;
+  const tbody=$("tbody");
   if(!items.length){
     tbody.innerHTML="";
-    document.getElementById("empty").style.display="block";
-    document.getElementById("page-info").textContent="";
+    $("empty").style.display="block";
+    $("page-info").textContent="";
     return;
   }
-  document.getElementById("empty").style.display="none";
+  $("empty").style.display="none";
   const STATUS_COLOR={COMPLETED:'var(--green)',COMPLETED_WITH_WARNINGS:'var(--amber)',FAILED:'var(--red)',RUNNING:'var(--acc)',VALIDATING:'var(--acc)',INGESTING:'var(--acc)',PARSING:'var(--acc)',CASE_MATCHING:'var(--acc)',ROOT_CAUSE_ANALYSIS:'var(--acc)',RESOLVING:'var(--acc)',REPORTING:'var(--acc)',FINALIZING:'var(--acc)'};
   const STATUS_LABEL={COMPLETED:'完成',COMPLETED_WITH_WARNINGS:'完成有告警',FAILED:'失败',RUNNING:'运行中',VALIDATING:'验证中',INGESTING:'采集中',PARSING:'解析中',CASE_MATCHING:'匹配中',ROOT_CAUSE_ANALYSIS:'根因分析',RESOLVING:'写入中',REPORTING:'报告中',FINALIZING:'收尾中'};
   tbody.innerHTML=items.map(i=>{
-    const ev=i.evaluation_status?'<a href="/eval/evaluations/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--muted)">未评测</span>';
-    // 误报率：FP/(TP+FP)，>=30% 才显示启动测评按钮
+    const ev=i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>';
     const fpr=i.fpr!=null?(i.fpr*100).toFixed(1)+'%':'NA';
     const canStart=!i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
     const op=canStart?'<button class="btn" style="padding:5px 12px;font-size:12px" onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">启动测评</button>':(i.evaluation_status?'':'-');
     return `<tr>
     <td class="proj">${i.project_name||i.project_id}</td>
     <td class="task" title="${(i.task_name||i.task_id).replace(/"/g,'&quot;')}">${i.task_name||i.task_id}</td>
-    <td><span class="badge agent" style="background:#eef2ff;color:#4f46e5">${i.agent_type||"unknown"}</span></td>
+    <td><span class="pt-badge">${i.agent_type||"unknown"}</span></td>
     <td>${ev}</td>
     <td>${i.project_owner||"-"}</td>
     <td class="num">${i.vuln_total||0}</td>
@@ -187,15 +200,13 @@ function render(d){
     <td>${op}</td>
   </tr>`;
   }).join("");
-  // 分页信息
   const total=d.total||0;
   const totalPages=Math.max(1,Math.ceil(total/PAGE_SIZE));
-  document.getElementById("page-info").textContent=`第 ${curPage}/${totalPages} 页 · 共 ${total} 条`;
-  document.getElementById("prev-btn").disabled=curPage<=1;
-  document.getElementById("next-btn").disabled=curPage>=totalPages;
-  // Agent 筛选下拉（汇总所有 agent）
-  const fAgent=document.getElementById("f-agent");
-  if(!fAgent.dataset.loaded){
+  $("page-info").textContent=`第 ${curPage}/${totalPages} 页 · 共 ${total} 条`;
+  $("prev-btn").disabled=curPage<=1;
+  $("next-btn").disabled=curPage>=totalPages;
+  const fAgent=$("f-agent");
+  if(fAgent&&!fAgent.dataset.loaded){
     const agents=new Set();
     (d.all_agents||[]).forEach(a=>agents.add(a));
     fAgent.innerHTML='<option value="">全部 Agent</option>'+Array.from(agents).map(a=>`<option value="${a}">${a}</option>`).join("");
@@ -207,41 +218,34 @@ async function syncNow(){
   clearErr();
   const btn=document.querySelector('button.btn:not(.g)');
   const old=btn.textContent;btn.disabled=true;btn.textContent="采集中…";
-  document.getElementById("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集已启动（后台执行），完成后自动刷新';
+  $("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集已启动（后台执行），完成后自动刷新';
   try{
-    const d=await API("/api/v2/report/sync",{method:"POST"});
-    // 后台采集：轮询 summary，采集中显示状态，完成后刷新
+    const d=await jpost("/api/v2/report/sync",{});
     let tries=0;
     const timer=setInterval(async()=>{
       tries++;
       try{
-        const s=await API("/api/v2/report/summary?page=1&page_size=20");
+        const s=await jget("/api/v2/report/summary?page=1&page_size=20");
         if(s.updated_at){
           clearInterval(timer);
           btn.textContent="采集完成";
-          document.getElementById("updated").innerHTML='<span class="dot"></span>最近采集：'+fmtUpdated(s.updated_at);
+          $("updated").innerHTML='<span class="dot"></span>最近采集：'+fmtUpdated(s.updated_at);
           await load(1);
-        }else if(tries>40){ // 2 分钟无结果
+        }else if(tries>40){
           clearInterval(timer);
           btn.textContent="采集进行中";
-          document.getElementById("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集进行中（425 项目，耗时可能较长）…';
+          $("updated").innerHTML='<span class="dot" style="background:var(--amber)"></span>采集进行中（425 项目，耗时可能较长）…';
         }
       }catch(e){}
     },3000);
   }catch(e){showErr("启动采集失败: "+e);btn.textContent=old;btn.disabled=false;}
 }
 
-// 启动测评：创建运行态评测（名称=任务名），跳转评测页
-function genEvalId(){
-  const d=new Date(Date.now()+8*3600000);
-  const p=n=>String(n).padStart(2,"0");
-  return `EV-${d.getUTCFullYear()}${p(d.getUTCMonth()+1)}${p(d.getUTCDate())}${p(d.getUTCHours())}${p(d.getUTCMinutes())}${p(d.getUTCSeconds())}-${Math.floor(Math.random()*9000+1000)}`;
-}
 async function startEval(projectId, taskId, taskName){
   if(!confirm(`确认对任务「${taskName}」启动运行态测评？`))return;
-  const eid=genEvalId();
+  const eid=genId();
   try{
-    const r=await fetch("/eval/api/v1/evaluations",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({
+    const r=await jpost("/api/v1/evaluations",{
       evaluation_id:eid,
       evaluation_name:taskName||taskId,
       kg_project_id:projectId,
@@ -250,14 +254,13 @@ async function startEval(projectId, taskId, taskName){
       benchmark_set_id:projectId,
       vc_source_task_id:taskId,
       eval_mode:"runtime"
-    })});
-    if(!r.ok){const t=await r.text();throw new Error(t.slice(0,120));}
-    const d=await r.json();
-    window.open("/eval/evaluations/"+d.evaluation_id,"_blank");
+    });
+    window.open(_INGRESS+"/evals/"+r.evaluation_id,"_blank");
     setTimeout(load,2000);
   }catch(e){showErr("启动测评失败: "+e);}
 }
 
+renderReport();
 load();
 </script>
 </body>
