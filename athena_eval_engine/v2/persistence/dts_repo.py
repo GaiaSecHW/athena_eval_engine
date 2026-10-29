@@ -492,7 +492,7 @@ def insert_regression_result(dts_id: str, task_id: str, case_id: str,
         match_method: 问题单的匹配方式——``dts_id`` / ``case_id`` / ``llm``。
 
     Returns:
-        True 表示写入成功，False 表示写入异常（已记录日志，不抛出）。
+        新记录的 id；写入异常时返回 None（已记录日志，不抛出）。
     """
     sql = (
         "INSERT INTO dts_regression_result ("
@@ -509,7 +509,7 @@ def insert_regression_result(dts_id: str, task_id: str, case_id: str,
 
     def _do_insert(cur):
         cur.execute(sql, params)
-        return cur.rowcount > 0
+        return cur.lastrowid if cur.rowcount > 0 else None
 
     try:
         return _db_query(_do_insert)
@@ -517,6 +517,32 @@ def insert_regression_result(dts_id: str, task_id: str, case_id: str,
         # 历史记录失败不应影响主流程（问题单已更新成功）
         log("DTS_REPO",
             f"insert_regression_result failed dts_id={dts_id}: {str(e)[:200]}")
+        return None
+
+
+def update_regression_result(result_id: int, replay_result: str, status: str,
+                             message: str, replay_data: str) -> bool:
+    """补全一条回归记录（异步判定完成时使用）。
+
+    Returns:
+        True 表示更新成功，False 表示记录不存在或写入异常。
+    """
+    sql = (
+        "UPDATE dts_regression_result SET"
+        "  replay_result = %s, status = %s, message = %s, replay_data = %s"
+        " WHERE id = %s"
+    )
+    params = (replay_result, status, (message or "")[:512], replay_data, result_id)
+
+    def _do_update(cur):
+        cur.execute(sql, params)
+        return cur.rowcount > 0
+
+    try:
+        return _db_query(_do_update)
+    except Exception as e:
+        log("DTS_REPO",
+            f"update_regression_result failed id={result_id}: {str(e)[:200]}")
         return False
 
 
