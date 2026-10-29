@@ -465,6 +465,23 @@ class RootCauseAnalyzer:
                     if sid not in session_agent_type:
                         session_agent_type[sid] = dp.agent_type or ""
 
+        # 从 data_packs 的 session_graph 聚合 parent_map / children_map——
+        # 与 DTS 问题单 _query_session_chains 的 _expand_chain 同源同逻辑：
+        # case_matching 的 mining/verify 种子 session 展开成完整调用链（祖先+子孙），
+        # 保证 debug/case_matching/DTS 三处显示的 session 链一致。
+        all_parent_map: dict[str, str] = {}
+        all_children_map: dict[str, list[str]] = {}
+        for dp in data_packs:
+            sg = getattr(dp, "session_graph", None) or {}
+            gpm = sg.get("parent_map", {}) if isinstance(sg, dict) else {}
+            for sid, pid in gpm.items():
+                if sid not in all_parent_map:
+                    all_parent_map[sid] = pid
+                if pid not in all_children_map:
+                    all_children_map[pid] = []
+                if sid not in all_children_map[pid]:
+                    all_children_map[pid].append(sid)
+
         # 多 case 并发分析（最多 10 个 case 同时处理）
         # 每个 case 内挖掘链和验证链串行执行，
         # 链内 session 压缩通过 submit_llm_batch 并发（受 LLM gate 控制）
@@ -481,8 +498,13 @@ class RootCauseAnalyzer:
             desc = case.get("description", "")
             summary = case.get("summary", "")
             outcome = case.get("outcome", "FP")
-            mining_chain = list(case.get("mining_sessions", []))
-            verify_chain = list(case.get("verify_sessions", []))
+            # 种子 session 展开成完整调用链（祖先+子孙），与 DTS 问题单一致
+            mining_chain = self._expand_chain(
+                set(case.get("mining_sessions", [])),
+                all_parent_map, all_children_map)
+            verify_chain = self._expand_chain(
+                set(case.get("verify_sessions", [])),
+                all_parent_map, all_children_map)
             fp_reason = case.get("human_confirmation_summary", "")
 
             log("ROOT_CAUSE",
@@ -574,6 +596,54 @@ class RootCauseAnalyzer:
                     results[idx] = result
 
         return [r for r in results if r is not None]
+
+    @staticmethod
+    def _expand_chain(
+        seeds: set[str],
+        all_parent_map: dict[str, str],
+        all_children_map: dict[str, list[str]],
+    ) -> list[str]:
+        """从种子 session 出发展开完整调用链（祖先 + 子孙），根→叶子顺序。
+
+        与 DTS 问题单 _query_session_chains._expand_chain 完全一致——
+        保证 case_matching / 根因分析 / DTS 三处展示的 session 链同源同逻辑。
+        """
+        chain_ids: set[str] = set()
+
+        # 向上找祖先
+        for sid in seeds:
+            cur = sid
+            while cur and cur in all_parent_map and cur not in chain_ids:
+                chain_ids.add(cur)
+                cur = all_parent_map[cur]
+            if cur and cur not in chain_ids:
+                chain_ids.add(cur)  # 根节点
+
+        # 向下找子孙
+        queue = list(seeds)
+        while queue:
+            sid = queue.pop(0)
+            for child in all_children_map.get(sid, []):
+                if child not in chain_ids:
+                    chain_ids.add(child)
+                    queue.append(child)
+
+        # 按根→叶子排序：找根节点（parent 不在链中），BFS 往下
+        roots = [sid for sid in chain_ids
+                 if all_parent_map.get(sid, "") not in chain_ids]
+        ordered: list[str] = []
+        visited: set[str] = set()
+        queue = sorted(roots)
+        while queue:
+            sid = queue.pop(0)
+            if sid in visited:
+                continue
+            visited.add(sid)
+            ordered.append(sid)
+            children = [c for c in all_children_map.get(sid, []) if c in chain_ids]
+            queue = sorted(children) + queue
+
+        return ordered
 
     def _analyze_chain(
         self,
