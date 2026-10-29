@@ -123,6 +123,19 @@ class SecMateParser(BaseParser):
     def agent_type(self) -> str:
         return "secmate"
 
+    def _extract_tool_task_id(self) -> str | None:
+        """从 source_uri 提取 secmate tool_task_id。
+
+        source_uri 形如 .../tasks/{task_id}/tools/secmate-XXX-{ts}/run/.worker-config/projects/...
+        tool_task_id = "secmate-XXX-{ts}"（目录名，对应 MySQL finding.tool_task_id）。
+        """
+        uri = (self._source_uri or "").replace("\\", "/")
+        # 匹配 tools/secmate-XXX-{ts}/ 段
+        m = re.search(r"/tools/(secmate-[^/]+?)/run(?:/|$)", uri)
+        if m:
+            return m.group(1)
+        return None
+
     @staticmethod
     def _files(uri: str) -> list[str]:
         return _find_jsonl_files(uri)
@@ -554,25 +567,20 @@ class SecMateParser(BaseParser):
         if db_path and os.path.isfile(db_path):
             try:
                 conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
-                # finding_id -> source_session_id 映射 + description 提取
-                # （description 作匹配索引键，与 argo finding_descs 同构，
-                # 供 case_matching 的 secmate finding extractor 使用）
-                finding_to_session = {}
-                finding_desc_by_sid: dict[str, dict] = {}
+                # finding_id -> source_session_id 映射
+                # （findings.db 是运行产物，含 session 级关联 source_session_id；
+                #   MySQL finding 表无 source_session_id，通过 source_finding_id 桥接）
+                finding_to_session: dict[str, str] = {}
+                finding_session_set: dict[str, str] = {}
                 for r in conn.execute(
-                    "SELECT id, source_session_id, description, vuln_type "
+                    "SELECT id, source_session_id "
                     "FROM findings "
                     "WHERE source_session_id IS NOT NULL "
-                    "  AND source_session_id != '' "
-                    "  AND description IS NOT NULL AND description != ''"
+                    "  AND source_session_id != ''"
                 ).fetchall():
-                    fid, src_sid, fdesc, vuln_type = (
-                        str(r[0]), r[1], r[2], r[3])
-                    finding_to_session[fid] = src_sid
-                    # 同一 session 可能有多个 finding：按 (vuln_type, desc) 存
-                    d_key = f"{vuln_type or ''}:{fdesc}"
-                    finding_desc_by_sid.setdefault(
-                        src_sid, {})[d_key] = fdesc
+                    fid = str(r[0])
+                    finding_to_session[fid] = r[1]
+                    finding_session_set[fid] = r[1]
                 # finding_edges -> session 级别边
                 # source_id 是 parent finding（先创建），target_id 是 child finding（derived）
                 for r in conn.execute(
@@ -584,15 +592,54 @@ class SecMateParser(BaseParser):
                         graph['parent_map'][tgt_sid] = src_sid
                         graph['edges'][tgt_sid].add(src_sid)
                         graph['edges'][src_sid].add(tgt_sid)
-                # 把 finding description 写入对应 session 的 finding_descs
-                # （供 case_matching 的 secmate finding extractor 使用）
-                for sid, fdescs in finding_desc_by_sid.items():
-                    sdata = graph['sessions'].get(sid)
-                    if sdata is None:
-                        continue
-                    sdata.setdefault('finding_descs', {})
-                    sdata['finding_descs'].update(fdescs)
                 conn.close()
+
+                # ── 从 secmate MySQL 提取 finding title（权威源），桥接 session ──
+                # MySQL finding 表：title（精确标题）+ source_finding_id + tool_task_id。
+                # source_finding_id = findings.db 的 findings.id → 关联 source_session_id。
+                # 只有 report_state='reported' 的才是实际上报的 finding（参与匹配）。
+                # 匹配键用 title（与 turing 的 title 索引一致），而非 description。
+                try:
+                    from ...infra.agent_db import AgentDBManager
+                    mgr = AgentDBManager()
+                    mysql_conn = mgr.get_connection("secmate")
+                    if mysql_conn is not None:
+                        try:
+                            cur = mysql_conn.cursor()
+                            # tool_task_id = source_uri 中 tools/secmate-XXX/ 的目录名
+                            tool_task_id = self._extract_tool_task_id()
+                            if tool_task_id:
+                                cur.execute(
+                                    "SELECT title, source_finding_id FROM finding "
+                                    "WHERE tool_task_id = %s AND report_state = %s "
+                                    "AND title IS NOT NULL AND title != ''",
+                                    (tool_task_id, "reported"),
+                                )
+                                rows = cur.fetchall()
+                                cur.close()
+                                # source_finding_id → session 的 finding_descs
+                                # （title 作索引键；桥接不到 session 的 finding 跳过——
+                                #  匹配仍可命中 title，但 session 为空）
+                                for f_title, source_fid in rows:
+                                    f_title = str(f_title or "").strip()
+                                    if not f_title:
+                                        continue
+                                    src_sid = finding_session_set.get(str(source_fid), "")
+                                    if src_sid:
+                                        sdata = graph['sessions'].get(src_sid)
+                                        if sdata is not None:
+                                            sdata.setdefault('finding_descs', {})
+                                            sdata['finding_descs'][f_title] = f_title
+                            _log.debug(
+                                "SecMate MySQL finding 提取: tool_task_id=%s, "
+                                "reported=%d",
+                                tool_task_id or "?",
+                                len(rows) if tool_task_id else 0,
+                            )
+                        finally:
+                            mysql_conn.close()
+                except Exception as e:
+                    _log.debug("SecMate MySQL finding 提取失败: %s", e)
                 _log.debug("SecMate build_session_graph: finding_edges -> %d session edges, %d total edges",
                            len(graph['parent_map']),
                            sum(len(v) for v in graph['edges'].values()) // 2)
