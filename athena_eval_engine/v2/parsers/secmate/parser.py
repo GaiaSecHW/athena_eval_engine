@@ -480,11 +480,25 @@ class SecMateParser(BaseParser):
         """构建 session 关系图。
 
         SecMate session 关联机制（从源码与 trace 数据验证）：
-        1. finding_edges（findings.db）：finding 级别的 parent/derived_from 关系，
-           通过 findings.source_session_id 映射到 session 级别边
-        2. SEED_ID 共享：planner prompt 含 SEED_ID=xxx，sessions 共享同一 seed
-        3. finding_id 共享：store_finding/query_finding 工具调用中的 finding_id
-        4. 共享文件（仅收集不建边——共享不是调用关系，会导致 BFS 误连）
+
+        parent_map/edges 的唯一来源是 **findings.db 的 finding_edges**：
+        finding 级别的 parent/derived_from 派生关系，通过 findings.source_session_id
+        映射到 session 级别边。语义是"产生相关漏洞发现的 session 之间的关系"
+        （挖掘逻辑链），不是"session A 调用了 session B"的严格调用关系。
+        SecMate 的 session（agent CLI 进程一次运行，UUID 文件）彼此独立运行，
+        不存在嵌套调用——这是与 argo/turing 的本质区别。
+
+        已排查并排除的来源：
+        - **trace parentUuid**：每个 session 文件都有 parentUuid，但父 UUID
+          全部不在本 run 的 session 集合内（指向 agent_spawner CLI 父进程的
+          全局 session），不可用于构建 case 内调用链。
+        - **events.jsonl spawn**：任务级派生（persona 调度单元），非 session 级。
+        - **MySQL task.parent_task_id**：任务级父子，无 session 级。
+        - **共享文件**：仅收集不建边——共享不是调用关系，会导致 BFS 误连。
+
+        辅助关联（不进 parent_map，仅供查询）：
+        1. SEED_ID 共享：planner prompt 含 SEED_ID=xxx，sessions 共享同一 seed
+        2. finding_id 共享：store_finding/query_finding 工具调用中的 finding_id
 
         注意：source_session_id 是 agent_spawner 从 AGENTFL_SESSION_ID 环境变量注入的
         （agent_spawner/server.py line 986），不在 store_finding 的 input 参数中

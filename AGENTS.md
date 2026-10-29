@@ -81,7 +81,7 @@ bash port-forward.sh   # 另一终端运行
 
 - **TuringTraceParser**: 读 SQLite（`opencode.db`），含 `session` + `part` 表。Schema Gate 在缺少必要表时阻断。
 - **ArgoTraceParser**: 读 Claude Code JSONL session 文件（`.jsonl` 目录）。`source_uri` 为目录或 `.jsonl` 结尾时选中。需要 LLM 模块注入。
-- **SecMateTraceParser**: 读 SecMate JSONL（`tools/secmate-*/run/.worker-config/projects/*/`）。
+- **SecMateTraceParser**: 读 SecMate JSONL（`tools/secmate-*/run/.worker-config/projects/*/`）。**session 调用链语义**：parent_map/edges 唯一来源是 findings.db 的 finding_edges（finding 派生链经 source_session_id 映射成 session 级关系），语义为"产生相关漏洞发现的 session 之间的关系"，非严格调用关系。SecMate 的 session（agent CLI 进程一次运行）彼此独立运行、无嵌套调用——与 argo/turing 不同。trace 的 parentUuid 指向 agent_spawner CLI 父进程 session（不在本 run 内），不可用于构建 case 内调用链。finding 权威源是 secmate MySQL `finding` 表（title + report_state=reported），经 source_finding_id 桥接 findings.db 的 source_session_id 关联 session。
 - **CVulnVerifyTraceParser**: 读 CVulnVerify JSONL（`tasks/c_vuln_verify/*.jsonl` 或 `{task_id}/run/*.jsonl`）。pi-agent 信封格式：type=session/model_change/message，message.role=user/assistant/toolResult。
 - **WebVulnVerifyTraceParser**: 读 WebVulnVerify JSONL（`session/WebVerify/*.jsonl`）。自定义 JSONL 格式：session_meta/tool_schema/message_completed。finding 入口为 `vulnerability_verify`。
 - **DataflowVulnScanTraceParser**: 读 dataflow_vuln_scan JSONL（`session/dataflow_vuln_scan/<dvs_run_id>/*.jsonl`）。与 CVulnVerify 同信封但 toolResult/usage 键名不同。按 dvs_run_id 子目录递归读取。
