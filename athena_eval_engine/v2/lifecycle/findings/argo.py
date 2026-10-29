@@ -19,10 +19,6 @@ from .base import FindingExtractor, register
 
 _log = logging.getLogger(__name__)
 
-#: session 丢失占位标记——上报 finding 的 trace session 文件缺失，
-#: 用 facts 表 fallback 时 entry 的 sid 标记为该值，注明 session 丢失
-SESSION_LOST = "__session_lost__"
-
 
 @register("argo")
 class ArgoFindingExtractor(FindingExtractor):

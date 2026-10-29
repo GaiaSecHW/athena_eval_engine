@@ -450,6 +450,19 @@ class DataflowVulnScanParser(BaseParser):
             sid = ev.session_id
             if not sid:
                 continue
+            # intake 合成占位 session（dvs_{run}/intake-result）不是 trace 落地的
+            # session 文件，不写入 session_graph——避免 debug/DTS 显示幽灵节点。
+            # 其 case_id 提取仍保留（供 finding_to_session），但 sid 不进 sessions。
+            if sid.endswith('/intake-result'):
+                if ev.event_type == "TEXT" and ev.output_json:
+                    text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
+                    if '"case_id"' in text:
+                        for data in extract_json_payloads(text, keywords=['"case_id"', '"findings"']):
+                            for f in (data.get("findings") or []):
+                                case_id = str(f.get("case_id", ""))
+                                if case_id:
+                                    finding_to_session[case_id] = sid
+                continue
             if sid not in graph['sessions']:
                 graph['sessions'][sid] = {'files': set(), 'facts': set(), 'athena_qs': [],
                                           'session_type': 'scan', 'memory_reads': []}
@@ -460,18 +473,6 @@ class DataflowVulnScanParser(BaseParser):
                 parts = sid.split('/')
                 if parts and parts[0].startswith('dvs_'):
                     sg['dvs_run_id'] = parts[0]
-                elif sid == 'dvs-intake-result':
-                    sg['dvs_run_id'] = ''
-
-            # intake events: 提取 case_id
-            if sid == 'dvs-intake-result' and ev.event_type == "TEXT" and ev.output_json:
-                text = ev.output_json if isinstance(ev.output_json, str) else str(ev.output_json)
-                if '"case_id"' in text:
-                    for data in extract_json_payloads(text, keywords=['"case_id"', '"findings"']):
-                        for f in (data.get("findings") or []):
-                            case_id = str(f.get("case_id", ""))
-                            if case_id:
-                                finding_to_session[case_id] = sid
 
             # 收集文件（仅用于多候选父消歧，不建边）
             if ev.is_tool_call():
@@ -526,8 +527,6 @@ class DataflowVulnScanParser(BaseParser):
         _depth_groups: dict[str, dict[int, list[str]]] = defaultdict(lambda: defaultdict(list))
 
         for sid in graph['sessions']:
-            if sid == 'dvs-intake-result':
-                continue
             parts = sid.split('/')
             if len(parts) < 2 or not parts[0].startswith('dvs_'):
                 continue
@@ -753,7 +752,7 @@ class DataflowVulnScanParser(BaseParser):
 
         返回 analysisType 字符串，无法提取时返回 None。
         """
-        if not session_id or session_id == 'dvs-intake-result':
+        if not session_id:
             return None
 
         parts = session_id.split('/')

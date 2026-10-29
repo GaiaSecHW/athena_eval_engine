@@ -4,8 +4,8 @@
 dataflow parser 把每个 status=reported 的 vuln_intake_result 解析成
 TEXT 事件，output_json 形如 {"findings": [{"finding_id", "case_id",
 "function_name", "line", "title", "vuln_type", ...}]}，
-session_id 为 "dvs-intake-result"（见 v2/parsers/dataflow/parser.py
-_parse_intake_events）。
+session_id 形如 dvs_{run_id}/intake-result（parser 合成的占位 session，
+不写入 session_graph；extract 时映射到真实 scan session，见下）。
 
 基线 case_id（如 case-20260917-232842-xxx）与上报的 case_id 一致，
 作为索引键精确匹配；title 同时入索引，供 raw_title/vuln_title 匹配路径。
