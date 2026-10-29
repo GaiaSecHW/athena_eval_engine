@@ -490,6 +490,13 @@ MIGRATIONS = [
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
     },
+    {
+        "id": "032_dts_regression_match_method",
+        "desc": "dts_regression_result 新增 match_method（记录问题单通过 dts_id / case_id / llm 哪种方式匹配上）",
+        "sql": [
+            "ALTER TABLE dts_regression_result ADD COLUMN match_method VARCHAR(16) NOT NULL DEFAULT '' AFTER case_id",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

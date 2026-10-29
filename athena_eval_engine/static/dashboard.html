@@ -1515,6 +1515,7 @@ async function renderDtsDetailPage(dtsId){
         +'<table style="width:100%;border-collapse:collapse;font-size:13px">'
         +'<thead><tr style="text-align:left;color:var(--gray)">'
         +'<th style="padding:6px 8px">时间</th>'
+        +'<th style="padding:6px 8px">匹配方式</th>'
         +'<th style="padding:6px 8px">结果</th>'
         +'<th style="padding:6px 8px">问题单状态</th>'
         +'<th style="padding:6px 8px">任务 ID</th>'
@@ -1523,9 +1524,11 @@ async function renderDtsDetailPage(dtsId){
         var ok=h.replay_result==='false_positive_resolved';
         var color=ok?'var(--green)':(h.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)');
         var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':'-');
+        var mm=h.match_method==='llm'?'LLM 匹配':(h.match_method||'-');
         var ts=String(h.submitted_at||'').replace('T',' ').slice(0,19);
         html+='<tr style="border-top:1px solid var(--p2)">'
           +'<td style="padding:6px 8px;white-space:nowrap">'+ts+'</td>'
+          +'<td style="padding:6px 8px">'+mm+'</td>'
           +'<td style="padding:6px 8px"><span style="color:'+color+';font-weight:600">'+label+'</span></td>'
           +'<td style="padding:6px 8px">'+String(h.status||'')+'</td>'
           +'<td style="padding:6px 8px;font-family:monospace;font-size:12px">'+String(h.task_id||'')+'</td>'

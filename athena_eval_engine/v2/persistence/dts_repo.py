@@ -480,25 +480,29 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
 
 
 def insert_regression_result(dts_id: str, task_id: str, case_id: str,
-                             is_vulnerable: bool, replay_result: str,
-                             status: str, message: str, vuln_title: str,
-                             replay_data: str) -> bool:
+                             match_method: str, is_vulnerable: bool,
+                             replay_result: str, status: str, message: str,
+                             vuln_title: str, replay_data: str) -> bool:
     """记录一次回归验证结果。
 
     与 ``dts_issue`` 上的 replay_* 字段不同，本表**只追加不覆盖**，
     保留每次回归的全部记录（含提交时间），供详情页展示回归历史。
+
+    Args:
+        match_method: 问题单的匹配方式——``dts_id`` / ``case_id`` / ``llm``。
 
     Returns:
         True 表示写入成功，False 表示写入异常（已记录日志，不抛出）。
     """
     sql = (
         "INSERT INTO dts_regression_result ("
-        "  dts_id, task_id, case_id, is_vulnerable, replay_result, status,"
-        "  message, vuln_title, replay_data"
-        ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+        "  dts_id, task_id, case_id, match_method, is_vulnerable,"
+        "  replay_result, status, message, vuln_title, replay_data"
+        ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)"
     )
     params = (
-        dts_id, task_id, case_id, 1 if is_vulnerable else 0,
+        dts_id, task_id, case_id, (match_method or "")[:16],
+        1 if is_vulnerable else 0,
         replay_result, status, (message or "")[:512], (vuln_title or "")[:512],
         replay_data,
     )
@@ -520,8 +524,8 @@ def list_regression_results(dts_id: str) -> list[dict]:
     """列出某问题单的全部回归验证记录（按提交时间倒序）。"""
     def _do_query(cur):
         cur.execute(
-            "SELECT id, task_id, case_id, is_vulnerable, replay_result, status,"
-            " message, vuln_title, replay_data, submitted_at"
+            "SELECT id, task_id, case_id, match_method, is_vulnerable,"
+            " replay_result, status, message, vuln_title, replay_data, submitted_at"
             " FROM dts_regression_result WHERE dts_id = %s"
             " ORDER BY submitted_at DESC, id DESC",
             (dts_id,),
@@ -537,17 +541,18 @@ def list_regression_results(dts_id: str) -> list[dict]:
 
     out = []
     for r in rows:
-        submitted = r[9]
+        submitted = r[10]
         out.append({
             "id": r[0],
             "task_id": r[1],
             "case_id": r[2],
-            "is_vulnerable": bool(r[3]),
-            "replay_result": r[4],
-            "status": r[5],
-            "message": r[6],
-            "vuln_title": r[7],
-            "replay_data": r[8],
+            "match_method": r[3],
+            "is_vulnerable": bool(r[4]),
+            "replay_result": r[5],
+            "status": r[6],
+            "message": r[7],
+            "vuln_title": r[8],
+            "replay_data": r[9],
             "submitted_at": (submitted.isoformat() if hasattr(submitted, "isoformat")
                              else (str(submitted) if submitted else "")),
         })

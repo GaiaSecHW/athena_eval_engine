@@ -347,10 +347,14 @@ def regression_verify(req: RegressionVerifyRequest):
     issue = None
     match_failed = False
     used_llm_match = False
+    # 记录问题单是通过哪种方式匹配上的：dts_id / case_id / llm
+    match_method = ""
     if req.dts_id:
         issue = get_dts_issue(req.dts_id)
         if issue is None:
             match_failed = True
+        else:
+            match_method = "dts_id"
     elif req.case_id:
         issues = list_dts_by_case(req.case_id)
         if not issues:
@@ -359,6 +363,7 @@ def regression_verify(req: RegressionVerifyRequest):
             # 同 case 可能多条问题单，取最新一条（list_dts_by_case 按 created_at ASC）
             issue = issues[-1]
             req.dts_id = issue.get("dts_id", "")  # 回填 dts_id 供后续使用
+            match_method = "case_id"
 
     # dts_id/case_id 未提供或匹配不上 → 用 LLM 在 task_id 下全部问题单中匹配
     if issue is None:
@@ -382,6 +387,7 @@ def regression_verify(req: RegressionVerifyRequest):
                 detail="dts_id 与 case_id 至少填一个（或提供可匹配的漏洞信息）",
             )
         used_llm_match = True
+        match_method = "llm"
         req.dts_id = issue.get("dts_id", "")  # 回填 LLM 匹配到的 dts_id
         log("DTS_API",
             f"regression_verify: LLM 匹配到 dts_id={req.dts_id}")
@@ -434,7 +440,8 @@ def regression_verify(req: RegressionVerifyRequest):
             })
             # 保留本次回归记录（只追加不覆盖），须在取详情之前写入
             insert_regression_result(
-                req.dts_id, req.task_id, req.case_id, req.is_vulnerable,
+                req.dts_id, req.task_id, req.case_id, match_method,
+                req.is_vulnerable,
                 replay_result, new_status, message, req.vuln_title, replay_data,
             )
             updated = get_dts_issue(req.dts_id) if success else None
@@ -493,7 +500,7 @@ def regression_verify(req: RegressionVerifyRequest):
 
     # 保留本次回归记录（只追加不覆盖），供详情页展示回归历史
     insert_regression_result(
-        req.dts_id, req.task_id, req.case_id, req.is_vulnerable,
+        req.dts_id, req.task_id, req.case_id, match_method, req.is_vulnerable,
         replay_result, new_status, message, req.vuln_title, replay_data,
     )
 
