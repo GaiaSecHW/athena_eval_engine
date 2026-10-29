@@ -608,6 +608,30 @@ class WebVulnVerifyParser(BaseParser):
         for case_id, info in session_map.items():
             analysis_sid = info.get("ai_analysis_session_id") or ""
             verification_sid = info.get("ai_verification_session_id") or ""
+
+            # API 兜底：case 的 analysis/verification session 都为空时
+            # （API 状态不完整，如 analysis_status=None/stopped），
+            # 从 trace 的 session_meta 提取同 case_id 的 session 作 fallback——
+            # trace 里确实存在该 case 的验证会话（detail 佐证）。
+            # 保证验证 agent session 不因 API 状态缺失而整体落空。
+            if not analysis_sid and not verification_sid:
+                for t_sid, t_meta in session_meta_by_sid.items():
+                    t_case = str(
+                        (t_meta.get("metadata") or {}).get("chimera_vuln_id", "") or "")
+                    if t_case == case_id:
+                        # 区分 analysis/verification phase（parent_id 有值=verification）
+                        pid = str(
+                            (t_meta.get("session") or {}).get("parent_id", "") or "")
+                        if pid:
+                            verification_sid = t_sid
+                        else:
+                            analysis_sid = t_sid
+                if verification_sid or analysis_sid:
+                    _log.debug(
+                        "WebVulnVerify API session 为空，trace session_meta 兜底: "
+                        "case=%s analysis=%s verification=%s",
+                        case_id, analysis_sid or "", verification_sid or "")
+
             for sid, phase in ((analysis_sid, "analysis"),
                                (verification_sid, "verification")):
                 if not sid:
