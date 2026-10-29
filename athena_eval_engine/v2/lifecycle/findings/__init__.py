@@ -15,7 +15,7 @@ from .base import (
     get_finding_extractor,
     register,
 )
-from . import turing, argo, webvuln_verify, cvuln_verify  # noqa: F401  注册副作用
+from . import turing, argo, webvuln_verify, cvuln_verify, dataflow  # noqa: F401  注册副作用
 from .turing import collect_turing_finding_sids
 
 __all__ = [
