@@ -554,13 +554,25 @@ class SecMateParser(BaseParser):
         if db_path and os.path.isfile(db_path):
             try:
                 conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
-                # finding_id -> source_session_id 映射
+                # finding_id -> source_session_id 映射 + description 提取
+                # （description 作匹配索引键，与 argo finding_descs 同构，
+                # 供 case_matching 的 secmate finding extractor 使用）
                 finding_to_session = {}
+                finding_desc_by_sid: dict[str, dict] = {}
                 for r in conn.execute(
-                    "SELECT id, source_session_id FROM findings "
-                    "WHERE source_session_id IS NOT NULL AND source_session_id != ''"
+                    "SELECT id, source_session_id, description, vuln_type "
+                    "FROM findings "
+                    "WHERE source_session_id IS NOT NULL "
+                    "  AND source_session_id != '' "
+                    "  AND description IS NOT NULL AND description != ''"
                 ).fetchall():
-                    finding_to_session[str(r[0])] = r[1]
+                    fid, src_sid, fdesc, vuln_type = (
+                        str(r[0]), r[1], r[2], r[3])
+                    finding_to_session[fid] = src_sid
+                    # 同一 session 可能有多个 finding：按 (vuln_type, desc) 存
+                    d_key = f"{vuln_type or ''}:{fdesc}"
+                    finding_desc_by_sid.setdefault(
+                        src_sid, {})[d_key] = fdesc
                 # finding_edges -> session 级别边
                 # source_id 是 parent finding（先创建），target_id 是 child finding（derived）
                 for r in conn.execute(
@@ -572,6 +584,14 @@ class SecMateParser(BaseParser):
                         graph['parent_map'][tgt_sid] = src_sid
                         graph['edges'][tgt_sid].add(src_sid)
                         graph['edges'][src_sid].add(tgt_sid)
+                # 把 finding description 写入对应 session 的 finding_descs
+                # （供 case_matching 的 secmate finding extractor 使用）
+                for sid, fdescs in finding_desc_by_sid.items():
+                    sdata = graph['sessions'].get(sid)
+                    if sdata is None:
+                        continue
+                    sdata.setdefault('finding_descs', {})
+                    sdata['finding_descs'].update(fdescs)
                 conn.close()
                 _log.debug("SecMate build_session_graph: finding_edges -> %d session edges, %d total edges",
                            len(graph['parent_map']),
