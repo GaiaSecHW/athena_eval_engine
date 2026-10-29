@@ -469,6 +469,27 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue MODIFY COLUMN replay_result VARCHAR(32)",
         ],
     },
+    {
+        "id": "031_dts_regression_result",
+        "desc": "新增 dts_regression_result 表——保留每次回归验证的全部记录（含回归时间）",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS dts_regression_result ("
+            "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+            "  dts_id VARCHAR(32) NOT NULL,"
+            "  task_id VARCHAR(128) NOT NULL DEFAULT '',"
+            "  case_id VARCHAR(64) NOT NULL DEFAULT '',"
+            "  is_vulnerable TINYINT(1) NOT NULL,"
+            "  replay_result VARCHAR(32) NOT NULL DEFAULT '',"
+            "  status VARCHAR(16) NOT NULL DEFAULT '',"
+            "  message VARCHAR(512) NOT NULL DEFAULT '',"
+            "  vuln_title VARCHAR(512) NOT NULL DEFAULT '',"
+            "  replay_data MEDIUMTEXT,"
+            "  submitted_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  INDEX idx_dts_reg_dts (dts_id, submitted_at),"
+            "  INDEX idx_dts_reg_task (task_id)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

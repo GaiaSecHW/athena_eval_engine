@@ -240,6 +240,9 @@ def get_dts_issue(dts_id: str) -> dict | None:
     # 是 session_id 列表，需要从 DB 补充每个 session 的调用关系（parent_id、agent 等）
     result["session_chains"] = _query_session_chains(result)
 
+    # 回归验证历史（dts_regression_result，只追加不覆盖）
+    result["regression_history"] = list_regression_results(dts_id)
+
     return result
 
 
@@ -474,6 +477,81 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     log("DTS_REPO",
         f"update_dts_issue: dts_id={dts_id}, updated={rowcount}{_detail}")
     return exists
+
+
+def insert_regression_result(dts_id: str, task_id: str, case_id: str,
+                             is_vulnerable: bool, replay_result: str,
+                             status: str, message: str, vuln_title: str,
+                             replay_data: str) -> bool:
+    """记录一次回归验证结果。
+
+    与 ``dts_issue`` 上的 replay_* 字段不同，本表**只追加不覆盖**，
+    保留每次回归的全部记录（含提交时间），供详情页展示回归历史。
+
+    Returns:
+        True 表示写入成功，False 表示写入异常（已记录日志，不抛出）。
+    """
+    sql = (
+        "INSERT INTO dts_regression_result ("
+        "  dts_id, task_id, case_id, is_vulnerable, replay_result, status,"
+        "  message, vuln_title, replay_data"
+        ") VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)"
+    )
+    params = (
+        dts_id, task_id, case_id, 1 if is_vulnerable else 0,
+        replay_result, status, (message or "")[:512], (vuln_title or "")[:512],
+        replay_data,
+    )
+
+    def _do_insert(cur):
+        cur.execute(sql, params)
+        return cur.rowcount > 0
+
+    try:
+        return _db_query(_do_insert)
+    except Exception as e:
+        # 历史记录失败不应影响主流程（问题单已更新成功）
+        log("DTS_REPO",
+            f"insert_regression_result failed dts_id={dts_id}: {str(e)[:200]}")
+        return False
+
+
+def list_regression_results(dts_id: str) -> list[dict]:
+    """列出某问题单的全部回归验证记录（按提交时间倒序）。"""
+    def _do_query(cur):
+        cur.execute(
+            "SELECT id, task_id, case_id, is_vulnerable, replay_result, status,"
+            " message, vuln_title, replay_data, submitted_at"
+            " FROM dts_regression_result WHERE dts_id = %s"
+            " ORDER BY submitted_at DESC, id DESC",
+            (dts_id,),
+        )
+        return cur.fetchall()
+
+    try:
+        rows = _db_query(_do_query) or []
+    except Exception as e:
+        log("DTS_REPO",
+            f"list_regression_results failed dts_id={dts_id}: {str(e)[:200]}")
+        return []
+
+    out = []
+    for r in rows:
+        submitted = r[9]
+        out.append({
+            "id": r[0],
+            "task_id": r[1],
+            "case_id": r[2],
+            "is_vulnerable": bool(r[3]),
+            "replay_result": r[4],
+            "status": r[5],
+            "message": r[6],
+            "vuln_title": r[7],
+            "replay_data": r[8],
+            "submitted_at": (submitted.isoformat() if hasattr(submitted, "isoformat")
+                             else (str(submitted) if submitted else "")),
+        })
+    return out
 
 
 def get_dts_stats(evaluation_id: str | None = None) -> dict:

@@ -1509,6 +1509,32 @@ async function renderDtsDetailPage(dtsId){
       html+='</div>';
     }
 
+    // ── 7. 回归历史（每次提交都保留，含提交时间）──
+    if(d.regression_history&&d.regression_history.length){
+      html+='<div class="card" style="margin-bottom:16px"><h3>回归历史（共 '+d.regression_history.length+' 次）</h3>'
+        +'<table style="width:100%;border-collapse:collapse;font-size:13px">'
+        +'<thead><tr style="text-align:left;color:var(--gray)">'
+        +'<th style="padding:6px 8px">时间</th>'
+        +'<th style="padding:6px 8px">结果</th>'
+        +'<th style="padding:6px 8px">问题单状态</th>'
+        +'<th style="padding:6px 8px">任务 ID</th>'
+        +'<th style="padding:6px 8px">说明</th></tr></thead><tbody>';
+      d.regression_history.forEach(function(h){
+        var ok=h.replay_result==='false_positive_resolved';
+        var color=ok?'var(--green)':(h.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)');
+        var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':'-');
+        var ts=String(h.submitted_at||'').replace('T',' ').slice(0,19);
+        html+='<tr style="border-top:1px solid var(--p2)">'
+          +'<td style="padding:6px 8px;white-space:nowrap">'+ts+'</td>'
+          +'<td style="padding:6px 8px"><span style="color:'+color+';font-weight:600">'+label+'</span></td>'
+          +'<td style="padding:6px 8px">'+String(h.status||'')+'</td>'
+          +'<td style="padding:6px 8px;font-family:monospace;font-size:12px">'+String(h.task_id||'')+'</td>'
+          +'<td style="padding:6px 8px">'+String(h.message||'').replace(/</g,'&lt;')+'</td>'
+          +'</tr>';
+      });
+      html+='</tbody></table></div>';
+    }
+
     $("dts-detail-body").innerHTML=html;
   }catch(e){
     $("dts-detail-body").innerHTML='<div style="color:var(--red)">加载失败: '+e+'</div>';

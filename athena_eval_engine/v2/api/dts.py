@@ -19,6 +19,7 @@ from ..persistence.dts_repo import (
     get_dts_issue,
     list_dts_issues,
     update_dts_issue,
+    insert_regression_result,
     get_dts_stats,
     list_dts_by_case,
     list_dts_by_task,
@@ -431,6 +432,11 @@ def regression_verify(req: RegressionVerifyRequest):
                 "replay_result": replay_result,
                 "replay_data": replay_data,
             })
+            # 保留本次回归记录（只追加不覆盖），须在取详情之前写入
+            insert_regression_result(
+                req.dts_id, req.task_id, req.case_id, req.is_vulnerable,
+                replay_result, new_status, message, req.vuln_title, replay_data,
+            )
             updated = get_dts_issue(req.dts_id) if success else None
             from ...infrastructure.log_util import log as _log
             _log("DTS_API",
@@ -484,6 +490,12 @@ def regression_verify(req: RegressionVerifyRequest):
             status_code=404,
             detail=f"问题单 '{req.dts_id}' 不存在",
         )
+
+    # 保留本次回归记录（只追加不覆盖），供详情页展示回归历史
+    insert_regression_result(
+        req.dts_id, req.task_id, req.case_id, req.is_vulnerable,
+        replay_result, new_status, message, req.vuln_title, replay_data,
+    )
 
     updated = get_dts_issue(req.dts_id)
 
