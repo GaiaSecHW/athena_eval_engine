@@ -441,7 +441,8 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
                  replay_eval_id、replay_result。
 
     Returns:
-        True 表示更新成功，False 表示记录不存在或无更新字段。
+        True 表示记录存在且更新成功（含值未变化的幂等 no-op），
+        False 表示记录不存在或无更新字段。
     """
     allowed = {
         "root_cause", "solution", "status",
@@ -460,11 +461,19 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
 
     def _do_update(cur):
         cur.execute(sql, tuple(params))
-        return cur.rowcount
+        rowcount = cur.rowcount
+        if rowcount > 0:
+            return True, rowcount
+        # MySQL 的 rowcount 是「实际变更行数」：值本来就等于目标值时返回 0。
+        # 必须区分两种情况——记录不存在（失败）vs 幂等 no-op（成功）。
+        cur.execute("SELECT 1 FROM dts_issue WHERE dts_id = %s", (dts_id,))
+        return cur.fetchone() is not None, rowcount
 
-    rowcount = _db_query(_do_update)
-    log("DTS_REPO", f"update_dts_issue: dts_id={dts_id}, updated={rowcount}")
-    return rowcount > 0
+    exists, rowcount = _db_query(_do_update)
+    _detail = "" if rowcount else (" (值未变化)" if exists else " (记录不存在)")
+    log("DTS_REPO",
+        f"update_dts_issue: dts_id={dts_id}, updated={rowcount}{_detail}")
+    return exists
 
 
 def get_dts_stats(evaluation_id: str | None = None) -> dict:

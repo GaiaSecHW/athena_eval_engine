@@ -462,6 +462,13 @@ MIGRATIONS = [
             "ALTER TABLE project_task_summary ADD COLUMN analyzing_count INT NOT NULL DEFAULT 0 AFTER confirmed_not_vulnerable",
         ],
     },
+    {
+        "id": "030_dts_issue_replay_result_widen",
+        "desc": "dts_issue.replay_result VARCHAR(16)→VARCHAR(32)，容纳 false_positive_resolved(24 字符)",
+        "sql": [
+            "ALTER TABLE dts_issue MODIFY COLUMN replay_result VARCHAR(32)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

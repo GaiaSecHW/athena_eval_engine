@@ -264,6 +264,25 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
         return None
 
 
+def _safe_update_dts_issue(dts_id: str, fields: dict) -> bool:
+    """update_dts_issue 的包装：把 DB 写入异常转成结构化 HTTP 错误。
+
+    典型场景：replay_result 等列长度不足时抛 pymysql DataError，
+    以前会变成未捕获的 ASGI 500，调用方只看到空响应、拿不到原因。
+    """
+    from ...infrastructure.log_util import log
+    try:
+        return update_dts_issue(dts_id, fields)
+    except Exception as e:
+        err = str(e)[:300]
+        log("DTS_API",
+            f"update_dts_issue 失败 dts_id={dts_id} err={err}")
+        raise HTTPException(
+            status_code=500,
+            detail=f"更新问题单 '{dts_id}' 失败：{err}",
+        ) from e
+
+
 def _is_same_vulnerability(vuln_title: str, vuln_description: str,
                            issue_vuln_title: str) -> bool:
     """用 LLM 判断提交的漏洞与问题单的漏洞是否为同一个。
@@ -406,7 +425,7 @@ def regression_verify(req: RegressionVerifyRequest):
                 "message": message,
                 "same_vulnerability": False,
             }, ensure_ascii=False)
-            success = update_dts_issue(req.dts_id, {
+            success = _safe_update_dts_issue(req.dts_id, {
                 "status": new_status,
                 "replay_eval_id": req.task_id,
                 "replay_result": replay_result,
@@ -452,16 +471,18 @@ def regression_verify(req: RegressionVerifyRequest):
         "message": message,
     }, ensure_ascii=False)
 
-    success = update_dts_issue(req.dts_id, {
+    success = _safe_update_dts_issue(req.dts_id, {
         "status": new_status,
         "replay_eval_id": req.task_id,
         "replay_result": replay_result,
         "replay_data": replay_data,
     })
     if not success:
+        # _safe_update_dts_issue 已把 DB 异常转成 500；
+        # 走到这里只可能是记录不存在（值未变化的幂等 no-op 已按成功处理）。
         raise HTTPException(
-            status_code=500,
-            detail=f"更新问题单 '{req.dts_id}' 失败",
+            status_code=404,
+            detail=f"问题单 '{req.dts_id}' 不存在",
         )
 
     updated = get_dts_issue(req.dts_id)
@@ -504,7 +525,7 @@ def update_issue(dts_id: str, update: DTSUpdate):
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
 
-    success = update_dts_issue(dts_id, updates)
+    success = _safe_update_dts_issue(dts_id, updates)
     if not success:
         raise HTTPException(status_code=500, detail=f"更新问题单 '{dts_id}' 失败")
 
@@ -558,7 +579,7 @@ def confirm_hypothesis(dts_id: str, req: HypothesisConfirmRequest):
         "confirmed_at": datetime.now().isoformat(),
     }
 
-    success = update_dts_issue(dts_id, {
+    success = _safe_update_dts_issue(dts_id, {
         "hypothesis_confirmations": json.dumps(hc, ensure_ascii=False),
     })
     if not success:
