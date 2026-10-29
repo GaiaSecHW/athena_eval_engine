@@ -165,9 +165,13 @@ class DataflowVulnScanParser(BaseParser):
                     eid = f"intake-{dvs_name}-{line_no}"
                     results.append(RawEvent(
                         event_id=eid, trace_id=trace_id,
-                        # session_id 带 dvs_run_id，与真实 scan session 同前缀，
-                        # 供 case_session_matcher 把上报 finding 关联到真实挖掘 session
-                        session_id=f"dvs_{dvs_name}/intake-result",
+                        # session_id 用 dvs_name 作 run_id（dvs_name 已含 dvs_ 前缀，
+                        # 如 dvs_e211133b344c4c1e），与真实 scan session
+                        # （dvs_{run_id}/d00-...）同前缀，供 findings extractor 的
+                        # _map_to_real_session 把上报 finding 关联到真实挖掘 session。
+                        # 不能再加 dvs_ 前缀（旧代码拼成 dvs_dvs_{run_id} 双前缀，
+                        # 与 scan run_id 不匹配，映射失败导致占位 intake 被当真实 session）。
+                        session_id=f"{dvs_name}/intake-result",
                         event_type="TEXT", timestamp_ms=ts,
                         message_id=d.get("id", ""), part_id=f"{eid}-x0",
                         step_no=None, tool_name=None,
