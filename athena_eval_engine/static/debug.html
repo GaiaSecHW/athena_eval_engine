@@ -949,17 +949,48 @@ RENDERERS.case_matching = function(el, data) {
   const outcomes = data.outcomes || {};
   const fp = outcomes.FP || 0;
   const fn = outcomes.FN || 0;
+  // 完整 agent 级结果（含 TP——误报率 FP/(TP+FP) 需 TP，TP/TN 不进 matches 列表）
+  const agentOutcomes = data.agent_outcomes || {};
 
   html += `<div class="stats">`;
-  html += `<div class="stat"><div class="num">${total}</div><div class="label">case 总数 (${data.eval_mode || ""})</div></div>`;
+  html += `<div class="stat"><div class="num">${total}</div><div class="label">需分析 case (FP/FN)</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#27ae60">${matched}</div><div class="label">已匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${unmatched}</div><div class="label">未匹配</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e74c3c">${fp}</div><div class="label">误报 (FP)</div></div>`;
   html += `<div class="stat"><div class="num" style="color:#e67e22">${fn}</div><div class="label">漏报 (FN)</div></div>`;
   html += `</div>`;
 
+  // 完整 agent 级结果（含 TP/TN——正确上报/正确未报的 case 也显示，
+  // 避免 total_cases=0 被误解为"匹配失败"）
+  const agentKeys = Object.keys(agentOutcomes);
+  if (agentKeys.length) {
+    html += `<div style="margin:12px 0 8px;font-size:15px;color:#6c5ce7;font-weight:600;">Agent 匹配结果（含正确 TP/TN）</div>`;
+    html += `<table><thead><tr><th>Agent</th><th>正确上报 TP</th><th>误报 FP</th><th>漏报 FN</th></tr></thead><tbody>`;
+    for (const agent of agentKeys) {
+      const ao = agentOutcomes[agent] || {};
+      html += `<tr><td>${esc(agent)}</td>`
+        + `<td style="color:#27ae60;font-weight:600">${ao.tp || 0}</td>`
+        + `<td style="color:#e74c3c;font-weight:600">${ao.fp || 0}</td>`
+        + `<td style="color:#e67e22;font-weight:600">${ao.fn || 0}</td></tr>`;
+    }
+    html += `</tbody></table>`;
+  }
+  // 全部正确（TP/TN 无 FP/FN）时给出明确提示
+  if (!total && agentKeys.length) {
+    html += `<div style="margin:10px 0;padding:10px 14px;background:#e8f8e8;border:1px solid #27ae60;border-radius:4px;color:#1e7e1e;font-size:14px">`
+      + `✅ 全部 case 匹配正确：${Object.entries(agentOutcomes).map(([a, o]) => `${esc(a)} TP=${o.tp || 0}`).join("，")}。`
+      + `无误报(FP)/漏报(FN)，无需问题单分析——TP/TN 不进下方明细列表。</div>`;
+  } else if (!total) {
+    html += `<div style="margin:10px 0;padding:10px 14px;background:#fdf3e7;border:1px solid #f39c12;border-radius:4px;color:#a06a12;font-size:14px">`
+      + `⚠️ 无任何 case 进入匹配（基线可能为空或过滤后无有效 case）。</div>`;
+  }
+
   const matches = data.matches || [];
   if (!matches.length) {
+    if (agentKeys.length && !total) {
+      el.innerHTML = html;
+      return;
+    }
     html += '<div class="empty">无匹配数据</div>';
     el.innerHTML = html;
     return;
