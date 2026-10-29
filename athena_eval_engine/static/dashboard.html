@@ -1522,8 +1522,10 @@ async function renderDtsDetailPage(dtsId){
         +'<th style="padding:6px 8px">说明</th></tr></thead><tbody>';
       d.regression_history.forEach(function(h){
         var ok=h.replay_result==='false_positive_resolved';
-        var color=ok?'var(--green)':(h.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)');
-        var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':'-');
+        var pend=h.status==='evaluating';
+        var err=h.status==='error';
+        var color=ok?'var(--green)':(h.replay_result==='still_vulnerable'?'var(--red)':(err?'var(--red)':'var(--gray)'));
+        var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':(pend?'判定中':(err?'判定失败':'-')));
         var mm=h.match_method==='llm'?'LLM 匹配':(h.match_method||'-');
         var ts=String(h.submitted_at||'').replace('T',' ').slice(0,19);
         html+='<tr style="border-top:1px solid var(--p2)">'
