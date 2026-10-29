@@ -128,12 +128,20 @@ class SecMateParser(BaseParser):
 
         source_uri 形如 .../tasks/{task_id}/tools/secmate-XXX-{ts}/run/.worker-config/projects/...
         tool_task_id = "secmate-XXX-{ts}"（目录名，对应 MySQL finding.tool_task_id）。
+
+        k8s 模式下 trace 被拷贝到 /tmp/eval_traces/，目录结构压扁成连字符路径：
+          .../df59d212_-data-files-{project}-tasks-{task}-tools-secmate-XXX-{ts}-run
+        （无 /tools/ 和 /run 分隔符），需从连字符段中提取 secmate-XXX-{ts}。
         """
         uri = (self._source_uri or "").replace("\\", "/")
-        # 匹配 tools/secmate-XXX-{ts}/ 段
+        # 匹配 tools/secmate-XXX-{ts}/ 段（原始目录结构）
         m = re.search(r"/tools/(secmate-[^/]+?)/run(?:/|$)", uri)
         if m:
             return m.group(1)
+        # k8s /tmp 压扁路径：-tools-secmate-XXX-{ts}-run
+        m2 = re.search(r"-tools-(secmate-[^/]+?)-run(?:/|$)", uri)
+        if m2:
+            return m2.group(1)
         return None
 
     @staticmethod
