@@ -603,10 +603,13 @@ class RootCauseAnalyzer:
         all_parent_map: dict[str, str],
         all_children_map: dict[str, list[str]],
     ) -> list[str]:
-        """从种子 session 出发展开完整调用链（祖先 + 子孙），根→叶子顺序。
+        """从种子 session 出发，向上找祖先，返回祖先链（根→种子顺序）。
 
         与 DTS 问题单 _query_session_chains._expand_chain 完全一致——
         保证 case_matching / 根因分析 / DTS 三处展示的 session 链同源同逻辑。
+
+        secmate 的 parent_map 是 finding 派生关系（非调用关系），向下展开
+        子孙会把整棵派生树拉进来。只展开祖先链——"这个 finding 是怎么被发现的"。
         """
         chain_ids: set[str] = set()
 
@@ -618,15 +621,6 @@ class RootCauseAnalyzer:
                 cur = all_parent_map[cur]
             if cur and cur not in chain_ids:
                 chain_ids.add(cur)  # 根节点
-
-        # 向下找子孙
-        queue = list(seeds)
-        while queue:
-            sid = queue.pop(0)
-            for child in all_children_map.get(sid, []):
-                if child not in chain_ids:
-                    chain_ids.add(child)
-                    queue.append(child)
 
         # 按根→叶子排序：找根节点（parent 不在链中），BFS 往下
         roots = [sid for sid in chain_ids

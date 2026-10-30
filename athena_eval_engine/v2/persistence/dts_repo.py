@@ -324,9 +324,15 @@ def _query_session_chains(issue: dict) -> dict:
             if sid not in all_children_map[pid]:
                 all_children_map[pid].append(sid)
 
-    # 从种子节点展开完整调用链（祖先 + 子孙）
+    # 从种子节点展开祖先链（种子 → 根，不展开子孙）
     def _expand_chain(seeds: set[str]) -> list[str]:
-        """从种子 session 出发，向上找祖先、向下找子孙，返回完整调用链（根→叶子顺序）。"""
+        """从种子 session 出发，向上找祖先，返回祖先链（根→种子顺序）。
+
+        secmate 的 parent_map 是 finding 派生关系（非调用关系），一个 finding
+        可派生出大量子 finding，向下展开子孙会把整棵派生树拉进来（如 83 个
+        session）。根因分析只需"这个 finding 是怎么被发现的"——从根到种子的
+        祖先链，不展开子孙。
+        """
         chain_ids: set[str] = set()
 
         # 向上找祖先
@@ -337,15 +343,6 @@ def _query_session_chains(issue: dict) -> dict:
                 cur = all_parent_map[cur]
             if cur and cur not in chain_ids:
                 chain_ids.add(cur)  # 根节点
-
-        # 向下找子孙
-        queue = list(seeds)
-        while queue:
-            sid = queue.pop(0)
-            for child in all_children_map.get(sid, []):
-                if child not in chain_ids:
-                    chain_ids.add(child)
-                    queue.append(child)
 
         # 按从根到叶子排序：找根节点（parent 不在链中的），BFS 往下
         roots = [sid for sid in chain_ids
