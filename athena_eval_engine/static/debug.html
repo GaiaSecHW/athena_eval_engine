@@ -33,6 +33,7 @@ tr:hover { background: #f5f5ff; }
 </head>
 <body>
 <h1 id="title">调试</h1>
+<div id="eval-meta" style="margin-bottom:12px;font-size:14px;color:#666"></div>
 <div class="step-bar" id="stepBar"></div>
 <div class="content" id="content"></div>
 <script>
@@ -90,7 +91,29 @@ document.getElementById("title").textContent = "调试 — " + eid;
 
 let available = [];
 
+// 从 ingesting debug 数据提取项目/任务信息
+async function loadEvalMeta() {
+  try {
+    const resp = await fetch(apiBase("ingesting"));
+    if (!resp.ok) return;
+    const data = await resp.json();
+    const entries = data.entries || [];
+    if (!entries.length) return;
+    const e = entries[0];
+    const parts = [];
+    if (e.project_id) parts.push('项目 ID: ' + e.project_id);
+    if (e.project_name) parts.push('项目名称: ' + e.project_name);
+    if (e.task_id) parts.push('任务 ID: ' + e.task_id);
+    if (e.task_name) parts.push('任务名称: ' + e.task_name);
+    if (parts.length) {
+      document.getElementById("eval-meta").textContent = parts.join(' · ');
+    }
+  } catch {}
+}
+
 async function checkSteps() {
+  // 并行加载步骤检查和元数据
+  loadEvalMeta();
   // 逐个检查哪些步骤有数据
   const results = await Promise.all(STEPS.map(async (step) => {
     try {
