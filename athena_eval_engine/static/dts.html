@@ -53,7 +53,7 @@ async function renderDtsList(){
     <div class="card" style="margin-bottom:16px">
       <h3>问题单</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
-        <input id="dts-search" placeholder="搜索问题单 ID / 任务 ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
+        <input id="dts-search" placeholder="搜索问题单 ID / Case ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
         <select id="dts-f-status" onchange="_dtsFilter.status=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部状态</option>
           <option value="open">未关闭</option>
@@ -128,7 +128,7 @@ function renderDtsTable(){
   if(!_dtsData){return;}
   var filtered=_dtsData.filter(function(i){
     if(_dtsFilter.responsibility&&!dtsRespMatches(i.responsibility,_dtsFilter.responsibility))return false;
-    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_name||'')+' '+(i.evaluation_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
+    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_name||'')+' '+(i.evaluation_id||'')+' '+(i.case_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
   if(!filtered.length){
