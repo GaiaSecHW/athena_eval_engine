@@ -135,7 +135,7 @@ function renderDtsTable(){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
     var lqPrecision='',lqColor='var(--gray)',lqLabel='-';
     try{
@@ -150,6 +150,7 @@ function renderDtsTable(){
     html+='<tr>'
       +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
       +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
+      +'<td style="font-size:12px;font-family:monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="'+(i.case_id||'')+'">'+(i.case_id||'-')+'</td>'
       +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="go(\'/evals/\'+encodeURIComponent(\''+(i.evaluation_id||'')+'\'))">'+(i.evaluation_name||i.evaluation_id||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+dtsAgentLabel(i.agent_type)+'</td>'
