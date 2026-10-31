@@ -536,8 +536,31 @@ class Orchestrator:
             # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定 + 漏报匹配结果，
             # 不含漏报原因——漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段展示）
             fn_match_cases = fp_fn_matches + fn_miss_match_cases
+            # 全部 case（含 TP/TN）的结果统计 + 未匹配明细。
+            # 调试页需要区分三种「total_cases=0」：
+            #   1) 基线为空（baseline_total=0）
+            #   2) 基线有 case 但都没匹配到 trace session（unmatched_cases 非空）
+            #   3) 全部匹配正确，没有 FP/FN（unmatched_cases 为空）
+            _outcome_counts = {
+                o: sum(1 for r in case_session_matches
+                       if r.get("outcome") == o)
+                for o in ("TP", "TN", "FP", "FN")
+            }
+            _unmatched_cases = [
+                {
+                    "case_id": r.get("case_id", ""),
+                    "ac_case_id": r.get("ac_case_id", ""),
+                    "vuln_title": (r.get("vuln_title") or "")[:120],
+                    "expected_label": r.get("expected_label", ""),
+                }
+                for r in case_session_matches
+                if r.get("match_method") == "unmatched"
+            ]
             case_matching_debug: dict = {
                 "eval_mode": eval_mode,
+                "baseline_total": len(case_details),
+                "outcome_counts": _outcome_counts,
+                "unmatched_cases": _unmatched_cases,
                 "total_cases": len(fn_match_cases),
                 "matched": sum(1 for r in fn_match_cases
                                if r["match_method"] != "unmatched"),
