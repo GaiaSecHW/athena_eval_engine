@@ -1679,7 +1679,12 @@ class Orchestrator:
         - 重跑中途失败时页面仍显示旧报告（状态 FAILED 但数据是旧的）
 
         删除范围：{eid}_debug_*.json、{eid}.json、{eid}_lifecycle.json、
-        {eid}_fpr.json、{eid}_kg.json、{eid}.html、{eid}_dts_*.json。
+        {eid}_fpr.json、{eid}_kg.json、{eid}.html。
+
+        注意：{eid}_dts_*.json（DTS 完整根因分析数据）不删除——
+        generate_dts_issues 用 "w" 模式覆盖写入同名文件，重跑后 case 消失
+        的旧文件保留可读（DB 行通过 UPSERT 保留，analysis_data_path 指向
+        的文件需要存在）。
         """
         import glob
         patterns = [
@@ -1689,7 +1694,6 @@ class Orchestrator:
             f"{evaluation_id}_fpr.json",
             f"{evaluation_id}_kg.json",
             f"{evaluation_id}.html",
-            f"{evaluation_id}_dts_*.json",
         ]
         for pattern in patterns:
             for f in glob.glob(os.path.join(reports_dir, pattern)):

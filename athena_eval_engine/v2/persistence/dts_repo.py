@@ -36,13 +36,13 @@ _INSERT_SQL = (
     "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
+    "  cause_code=VALUES(cause_code), breakpoint_level=VALUES(breakpoint_level),"
+    "  breakpoint_desc=VALUES(breakpoint_desc), evidence_uri=VALUES(evidence_uri),"
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
     "  hypotheses=VALUES(hypotheses), label_quality=VALUES(label_quality),"
     "  analysis_data_path=VALUES(analysis_data_path),"
-    "  status=VALUES(status), replay_eval_id=VALUES(replay_eval_id),"
-    "  replay_result=VALUES(replay_result),"
-    "  replay_data=VALUES(replay_data),"
-    "  hypothesis_confirmations=VALUES(hypothesis_confirmations)"
+    "  agent_type=VALUES(agent_type), case_type=VALUES(case_type),"
+    "  responsibility=VALUES(responsibility)"
 )
 
 # 列名→查询返回索引的映射（list_dts_issues / get_dts_issue 使用）
@@ -130,19 +130,18 @@ def _row_to_dict(row) -> dict:
 
 def upsert_dts_issues(issues: list[dict], evaluation_id: str,
                       reports_dir: str) -> int:
-    """批量写入问题单（幂等：同 evaluation 先删后插）。
+    """批量写入问题单（UPSERT：按 (evaluation_id, case_id) 去重）。
 
-    每次 pipeline 运行都是为该 evaluation **全量重建**问题单（生成新
-    dts_id 随机主键）。若只靠 ON DUPLICATE KEY UPDATE 按 dts_id 去重，
-    重跑会插入全新 dts_id 行，导致同一 case_id 出现重复问题单。
+    重跑时 ON DUPLICATE KEY UPDATE 只更新分析产物字段（root_cause、
+    hypotheses、cause_code 等），**不更新**回归字段（status、replay_*）
+    和人工标注字段（hypothesis_confirmations）——保留上一轮的回归验证
+    结果和人工确认。
 
-    因此这里改为：先删除该 evaluation 下全部旧单，再插入新单——
-    保证 (evaluation_id, case_id) 恒唯一，重跑只保留最新一轮。
+    dts_id（PRIMARY KEY）不在 UPDATE 列表中，重跑时旧行的 dts_id 不变，
+    dts_regression_result 通过 dts_id 的关联自动存活。
 
-    跨 evaluation 的 dts_id 碰撞：12 位随机 hex（48 位）碰撞概率可忽略，
-    但 ON DUPLICATE KEY UPDATE 会在碰撞时误更新其他 evaluation 的行。
-    因此插入前批量检查 dts_id 是否已存在（其他 evaluation），
-    已存在的重新生成后再插。
+    消失的 case（重跑后不再产生问题单）的旧行保留不动——UPSERT 不触发，
+    旧的分析数据、回归数据、人工标注全部保留。
 
     Args:
         issues: 问题单 dict 列表，每条含 dts_id、evaluation_id 等。
@@ -156,25 +155,7 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
         return 0
 
     def _do_insert(cur):
-        # 先删旧单（同 evaluation 全量重建），避免随机 dts_id 主键导致重复
-        cur.execute("DELETE FROM dts_issue WHERE evaluation_id=%s", (evaluation_id,))
         args = [tuple(iss.get(k) for k in _FIELD_ORDER) for iss in issues]
-        # 跨 evaluation 碰撞检查：已存在的 dts_id 重新生成
-        import uuid as _uuid
-        retry = 0
-        while retry < 3:
-            ids = [a[0] for a in args]
-            ph = ",".join(["%s"] * len(ids)) if ids else "NULL"
-            cur.execute(f"SELECT dts_id FROM dts_issue WHERE dts_id IN ({ph})", ids) if ids else None
-            existing = {r[0] for r in cur.fetchall()} if ids else set()
-            if not existing:
-                break
-            # 有碰撞：重新生成碰撞的 dts_id
-            for i, a in enumerate(args):
-                if a[0] in existing:
-                    new_id = _uuid.uuid4().hex[:12].upper()
-                    args[i] = (new_id,) + a[1:]
-            retry += 1
         cur.executemany(_INSERT_SQL, args)
         return len(args)
 
@@ -474,6 +455,54 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     log("DTS_REPO",
         f"update_dts_issue: dts_id={dts_id}, updated={rowcount}{_detail}")
     return exists
+
+
+def update_dts_issues_by_case_id(case_id: str, updates: dict) -> list[str]:
+    """按 case_id 批量更新全部问题单，返回被更新的 dts_id 列表。
+
+    回归验证是针对漏洞（case_id）的，不是针对单条问题单的。同一个 case_id
+    跨多个 evaluation 产生多条问题单，回归结果应同步刷新全部。
+
+    Args:
+        case_id: case ID。
+        updates: 待更新字段 dict，与 update_dts_issue 相同的 allowed 集合。
+
+    Returns:
+        被更新的 dts_id 列表（供写回归历史用）。空列表表示无匹配行。
+    """
+    allowed = {
+        "root_cause", "solution", "status",
+        "replay_eval_id", "replay_result", "replay_data",
+        "hypotheses", "label_quality", "hypothesis_confirmations",
+    }
+    update_fields = {k: v for k, v in updates.items() if k in allowed}
+    if not update_fields or not case_id:
+        return []
+
+    set_parts = [f"{k} = %s" for k in update_fields]
+    params = list(update_fields.values())
+
+    def _do_update(cur):
+        # 先查出全部 dts_id（供写回归历史用）
+        cur.execute(
+            "SELECT dts_id FROM dts_issue WHERE case_id = %s",
+            (case_id,),
+        )
+        dts_ids = [r[0] for r in cur.fetchall()]
+        if not dts_ids:
+            return []
+        # 批量更新
+        sql = (
+            f"UPDATE dts_issue SET {', '.join(set_parts)} "
+            f"WHERE case_id = %s"
+        )
+        cur.execute(sql, tuple(params + [case_id]))
+        log("DTS_REPO",
+            f"update_dts_issues_by_case_id: case_id={case_id}, "
+            f"updated={cur.rowcount} rows, dts_ids={dts_ids}")
+        return dts_ids
+
+    return _db_query(_do_update)
 
 
 def insert_regression_result(dts_id: str, task_id: str, case_id: str,

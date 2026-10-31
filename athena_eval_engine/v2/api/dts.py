@@ -22,6 +22,7 @@ from ..persistence.dts_repo import (
     get_dts_issue,
     list_dts_issues,
     update_dts_issue,
+    update_dts_issues_by_case_id,
     insert_regression_result,
     update_regression_result,
     get_dts_stats,
@@ -358,12 +359,17 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
                         result_id: int | None = None) -> dict:
     """根据 is_vulnerable（及一致性判定）更新问题单并写回归历史。
 
+    回归验证是针对漏洞（case_id）的，不是针对单条问题单的。按 case_id
+    批量刷新全部同 case_id 的问题单（跨 evaluation），确保同一漏洞的
+    回归状态在所有评测中一致。
+
     Args:
         same: False 表示提交的漏洞与问题单不一致 → 回归不通过。
         result_id: 若已有「判定中」的占位记录，则原地补全而不是新增。
     """
     from ...infrastructure.log_util import log
     dts_id = req.dts_id or issue.get("dts_id", "")
+    case_id = req.case_id or issue.get("case_id", "")
 
     if not same:
         new_status = "failed"
@@ -383,7 +389,7 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
     import json as _json
     replay_payload = {
         "task_id": req.task_id,
-        "case_id": req.case_id,
+        "case_id": case_id,
         "vuln_title": req.vuln_title,
         "vuln_description": req.vuln_description,
         "is_vulnerable": req.is_vulnerable,
@@ -394,33 +400,47 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
         replay_payload["same_vulnerability"] = False
     replay_data = _json.dumps(replay_payload, ensure_ascii=False)
 
-    success = _safe_update_dts_issue(dts_id, {
+    # 按 case_id 批量更新全部问题单（跨 evaluation）
+    updated_ids = update_dts_issues_by_case_id(case_id, {
         "status": new_status,
         "replay_eval_id": req.task_id,
         "replay_result": replay_result,
         "replay_data": replay_data,
     })
-    if not success:
-        # _safe_update_dts_issue 已把 DB 异常转成 500；
-        # 走到这里只可能是记录不存在（值未变化的幂等 no-op 已按成功处理）。
-        raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
+    if not updated_ids:
+        # case_id 无匹配行，回退到按 dts_id 单条更新
+        success = _safe_update_dts_issue(dts_id, {
+            "status": new_status,
+            "replay_eval_id": req.task_id,
+            "replay_result": replay_result,
+            "replay_data": replay_data,
+        })
+        if not success:
+            raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
+        updated_ids = [dts_id]
 
-    if result_id is not None:
-        update_regression_result(result_id, replay_result, new_status,
-                                 message, replay_data)
-    else:
-        insert_regression_result(
-            dts_id, req.task_id, req.case_id, match_method, req.is_vulnerable,
-            replay_result, new_status, message, req.vuln_title, replay_data,
-        )
+    # 给每条被更新的问题单写回归历史（追加，不覆盖）
+    for did in updated_ids:
+        if did == dts_id and result_id is not None:
+            # 主问题单已有占位记录，原地补全
+            update_regression_result(result_id, replay_result, new_status,
+                                     message, replay_data)
+        else:
+            insert_regression_result(
+                did, req.task_id, case_id, match_method, req.is_vulnerable,
+                replay_result, new_status, message, req.vuln_title, replay_data,
+            )
 
     updated = get_dts_issue(dts_id)
     log("DTS_API",
-        f"regression_verify: dts_id={dts_id}, task_id={req.task_id}, "
-        f"match_method={match_method}, is_vulnerable={req.is_vulnerable}, "
-        f"same={same} → {new_status}")
+        f"regression_verify: case_id={case_id}, dts_id={dts_id}, "
+        f"task_id={req.task_id}, match_method={match_method}, "
+        f"is_vulnerable={req.is_vulnerable}, same={same} → {new_status}, "
+        f"updated_ids={updated_ids}")
     return {
         "dts_id": dts_id,
+        "updated_dts_ids": updated_ids,
+        "case_id": case_id,
         "task_id": req.task_id,
         "vuln_title": req.vuln_title,
         "vuln_description": req.vuln_description,

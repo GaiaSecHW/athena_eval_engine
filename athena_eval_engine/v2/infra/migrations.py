@@ -497,6 +497,14 @@ MIGRATIONS = [
             "ALTER TABLE dts_regression_result ADD COLUMN match_method VARCHAR(16) NOT NULL DEFAULT '' AFTER case_id",
         ],
     },
+    {
+        "id": "033_dts_issue_unique_eval_case",
+        "desc": "dts_issue 加唯一索引 (evaluation_id, case_id)——UPSERT 按 eval+case 去重，重跑不丢回归数据",
+        "sql": [
+            "ALTER TABLE dts_issue DROP INDEX idx_dts_case",
+            "ALTER TABLE dts_issue ADD UNIQUE INDEX uk_dts_eval_case (evaluation_id, case_id)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
