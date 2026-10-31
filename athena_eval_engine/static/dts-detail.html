@@ -409,6 +409,37 @@ async function renderDtsDetailPage(dtsId){
           html+=renderKMSummary(mergeKM,ch.label+' 综合');
         }
 
+        // L4 独立验证（由测评系统代为发起知识库查询）
+        var l4=ch.data.l4_independent_verification;
+        if(l4&&l4.query_log){
+          var l4Exists=l4.l4_knowledge_exists;
+          var l4Color=l4Exists===false?'var(--red)':l4Exists===true?'var(--green)':'var(--gray)';
+          var l4Label=l4Exists===false?'知识库中未找到相关知识':l4Exists===true?'知识库中存在相关知识':'验证未完成';
+          html+='<details style="margin-bottom:12px"><summary style="font-size:14px;color:var(--sub);cursor:pointer">L4 独立验证（由测评系统代为发起知识库查询）</summary>';
+          html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px">';
+          html+='<div style="margin-bottom:8px"><span style="color:var(--gray)">验证结果：</span><b style="color:'+l4Color+'">'+l4Label+'</b>';
+          if(l4.summary){html+='<span style="color:var(--gray);margin-left:8px">('+String(l4.summary).replace(/</g,'&lt;')+')</span>';}
+          html+='</div>';
+          if(l4.kb_searched){
+            var sources=[];
+            if(l4.kb_searched.athena_api)sources.push('Athena 知识库 API');
+            if(l4.kb_searched.wiki_nfs)sources.push('记忆/Wiki NFS');
+            if(sources.length)html+='<div style="margin-bottom:8px"><span style="color:var(--gray)">查询来源：</span>'+sources.join(' + ')+'</div>';
+          }
+          var ql=l4.query_log||[];
+          if(ql.length){
+            html+='<div style="color:var(--gray);margin-bottom:4px">查询过程：</div>';
+            ql.forEach(function(q){
+              html+='<div style="margin-bottom:6px;padding:6px 8px;background:var(--p1);border-radius:6px">';
+              if(q.step){html+='<div style="font-weight:600;font-size:12px;color:var(--acc)">'+String(q.step).replace(/</g,'&lt;')+'</div>';}
+              if(q.action){html+='<div style="color:var(--sub);font-size:12px;margin-top:2px">'+String(q.action).replace(/</g,'&lt;')+'</div>';}
+              if(q.result){html+='<div style="color:var(--gray);font-size:12px;margin-top:2px">'+String(q.result).replace(/</g,'&lt;')+'</div>';}
+              html+='</div>';
+            });
+          }
+          html+='</div></details>';
+        }
+
         html+='</div>';
       });
     }

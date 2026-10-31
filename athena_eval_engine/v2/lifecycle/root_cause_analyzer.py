@@ -1133,8 +1133,8 @@ class RootCauseAnalyzer:
                                     break
                         bp["query_content"] = (
                             f"知识库缺少该知识（推理任务需要：{need_part}）"
-                            f" | L4 独立验证：知识库中未找到"
-                            f"能消减此误报的知识"
+                            f" | L4 独立验证（由测评系统代为发起知识库查询）："
+                            f"知识库中未找到能消减此误报的知识"
                             f"（{result.get('summary', '')}）"
                         )
                         changed += 1
@@ -1151,7 +1151,8 @@ class RootCauseAnalyzer:
                         h["cause_code"] = "C"
                         old_evid = h.get("evidence", "")
                         h["evidence"] = (
-                            f"{old_evid} | L4 独立验证：知识库中未找到"
+                            f"{old_evid} | L4 独立验证（由测评系统代为发起"
+                            f"知识库查询）：知识库中未找到"
                             f"能消减此误报的知识"
                             f"（{result.get('summary', '')}），"
                             f"知识确实缺失，责任在知识库（查了没得）"
@@ -1180,7 +1181,8 @@ class RootCauseAnalyzer:
                         h["cause_code"] = "A"
                         old_evid = h.get("evidence", "")
                         h["evidence"] = (
-                            f"{old_evid} | L4 独立验证：知识库中存在"
+                            f"{old_evid} | L4 独立验证（由测评系统代为发起"
+                            f"知识库查询）：知识库中存在"
                             f"相关知识（{result.get('summary', '')}），"
                             f"责任在 agent（该查没查）"
                         )
