@@ -607,7 +607,9 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             "task_run", "trace_source", "extracted_finding", "finding_benchmark_match",
             "session_graph",
             # 生命周期分析结果
-            "knowledge_access_detail", "dts_issue",
+            "knowledge_access_detail",
+            # 注意：dts_issue 不在此清理——重跑通过 UPSERT 保留回归数据和人工标注
+            # （ON DUPLICATE KEY UPDATE 只更新分析产物，不删旧行）
             # 报告
             "evaluation_report",
             # 计算运行记录
