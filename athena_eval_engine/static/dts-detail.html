@@ -420,6 +420,16 @@ async function renderDtsDetailPage(dtsId){
           html+='<div style="margin-bottom:8px"><span style="color:var(--gray)">验证结果：</span><b style="color:'+l4Color+'">'+l4Label+'</b>';
           if(l4.summary){html+='<span style="color:var(--gray);margin-left:8px">('+String(l4.summary).replace(/</g,'&lt;')+')</span>';}
           html+='</div>';
+          // 从 query_log 中提取项目 ID
+          var l4ProjectId='';
+          for(var qi=0;qi<l4.query_log.length;qi++){
+            var act=l4.query_log[qi].action||'';
+            var m=act.match(/projects\/([a-f0-9]+)/);
+            if(m){l4ProjectId=m[1];break;}
+          }
+          if(l4ProjectId){
+            html+='<div style="margin-bottom:8px"><span style="color:var(--gray)">项目 ID：</span><b style="font-family:monospace;font-size:12px">'+l4ProjectId+'</b></div>';
+          }
           if(l4.kb_searched){
             var sources=[];
             if(l4.kb_searched.athena_api)sources.push('Athena 知识库 API');
@@ -428,12 +438,20 @@ async function renderDtsDetailPage(dtsId){
           }
           var ql=l4.query_log||[];
           if(ql.length){
-            html+='<div style="color:var(--gray);margin-bottom:4px">查询过程：</div>';
+            html+='<div style="color:var(--gray);margin-bottom:4px">查询过程（问题完整 / 回复汇总）：</div>';
             ql.forEach(function(q){
-              html+='<div style="margin-bottom:6px;padding:6px 8px;background:var(--p1);border-radius:6px">';
+              html+='<div style="margin-bottom:8px;padding:8px 10px;background:var(--p1);border-radius:6px">';
               if(q.step){html+='<div style="font-weight:600;font-size:12px;color:var(--acc)">'+String(q.step).replace(/</g,'&lt;')+'</div>';}
-              if(q.action){html+='<div style="color:var(--sub);font-size:12px;margin-top:2px">'+String(q.action).replace(/</g,'&lt;')+'</div>';}
-              if(q.result){html+='<div style="color:var(--gray);font-size:12px;margin-top:2px">'+String(q.result).replace(/</g,'&lt;')+'</div>';}
+              // 问题：detail（含漏洞标题/误报原因/关键词）+ action（含完整 URL）
+              if(q.detail){html+='<div style="margin-top:4px;font-size:12px"><b style="color:var(--sub)">问题：</b><div style="margin-top:2px;white-space:pre-wrap">'+String(q.detail).replace(/</g,'&lt;')+'</div></div>';}
+              if(q.action){html+='<div style="margin-top:2px;font-size:12px;color:var(--gray);word-break:break-all">'+String(q.action).replace(/</g,'&lt;')+'</div>';}
+              // 回复：result + count 汇总
+              if(q.result||q.count!==undefined){
+                html+='<div style="margin-top:4px;font-size:12px"><b style="color:var(--sub)">回复：</b>';
+                if(q.result){html+='<span style="color:var(--gray)">'+String(q.result).replace(/</g,'&lt;')+'</span>';}
+                if(q.count!==undefined&&q.count!==null){html+=' <span class="knd">命中 '+q.count+'</span>';}
+                html+='</div>';
+              }
               html+='</div>';
             });
           }
