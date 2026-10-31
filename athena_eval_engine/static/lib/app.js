@@ -147,3 +147,9 @@ function showConfirm(opts){
   document.getElementById("modal-confirm").onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm();};
   return ov;
 }
+
+// 页面加载时恢复保存的主题
+(function(){
+  var saved=localStorage.getItem("eval-theme");
+  if(saved&&THEMES[saved]){applyTheme(saved);}
+})();
