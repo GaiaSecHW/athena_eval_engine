@@ -11,7 +11,7 @@ import os
 
 from ..infra.database import connect
 from ..infra.db_utils import db_query as _db_query
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 
 # ── 取消异常 ──────────────────────────────────────────

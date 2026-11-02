@@ -17,7 +17,7 @@
 from __future__ import annotations
 
 from ..core.data_pack import DataPack
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from .sink_search_scanner import SinkSearchScanner
 from .sink_info_extractor import SinkInfoExtractor
 from .miss_detail_analyzer import MissDetailAnalyzer, MISS_SUB_CATEGORIES

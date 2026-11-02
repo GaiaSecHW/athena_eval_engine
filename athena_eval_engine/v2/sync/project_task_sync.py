@@ -17,9 +17,9 @@ import threading
 import time
 from datetime import datetime, timezone, timedelta
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ...application import platform_service as ps
-from ...infrastructure import vuln_center_client as vc
+from ..infra import vuln_center_client as vc
 
 # 每日触发时间（本地时区 HH:MM）
 _SYNC_TIMES = ("06:00", "12:00", "17:00")

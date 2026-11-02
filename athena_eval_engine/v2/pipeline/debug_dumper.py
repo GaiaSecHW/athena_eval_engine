@@ -7,7 +7,7 @@ from __future__ import annotations
 import glob
 import os
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..infra.json_utils import json_dump as _json_dump
 
 

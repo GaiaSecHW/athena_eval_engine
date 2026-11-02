@@ -30,7 +30,7 @@ from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 # ── 系统 prompt（固定）──
 

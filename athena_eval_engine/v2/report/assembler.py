@@ -17,7 +17,7 @@ import sys
 from collections import Counter
 from typing import Any
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..infra.json_utils import json_default as _json_default
 
 # ── 常量 ──────────────────────────────────────────────

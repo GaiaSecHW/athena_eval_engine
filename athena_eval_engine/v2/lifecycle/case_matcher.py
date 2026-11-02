@@ -13,7 +13,7 @@ from __future__ import annotations
 
 from ..infra import llm as llm_mod
 from ..infra.token_counter import count_tokens, fit_batch_by_token
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 # 模型最大上下文 token 数 — 优先用 LLM 运行时收集的值，否则默认 128K
 _DEFAULT_MAX_CONTEXT = 128_000

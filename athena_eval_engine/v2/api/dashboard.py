@@ -22,7 +22,7 @@ import os
 
 from fastapi import APIRouter, HTTPException
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..infra.db_utils import db_query as _db_query
 
 router = APIRouter(prefix="/api/v2/dashboard", tags=["dashboard"])

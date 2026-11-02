@@ -11,7 +11,7 @@ import json
 import os
 import uuid
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
 

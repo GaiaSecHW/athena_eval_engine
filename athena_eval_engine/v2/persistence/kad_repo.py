@@ -18,7 +18,7 @@ import pymysql
 
 from ..infra.database import connect
 from ..infra.db_utils import db_query as _db_query
-from ...infrastructure.log_util import log, log_to_file
+from ..infra.log_util import log, log_to_file
 
 
 # ---------------------------------------------------------------------------

@@ -19,7 +19,7 @@ sink 函数名（agent 读到了 sink 点的函数，而不只是读了文件的
 from __future__ import annotations
 
 from ..infra import llm as llm_mod
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 _PROMPT_SYSTEM = """你是漏洞 sink 点提取器。给你一个漏洞的完整描述，请从中提取出 sink 点的结构化信息。
 

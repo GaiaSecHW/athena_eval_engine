@@ -18,7 +18,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..persistence.dts_repo import (
     get_dts_issue,
     list_dts_issues,

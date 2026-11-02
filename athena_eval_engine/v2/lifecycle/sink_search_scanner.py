@@ -14,7 +14,7 @@ from __future__ import annotations
 import os
 
 from ..core.data_pack import DataPack
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 
 class SinkSearchScanner:

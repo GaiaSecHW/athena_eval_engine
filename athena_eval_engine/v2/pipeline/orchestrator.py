@@ -22,7 +22,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..infra.concurrency import get as _conc_get
 from ..infra.parallel import iter_completed
-from ...infrastructure.log_util import (
+from ..infra.log_util import (
     log, set_eval_ctx, clear_eval_ctx, with_eval_ctx, log_error,
 )
 from .state_machine import assert_transition
@@ -127,408 +127,61 @@ class Orchestrator:
         set_eval_ctx(evaluation_id)
         reports_dir = _get_reports_dir()
         os.makedirs(reports_dir, exist_ok=True)
-
-        # 清除旧的 debug 数据文件（重试时避免残留历史数据）
         _clear_debug_files(reports_dir, evaluation_id)
-
-        # 统一 cancel_cb：外部传入的优先，否则用内部创建的
         _cancel_cb = cancel_cb or _make_cancel_cb(evaluation_id, "ORCHESTRATOR")
 
         log("ORCH", f"启动 v2 pipeline: evaluation_id={evaluation_id} "
               f"reports_dir={reports_dir}")
 
         try:
-            # ── INGESTING（拆分：config+entries 立即返回，数据采集并行） ──
-            assert_transition("VALIDATING", stages.INGESTING)
-            _set_status_safe(evaluation_id, "VALIDATING")
-            _set_status_safe(evaluation_id, stages.INGESTING)
-
-            # 1. 读 config + entries（快，纯 DB 读）
-            cfg = self._read_config(evaluation_id)
-            entries = cfg.get("manifest", {}).get("entries", [])
-            eval_mode = cfg.get("manifest", {}).get("eval_mode", "dev")
-            benchmark_source = cfg.get("manifest", {}).get(
-                "benchmark_source", "vbench_zip")
-            log("ORCH", f"INGESTING: {len(entries)} entries, eval_mode={eval_mode}, "
-                  f"benchmark_source={benchmark_source}")
-
-            # 2. 并行启动：trace 解析 + 数据采集（基线/原始数据/LLM 匹配）
-            _set_progress(evaluation_id, "并行：trace 解析 + 数据采集...")
-
-            # ── PARSING 线程 ──
-            _check_cancel(evaluation_id, stages.PARSING)
-            assert_transition(stages.INGESTING, stages.PARSING)
-            _set_status_safe(evaluation_id, stages.PARSING)
-
-            parse_pool = ThreadPoolExecutor(max_workers=1)
-            parse_future = parse_pool.submit(
-                with_eval_ctx(self._parse_traces),
-                evaluation_id, entries, [], {}, cfg,
-                cancel_cb=_cancel_cb,
-            )
-
-            # ── 数据采集线程 ──
-            def _collect_data():
-                return with_eval_ctx(self._collect_baseline_and_raw)(
-                    evaluation_id, cfg,
+            # ── INGESTING + PARSING（并行启动） ──
+            cfg, entries, eval_mode, benchmark_source, \
+                benchmark_items, case_details, alert_center_data, case_matches, \
+                parse_pool, parse_future = self._stage_ingesting(
+                    evaluation_id, reports_dir, _cancel_cb,
                 )
-            data_pool = ThreadPoolExecutor(max_workers=1)
-            data_future = data_pool.submit(_collect_data)
 
-            # 等待数据采集完成
-            try:
-                benchmark_items, case_details, alert_center_data, case_matches = \
-                    data_future.result()
-            finally:
-                data_pool.shutdown(wait=False)
-            log("ORCH", f"数据采集 done: {len(benchmark_items)} benchmark_items, "
-                  f"{len(case_details)} case_details")
-
-            # ── 开发态 LLM 语义匹配 ──
-            # （已在 _collect_baseline_and_raw 内完成，case_matches 直接返回）
-
-            # debug dump：INGESTING 中间数据明细
-            _dump_debug(reports_dir, evaluation_id, "ingesting", {
-                "benchmark_source": benchmark_source,
-                "eval_mode": eval_mode,
-                "benchmark_set_id": cfg.get("manifest", {}).get("benchmark_set_id"),
-                "vc_source_task_id": cfg.get("manifest", {}).get("vc_source_task_id"),
-                "entries": [
-                    {
-                        "condition": e.get("condition"),
-                        "project_id": e.get("project_id"),
-                        "task_id": e.get("task_id_actual"),
-                        "project_name": e.get("project_name"),
-                        "task_name": e.get("task_name"),
-                        "category": e.get("category"),
-                        "source_uri": e.get("source_uri"),
-                    }
-                    for e in entries
-                ],
-                "raw_data": {
-                    "source_task_ids": alert_center_data.get("source_task_ids", []),
-                    "project_ids": alert_center_data.get("project_ids", []),
-                    "total": alert_center_data.get("total", 0),
-                    "counts": alert_center_data.get("counts", {}),
-                    "cases": [
-                        {
-                            "case_id": c.get("id"),
-                            "title": c.get("title"),
-                            "summary": c.get("summary") or "",
-                            "validation_result": c.get("validation_result"),
-                            "current_stage": c.get("current_stage"),
-                            "false_positive_reason": c.get("false_positive_reason"),
-                            "false_positive_group": c.get("false_positive_group"),
-                            "human_confirmation_summary": (c.get("human_confirmation") or {}).get("summary") or "",
-                            "project_id": c.get("project_id"),
-                            "source_file": (c.get("subject") or {}).get("locator") or "",
-                        }
-                        for c in alert_center_data.get("cases", [])
-                    ],
-                },
-                "baseline": {
-                    "total": len(case_details),
-                    "cases": [
-                        {
-                            "case_id": cid,
-                            **detail,
-                        }
-                        for cid, detail in case_details.items()
-                    ],
-                },
-                "case_matches": case_matches,
-            })
-
-            # debug 断点
             debug_stop = cfg.get("manifest", {}).get("debug_stop_after")
             if debug_stop == "ingesting":
-                log("ORCH", f"DEBUG 断点：停在 INGESTING 之后（debug_stop_after=ingesting）")
+                log("ORCH", "DEBUG 断点：停在 INGESTING 之后")
                 parse_pool.shutdown(wait=False)
                 _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
                 _set_progress(evaluation_id, "调试断点：INGESTING 完成")
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=ingesting")
                 return
 
-            # 等待 trace 解析完成
-            try:
-                data_packs = parse_future.result()
-            finally:
-                parse_pool.shutdown(wait=False)
-            log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
-
-            # 将 benchmark_items 附加到每个 DataPack（并行解析时未传入）
-            if benchmark_items:
-                from ..core.task_run import BenchmarkItem
-                from ..core.enums import ExpectedLabel
-                for dp in data_packs:
-                    bench = []
-                    for bid in benchmark_items:
-                        cd = case_details.get(bid, {})
-                        exp_label = cd.get("expected_label", "VULNERABLE")
-                        bench.append(BenchmarkItem(
-                            benchmark_item_id=bid,
-                            benchmark_set_id=cfg.get("manifest", {}).get(
-                                "benchmark_set_id", "BS001",
-                            ),
-                            task_id=dp.task_id,
-                            expected_label=ExpectedLabel(exp_label)
-                            if exp_label else None,
-                            metadata=cd,
-                        ))
-                    dp.benchmark_item = bench[0] if bench else None
-
-            # debug dump：PARSING 中间数据 — 所有 session 关系图
-            _dump_debug(reports_dir, evaluation_id, "parsing", {
-                "data_packs": [
-                    _summarize_data_pack(dp)
-                    for dp in data_packs
-                ],
-            })
-
-            # ── CASE_MATCHING（基线 case ↔ trace session）──
-            _check_cancel(evaluation_id, stages.CASE_MATCHING)
-            assert_transition(stages.PARSING, stages.CASE_MATCHING)
-            _set_status_safe(evaluation_id, stages.CASE_MATCHING)
-            _set_progress(evaluation_id, "case-session 匹配...")
-            from ..lifecycle.case_session_matcher import CaseSessionMatcher
-            matcher = CaseSessionMatcher()
-            case_session_matches = matcher.match(
-                evaluation_id, data_packs, case_details,
-                case_matches=case_matches,
-                eval_mode=eval_mode,
-                alert_center_data=alert_center_data,
+            # ── PARSING（join + post-process） ──
+            data_packs = self._stage_parsing_join(
+                evaluation_id, reports_dir, parse_pool, parse_future,
+                benchmark_items, case_details, cfg,
             )
 
-            # case_matching 只处理 FP（误报）和 FN（漏报）case
-            # TP（真阳性，正确报了）和 TN（真阴性，正确没报）不需要根因分析/问题单
-            fp_fn_matches = [r for r in case_session_matches
-                             if r["outcome"] in ("FP", "FN")]
-
-            # ── FN 漏报匹配结果（开发态）──
-            # LLM 未匹配的 VULNERABLE 基线在 case_session_matches 里被 sink
-            # 文件扫描判为 TP，但 agent 实际未上报漏洞——评测上是漏报。
-            # 这里的漏报匹配结果是**精确匹配**：只有 sink 函数/行号级命中
-            # （且读取型工具）的 session 才算匹配上——agent 确实读到过
-            # 疑似 sink 点。文件级命中（grep/glob 结果列表碰巧含路径）
-            # 不算匹配。FnMissAnalyzer 一次完成：sink 提取 + 精确匹配 +
-            # 细分漏报成因，结果在 CASE_MATCHING 展示匹配、在
-            # ROOT_CAUSE_ANALYSIS 展示漏报原因（避免重复 LLM 调用）。
-            fn_miss_results: list[dict] = []
-            fn_miss_match_cases: list[dict] = []
-            if eval_mode == "dev":
-                _set_progress(evaluation_id, "FN 漏报原因分析...")
-                from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
-                fn_analyzer = FnMissAnalyzer()
-                fn_miss_results = fn_analyzer.analyze(
-                    evaluation_id, case_details, case_matches,
-                    data_packs, eval_mode=eval_mode,
-                    cancel_cb=_cancel_cb,
-                )
-                for r in fn_miss_results:
-                    precise_sessions = r.get("precise_sessions", {}) or {}
-                    mining_sessions: list[str] = []
-                    for at, sids in precise_sessions.items():
-                        for sid in sids:
-                            if sid not in mining_sessions:
-                                mining_sessions.append(sid)
-                    fn_miss_match_cases.append({
-                        "case_id": r.get("case_id", ""),
-                        "ac_case_id": "",
-                        "vuln_title": r.get("vuln_title", ""),
-                        "summary": r.get("summary", ""),
-                        "description": r.get("description", ""),
-                        "expected_label": "VULNERABLE",
-                        "mining_sessions": mining_sessions,
-                        "verify_sessions": [],
-                        "agent_type": _mining_agent_type(data_packs),
-                        "outcome": "FN",
-                        "match_method": "unmatched" if not mining_sessions
-                        else "matched",
-                        "match_detail": (
-                            f"{len(mining_sessions)} 个 session 精确命中 sink 点"
-                            f"（函数/行号级），LLM 未匹配原始数据，漏报"
-                            if mining_sessions else
-                            "LLM 未匹配原始数据且 trace 未精确命中 sink 点，漏报"),
-                    })
-
-            # debug dump：CASE_MATCHING 中间数据（FP/FN 匹配判定 + 漏报匹配结果，
-            # 不含漏报原因——漏报原因分析在 ROOT_CAUSE_ANALYSIS 阶段展示）
-            fn_match_cases = fp_fn_matches + fn_miss_match_cases
-            # 全部 case（含 TP/TN）的结果统计 + 未匹配明细。
-            # 调试页需要区分三种「total_cases=0」：
-            #   1) 基线为空（baseline_total=0）
-            #   2) 基线有 case 但都没匹配到 trace session（unmatched_cases 非空）
-            #   3) 全部匹配正确，没有 FP/FN（unmatched_cases 为空）
-            _outcome_counts = {
-                o: sum(1 for r in case_session_matches
-                       if r.get("outcome") == o)
-                for o in ("TP", "TN", "FP", "FN")
-            }
-            _unmatched_cases = [
-                {
-                    "case_id": r.get("case_id", ""),
-                    "ac_case_id": r.get("ac_case_id", ""),
-                    "vuln_title": (r.get("vuln_title") or "")[:120],
-                    "expected_label": r.get("expected_label", ""),
-                }
-                for r in case_session_matches
-                if r.get("match_method") == "unmatched"
-            ]
-            case_matching_debug: dict = {
-                "eval_mode": eval_mode,
-                "baseline_total": len(case_details),
-                "outcome_counts": _outcome_counts,
-                "unmatched_cases": _unmatched_cases,
-                "total_cases": len(fn_match_cases),
-                "matched": sum(1 for r in fn_match_cases
-                               if r["match_method"] != "unmatched"),
-                "unmatched": sum(1 for r in fn_match_cases
-                                 if r["match_method"] == "unmatched"),
-                "outcomes": {
-                    "FP": sum(1 for r in fn_match_cases if r["outcome"] == "FP"),
-                    "FN": sum(1 for r in fn_match_cases if r["outcome"] == "FN"),
-                },
-                # 各 agent 的 TP/FP 统计（从完整 case_session_matches 反推，
-                # 供看板计算各 agent 误报率 FP/(TP+FP) 同口径）。
-                # 注：matches 仍只含 FP/FN（TP/TN 不进 matches 避免展示影响），
-                # 但 agent 级统计必须含 TP——否则误报率无法计算。
-                "agent_outcomes": _calc_agent_outcomes(
-                    case_session_matches, data_packs),
-                "matches": fn_match_cases,
-            }
-            _dump_debug(reports_dir, evaluation_id, "case_matching",
-                             case_matching_debug)
-
-            # debug 断点
+            # ── CASE_MATCHING ──
+            case_session_matches, fn_miss_results = self._stage_case_matching(
+                evaluation_id, reports_dir, _cancel_cb,
+                data_packs, case_details, case_matches,
+                alert_center_data, eval_mode, cfg,
+            )
             if cfg.get("manifest", {}).get("debug_stop_after") == "case_matching":
-                log("ORCH", "DEBUG 断点：停在 CASE_MATCHING 之后")
-                _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
-                _set_progress(evaluation_id, "调试断点：CASE_MATCHING 完成")
-                _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
                 return
 
-            # ── ROOT_CAUSE_ANALYSIS（FP + FN case 独立压缩 + 合并输出根因分析）──
-            # FN 漏报原因分析（sink 精确命中 + 细分漏报成因）已在
-            # CASE_MATCHING 阶段完成（fn_miss_results），此处直接复用，
-            # 不重复调 LLM。
-            _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
-            assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
-            _set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
-            fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
-            fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
-
-            # 补充人工标注误报原因到 fp_cases/fn_cases，供根因分析使用
-            for fc in fp_cases + fn_cases:
-                cd = case_details.get(fc.get("case_id", ""), {})
-                fc["human_confirmation_summary"] = cd.get(
-                    "human_confirmation_summary", "")
-                fc["summary"] = cd.get("summary", "")
-            # FN 漏报原因分析结果按 case_id 附加到对应 case 上
-            fn_miss_by_case: dict[str, dict] = {
-                r["case_id"]: r for r in fn_miss_results
-            }
-            for fc in fn_cases:
-                fc["fn_miss"] = fn_miss_by_case.get(fc.get("case_id", ""))
-
-            # LLM 未匹配的 VULNERABLE 基线（agent 实际未上报的真漏洞）——
-            # 不在 case_session_matches 里（sink 文件扫描使其判为 TP），
-            # 但作为评测漏报必须进入根因分析。从 fn_miss_results 构建
-            # 根因分析 case：outcome=FN，session 用精确命中的 session，
-            # fn_miss 字段带 sink 漏报原因分析结果。
-            existing_fn_ids = {fc.get("case_id", "") for fc in fn_cases}
-            for r in fn_miss_results:
-                cid = r.get("case_id", "")
-                if cid in existing_fn_ids:
-                    continue
-                # 漏报原因分析的精确命中 session（函数/行号级）作为根因分析链
-                all_precise_sids: list[str] = []
-                for at, sids in (r.get("precise_sessions", {}) or {}).items():
-                    for sid in sids:
-                        if sid not in all_precise_sids:
-                            all_precise_sids.append(sid)
-                fn_cases.append({
-                    "case_id": cid,
-                    "ac_case_id": "",
-                    "vuln_title": r.get("vuln_title", ""),
-                    "summary": r.get("summary", ""),
-                    "description": r.get("description", ""),
-                    "expected_label": "VULNERABLE",
-                    "mining_sessions": all_precise_sids,
-                    "verify_sessions": [],
-                    "agent_type": _mining_agent_type(data_packs),
-                    "outcome": "FN",
-                    "match_method": "unmatched",
-                    "match_detail": "LLM 未匹配原始数据，按漏报进入根因分析",
-                    "fn_miss": r,
-                })
-                existing_fn_ids.add(cid)
-
-            root_cause_cases = fp_cases + fn_cases
-            if root_cause_cases or fn_miss_results:
-                _set_progress(evaluation_id,
-                              f"根因分析中... {len(fp_cases)} FP + "
-                              f"{len(fn_cases)} FN case"
-                              + (f" + {len(fn_miss_results)} 漏报原因分析"
-                                 if fn_miss_results else ""))
-                from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
-                rca = RootCauseAnalyzer()
-                # 从 manifest 取 project_id（知识库主动验证用）
-                project_ids = [
-                    e.get("project_id") for e in entries
-                    if e.get("project_id")
-                ]
-                root_cause_project_id = project_ids[0] if project_ids else ""
-                root_cause_results = rca.analyze(
-                    evaluation_id, root_cause_cases, data_packs,
-                    cancel_cb=_cancel_cb,
-                    project_id=root_cause_project_id,
-                )
-
-                # debug dump：ROOT_CAUSE 中间数据（含 FN 漏报原因分析）
-                _dump_debug(reports_dir, evaluation_id, "root_cause", {
-                    "total_fp": len(fp_cases),
-                    "total_fn": len(fn_cases),
-                    "analyzed": len(root_cause_results),
-                    "fn_miss_analysis": {
-                        "total": len(fn_miss_results),
-                        "sink_found": sum(1 for r in fn_miss_results
-                                          if r.get("sink_found")),
-                        "sink_not_found": sum(1 for r in fn_miss_results
-                                              if not r.get("sink_found")),
-                        "results": fn_miss_results,
-                    } if fn_miss_results else None,
-                    "results": root_cause_results,
-                })
-
-                # debug 断点
-                if cfg.get("manifest", {}).get("debug_stop_after") == "root_cause":
-                    log("ORCH", "DEBUG 断点：停在 ROOT_CAUSE 之后")
-                    _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
-                    _set_progress(evaluation_id, "调试断点：ROOT_CAUSE 完成")
-                    _set_failed(evaluation_id, "调试断点：debug_stop_after=root_cause")
-                    return
-            else:
-                root_cause_results = []
-                log("ORCH", "无 FP/FN case，跳过根因分析")
-
-            # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
-            try:
-                from ..infra.trace_cache import cleanup_trace_cache
-                cleanup_trace_cache(evaluation_id)
-            except Exception:
-                pass
+            # ── ROOT_CAUSE_ANALYSIS ──
+            root_cause_results = self._stage_root_cause(
+                evaluation_id, reports_dir, _cancel_cb,
+                case_session_matches, fn_miss_results,
+                case_details, data_packs, entries, cfg,
+            )
+            if cfg.get("manifest", {}).get("debug_stop_after") == "root_cause":
+                return
 
             # ── RESOLVING ──
-            # 持久化 session_graph + 4 种 fact 到 DB
             _check_cancel(evaluation_id, stages.RESOLVING)
             assert_transition(stages.ROOT_CAUSE_ANALYSIS, stages.RESOLVING)
             _set_status_safe(evaluation_id, stages.RESOLVING)
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_data(evaluation_id, data_packs)
 
-            # ── 因果链分析 + 问题单生成（从根因分析结果构建）──
             _set_progress(evaluation_id, "因果链分析 + 问题单生成...")
-            # 从 manifest 取原始数据 task_id，写入问题单供按任务查询
             _task_id = cfg.get("manifest", {}).get("kg_task_id", "")
             causal_chain = self._run_causal_chain(
                 root_cause_results, evaluation_id, reports_dir,
@@ -537,8 +190,6 @@ class Orchestrator:
             log("ORCH", f"因果链分析 done: "
                   f"{len(causal_chain.get('per_case_breakpoints', []))} "
                   f"cases with breakpoints")
-
-            # debug dump：因果链分析结果
             _dump_debug(reports_dir, evaluation_id, "resolving", {
                 "causal_chain": causal_chain,
             })
@@ -548,7 +199,6 @@ class Orchestrator:
             assert_transition(stages.RESOLVING, stages.REPORTING)
             _set_status_safe(evaluation_id, stages.REPORTING)
 
-            # 重试路径：lifecycle report 已存在 → 跳过报告组装
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
                     os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
                 log("ORCH", "REPORTING skipped: lifecycle + base report 已存在"
@@ -574,8 +224,7 @@ class Orchestrator:
             assert_transition(stages.REPORTING, "FINALIZING")
             _set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
-            self._finalize(evaluation_id, reports_dir,
-                           causal_chain)
+            self._finalize(evaluation_id, reports_dir, causal_chain)
             _set_status_safe(evaluation_id, "COMPLETED")
             _set_progress(evaluation_id, "评测完成")
             log("ORCH", f"v2 pipeline 完成: {evaluation_id}")
@@ -591,6 +240,369 @@ class Orchestrator:
         finally:
             clear_eval_ctx()
             _clear_progress(evaluation_id)
+
+    # ── 阶段方法 ───────────────────────────────────────
+
+    def _stage_ingesting(
+        self, evaluation_id: str, reports_dir: str, _cancel_cb,
+    ):
+        """INGESTING：读 config + 并行启动 trace 解析 + 数据采集。
+
+        PARSING 线程在此阶段启动（与数据采集并行），但 join 在调用方执行。
+        返回 (cfg, entries, eval_mode, benchmark_source,
+              benchmark_items, case_details, alert_center_data, case_matches,
+              parse_pool, parse_future)。
+        """
+        assert_transition("VALIDATING", stages.INGESTING)
+        _set_status_safe(evaluation_id, "VALIDATING")
+        _set_status_safe(evaluation_id, stages.INGESTING)
+
+        cfg = self._read_config(evaluation_id)
+        entries = cfg.get("manifest", {}).get("entries", [])
+        eval_mode = cfg.get("manifest", {}).get("eval_mode", "dev")
+        benchmark_source = cfg.get("manifest", {}).get(
+            "benchmark_source", "vbench_zip")
+        log("ORCH", f"INGESTING: {len(entries)} entries, eval_mode={eval_mode}, "
+              f"benchmark_source={benchmark_source}")
+
+        _set_progress(evaluation_id, "并行：trace 解析 + 数据采集...")
+
+        # PARSING 线程（与数据采集并行启动）
+        _check_cancel(evaluation_id, stages.PARSING)
+        assert_transition(stages.INGESTING, stages.PARSING)
+        _set_status_safe(evaluation_id, stages.PARSING)
+
+        parse_pool = ThreadPoolExecutor(max_workers=1)
+        parse_future = parse_pool.submit(
+            with_eval_ctx(self._parse_traces),
+            evaluation_id, entries, [], {}, cfg,
+            cancel_cb=_cancel_cb,
+        )
+
+        # 数据采集线程
+        def _collect_data():
+            return with_eval_ctx(self._collect_baseline_and_raw)(
+                evaluation_id, cfg,
+            )
+        data_pool = ThreadPoolExecutor(max_workers=1)
+        data_future = data_pool.submit(_collect_data)
+
+        try:
+            benchmark_items, case_details, alert_center_data, case_matches = \
+                data_future.result()
+        finally:
+            data_pool.shutdown(wait=False)
+        log("ORCH", f"数据采集 done: {len(benchmark_items)} benchmark_items, "
+              f"{len(case_details)} case_details")
+
+        _dump_debug(reports_dir, evaluation_id, "ingesting", {
+            "benchmark_source": benchmark_source,
+            "eval_mode": eval_mode,
+            "benchmark_set_id": cfg.get("manifest", {}).get("benchmark_set_id"),
+            "vc_source_task_id": cfg.get("manifest", {}).get("vc_source_task_id"),
+            "entries": [
+                {
+                    "condition": e.get("condition"),
+                    "project_id": e.get("project_id"),
+                    "task_id": e.get("task_id_actual"),
+                    "project_name": e.get("project_name"),
+                    "task_name": e.get("task_name"),
+                    "category": e.get("category"),
+                    "source_uri": e.get("source_uri"),
+                }
+                for e in entries
+            ],
+            "raw_data": {
+                "source_task_ids": alert_center_data.get("source_task_ids", []),
+                "project_ids": alert_center_data.get("project_ids", []),
+                "total": alert_center_data.get("total", 0),
+                "counts": alert_center_data.get("counts", {}),
+                "cases": [
+                    {
+                        "case_id": c.get("id"),
+                        "title": c.get("title"),
+                        "summary": c.get("summary") or "",
+                        "validation_result": c.get("validation_result"),
+                        "current_stage": c.get("current_stage"),
+                        "false_positive_reason": c.get("false_positive_reason"),
+                        "false_positive_group": c.get("false_positive_group"),
+                        "human_confirmation_summary": (c.get("human_confirmation") or {}).get("summary") or "",
+                        "project_id": c.get("project_id"),
+                        "source_file": (c.get("subject") or {}).get("locator") or "",
+                    }
+                    for c in alert_center_data.get("cases", [])
+                ],
+            },
+            "baseline": {
+                "total": len(case_details),
+                "cases": [
+                    {"case_id": cid, **detail}
+                    for cid, detail in case_details.items()
+                ],
+            },
+            "case_matches": case_matches,
+        })
+
+        return (cfg, entries, eval_mode, benchmark_source,
+                benchmark_items, case_details, alert_center_data, case_matches,
+                parse_pool, parse_future)
+
+    def _stage_parsing_join(
+        self, evaluation_id: str, reports_dir: str,
+        parse_pool, parse_future,
+        benchmark_items: list, case_details: dict, cfg: dict,
+    ) -> list:
+        """PARSING：等待解析完成 + 附加 benchmark_items + debug dump。"""
+        try:
+            data_packs = parse_future.result()
+        finally:
+            parse_pool.shutdown(wait=False)
+        log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
+
+        # 将 benchmark_items 附加到每个 DataPack（并行解析时未传入）
+        if benchmark_items:
+            from ..core.task_run import BenchmarkItem
+            from ..core.enums import ExpectedLabel
+            for dp in data_packs:
+                bench = []
+                for bid in benchmark_items:
+                    cd = case_details.get(bid, {})
+                    exp_label = cd.get("expected_label", "VULNERABLE")
+                    bench.append(BenchmarkItem(
+                        benchmark_item_id=bid,
+                        benchmark_set_id=cfg.get("manifest", {}).get(
+                            "benchmark_set_id", "BS001",
+                        ),
+                        task_id=dp.task_id,
+                        expected_label=ExpectedLabel(exp_label)
+                        if exp_label else None,
+                        metadata=cd,
+                    ))
+                dp.benchmark_item = bench[0] if bench else None
+
+        _dump_debug(reports_dir, evaluation_id, "parsing", {
+            "data_packs": [_summarize_data_pack(dp) for dp in data_packs],
+        })
+        return data_packs
+
+    def _stage_case_matching(
+        self, evaluation_id: str, reports_dir: str, _cancel_cb,
+        data_packs: list, case_details: dict, case_matches: list,
+        alert_center_data: dict, eval_mode: str, cfg: dict,
+    ):
+        """CASE_MATCHING：基线 case ↔ trace session 精确匹配 + FN 漏报分析。
+
+        返回 (case_session_matches, fn_miss_results)。
+        """
+        _check_cancel(evaluation_id, stages.CASE_MATCHING)
+        assert_transition(stages.PARSING, stages.CASE_MATCHING)
+        _set_status_safe(evaluation_id, stages.CASE_MATCHING)
+        _set_progress(evaluation_id, "case-session 匹配...")
+        from ..lifecycle.case_session_matcher import CaseSessionMatcher
+        matcher = CaseSessionMatcher()
+        case_session_matches = matcher.match(
+            evaluation_id, data_packs, case_details,
+            case_matches=case_matches,
+            eval_mode=eval_mode,
+            alert_center_data=alert_center_data,
+        )
+
+        fp_fn_matches = [r for r in case_session_matches
+                         if r["outcome"] in ("FP", "FN")]
+
+        # FN 漏报匹配结果（开发态）
+        fn_miss_results: list[dict] = []
+        fn_miss_match_cases: list[dict] = []
+        if eval_mode == "dev":
+            _set_progress(evaluation_id, "FN 漏报原因分析...")
+            from ..lifecycle.fn_miss_analyzer import FnMissAnalyzer
+            fn_analyzer = FnMissAnalyzer()
+            fn_miss_results = fn_analyzer.analyze(
+                evaluation_id, case_details, case_matches,
+                data_packs, eval_mode=eval_mode,
+                cancel_cb=_cancel_cb,
+            )
+            for r in fn_miss_results:
+                precise_sessions = r.get("precise_sessions", {}) or {}
+                mining_sessions: list[str] = []
+                for at, sids in precise_sessions.items():
+                    for sid in sids:
+                        if sid not in mining_sessions:
+                            mining_sessions.append(sid)
+                fn_miss_match_cases.append({
+                    "case_id": r.get("case_id", ""),
+                    "ac_case_id": "",
+                    "vuln_title": r.get("vuln_title", ""),
+                    "summary": r.get("summary", ""),
+                    "description": r.get("description", ""),
+                    "expected_label": "VULNERABLE",
+                    "mining_sessions": mining_sessions,
+                    "verify_sessions": [],
+                    "agent_type": _mining_agent_type(data_packs),
+                    "outcome": "FN",
+                    "match_method": "unmatched" if not mining_sessions
+                    else "matched",
+                    "match_detail": (
+                        f"{len(mining_sessions)} 个 session 精确命中 sink 点"
+                        f"（函数/行号级），LLM 未匹配原始数据，漏报"
+                        if mining_sessions else
+                        "LLM 未匹配原始数据且 trace 未精确命中 sink 点，漏报"),
+                })
+
+        # debug dump
+        fn_match_cases = fp_fn_matches + fn_miss_match_cases
+        _outcome_counts = {
+            o: sum(1 for r in case_session_matches
+                   if r.get("outcome") == o)
+            for o in ("TP", "TN", "FP", "FN")
+        }
+        _unmatched_cases = [
+            {
+                "case_id": r.get("case_id", ""),
+                "ac_case_id": r.get("ac_case_id", ""),
+                "vuln_title": (r.get("vuln_title") or "")[:120],
+                "expected_label": r.get("expected_label", ""),
+            }
+            for r in case_session_matches
+            if r.get("match_method") == "unmatched"
+        ]
+        case_matching_debug: dict = {
+            "eval_mode": eval_mode,
+            "baseline_total": len(case_details),
+            "outcome_counts": _outcome_counts,
+            "unmatched_cases": _unmatched_cases,
+            "total_cases": len(fn_match_cases),
+            "matched": sum(1 for r in fn_match_cases
+                           if r["match_method"] != "unmatched"),
+            "unmatched": sum(1 for r in fn_match_cases
+                             if r["match_method"] == "unmatched"),
+            "outcomes": {
+                "FP": sum(1 for r in fn_match_cases if r["outcome"] == "FP"),
+                "FN": sum(1 for r in fn_match_cases if r["outcome"] == "FN"),
+            },
+            "agent_outcomes": _calc_agent_outcomes(
+                case_session_matches, data_packs),
+            "matches": fn_match_cases,
+        }
+        _dump_debug(reports_dir, evaluation_id, "case_matching",
+                         case_matching_debug)
+
+        if cfg.get("manifest", {}).get("debug_stop_after") == "case_matching":
+            log("ORCH", "DEBUG 断点：停在 CASE_MATCHING 之后")
+            _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+            _set_progress(evaluation_id, "调试断点：CASE_MATCHING 完成")
+            _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
+
+        return case_session_matches, fn_miss_results
+
+    def _stage_root_cause(
+        self, evaluation_id: str, reports_dir: str, _cancel_cb,
+        case_session_matches: list, fn_miss_results: list,
+        case_details: dict, data_packs: list, entries: list, cfg: dict,
+    ) -> list:
+        """ROOT_CAUSE_ANALYSIS：FP + FN case 根因分析。
+
+        返回 root_cause_results。
+        """
+        _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
+        assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
+        _set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
+        fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
+        fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
+
+        # 补充人工标注误报原因
+        for fc in fp_cases + fn_cases:
+            cd = case_details.get(fc.get("case_id", ""), {})
+            fc["human_confirmation_summary"] = cd.get(
+                "human_confirmation_summary", "")
+            fc["summary"] = cd.get("summary", "")
+        # FN 漏报原因分析结果按 case_id 附加
+        fn_miss_by_case: dict[str, dict] = {
+            r["case_id"]: r for r in fn_miss_results
+        }
+        for fc in fn_cases:
+            fc["fn_miss"] = fn_miss_by_case.get(fc.get("case_id", ""))
+
+        # LLM 未匹配的 VULNERABLE 基线作为漏报进入根因分析
+        existing_fn_ids = {fc.get("case_id", "") for fc in fn_cases}
+        for r in fn_miss_results:
+            cid = r.get("case_id", "")
+            if cid in existing_fn_ids:
+                continue
+            all_precise_sids: list[str] = []
+            for at, sids in (r.get("precise_sessions", {}) or {}).items():
+                for sid in sids:
+                    if sid not in all_precise_sids:
+                        all_precise_sids.append(sid)
+            fn_cases.append({
+                "case_id": cid,
+                "ac_case_id": "",
+                "vuln_title": r.get("vuln_title", ""),
+                "summary": r.get("summary", ""),
+                "description": r.get("description", ""),
+                "expected_label": "VULNERABLE",
+                "mining_sessions": all_precise_sids,
+                "verify_sessions": [],
+                "agent_type": _mining_agent_type(data_packs),
+                "outcome": "FN",
+                "match_method": "unmatched",
+                "match_detail": "LLM 未匹配原始数据，按漏报进入根因分析",
+                "fn_miss": r,
+            })
+            existing_fn_ids.add(cid)
+
+        root_cause_cases = fp_cases + fn_cases
+        if root_cause_cases or fn_miss_results:
+            _set_progress(evaluation_id,
+                          f"根因分析中... {len(fp_cases)} FP + "
+                          f"{len(fn_cases)} FN case"
+                          + (f" + {len(fn_miss_results)} 漏报原因分析"
+                             if fn_miss_results else ""))
+            from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
+            rca = RootCauseAnalyzer()
+            project_ids = [
+                e.get("project_id") for e in entries
+                if e.get("project_id")
+            ]
+            root_cause_project_id = project_ids[0] if project_ids else ""
+            root_cause_results = rca.analyze(
+                evaluation_id, root_cause_cases, data_packs,
+                cancel_cb=_cancel_cb,
+                project_id=root_cause_project_id,
+            )
+
+            _dump_debug(reports_dir, evaluation_id, "root_cause", {
+                "total_fp": len(fp_cases),
+                "total_fn": len(fn_cases),
+                "analyzed": len(root_cause_results),
+                "fn_miss_analysis": {
+                    "total": len(fn_miss_results),
+                    "sink_found": sum(1 for r in fn_miss_results
+                                      if r.get("sink_found")),
+                    "sink_not_found": sum(1 for r in fn_miss_results
+                                          if not r.get("sink_found")),
+                    "results": fn_miss_results,
+                } if fn_miss_results else None,
+                "results": root_cause_results,
+            })
+
+            if cfg.get("manifest", {}).get("debug_stop_after") == "root_cause":
+                log("ORCH", "DEBUG 断点：停在 ROOT_CAUSE 之后")
+                _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_progress(evaluation_id, "调试断点：ROOT_CAUSE 完成")
+                _set_failed(evaluation_id, "调试断点：debug_stop_after=root_cause")
+        else:
+            root_cause_results = []
+            log("ORCH", "无 FP/FN case，跳过根因分析")
+
+        # 清理 /tmp trace 缓存
+        try:
+            from ..infra.trace_cache import cleanup_trace_cache
+            cleanup_trace_cache(evaluation_id)
+        except Exception:
+            pass
+
+        return root_cause_results
 
     # ── INGESTING ────────────────────────────────────
 
@@ -650,7 +662,7 @@ class Orchestrator:
         # ── 获取原始数据：从告警中心取挖掘 agent 上报的全部 case ──
         if kg_project_id and kg_task_id:
             try:
-                from ...infrastructure.vuln_center_client import (
+                from ..infra.vuln_center_client import (
                     get_alert_center_summary,
                 )
                 ac_summary = with_eval_ctx(self._fetch_ac)(
@@ -677,7 +689,7 @@ class Orchestrator:
 
         # ── 取基线 case 详情 ──
         if bm_source == "vuln_center":
-            from ...infrastructure.vuln_center_client import (
+            from ..infra.vuln_center_client import (
                 _case_to_benchmark, get_alert_center_summary,
             )
 
@@ -704,7 +716,7 @@ class Orchestrator:
                 baseline_cases = baseline_summary.get("cases", [])
                 log("INGEST", f"基线告警中心返回 {len(baseline_cases)} 条 case")
 
-            from ...infrastructure.vuln_center_client import get_case_raw_report
+            from ..infra.vuln_center_client import get_case_raw_report
             for c in baseline_cases:
                 if c.get("current_stage") != "finished":
                     continue
@@ -733,7 +745,7 @@ class Orchestrator:
                     }
 
         elif bm_source == "vbench_zip":
-            from ...infrastructure.vbench_client import get_benchmark
+            from ..infra.vbench_client import get_benchmark
             log("INGEST", f"基线数据(V-Bench): set_id={benchmark_set_id}")
             bm = get_benchmark(benchmark_set_id)
             all_cases = bm.get("cases") or []
@@ -782,7 +794,7 @@ class Orchestrator:
                 # 修复：之前直接用 alert_center_data["cases"] 原始 42 字段结构，
                 # 没有 description 字段（API 返回 summary），LLM 只看到 91 字符 title，
                 # 与基线 5730 字符 description 严重不对称，导致匹配率低。
-                from ...infrastructure.vuln_center_client import _case_to_benchmark
+                from ..infra.vuln_center_client import _case_to_benchmark
                 raw_cases_for_match = [
                     _case_to_benchmark(c, expected_label="")
                     for c in alert_center_data.get("cases", [])
@@ -862,7 +874,7 @@ class Orchestrator:
 
     def _fetch_ac(self, pair: tuple[str, str]) -> dict:
         """获取单个项目的告警中心数据（用于线程池并行）。"""
-        from ...infrastructure.vuln_center_client import get_alert_center_summary
+        from ..infra.vuln_center_client import get_alert_center_summary
         project_id, task_id = pair
         return get_alert_center_summary(project_id, task_id)
 

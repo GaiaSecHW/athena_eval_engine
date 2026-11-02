@@ -37,7 +37,7 @@ from collections import defaultdict
 
 from ..core.data_pack import DataPack
 from ..core.agents import MINING_AGENT_SET, VERIFY_AGENT_SET
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 
 class CaseSessionMatcher:

@@ -14,7 +14,7 @@ from typing import Any
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ..core.task_run import BenchmarkItem
-from ...infrastructure.log_util import log, with_eval_ctx, get_eval_ctx
+from ..infra.log_util import log, with_eval_ctx, get_eval_ctx
 
 # ── 默认值 ──
 

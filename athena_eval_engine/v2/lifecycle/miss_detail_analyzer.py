@@ -21,7 +21,7 @@ from __future__ import annotations
 
 from ..infra import llm as llm_mod
 from ..infra.token_counter import count_tokens
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..core.raw_event import RawEvent
 
 # 细分漏报成因 → 描述

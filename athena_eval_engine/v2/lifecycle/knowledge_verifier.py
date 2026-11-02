@@ -33,7 +33,7 @@ import urllib.request
 from typing import Any
 
 from ...config_loader import DATA_ROOT
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 from ..infra import llm as llm_mod
 
 # ── 记忆/wiki NFS 路径 ──

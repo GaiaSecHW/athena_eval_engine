@@ -68,7 +68,7 @@ def get_evaluation(evaluation_id: str):
     """返回评测状态 + 元信息（从 DB 读取，兼容 v1/v2）。"""
     _validate_eval_id(evaluation_id)
     import json as _json
-    from ...infrastructure.database import connect
+    from ..infra.database import connect
 
     conn = connect(autocommit=True)
     try:

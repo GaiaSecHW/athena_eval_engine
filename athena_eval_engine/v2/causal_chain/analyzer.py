@@ -16,7 +16,7 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from ..core.agents import ALL_AGENT_TYPES
-from ...infrastructure.log_util import log
+from ..infra.log_util import log
 
 # ── 断点→级别映射（§4.1 断点→成因映射）──
 

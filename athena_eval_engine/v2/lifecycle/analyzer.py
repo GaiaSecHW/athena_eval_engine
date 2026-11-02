@@ -29,7 +29,7 @@ from ..infra.parallel import iter_completed
 from .case_filter import CaseFilter
 from .evidence_chain import L7_CONFIDENCE_THRESHOLD
 from ..persistence.kad_repo import upsert_knowledge_access_details
-from ...infrastructure.log_util import log, with_eval_ctx, get_eval_ctx
+from ..infra.log_util import log, with_eval_ctx, get_eval_ctx
 
 # ── 安全上下文阈值（占 max_context 的比例）──
 _CONTEXT_SAFETY_RATIO = 0.6  # 只用 60% 上下文窗口给 user_content，留余量给 system prompt + 输出
