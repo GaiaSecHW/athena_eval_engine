@@ -192,8 +192,39 @@ class TuringParser(BaseParser):
 
     @staticmethod
     def _connect(uri: str) -> sqlite3.Connection:
-        """以只读模式打开 opencode.db（避免锁大库）。"""
+        """以只读模式打开 opencode.db（避免锁大库）。
+
+        ``immutable=1`` 模式不做任何一致性恢复，索引损坏时直接抛
+        ``database disk image is malformed``。生产环境中 opencode.db 的
+        索引可能因写入中断、磁盘错误等原因损坏（integrity_check 报
+        "wrong # of entries in index ..."）。
+
+        修复策略：不做预检（integrity_check 需 4s+），直接以 immutable=1
+        打开返回。调用方查询时如果触发 ``DatabaseError``，由 ``_reindex_and_retry``
+        装饰器捕获，切到可写模式执行 ``REINDEX`` 重建索引后重试。
+
+        REINDEX 只重建索引结构，不修改表数据。
+        """
         return sqlite3.connect(f"file:{uri}?immutable=1", uri=True)
+
+    @staticmethod
+    def _reindex_if_corrupt(uri: str) -> None:
+        """检测到索引损坏后，用可写模式 REINDEX 重建。
+
+        在 parse/build_session_graph 查询触发 DatabaseError 时调用。
+        REINDEX 重建全部索引的 B-tree 结构，不修改表数据，对共享存储
+        上的 opencode.db 是安全的。
+        """
+        import logging
+        logging.getLogger(__name__).warning(
+            "opencode.db 索引损坏，执行 REINDEX 修复: %s", uri,
+        )
+        rw_conn = sqlite3.connect(f"file:{uri}?mode=rw", uri=True)
+        try:
+            rw_conn.execute("REINDEX")
+            rw_conn.commit()
+        finally:
+            rw_conn.close()
 
     @staticmethod
     def _check_schema(conn):
@@ -221,13 +252,10 @@ class TuringParser(BaseParser):
         self._cached_n_finish = 0
         self._cached_ti = self._cached_to = self._cached_tr = self._cached_tcr = 0
 
-        events: list[RawEvent] = []
-        conn = self._connect(uri)
-        conn.row_factory = sqlite3.Row
-        try:
-            self._check_schema(conn)
+        def _scan_parts(conn) -> list[RawEvent]:
+            """扫描 part 表，返回事件列表。可能抛 DatabaseError（索引损坏）。"""
+            evs: list[RawEvent] = []
             for row in conn.execute("SELECT * FROM part ORDER BY id"):
-                # 累计 step/token 统计（避免 load_session 二次全表扫描）
                 cols = row.keys() if hasattr(row, "keys") else []
                 t = str(row["type"] or "") if "type" in cols else ""
                 if not t:
@@ -253,7 +281,23 @@ class TuringParser(BaseParser):
                         pass
 
                 row_sid = str(row["session_id"]) if "session_id" in row.keys() and row["session_id"] else fallback_sid
-                events.append(self._part_to_event(row, trace_id, row_sid))
+                evs.append(self._part_to_event(row, trace_id, row_sid))
+            return evs
+
+        events: list[RawEvent] = []
+        conn = self._connect(uri)
+        conn.row_factory = sqlite3.Row
+        try:
+            self._check_schema(conn)
+            events = _scan_parts(conn)
+        except sqlite3.DatabaseError:
+            # 索引损坏：REINDEX 修复后重试
+            conn.close()
+            self._reindex_if_corrupt(uri)
+            conn = self._connect(uri)
+            conn.row_factory = sqlite3.Row
+            self._check_schema(conn)
+            events = _scan_parts(conn)
         finally:
             conn.close()
         return events
@@ -292,9 +336,7 @@ class TuringParser(BaseParser):
         # SQLite opencode.db session 表 — agent 信息补充
         uri = getattr(self, '_source_uri', None)
         if uri:
-            try:
-                conn = self._connect(uri)
-                conn.row_factory = sqlite3.Row
+            def _load_sessions(conn):
                 for row in conn.execute("SELECT id, parent_id, agent FROM session"):
                     sid = row["id"]
                     if sid not in graph['sessions']:
@@ -302,9 +344,22 @@ class TuringParser(BaseParser):
                     sg = graph['sessions'][sid]
                     if "agent" in row.keys():
                         sg['agent'] = row["agent"] or ""
+            try:
+                conn = self._connect(uri)
+                conn.row_factory = sqlite3.Row
+                _load_sessions(conn)
                 conn.close()
-            except Exception as e:
-                _log.warning("Turing build_session_graph SQLite query failed: %s", e)
+            except sqlite3.DatabaseError:
+                # 索引损坏：REINDEX 修复后重试
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+                self._reindex_if_corrupt(uri)
+                conn = self._connect(uri)
+                conn.row_factory = sqlite3.Row
+                _load_sessions(conn)
+                conn.close()
 
         # Turing MySQL turing_task 表 — 以 task_id 为主键建树
         # 权威父子关系源：turing_app_security.turing_task.parent_task_id。
