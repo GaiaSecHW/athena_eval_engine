@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from ..core.data_pack import DataPack
 from ..infra.log_util import log
+from ..infra import llm as llm_mod
 from .sink_search_scanner import SinkSearchScanner
 from .sink_info_extractor import SinkInfoExtractor
 from .miss_detail_analyzer import MissDetailAnalyzer, MISS_SUB_CATEGORIES
@@ -95,13 +96,25 @@ class FnMissAnalyzer:
             f"LLM 未匹配上原始数据，开始提取 sink 信息并匹配 trace",
             eval_id=evaluation_id)
 
-        # Step 1: 用 LLM 提取每个 case 的结构化 sink 信息
+        # Step 1: 用 LLM 提取每个 case 的结构化 sink 信息（并发提交）
         extractor = SinkInfoExtractor()
+
+        def _extract_sink(cd: dict) -> dict:
+            return extractor.extract(cd, cancel_cb=cancel_cb)
+
+        sink_futures = llm_mod.submit_llm_batch(
+            _extract_sink, [cd for _, cd in unmatched_vuln_cases],
+            cancel_cb=cancel_cb)
         sink_infos: dict[str, dict] = {}
-        for cid, cd in unmatched_vuln_cases:
-            if cancel_cb:
-                cancel_cb()
-            sink_infos[cid] = extractor.extract(cd, cancel_cb=cancel_cb)
+        for (cid, _), fut in zip(unmatched_vuln_cases, sink_futures):
+            try:
+                sink_infos[cid] = fut.result()
+            except Exception as e:
+                log("FN_MISS",
+                    f"case {cid}: sink 信息提取失败: {str(e)[:200]}",
+                    eval_id=evaluation_id)
+                sink_infos[cid] = extractor._empty_result(
+                    {"case_id": cid, "description": ""})
 
         log("FN_MISS",
             f"LLM sink 信息提取完成: {len(sink_infos)} 个 case",
@@ -111,7 +124,7 @@ class FnMissAnalyzer:
         # 文件级命中（仅文件名，无函数/行号级）直接忽略——
         # 只有 agent 确实读到过疑似 sink 点（函数或行号级命中）才算找到过
         scanner = SinkSearchScanner()
-        results: list[dict] = []
+        miss_detail_analyzer = MissDetailAnalyzer()
 
         # 预建 session_id → events 索引（供 MissDetailAnalyzer 取精确命中
         # session 的完整事件上下文）
@@ -121,30 +134,77 @@ class FnMissAnalyzer:
                 sid = ev.session_id or ""
                 if sid:
                     session_events.setdefault(sid, []).append(ev)
-        miss_detail_analyzer = MissDetailAnalyzer()
 
+        # 2a: 全部 case 先做 CPU 扫描（不调 LLM）
+        scan_results: list[dict] = []
         for cid, cd in unmatched_vuln_cases:
             vuln_title = cd.get("vuln_title", "")
             source_file = cd.get("source_file", "")
             description = cd.get("description", "")
             summary = cd.get("summary", "")
             sink_info = sink_infos.get(cid, {})
-
-            # 用结构化 sink 信息扫描 trace
             scan_result = scanner.scan_with_sink_info(sink_info, data_packs)
+            scan_results.append({
+                "cid": cid, "vuln_title": vuln_title,
+                "source_file": source_file, "description": description,
+                "summary": summary, "sink_info": sink_info,
+                "scan_result": scan_result,
+            })
+
+        # 2b: 收集需要 LLM 细分分析的 case（found_precise=True），
+        # 并发提交到 LLM gate
+        need_llm: list[tuple[int, dict]] = []
+        for i, sr in enumerate(scan_results):
+            scan = sr["scan_result"]
+            if scan.get("found_precise"):
+                precise_sessions = scan.get("precise_sessions", {})
+                need_llm.append((i, {
+                    "case_id": sr["cid"],
+                    "vuln_title": sr["vuln_title"],
+                    "description": sr["description"],
+                    "sink_info": sr["sink_info"],
+                    "precise_sessions": precise_sessions,
+                }))
+
+        miss_detail_results: dict[str, dict] = {}
+        if need_llm:
+            def _analyze_miss_detail(case_data: dict) -> tuple[str, dict]:
+                cid = case_data["case_id"]
+                result = miss_detail_analyzer.analyze(
+                    evaluation_id, case_data, session_events,
+                    cancel_cb=cancel_cb)
+                return cid, result
+
+            detail_futures = llm_mod.submit_llm_batch(
+                _analyze_miss_detail, [cd for _, cd in need_llm],
+                cancel_cb=cancel_cb)
+            for fut in detail_futures:
+                try:
+                    cid, result = fut.result()
+                    miss_detail_results[cid] = result
+                except Exception as e:
+                    log("FN_MISS",
+                        f"细分成因分析失败: {str(e)[:200]}",
+                        eval_id=evaluation_id)
+
+        # 2c: 组装最终结果
+        results: list[dict] = []
+        for sr in scan_results:
+            cid = sr["cid"]
+            vuln_title = sr["vuln_title"]
+            source_file = sr["source_file"]
+            description = sr["description"]
+            summary = sr["summary"]
+            sink_info = sr["sink_info"]
+            scan_result = sr["scan_result"]
             found_precise = scan_result.get("found_precise", False)
-            hit_sessions = scan_result.get("hit_sessions", {})
             precise_sessions = scan_result.get("precise_sessions", {})
             hits_by_agent = scan_result.get("hits_by_agent", {})
 
-            # 分类漏报原因：
-            # sink 找到 = 有精确命中（函数或行号级）——agent 确实读到过疑似 sink 点
-            # 文件级命中直接忽略——grep/glob 输出列表碰巧含路径不算找到
             miss_detail: dict = {}
             if found_precise:
                 sink_found = True
                 miss_category = "sink_found_no_report"
-                # 只收集精确命中的 event 上下文（文件级命中忽略）
                 hit_events: list[dict] = []
                 for agent_type, events in hits_by_agent.items():
                     for ev_info in events:
@@ -161,21 +221,7 @@ class FnMissAnalyzer:
                     f"精确命中——agent 确实读到过 sink 函数/行号），"
                     f"但 agent 未上报漏洞")
 
-                # ── 细分漏报成因（LLM 分析精确命中 session 上下文）──
-                # sink_found_no_report 内部成因多样：调用链中断、知识误导、
-                # 幻觉、验证遗漏等。用 LLM 判定最可能的细分成因。
-                miss_detail = miss_detail_analyzer.analyze(
-                    evaluation_id,
-                    {
-                        "case_id": cid,
-                        "vuln_title": vuln_title,
-                        "description": description,
-                        "sink_info": sink_info,
-                        "precise_sessions": precise_sessions,
-                    },
-                    session_events,
-                    cancel_cb=cancel_cb,
-                )
+                miss_detail = miss_detail_results.get(cid, {})
                 sub_label = miss_detail.get(
                     "miss_sub_category_label", "其他")
                 miss_reason = (

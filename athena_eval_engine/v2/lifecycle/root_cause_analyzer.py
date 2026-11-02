@@ -536,19 +536,35 @@ class RootCauseAnalyzer:
                     "compressed_summaries": [],
                     "l0_l7_breakpoints": [],
                 }
+                verification_result = self._analyze_chain(
+                    evaluation_id, case_id, "verification",
+                    verify_chain, session_events,
+                    vuln_title, desc, fp_reason, outcome, cancel_cb,
+                    project_id=project_id,
+                )
             else:
-                mining_result = self._analyze_chain(
+                # mining 和 verification 链互相独立，并行分析
+                # 用 submit_pool（不占 gate），各链内部 submit_llm_batch/chat_json 自行 acquire gate
+                mining_fut = llm_mod.submit_pool(
+                    self._analyze_chain,
                     evaluation_id, case_id, "mining",
                     mining_chain, session_events,
                     vuln_title, desc, fp_reason, outcome, cancel_cb,
                     project_id=project_id,
                 )
-            verification_result = self._analyze_chain(
-                evaluation_id, case_id, "verification",
-                verify_chain, session_events,
-                vuln_title, desc, fp_reason, outcome, cancel_cb,
-                project_id=project_id,
-            )
+                verification_result = self._analyze_chain(
+                    evaluation_id, case_id, "verification",
+                    verify_chain, session_events,
+                    vuln_title, desc, fp_reason, outcome, cancel_cb,
+                    project_id=project_id,
+                )
+                try:
+                    mining_result = mining_fut.result()
+                except Exception as e:
+                    log("ROOT_CAUSE",
+                        f"case {case_id}: mining 链分析失败: {str(e)[:200]}",
+                        eval_id=evaluation_id)
+                    raise
 
             # 从 session_chain 推导 agent_type（取第一个 session 的 agent_type）
             # FN 漏报 case（sink_not_found）mining_sessions 可能为空——
