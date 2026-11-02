@@ -129,7 +129,7 @@ class Orchestrator:
         reports_dir = _get_reports_dir()
         os.makedirs(reports_dir, exist_ok=True)
         _clear_debug_files(reports_dir, evaluation_id)
-        _pw.reset()
+        _pw.reset(evaluation_id)
         _cancel_cb = cancel_cb or _make_cancel_cb(evaluation_id, "ORCHESTRATOR")
 
         log("ORCH", f"启动 v2 pipeline: evaluation_id={evaluation_id} "
@@ -202,7 +202,7 @@ class Orchestrator:
             _set_status_safe(evaluation_id, stages.REPORTING)
 
             # 收集 pipeline 执行中的数据质量告警（drain 清空，后续 has_warnings 用本地变量）
-            data_quality_warnings = _pw.drain()
+            data_quality_warnings = _pw.drain(evaluation_id)
 
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
                     os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
@@ -743,7 +743,7 @@ class Orchestrator:
                 cid = bm.get("case_id") or ""
                 if cid:
                     case_details[cid] = {
-                        "description": get_case_raw_report(cid) or bm.get("description") or "",
+                        "description": get_case_raw_report(cid, evaluation_id=evaluation_id) or bm.get("description") or "",
                         "summary": c.get("summary") or "",
                         "vuln_title": bm.get("vuln_title") or "",
                         "expected_label": expected_label,
@@ -1281,15 +1281,10 @@ class Orchestrator:
                 "cause_summary": causal_chain.get("cause_summary", {}),
             },
         }
-        if data_quality_warnings:
-            base_report["data_quality_warnings"] = data_quality_warnings
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")
         with open(base_path, "w", encoding="utf-8") as f:
             _json_dump(base_report, f)
-        if data_quality_warnings:
-            log("REPORT", f"基础报告写入 {base_path}（含 {len(data_quality_warnings)} 条数据质量告警）")
-        else:
-            log("REPORT", f"基础报告写入 {base_path}")
+        log("REPORT", f"基础报告写入 {base_path}")
 
     # ── FINALIZE ─────────────────────────────────────
 

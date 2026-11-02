@@ -738,7 +738,7 @@ class RootCauseAnalyzer:
                         f"LLM 压缩失败: {str(e)[:200]}",
                         eval_id=evaluation_id)
                     from ..infra.pipeline_warnings import add as _add_warning
-                    _add_warning("llm", "compression_failed", "warning",
+                    _add_warning(evaluation_id, "llm", "compression_failed", "warning",
                                  f"case {case_id} {chain_type} session {i+1} LLM 压缩失败，降级为规则提取: {str(e)[:200]}",
                                  case_id=case_id)
                     # LLM 调用失败（非超限）时降级：用规则提取知识访问标记，
@@ -812,7 +812,7 @@ class RootCauseAnalyzer:
                 f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
             from ..infra.pipeline_warnings import add as _add_warning
-            _add_warning("llm", "merge_compression_failed", "warning",
+            _add_warning(evaluation_id, "llm", "merge_compression_failed", "warning",
                          f"case {case_id} {chain_type} 合并压缩 LLM 失败，降级为摘要拼接: {str(e)[:200]}",
                          case_id=case_id)
             # LLM 不可用时降级：拼接 session 摘要作为结果，但标记为低概率
@@ -940,6 +940,7 @@ class RootCauseAnalyzer:
             case_id, chain_type, vuln_title, fp_reason, outcome,
             all_breakpoints, project_id, cancel_cb,
             hypotheses=merge_hypotheses,
+            evaluation_id=evaluation_id,
         )
 
         # ── 假设可信度筛选 ──
@@ -1067,6 +1068,7 @@ class RootCauseAnalyzer:
         project_id: str,
         cancel_cb=None,
         hypotheses: list[dict] | None = None,
+        evaluation_id: str = "",
     ) -> dict | None:
         """L4 独立验证：当 L2 断点或 knowledge 责任假设存在时，主动搜索知识库验证。
 
@@ -1124,6 +1126,7 @@ class RootCauseAnalyzer:
                 fp_reason=fp_reason,
                 project_id=project_id,
                 cancel_cb=cancel_cb,
+                evaluation_id=evaluation_id,
             )
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} L4 独立验证完成: "

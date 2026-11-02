@@ -5,17 +5,21 @@
 最终写入报告 JSON 的 ``data_quality_warnings`` 字段，使报告读者能看到
 数据质量问题，而非误以为所有结果都完全可信。
 
+按 ``evaluation_id`` 隔离——并发评测各自维护独立的告警列表，
+互不干扰。
+
 用法::
 
-    from ..infra.pipeline_warnings import warnings_collector as wc
+    from ..infra.pipeline_warnings import add, drain, reset
 
-    # 记录告警
-    wc.add("vuln_center", "fetch_failed", "warning",
-           f"case {cid} 原始报告获取失败: 404", case_id=cid)
+    # 记录告警（需传 evaluation_id）
+    add("EV-20261021150914-9775",
+        "vuln_center", "fetch_failed", "warning",
+        f"case {cid} 原始报告获取失败: 404", case_id=cid)
 
-    # 读取全部告警（报告组装时调用）
-    warnings = wc.drain()  # list[dict]
-    wc.reset()             # 新评测前清空
+    # 读取该评测的全部告警（报告组装时调用）
+    warnings = drain("EV-20261021150914-9775")  # list[dict]
+    reset("EV-20261021150914-9775")              # 新评测前清空
 """
 from __future__ import annotations
 
@@ -26,10 +30,11 @@ import time
 # severity: "warning"（数据降级但评测继续）| "error"（数据缺失影响结果可信度）
 
 _lock = threading.Lock()
-_warnings: list[dict] = []
+_warnings: dict[str, list[dict]] = {}
 
 
 def add(
+    evaluation_id: str,
     source: str,
     type_: str,
     severity: str,
@@ -39,6 +44,7 @@ def add(
     """记录一条数据质量告警。
 
     Args:
+        evaluation_id: 评测 ID，用于隔离不同评测的告警。
         source: 告警来源模块（如 "vuln_center"、"kb_verify"、"llm"）。
         type_: 告警类型（如 "fetch_failed"、"api_404"、"degraded"）。
         severity: 严重程度（"warning" 或 "error"）。
@@ -46,7 +52,7 @@ def add(
         case_id: 关联的 case ID（可选）。
     """
     with _lock:
-        _warnings.append({
+        _warnings.setdefault(evaluation_id, []).append({
             "source": source,
             "type": type_,
             "severity": severity,
@@ -56,27 +62,26 @@ def add(
         })
 
 
-def drain() -> list[dict]:
-    """读取并清空全部告警（报告组装时调用）。"""
+def drain(evaluation_id: str) -> list[dict]:
+    """读取并清空指定评测的全部告警（报告组装时调用）。"""
     with _lock:
-        result = list(_warnings)
-        _warnings.clear()
+        result = _warnings.pop(evaluation_id, [])
         return result
 
 
-def peek() -> list[dict]:
-    """读取告警列表（不清空，用于判断是否有告警）。"""
+def peek(evaluation_id: str) -> list[dict]:
+    """读取指定评测的告警列表（不清空，用于判断是否有告警）。"""
     with _lock:
-        return list(_warnings)
+        return list(_warnings.get(evaluation_id, []))
 
 
-def reset():
-    """清空告警（新评测开始前调用）。"""
+def reset(evaluation_id: str):
+    """清空指定评测的告警（新评测开始前调用）。"""
     with _lock:
-        _warnings.clear()
+        _warnings.pop(evaluation_id, None)
 
 
-def has_warnings() -> bool:
-    """是否有告警。"""
+def has_warnings(evaluation_id: str) -> bool:
+    """指定评测是否有告警。"""
     with _lock:
-        return len(_warnings) > 0
+        return len(_warnings.get(evaluation_id, [])) > 0

@@ -114,6 +114,7 @@ class KnowledgeVerifier:
         fp_reason: str,
         project_id: str = "",
         cancel_cb=None,
+        evaluation_id: str = "",
     ) -> dict:
         """主动搜索知识库 + 记忆/wiki，验证是否有解决该误报所需的知识。
 
@@ -171,7 +172,7 @@ class KnowledgeVerifier:
         # 2. 查 Athena API knowledge/concepts
         if project_id:
             api_candidates, api_log = self._search_athena_api_logged(
-                project_id, keywords)
+                project_id, keywords, evaluation_id=evaluation_id)
             candidates.extend(api_candidates)
             query_log.extend(api_log)
             log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选")
@@ -244,7 +245,8 @@ class KnowledgeVerifier:
             "count": len(candidates),
         })
 
-        result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb)
+        result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb,
+                                  evaluation_id=evaluation_id)
         result["kb_searched"] = {
             "athena_api": bool(project_id),
             "wiki_nfs": os.path.isdir(_WIKI_ROOT),
@@ -318,6 +320,7 @@ class KnowledgeVerifier:
 
     def _search_athena_api_logged(
         self, project_id: str, keywords: list[str],
+        evaluation_id: str = "",
     ) -> tuple[list[dict], list[dict]]:
         """Athena API 搜索（带查询日志）。
 
@@ -348,7 +351,7 @@ class KnowledgeVerifier:
             if data is None:
                 log("KB_VERIFY", f"Athena API 查询失败 (kw={kw}, {_ATHENA_RETRIES}次重试后): {str(last_err)[:150]}")
                 from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning("kb_verify", "athena_api_failed", "warning",
+                _add_warning(evaluation_id, "kb_verify", "athena_api_failed", "warning",
                              f"Athena API 查询失败 (kw={kw}): {str(last_err)[:150]}")
                 log_entries.append({
                     "step": "Athena API 搜索",
@@ -701,6 +704,7 @@ class KnowledgeVerifier:
         fp_reason: str,
         candidates: list[dict],
         cancel_cb=None,
+        evaluation_id: str = "",
     ) -> dict:
         """LLM 判定候选文章是否真正包含解决误报所需的知识。
 
@@ -744,7 +748,7 @@ class KnowledgeVerifier:
             except Exception as e:
                 log("KB_VERIFY", f"LLM 判定失败: {str(e)[:200]}")
                 from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning("kb_verify", "llm_judgment_failed", "warning",
+                _add_warning(evaluation_id, "kb_verify", "llm_judgment_failed", "warning",
                              f"KB_VERIFY LLM 判定失败，降级为关键词匹配: {str(e)[:200]}")
                 return {
                     "l4_knowledge_exists": bool(candidates),
@@ -792,7 +796,7 @@ class KnowledgeVerifier:
             except Exception as e:
                 log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败: {str(e)[:200]}")
                 from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning("kb_verify", "llm_judgment_failed", "warning",
+                _add_warning(evaluation_id, "kb_verify", "llm_judgment_failed", "warning",
                              f"KB_VERIFY 分批 {bi+1} LLM 判定失败: {str(e)[:200]}")
                 # 失败批次降级为关键词匹配
                 for c in batch:

@@ -30,13 +30,15 @@ def _get(url: str, params: dict | None = None, retries: int = 20,
                      retry_delay=retry_delay, timeout=timeout, log_tag="VULN_CENTER")
 
 
-def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:
+def get_case_raw_report(case_id: str, report_id: str = "raw-intake",
+                        evaluation_id: str = "") -> str:
     """获取 case 的原始漏洞报告内容。
 
     调用漏洞中心 API ``GET /api/vuln/cases/{case_id}/report?report_id=raw-intake``，
     返回 report 的 ``content`` 字段（Markdown 格式的完整漏洞报告）。
 
     失败时返回空字符串，不抛异常（原始报告是补充信息，不阻塞主流程）。
+    传入 ``evaluation_id`` 时记录数据质量告警到该评测的告警列表。
     """
     try:
         data = _get(
@@ -48,9 +50,10 @@ def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:
             return data.get("content") or ""
     except Exception as e:
         log("VULN_CENTER", f"获取原始报告失败 case={case_id}: {e}")
-        from ..v2.infra.pipeline_warnings import add as _add_warning
-        _add_warning("vuln_center", "raw_report_fetch_failed", "warning",
-                     f"case {case_id} 原始报告获取失败: {str(e)[:200]}", case_id=case_id)
+        if evaluation_id:
+            from ..v2.infra.pipeline_warnings import add as _add_warning
+            _add_warning(evaluation_id, "vuln_center", "raw_report_fetch_failed", "warning",
+                         f"case {case_id} 原始报告获取失败: {str(e)[:200]}", case_id=case_id)
     return ""
 
 
@@ -417,7 +420,8 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
 
 
 def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None,
-                              fetch_non_vuln: bool = True) -> dict:
+                              fetch_non_vuln: bool = True,
+                              evaluation_id: str = "") -> dict:
     """返回与 ``vbench_client.get_benchmark`` 同构的基线结构。
 
     拉取两类人工确认 case：
@@ -441,6 +445,6 @@ def get_vuln_center_benchmark(project_id: str, source_task_id: str | None = None
     for c in cases:
         cid = c.get("case_id") or ""
         if cid:
-            c["description"] = get_case_raw_report(cid) or c.get("description") or ""
+            c["description"] = get_case_raw_report(cid, evaluation_id=evaluation_id) or c.get("description") or ""
 
     return {"benchmark_id": project_id, "name": None, "cases": cases}

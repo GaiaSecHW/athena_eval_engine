@@ -294,8 +294,8 @@ function renderV2Report(d){
   var vcProj=d.vc_source_project_name||(base.vc_source_project_name||'');
   var vcTask=d.vc_source_task_name||(base.vc_source_task_name||'');
 
-  // 数据质量告警（从基础报告和生命周期报告中合并）
-  var _dqWarnings=(base.data_quality_warnings||[]).concat((d.lifecycle&&d.lifecycle.data_quality_warnings)||[]);
+  // 数据质量告警（仅从生命周期报告读取，避免重复）
+  var _dqWarnings=(d.lifecycle&&d.lifecycle.data_quality_warnings)||[];
   var _warnHtml='';
   if(_dqWarnings.length){
     var _srcLabels={'vuln_center':'漏洞中心','kb_verify':'知识库验证','llm':'LLM 调用','gaiasec':'GAISEC API'};
