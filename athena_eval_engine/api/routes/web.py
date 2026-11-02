@@ -6,7 +6,7 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from ...infrastructure.database import connect
-from ...application.evaluation_service import get_progress
+from ...v2.infra.progress import get_progress
 
 router = APIRouter()
 STATIC = Path(__file__).parent.parent.parent / "static"

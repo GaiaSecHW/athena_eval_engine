@@ -40,47 +40,13 @@ from ..core.agents import MINING_AGENT_SET
 # ── 报告目录 ──────────────────────────────────────────
 
 
-def _json_default(obj):
-    """json.dump default — dataclass → dict，numpy → Python 原生类型。"""
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.asdict(obj)
-    # numpy 标量
-    for mod_name, convs in (
-        ("numpy", (
-            ("float64", float), ("float32", float),
-            ("int64", int), ("int32", int),
-            ("float_", float), ("int_", int),
-        )),
-    ):
-        mod = sys.modules.get(mod_name)
-        if mod is not None and isinstance(obj, mod.ndarray):
-            return obj.tolist()
-        if mod is not None:
-            for attr, conv in convs:
-                t = getattr(mod, attr, None)
-                if t is not None and isinstance(obj, t):
-                    return conv(obj)
-    if isinstance(obj, (set, tuple)):
-        return list(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
-
-
-def _json_dump(obj, f, **kw):
-    """json.dump 包装：用 _json_default 替代 default=str。"""
-    kw.setdefault("ensure_ascii", False)
-    kw.setdefault("indent", 2)
-    json.dump(obj, f, default=_json_default, **kw)
-
-
-def _json_dumps(obj, **kw):
-    """json.dumps 包装：用 _json_default 替代 default=str。"""
-    kw.setdefault("ensure_ascii", False)
-    return json.dumps(obj, default=_json_default, **kw)
+from ..infra.json_utils import json_default as _json_default, json_dump as _json_dump, json_dumps as _json_dumps
 
 
 def _get_reports_dir() -> str:
-    """获取报告输出目录（EVAL_REPORTS_DIR 或默认 /app/reports）。"""
-    return os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    """获取报告输出目录（统一从 config_loader 读取）。"""
+    from ...config_loader import get_reports_dir
+    return get_reports_dir()
 
 
 def _mining_agent_type(data_packs: list) -> str:
@@ -111,70 +77,14 @@ class TaskCancelledError(Exception):
 
 # ── DB 短连接 + 重试 ──────────────────────────────────
 
-
-def _db_query(fn, _retries: int = 8):
-    """短连接 + 重试包装器。
-
-    2006/2013（连接丢失）时指数退避重试，其他错误直接抛出。
-    与老代码 evaluation_service._db_query 同模式——拷贝而非 import。
-    """
-    from ...infrastructure.log_util import log_to_file
-    last_err = None
-    for attempt in range(_retries):
-        conn = None
-        try:
-            conn = connect(autocommit=True)
-            return fn(conn.cursor())
-        except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
-            last_err = e
-            # 强制关闭底层 pymysql 连接，防止池复用坏连接
-            if conn:
-                try:
-                    inner = getattr(conn, "_con", None)
-                    if inner is not None and not getattr(inner, "_closed", True):
-                        inner.close()
-                except Exception:
-                    pass
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                conn = None
-            if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                _wait = min(2 * (attempt + 1), 30)
-                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
-                log_to_file("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]} {e}, retry in {_wait}s...")
-                time.sleep(_wait)
-                continue
-            raise
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-    raise last_err  # type: ignore[misc]
+from ..infra.db_utils import db_query as _db_query
 
 
 # ── 进度追踪（内存，pod 重启后重跑不需要持久化）──
 
-_progress: dict[str, str] = {}
-_progress_lock = threading.Lock()
-
-
-def _set_progress(evaluation_id: str, text: str):
-    with _progress_lock:
-        _progress[evaluation_id] = text
-
-
-def _get_progress(evaluation_id: str) -> str:
-    with _progress_lock:
-        return _progress.get(evaluation_id, "")
-
-
-def _clear_progress(evaluation_id: str):
-    with _progress_lock:
-        _progress.pop(evaluation_id, None)
+from ..infra.progress import set_progress as _set_progress
+from ..infra.progress import get_progress as _get_progress
+from ..infra.progress import clear_progress as _clear_progress
 
 
 # ── 取消信号 ──────────────────────────────────────────
@@ -700,8 +610,8 @@ class Orchestrator:
 
             # 清理 /tmp trace 缓存（NFS 拷贝到本地的临时文件）
             try:
-                from ...application.evaluation_service import _cleanup_trace_cache
-                _cleanup_trace_cache(evaluation_id)
+                from ..infra.trace_cache import cleanup_trace_cache
+                cleanup_trace_cache(evaluation_id)
             except Exception:
                 pass
 
@@ -1254,10 +1164,8 @@ class Orchestrator:
                 # k8s 模式：/data 在 NFS-backed PVC 上，SQLite 随机读极慢，
                 # 拷贝到 pod 本地 /tmp 加速解析，解析完删除
                 if source_uri.startswith("/data/"):
-                    from ...application.evaluation_service import (
-                        _copy_trace_to_local,
-                    )
-                    return _copy_trace_to_local(
+                    from ..infra.trace_cache import copy_trace_to_local
+                    return copy_trace_to_local(
                         source_uri, evaluation_id=evaluation_id)
                 return source_uri
             # /data/ 路径 — 本地开发时从平台拉取
@@ -1707,7 +1615,7 @@ class Orchestrator:
         - 重跑中途失败时页面仍显示旧报告（状态 FAILED 但数据是旧的）
 
         删除范围：{eid}_debug_*.json、{eid}.json、{eid}_lifecycle.json、
-        {eid}_fpr.json、{eid}_kg.json、{eid}.html。
+        {eid}.html。
 
         注意：{eid}_dts_*.json（DTS 完整根因分析数据）不删除——
         generate_dts_issues 用 "w" 模式覆盖写入同名文件，重跑后 case 消失
@@ -1719,8 +1627,6 @@ class Orchestrator:
             f"{evaluation_id}_debug_*.json",
             f"{evaluation_id}.json",
             f"{evaluation_id}_lifecycle.json",
-            f"{evaluation_id}_fpr.json",
-            f"{evaluation_id}_kg.json",
             f"{evaluation_id}.html",
         ]
         for pattern in patterns:

@@ -30,11 +30,9 @@ from .web import router as web_router
 from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
-# 报告目录（删除旧 HTML 时用）
-REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR") or os.path.join(
-    os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(__file__)))),
-    "reports",
-)
+# 报告目录（统一从 config_loader 读取）
+from ...config_loader import get_reports_dir
+REPORTS_DIR = get_reports_dir()
 
 # 最多 N 个评测同时运行，其余排队等待
 # 线程池固定大小（上界由 eval_pool_max 控制），通过队列 + 协作取消动态控制实际并发数

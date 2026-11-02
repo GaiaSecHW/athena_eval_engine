@@ -1,6 +1,6 @@
 """问题单持久化模块。
 
-DB CRUD 操作，短连接 + 重试模式（与 kad_repo 同模式）。
+DB CRUD 操作，短连接 + 重试模式（v2/infra/db_utils.py）。
 表：dts_issue（由 migration 010 创建）。
 """
 from __future__ import annotations
@@ -11,6 +11,7 @@ import time
 import pymysql
 
 from ..infra.database import connect
+from ..infra.db_utils import db_query as _db_query
 from ...infrastructure.log_util import log, log_to_file
 
 # ── 字段顺序（与 INSERT SQL 列顺序一致）──
@@ -62,47 +63,8 @@ _FROM_JOIN = " dts_issue d LEFT JOIN evaluation e ON d.evaluation_id = e.evaluat
 
 
 # ---------------------------------------------------------------------------
-# DB 连接重试（与 kad_repo._db_query 同模式）
+# DB 连接重试（从 v2/infra/db_utils.py 导入）
 # ---------------------------------------------------------------------------
-
-def _db_query(fn, _retries: int = 8):
-    """短连接 + 重试包装器。
-
-    2006/2013（连接丢失）时指数退避重试，其他错误直接抛出。
-    """
-    last_err = None
-    for attempt in range(_retries):
-        conn = None
-        try:
-            conn = connect(autocommit=True)
-            return fn(conn.cursor())
-        except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
-            last_err = e
-            if conn:
-                try:
-                    inner = getattr(conn, "_con", None)
-                    if inner is not None and not getattr(inner, "_closed", True):
-                        inner.close()
-                except Exception:
-                    pass
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                conn = None
-            if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                _wait = min(2 * (attempt + 1), 30)
-                log("DTS_REPO", f"DB retry {attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
-                log_to_file("DTS_REPO", f"DB retry {attempt+1}/{_retries}: {e.args[0]} {e}, retry in {_wait}s...")
-                time.sleep(_wait)
-                continue
-            raise
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
 
 # ---------------------------------------------------------------------------
@@ -195,7 +157,8 @@ def get_dts_issue(dts_id: str) -> dict | None:
     if analysis_data_path:
         import os
         import json as _json
-        reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
+        from ...config_loader import get_reports_dir
+        reports_dir = get_reports_dir()
         file_path = os.path.join(reports_dir, analysis_data_path)
         try:
             with open(file_path, "r", encoding="utf-8") as f:

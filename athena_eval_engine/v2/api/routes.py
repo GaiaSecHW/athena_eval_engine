@@ -21,8 +21,9 @@ from ..pipeline.orchestrator import _get_progress
 
 router = APIRouter(prefix="/api/v2/evaluations", tags=["evaluations"])
 
-# 报告目录（与老代码一致，环境变量优先）
-REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "reports")
+# 报告目录（统一从 config_loader 读取）
+from ...config_loader import get_reports_dir
+REPORTS_DIR = get_reports_dir()
 
 # evaluation_id 合法字符：字母、数字、下划线、连字符
 _EVAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
@@ -159,15 +160,11 @@ def get_report_status(evaluation_id: str):
 
     检查以下段文件是否存在：
     - base: {eid}.json
-    - fpr: {eid}_fpr.json
-    - kg: {eid}_kg.json
     - lifecycle: {eid}_lifecycle.json
     """
     _validate_eval_id(evaluation_id)
     segments = {
         "base": f"{evaluation_id}.json",
-        "fpr": f"{evaluation_id}_fpr.json",
-        "kg": f"{evaluation_id}_kg.json",
         "lifecycle": f"{evaluation_id}_lifecycle.json",
     }
     return {

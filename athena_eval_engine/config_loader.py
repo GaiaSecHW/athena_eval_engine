@@ -58,5 +58,14 @@ SCHED_POD = os.environ.get("SCHED_POD", PLATFORM.get("sched_pod", ""))
 # 数据目录（k8s 部署时 /data 直接挂载；dev 用本地路径或 port-forward 挂载点）
 DATA_ROOT = os.environ.get("DATA_ROOT", PLATFORM.get("data_root", "/data/files"))
 
+# 报告目录（统一单一来源，替代各模块 8 处 os.environ.get 分散解析）
+EVAL_REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "/app/reports")
+
+
+def get_reports_dir() -> str:
+    """返回报告目录路径（单一来源）。"""
+    return EVAL_REPORTS_DIR
+
+
 # 平台 token
 PLATFORM_TOKEN = os.environ.get("PLATFORM_TOKEN", _cfg.get("platform_token", ""))

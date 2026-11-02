@@ -17,6 +17,7 @@ import time
 import pymysql
 
 from ..infra.database import connect
+from ..infra.db_utils import db_query as _db_query
 from ...infrastructure.log_util import log, log_to_file
 
 
@@ -166,49 +167,8 @@ def _prepare_record(record: dict, evaluation_id: str, reports_dir: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# DB 连接重试
+# DB 连接重试（从 v2/infra/db_utils.py 导入）
 # ---------------------------------------------------------------------------
-
-def _db_query(fn, _retries: int = 8):
-    """短连接 + 重试包装器。
-
-    2006/2013（连接丢失）时指数退避重试，其他错误直接抛出。
-    与 evaluation_service._db_query 同模式。
-    """
-    last_err = None
-    for attempt in range(_retries):
-        conn = None
-        try:
-            conn = connect(autocommit=True)
-            return fn(conn.cursor())
-        except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
-            last_err = e
-            # 强制关闭底层连接，防止池复用坏连接
-            if conn:
-                try:
-                    inner = getattr(conn, "_con", None)
-                    if inner is not None and not getattr(inner, "_closed", True):
-                        inner.close()
-                except Exception:
-                    pass
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                conn = None
-            if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                _wait = min(2 * (attempt + 1), 30)
-                log("KAD_REPO", f"DB retry {attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
-                log_to_file("KAD_REPO", f"DB retry {attempt+1}/{_retries}: {e.args[0]} {e}, retry in {_wait}s...")
-                time.sleep(_wait)
-                continue
-            raise
-        finally:
-            if conn:
-                try:
-                    conn.close()
-                except Exception:
-                    pass
 
 
 # ---------------------------------------------------------------------------

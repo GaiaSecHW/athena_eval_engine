@@ -37,9 +37,7 @@ from datetime import datetime
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
-from .utils import (
-    extract_json_payloads,
-)
+from ..json_utils import extract_json_payloads
 
 _log = logging.getLogger(__name__)
 

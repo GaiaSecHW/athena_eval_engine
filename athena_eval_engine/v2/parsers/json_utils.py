@@ -1,18 +1,17 @@
-"""Turing parser 专用工具函数。
+"""Parser 共享 JSON 工具函数。
 
-从老代码 ``workers/parse_utils.py`` 中拷贝 Turing parser 实际用到的函数：
-- ``parse_json_lenient`` — 尽力解析单个 JSON 对象（四层策略递进）
+从各 parser utils.py 提取的公共函数，消除 ~1,500 行重复代码。
 
-不 import 老代码，逻辑独立维护。
+函数：
+- ``parse_json_lenient`` — 尽力解析单个 JSON 对象（四层策略）
+- ``extract_json_payloads`` — 从文本提取 JSON 对象（多层策略）
+- ``_extract_json_objects_from_text`` — 从 ```json 代码块提取 JSON 对象
+- ``_try_repair_backslash_quote`` — JSON 转义修复 + 结构补全
+- ``_escape_control_chars_in_strings`` — 字符串值中字面控制字符转义
 """
 from __future__ import annotations
-
 import json
 
-
-# ---------------------------------------------------------------------------
-# 内部辅助（parse_json_lenient 的支撑函数）
-# ---------------------------------------------------------------------------
 
 def _extract_json_objects_from_text(text: str) -> list[dict]:
     """Extract JSON objects from text containing ```json blocks.
@@ -193,10 +192,6 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
     return None
 
 
-# ---------------------------------------------------------------------------
-# 公开工具函数
-# ---------------------------------------------------------------------------
-
 def parse_json_lenient(text: str) -> dict | None:
     """尽力解析单个 JSON 对象，四层策略递进。
 
@@ -255,3 +250,155 @@ def parse_json_lenient(text: str) -> dict | None:
             pass
     # 策略 4: \\" 转义修复
     return _try_repair_backslash_quote(text)
+
+
+def extract_json_payloads(text: str, keywords: list[str] | None = None) -> list[dict]:
+    """从文本中提取 JSON 对象，多层策略递进。
+
+    策略：
+    1. ```json 代码块（raw_decode + 花括号补全兜底）
+    2. 关键词+花括号匹配（搜索 keywords，找到外层 JSON 对象）
+    3. 裸 raw_decode（从每个顶层 { 尝试解析）
+
+    Args:
+        text: 包含 JSON 的文本
+        keywords: 策略 2 的搜索关键词列表（如 ['"verdict"', '"findings"']），
+                  None 时跳过策略 2
+    """
+    if not text:
+        return []
+
+    results: list[dict] = []
+    seen: set[str] = set()
+
+    def _add(obj: dict) -> None:
+        sig = json.dumps(obj, sort_keys=True, ensure_ascii=False)
+        if sig not in seen:
+            seen.add(sig)
+            results.append(obj)
+
+    # 策略 1: ```json 代码块
+    for obj in _extract_json_objects_from_text(text):
+        _add(obj)
+    # 策略 1b: ```json 块用花括号补全兜底
+    marker = '```json'
+    search_start = 0
+    while True:
+        idx = text.find(marker, search_start)
+        if idx == -1:
+            break
+        brace_idx = text.find('{', idx + len(marker))
+        if brace_idx == -1:
+            search_start = idx + len(marker)
+            continue
+        close_idx = text.find('```', brace_idx)
+        if close_idx < 0:
+            close_idx = len(text)
+        json_str = text[brace_idx:close_idx]
+        obj = parse_json_lenient(json_str)
+        if obj:
+            _add(obj)
+        search_start = close_idx + 3
+
+    if results:
+        return results
+
+    # 策略 2: 关键词+花括号匹配
+    if keywords:
+        # 预计算所有顶层 { 的位置（depth=0）
+        top_level_opens: list[int] = []
+        depth = 0
+        in_str = False
+        esc = False
+        for j, ch in enumerate(text):
+            if esc:
+                esc = False
+                continue
+            if ch == '\\':
+                esc = True
+                continue
+            if ch == '"':
+                in_str = not in_str
+                continue
+            if in_str:
+                continue
+            if ch == '{':
+                if depth == 0:
+                    top_level_opens.append(j)
+                depth += 1
+            elif ch == '}':
+                depth -= 1
+
+        for keyword in keywords:
+            kw_search = 0
+            while True:
+                idx = text.find(keyword, kw_search)
+                if idx < 0:
+                    break
+                # 找到关键词之前的最后一个顶层 {
+                brace_start = -1
+                for tb in top_level_opens:
+                    if tb <= idx:
+                        brace_start = tb
+                    else:
+                        break
+                if brace_start < 0:
+                    kw_search = idx + 1
+                    continue
+                # 花括号匹配找到外层 JSON
+                d = 0
+                in_s = False
+                esc2 = False
+                end_idx = -1
+                for j in range(brace_start, len(text)):
+                    ch = text[j]
+                    if esc2:
+                        esc2 = False
+                        continue
+                    if ch == '\\':
+                        esc2 = True
+                        continue
+                    if ch == '"':
+                        in_s = not in_s
+                        continue
+                    if in_s:
+                        continue
+                    if ch == '{':
+                        d += 1
+                    elif ch == '}':
+                        d -= 1
+                        if d == 0:
+                            end_idx = j + 1
+                            break
+                if end_idx > 0:
+                    obj = parse_json_lenient(text[brace_start:end_idx])
+                    if obj:
+                        _add(obj)
+                    kw_search = max(end_idx, idx + len(keyword))
+                else:
+                    close_idx = text.find('```', brace_start)
+                    if close_idx < 0:
+                        close_idx = len(text)
+                    json_str = text[brace_start:close_idx]
+                    obj = parse_json_lenient(json_str)
+                    if obj:
+                        _add(obj)
+                    kw_search = max(close_idx + 3, idx + len(keyword))
+
+    if results:
+        return results
+
+    # 策略 3: 裸 raw_decode（从每个顶层 { 尝试）
+    decoder = json.JSONDecoder()
+    for i in top_level_opens if keywords else range(len(text)):
+        ch = text[i] if keywords else text[i]
+        if ch != '{':
+            continue
+        try:
+            obj, _ = decoder.raw_decode(text, i)
+            if isinstance(obj, dict):
+                _add(obj)
+        except json.JSONDecodeError:
+            pass
+
+    return results

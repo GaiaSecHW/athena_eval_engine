@@ -161,7 +161,8 @@ def list_by_task(task_id: str):
         log("DTS_API", f"list_by_task 查询失败: {str(e)[:200]}")
         raise HTTPException(status_code=500, detail=f"按任务查询问题单失败: {str(e)[:200]}")
 
-    reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
+    from ...config_loader import get_reports_dir
+    reports_dir = get_reports_dir()
 
     # 按 case_id 去重缓存，避免同 case 多条问题单重复读文件
     raw_report_cache: dict[str, str] = {}

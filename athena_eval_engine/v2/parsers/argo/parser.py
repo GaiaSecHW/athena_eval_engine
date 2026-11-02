@@ -33,7 +33,7 @@ from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
 from ...infra import llm as _llm_mod
-from .utils import (
+from ..json_utils import (
     _extract_json_objects_from_text,
     parse_json_lenient,
     extract_json_payloads,

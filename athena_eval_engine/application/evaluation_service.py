@@ -3,9 +3,10 @@
 create(request) → 冻结 snapshot + 建 evaluation。
 get_status() / get_report() → 查询评测状态/报告。
 set_cancel/clear_cancel → 协作取消信号（跨 worker，写 DB cancel_requested）。
-_copy_trace_to_local / _cleanup_trace_cache → k8s 下 trace 文件本地缓存加速。
 
 v2 Orchestrator (v2/pipeline/orchestrator.py) 已替代 v1 run() 函数。
+进度追踪和 trace 缓存已提取到 v2/infra/progress.py 和 v2/infra/trace_cache.py，
+此处 re-export 保持向后兼容（es.xxx 调用不受影响）。
 """
 from __future__ import annotations
 import json
@@ -16,6 +17,34 @@ from ..infrastructure.database import connect
 from ..infrastructure.log_util import log
 from ..infrastructure.concurrency import get as _conc_get
 from ..application import platform_service as ps
+
+# ── re-export: 进度追踪（已提取到 v2/infra/progress.py）──
+from ..v2.infra.progress import (
+    set_progress as _set_progress_impl,
+    set_task_progress as _set_task_progress_impl,
+    get_progress,
+    clear_progress,
+)
+
+def set_progress(evaluation_id: str, text: str):
+    _set_progress_impl(evaluation_id, text)
+
+def set_task_progress(evaluation_id: str, task_run_id: str, text: str):
+    _set_task_progress_impl(evaluation_id, task_run_id, text)
+
+# ── re-export: trace 缓存（已提取到 v2/infra/trace_cache.py）──
+from ..v2.infra.trace_cache import (
+    cleanup_trace_cache as _cleanup_trace_cache_impl,
+    copy_trace_to_local as _copy_trace_to_local_impl,
+    _verify_sqlite,
+    _K8S_TRACE_CACHE,
+)
+
+def _cleanup_trace_cache(evaluation_id: str = ""):
+    _cleanup_trace_cache_impl(evaluation_id)
+
+def _copy_trace_to_local(remote_path: str, evaluation_id: str = "") -> str:
+    return _copy_trace_to_local_impl(remote_path, evaluation_id=evaluation_id)
 
 
 def _extract_source_task_id(entry: dict) -> str:
@@ -33,40 +62,6 @@ def _extract_source_task_id(entry: dict) -> str:
 def get_runtime_workers() -> dict:
     """返回 parse/kg_analysis 两个常用参数（兼容旧接口）。"""
     return {"parse": _conc_get("parse_workers"), "kg_analysis": _conc_get("kg_analysis_workers")}
-
-
-# 进度文本：AI 匹配等慢阶段向前端报告进度（内存字典，pod 重启后重跑无需持久化）
-# 两层：_progress_phase 存阶段级文本（解析/写入/配对等），_progress_tasks 存任务级文本（多 task_run 并行各自独立）
-_progress_phase: dict[str, str] = {}
-_progress_tasks: dict[str, dict[str, str]] = {}
-_progress_lock = threading.Lock()
-
-
-def set_progress(evaluation_id: str, text: str):
-    """设置阶段级进度（覆盖任务级进度）。"""
-    with _progress_lock:
-        _progress_phase[evaluation_id] = text
-        _progress_tasks.pop(evaluation_id, None)
-
-
-def set_task_progress(evaluation_id: str, task_run_id: str, text: str):
-    """设置任务级进度（多任务并行时各自独立，互不覆盖）。"""
-    with _progress_lock:
-        _progress_tasks.setdefault(evaluation_id, {})[task_run_id] = text
-
-
-def get_progress(evaluation_id: str) -> str:
-    with _progress_lock:
-        tasks = _progress_tasks.get(evaluation_id, {})
-        if tasks:
-            return " | ".join(tasks.values())
-        return _progress_phase.get(evaluation_id, "")
-
-
-def clear_progress(evaluation_id: str):
-    with _progress_lock:
-        _progress_phase.pop(evaluation_id, None)
-        _progress_tasks.pop(evaluation_id, None)
 
 
 def set_cancel(evaluation_id: str):
@@ -97,242 +92,6 @@ def clear_cancel(evaluation_id: str):
 
 
 LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tests", "fixtures", "fetched")
-# k8s 模式下 trace 文件在 NFS-backed PVC 上，SQLite 随机读极慢；
-# 拷贝到 pod 本地 /tmp 加速解析，解析完删除，pod 重启自动清理
-_K8S_TRACE_CACHE = "/tmp/eval_traces"
-
-
-def _is_webvulnverify_trace_module(path):
-    """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。模块级版本。"""
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line:
-                    continue
-                import json as _json
-                d = _json.loads(line)
-                return d.get("type") == "session_meta"
-    except Exception:
-        pass
-    return False
-
-
-def _get_parser_module(uri, trace_kind: str | None = None):
-    """根据 trace_kind 或路径推断返回 parser 实例。模块级版本，供 rerun_kg 使用。"""
-    import os as _os
-    if trace_kind == "webvulnverify":
-        from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
-        return WebVulnVerifyTraceParser()
-    if trace_kind == "cvuln_verify":
-        from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
-        return CVulnVerifyTraceParser()
-    if trace_kind == "argo":
-        from ..workers.argo_trace_parser import ArgoTraceParser
-        from ..infrastructure import llm as _llm_mod
-        return ArgoTraceParser(llm_module=_llm_mod)
-    if trace_kind == "turing":
-        from ..workers.turing_trace_parser import TuringTraceParser
-        return TuringTraceParser()
-    if trace_kind == "dataflow":
-        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
-        return DataflowVulnScanTraceParser()
-    if trace_kind == "secmate":
-        from ..workers.secmate_trace_parser import SecMateTraceParser
-        return SecMateTraceParser()
-    # 兼容：无 trace_kind 时按路径推断
-    p = _os.normpath(uri)
-    cvuln_suffix = _os.path.join("tasks", "c_vuln_verify")
-    argo_suffix = _os.path.join("session", "argo")
-    dataflow_suffix = _os.path.join("session", "dataflow_vuln_scan")
-    if p.replace("\\", "/").endswith("/session/secmate"):
-        from ..workers.secmate_trace_parser import SecMateTraceParser
-        return SecMateTraceParser()
-    if _os.path.isdir(p) and p.endswith(cvuln_suffix):
-        from ..workers.cvuln_verify_trace_parser import CVulnVerifyTraceParser
-        return CVulnVerifyTraceParser()
-    if _os.path.isdir(p) and p.endswith(argo_suffix):
-        from ..workers.argo_trace_parser import ArgoTraceParser
-        from ..infrastructure import llm as _llm_mod
-        return ArgoTraceParser(llm_module=_llm_mod)
-    if _os.path.isdir(p) and (p.endswith(dataflow_suffix) or "dataflow_vuln_scan" in p):
-        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
-        return DataflowVulnScanTraceParser()
-    if "dataflow_vuln_scan" in p and (p.endswith(".jsonl") or _os.path.isdir(p)):
-        from ..workers.dataflow_trace_parser import DataflowVulnScanTraceParser
-        return DataflowVulnScanTraceParser()
-    if p.endswith("opencode.db"):
-        from ..workers.turing_trace_parser import TuringTraceParser
-        return TuringTraceParser()
-    if _os.path.isdir(p) or p.endswith(".jsonl"):
-        from ..workers.secmate_trace_parser import is_secmate_trace
-        if is_secmate_trace(p):
-            from ..workers.secmate_trace_parser import SecMateTraceParser
-            return SecMateTraceParser()
-        _check_path = p
-        if _os.path.isdir(p):
-            import glob as _glob
-            _jfiles = sorted(_glob.glob(_os.path.join(p, "*.jsonl")))
-            _check_path = _jfiles[0] if _jfiles else ""
-        if _check_path and _is_webvulnverify_trace_module(_check_path):
-            from ..workers.webvulnverify_trace_parser import WebVulnVerifyTraceParser
-            return WebVulnVerifyTraceParser()
-        from ..workers.argo_trace_parser import ArgoTraceParser
-        from ..infrastructure import llm as _llm_mod
-        return ArgoTraceParser(llm_module=_llm_mod)
-    from ..workers.turing_trace_parser import TuringTraceParser
-    return TuringTraceParser()
-
-
-def _verify_sqlite(path: str) -> bool:
-    """快速校验 SQLite 文件可读（不跑 integrity_check，太慢）。"""
-    import sqlite3 as _sql
-    _conn = None
-    try:
-        _conn = _sql.connect(f"file:{path}?immutable=1", uri=True)
-        _conn.execute("SELECT COUNT(*) FROM sqlite_master")
-        return True
-    except Exception:
-        return False
-    finally:
-        if _conn:
-            try: _conn.close()
-            except: pass
-
-
-def _copy_trace_to_local(remote_path: str, evaluation_id: str = "") -> str:
-    """k8s 模式下将 trace 文件从 NFS 拷贝到本地 /tmp，加速后续 SQLite/JSONL 解析。
-
-    单文件（.db/.jsonl）→ 直接 copy；目录（session/）→ copytree。
-    已存在且完整 → 直接返回（幂等，resume 场景复用）。
-    拷贝后校验大小 + SQLite 可读性；校验失败回退到直接读 NFS 原始路径。
-
-    evaluation_id 非空时，文件存到 {cache}/{evaluation_id}/ 子目录下，
-    清理时只删该评测的文件，不影响并发评测。
-    """
-    import hashlib, shutil
-    h = hashlib.md5(remote_path.encode()).hexdigest()[:8]
-    name = os.path.basename(remote_path.rstrip("/"))
-    is_sqlite = name.endswith((".db", ".sqlite", ".sqlite3"))
-
-    if evaluation_id:
-        cache_dir = os.path.join(_K8S_TRACE_CACHE, evaluation_id)
-    else:
-        cache_dir = _K8S_TRACE_CACHE
-    os.makedirs(cache_dir, exist_ok=True)
-    local = os.path.join(cache_dir, f"{h}_{name}")
-
-    def _verify_local():
-        """校验本地文件：大小匹配 + SQLite 可读。"""
-        if not os.path.exists(local):
-            return False
-        if os.path.isdir(local):
-            return bool(os.listdir(local))
-        if os.path.isfile(local):
-            if os.path.getsize(local) == 0:
-                return False
-            if is_sqlite:
-                return _verify_sqlite(local)
-            return True
-        return False
-
-    # resume 场景：缓存文件已存在且校验通过 → 直接返回
-    if _verify_local():
-        return local
-    # 缓存文件损坏 → 清理
-    if os.path.exists(local):
-        try:
-            if os.path.isdir(local):
-                shutil.rmtree(local, ignore_errors=True)
-            else:
-                os.remove(local)
-        except OSError:
-            pass
-
-    # 执行拷贝
-    try:
-        if os.path.isdir(remote_path):
-            shutil.copytree(remote_path, local)
-        else:
-            shutil.copy2(remote_path, local)
-    except Exception as e:
-        log("TRACE_CACHE", f"⚠ 拷贝失败: {remote_path} → {local}: {e}，回退到直接读 NFS")
-        return remote_path
-
-    # SecMate trace 目录拷贝后，findings.db 在上级 run/ 目录中，
-    # 不会被 copytree 带过来。检查并额外拷贝。
-    if "/.worker-config/" in remote_path:
-        run_dir = remote_path.split("/.worker-config")[0]
-        findings_db = os.path.join(run_dir, "findings.db")
-        if os.path.isfile(findings_db):
-            # findings.db 放在 local 的同级目录（对应原始 run/ 目录）
-            local_run_dir = os.path.dirname(local)  # /tmp/eval_traces
-            local_db = os.path.join(local_run_dir, f"{h}_findings.db")
-            try:
-                shutil.copy2(findings_db, local_db)
-                log("TRACE_CACHE", f"额外拷贝 findings.db: {findings_db} → {local_db}")
-            except Exception as e:
-                log("TRACE_CACHE", f"⚠ findings.db 拷贝失败: {e}，回退到直接读 NFS")
-                return remote_path
-
-    remote_size = os.path.getsize(remote_path) if os.path.isfile(remote_path) else None
-    local_size = os.path.getsize(local) if os.path.isfile(local) else None
-    log("TRACE_CACHE", f"拷贝到本地: {remote_path} → {local} "
-          f"(remote={remote_size}B local={local_size}B)")
-
-    # 校验拷贝结果
-    if remote_size is not None and local_size is not None and remote_size != local_size:
-        log("TRACE_CACHE", f"⚠ 拷贝截断: remote={remote_size}B local={local_size}B "
-              f"(差 {remote_size - local_size}B)，回退到直接读 NFS")
-        try: os.remove(local)
-        except OSError: pass
-        return remote_path
-
-    if is_sqlite and not _verify_sqlite(local):
-        log("TRACE_CACHE", f"⚠ SQLite 校验失败: {local}，回退到直接读 NFS")
-        try: os.remove(local)
-        except OSError: pass
-        return remote_path
-
-    return local
-
-
-def _cleanup_trace_cache(evaluation_id: str = ""):
-    """解析完成后清理本地 trace 缓存。
-
-    evaluation_id 非空时只删该评测的子目录，不影响并发评测。
-    为空时删整个缓存目录（向后兼容，不推荐在并发场景使用）。
-    """
-    import shutil
-    target = (os.path.join(_K8S_TRACE_CACHE, evaluation_id)
-              if evaluation_id else _K8S_TRACE_CACHE)
-    try:
-        if os.path.exists(target):
-            shutil.rmtree(target, ignore_errors=True)
-            log("TRACE_CACHE", f"已清理 {target}")
-    except Exception:
-        pass
-
-
-def _resolve_trace_path(source_uri: str, project_id: str = "", task_id: str = "",
-                        evaluation_id: str = "") -> str:
-    """source_uri 可能是 k8s pod 上的 /data/... 路径；本地开发时拉到本地。
-
-    k8s 模式下 /data 在 NFS-backed PVC 上，SQLite 随机读极慢，
-    拷贝到 pod 本地 /tmp 加速解析。
-    """
-    if os.path.exists(source_uri):
-        # k8s 模式：/data 上的文件拷贝到本地 /tmp 加速
-        if source_uri.startswith("/data/") and os.path.isdir(_K8S_TRACE_CACHE):
-            return _copy_trace_to_local(source_uri, evaluation_id=evaluation_id)
-        # 判断是否在 NFS 上（k8s 部署时 DATA_ROOT=/data/files 存在）
-        from ..config_loader import DATA_ROOT
-        if source_uri.startswith("/data/") and os.path.isdir(DATA_ROOT):
-            return _copy_trace_to_local(source_uri)
-        return source_uri
-    if source_uri.startswith("/data/") or source_uri.startswith("data/"):
-        return ps.fetch_trace_to_local(project_id, task_id, source_uri, LOCAL_TRACE_DIR)
-    raise FileNotFoundError(f"trace 不可读且非 /data 路径：{source_uri}")
 
 
 EVAL_CONFIG = {
@@ -542,46 +301,7 @@ def create(req: CreateRequest):
     return req.evaluation_id
 
 
-def _db_query(fn, _retries=8):
-    """短连接 + 重试包装器。
-
-    2006/2013（连接丢失）时指数退避重试，其他错误直接抛出。
-    """
-    import pymysql
-    from ..infrastructure.log_util import log_to_file
-    last_err = None
-    for attempt in range(_retries):
-        conn = None
-        try:
-            conn = connect(autocommit=True)
-            return fn(conn.cursor())
-        except (pymysql.err.OperationalError, pymysql.err.InterfaceError) as e:
-            last_err = e
-            # 强制关闭底层 pymysql 连接，防止池复用坏连接
-            if conn:
-                try:
-                    inner = getattr(conn, '_con', None)
-                    if inner is not None and not getattr(inner, '_closed', True):
-                        inner.close()
-                except Exception:
-                    pass
-                try:
-                    conn.close()
-                except Exception:
-                    pass
-                conn = None
-            if e.args and e.args[0] in (2013, 2006) and attempt < _retries - 1:
-                _wait = min(2 * (attempt + 1), 30)
-                log("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]}, retry in {_wait}s...")
-                log_to_file("DB RETRY", f"{attempt+1}/{_retries}: {e.args[0]} {e}, retry in {_wait}s...")
-                import time; time.sleep(_wait)
-                continue
-            raise
-        finally:
-            if conn:
-                try: conn.close()
-                except: pass
-    raise last_err  # type: ignore[misc]
+from ..v2.infra.db_utils import db_query as _db_query
 
 
 def get_status(evaluation_id: str) -> dict:
@@ -607,7 +327,8 @@ def get_status(evaluation_id: str) -> dict:
 def get_report(evaluation_id: str) -> dict:
     # 优先从文件读取（新方式），回退到 DB report_config_json（旧数据兼容）
     import os as _os
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    from ..config_loader import get_reports_dir
+    _reports_dir = get_reports_dir()
     _json_path = _os.path.join(_reports_dir, f"{evaluation_id}.json")
     if _os.path.isfile(_json_path):
         with open(_json_path, "r", encoding="utf-8") as _f:

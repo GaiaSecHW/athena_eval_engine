@@ -18,29 +18,9 @@ from collections import Counter
 from typing import Any
 
 from ...infrastructure.log_util import log
+from ..infra.json_utils import json_default as _json_default
 
 # ── 常量 ──────────────────────────────────────────────
-
-
-def _json_default(obj):
-    """json.dump default — dataclass → dict，numpy → Python 原生类型。"""
-    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
-        return dataclasses.asdict(obj)
-    mod = sys.modules.get("numpy")
-    if mod is not None and isinstance(obj, mod.ndarray):
-        return obj.tolist()
-    if mod is not None:
-        for attr in ("float64", "float32", "float_"):
-            t = getattr(mod, attr, None)
-            if t is not None and isinstance(obj, t):
-                return float(obj)
-        for attr in ("int64", "int32", "int_"):
-            t = getattr(mod, attr, None)
-            if t is not None and isinstance(obj, t):
-                return int(obj)
-    if isinstance(obj, (set, tuple)):
-        return list(obj)
-    raise TypeError(f"Object of type {type(obj).__name__} is not JSON serializable")
 
 _LARGE_FIELD_THRESHOLD = 64 * 1024  # 64KB
 

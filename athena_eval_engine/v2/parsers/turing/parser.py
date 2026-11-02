@@ -19,7 +19,7 @@ from typing import Iterator
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags
 from ...infra.agent_db import AgentDBManager
-from .utils import parse_json_lenient
+from ..json_utils import parse_json_lenient
 
 _log = logging.getLogger(__name__)
 

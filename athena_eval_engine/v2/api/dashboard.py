@@ -27,8 +27,9 @@ from ..persistence.dts_repo import _db_query
 
 router = APIRouter(prefix="/api/v2/dashboard", tags=["dashboard"])
 
-# 报告目录（与老代码一致，环境变量优先）
-REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "reports")
+# 报告目录（统一从 config_loader 读取）
+from ...config_loader import get_reports_dir
+REPORTS_DIR = get_reports_dir()
 
 # A-K 成因码
 _ALL_CAUSE_CODES = list("ABCDEFGHIJK")

@@ -94,7 +94,8 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     # case_results 全部存文件，DB 只存 URI
     case_results = getattr(f, "case_results", None) or []
     ev_json = _json.dumps({"case_results": case_results}, ensure_ascii=False)
-    _reports_dir = _os.environ.get("EVAL_REPORTS_DIR") or "/app/reports"
+    from ...config_loader import get_reports_dir
+    _reports_dir = get_reports_dir()
     _os.makedirs(_reports_dir, exist_ok=True)
     _cr_path = _os.path.join(_reports_dir, f"{f.evaluation_id}_{f.task_run_id}_cr.json")
     with open(_cr_path, "w", encoding="utf-8") as _f:
