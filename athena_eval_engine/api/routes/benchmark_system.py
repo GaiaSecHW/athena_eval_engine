@@ -40,7 +40,7 @@ class SystemConfigUpdate(BaseModel):
 
 def _apply_config(key: str, value: str):
     """把 DB 里的 config_value 应用到运行时。"""
-    from ...infrastructure import llm
+    from ...v2.infra import llm
     from .evaluations import set_max_concurrent_evals
     if key == "llm_max_concurrency":
         llm.set_max_concurrency(int(value))
@@ -50,9 +50,7 @@ def _apply_config(key: str, value: str):
     elif key == "reasoning_effort":
         llm.set_runtime_config(reasoning_effort=value)
     elif key == "llm_model":
-        from ...v2.infra import llm as _v2_llm
-        _v2_llm.set_model(value)
-        llm.DEFAULT_MODEL = value
+        llm.set_model(value)
     elif key in _CONFIG_KEYS:
         _conc_set(key, int(value))
 
@@ -195,7 +193,7 @@ def _start_config_watcher():
                 # ── 5. LLM 线程 dict watchdog ──
                 # 清理已完成/卡死的线程，释放 dict 空间
                 try:
-                    from ...infrastructure import llm as _llm_mod
+                    from ...v2.infra import llm as _llm_mod
                     _llm_mod.watchdog_cleanup()
                 except Exception as _e:
                     log("WATCHDOG", f"LLM 线程清理异常: {_e}")
@@ -274,7 +272,7 @@ async def get_system_config():
     """获取系统参数（从 DB 读取，确保多 worker 一致）。
     async + to_thread 避免 sync 端点在 GIL 竞争时阻塞事件循环。
     """
-    from ...infrastructure import llm
+    from ...v2.infra import llm
     db_cfg = await asyncio.to_thread(_load_config_from_db)
     # _running_lock 是 threading.Lock，持有时间极短（几个 len() 调用）
     # 但在 GIL 竞争下仍可能阻塞，用 to_thread 避免占用事件循环
@@ -294,24 +292,11 @@ async def get_system_config():
     result["llm_max_concurrency"] = int(db_cfg.get("llm_max_concurrency", llm.get_max_concurrency()))
     result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
     # LLM 模型（DB 可配，运行时可切换）
-    _v2_model = ""
-    try:
-        _v2_model = _v2_llm.get_model()
-    except Exception:
-        pass
-    result["llm_model"] = db_cfg.get("llm_model", _v2_model)
+    result["llm_model"] = db_cfg.get("llm_model", llm.get_model())
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
-    # v2 pipeline 使用 v2.infra.llm，与 v1 infrastructure.llm 是独立模块
-    # 合并两者的 active count 才能反映真实并发
-    _v2_active = 0
-    try:
-        from ...v2.infra import llm as _v2_llm
-        _v2_active = _v2_llm.get_active_concurrency()
-    except Exception:
-        pass
-    result["llm_active"] = llm.get_active_concurrency() + _v2_active
+    result["llm_active"] = llm.get_active_concurrency()
     result["llm_thread_count"] = llm.get_thread_count()
     result["thread_count"] = threading.active_count()
     return result
@@ -321,7 +306,7 @@ async def get_system_config():
 def update_system_config(params: SystemConfigUpdate):
     """更新运行时系统参数，同时写入 DB 持久化。"""
     global _config_version
-    from ...infrastructure import llm
+    from ...v2.infra import llm
     from .evaluations import set_max_concurrent_evals
     updated = []
     # 遍历所有参数字段，非 None 的更新
@@ -413,9 +398,6 @@ def update_llm_model(body: dict = {}):
         raise HTTPException(status_code=400, detail="model 不能为空")
     _v2_llm.set_model(model)
     _save_config("llm_model", model)
-    # 同步 v1 模块
-    from ...infrastructure import llm as _v1_llm
-    _v1_llm.DEFAULT_MODEL = model
     log("SYS_CFG", f"LLM 模型切换: {model}")
     return {"model": model}
 
