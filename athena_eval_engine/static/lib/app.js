@@ -12,6 +12,12 @@ const DEBUG = new URLSearchParams(location.search).get("debug")==="true";
 function $(i){return document.getElementById(i);}
 function el(h){const d=document.createElement("div");d.innerHTML=h;return d.firstChild;}
 
+// HTML 转义：所有插入 innerHTML 的外部字段必须经过 esc()
+function esc(v){
+  if(v===null||v===undefined)return "";
+  return String(v).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;").replace(/"/g,"&quot;").replace(/'/g,"&#39;");
+}
+
 // HTTP
 async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
 async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
@@ -136,12 +142,12 @@ function goBack(defaultPath){
 function showConfirm(opts){
   if(typeof opts==='string')opts={title:'确认',desc:opts};
   var ov=document.createElement("div");ov.className="modal-overlay";
-  var risksHtml=(opts.risks||[]).map(function(r){return "<li>"+r+"</li>";}).join("");
+  var risksHtml=(opts.risks||[]).map(function(r){return "<li>"+esc(r)+"</li>";}).join("");
   ov.innerHTML='<div class="modal">'
-    +'<div class="modal-head"><div class="modal-icon" style="background:'+opts.iconBg+';color:'+opts.iconColor+'">'+(opts.icon||'⚠️')+'</div><h3>'+(opts.title||'确认')+'</h3></div>'
-    +'<div class="modal-body"><p>'+(opts.desc||'')+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'
+    +'<div class="modal-head"><div class="modal-icon" style="background:'+esc(opts.iconBg)+';color:'+esc(opts.iconColor)+'">'+esc(opts.icon||'⚠️')+'</div><h3>'+esc(opts.title||'确认')+'</h3></div>'
+    +'<div class="modal-body"><p>'+esc(opts.desc||'')+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
-    +'<button class="btn" style="font-size:15px;padding:8px 20px;background:'+(opts.confirmColor||'var(--acc)')+'" id="modal-confirm">'+(opts.confirmText||'确认')+'</button></div></div>';
+    +'<button class="btn" style="font-size:15px;padding:8px 20px;background:'+esc(opts.confirmColor||'var(--acc)')+'" id="modal-confirm">'+esc(opts.confirmText||'确认')+'</button></div></div>';
   document.body.appendChild(ov);
   ov.addEventListener("click",function(e){if(e.target===ov)ov.remove();});
   document.getElementById("modal-confirm").onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm();};

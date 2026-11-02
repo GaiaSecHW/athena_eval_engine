@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
@@ -22,6 +23,22 @@ router = APIRouter(prefix="/api/v2/evaluations", tags=["evaluations"])
 
 # 报告目录（与老代码一致，环境变量优先）
 REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "reports")
+
+# evaluation_id 合法字符：字母、数字、下划线、连字符
+_EVAL_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _validate_eval_id(evaluation_id: str) -> None:
+    """校验 evaluation_id 防止路径遍历。
+
+    evaluation_id 直接拼进文件路径，如果不校验，攻击者可传入
+    ``../../etc/passwd`` 读取任意文件。
+    """
+    if not evaluation_id or not _EVAL_ID_RE.match(evaluation_id):
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid evaluation_id: '{evaluation_id}'",
+        )
 
 
 def _report_path(evaluation_id: str, suffix: str) -> str:
@@ -48,6 +65,7 @@ def _read_report_segment(evaluation_id: str, suffix: str) -> dict:
 @router.get("/{evaluation_id}")
 def get_evaluation(evaluation_id: str):
     """返回评测状态 + 元信息（从 DB 读取，兼容 v1/v2）。"""
+    _validate_eval_id(evaluation_id)
     import json as _json
     from ...infrastructure.database import connect
 
@@ -58,9 +76,13 @@ def get_evaluation(evaluation_id: str):
             "SELECT e.evaluation_id, e.evaluation_name, e.evaluation_status, "
             "e.benchmark_set_id, e.created_at, e.started_at, e.finished_at, "
             "e.error_message, e.version, "
-            "s.config_json "
+            "s.config_json, "
+            "pts.task_created_at "
             "FROM evaluation e "
             "LEFT JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
+            "LEFT JOIN project_task_summary pts "
+            "  ON pts.project_id = e.benchmark_set_id "
+            "  AND pts.task_id = e.task_id "
             "WHERE e.evaluation_id = %s",
             (evaluation_id,),
         )
@@ -81,6 +103,7 @@ def get_evaluation(evaluation_id: str):
             "error_message": row[7],
             "version": row[8],
             "progress": _get_progress(evaluation_id),
+            "task_created_at": row[10] or "",
         }
         # 从 config_json 提取 manifest 信息
         if row[9]:
@@ -112,6 +135,7 @@ def get_evaluation(evaluation_id: str):
 @router.get("/{evaluation_id}/report")
 def get_base_report(evaluation_id: str):
     """返回 {eid}.json 基础报告段（指标 + 汇总）。"""
+    _validate_eval_id(evaluation_id)
     path = os.path.join(REPORTS_DIR, f"{evaluation_id}.json")
     if not os.path.isfile(path):
         raise HTTPException(
@@ -125,6 +149,7 @@ def get_base_report(evaluation_id: str):
 @router.get("/{evaluation_id}/report/lifecycle")
 def get_lifecycle_report(evaluation_id: str):
     """返回 {eid}_lifecycle.json 报告段。"""
+    _validate_eval_id(evaluation_id)
     return _read_report_segment(evaluation_id, "lifecycle")
 
 
@@ -138,6 +163,7 @@ def get_report_status(evaluation_id: str):
     - kg: {eid}_kg.json
     - lifecycle: {eid}_lifecycle.json
     """
+    _validate_eval_id(evaluation_id)
     segments = {
         "base": f"{evaluation_id}.json",
         "fpr": f"{evaluation_id}_fpr.json",
@@ -167,6 +193,7 @@ _STATIC_OVERRIDE_DIR = os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static")
 @router.get("/{evaluation_id}/debug")
 def get_debug_page(evaluation_id: str):
     """调试页面：展示各步骤中间数据。返回静态 HTML，前端通过 API 获取数据。"""
+    _validate_eval_id(evaluation_id)
     # 优先从可覆盖目录读取（热更新），回退到打包目录
     override_path = os.path.join(_STATIC_OVERRIDE_DIR, "debug.html")
     if os.path.isfile(override_path):
@@ -180,6 +207,13 @@ def get_debug_page(evaluation_id: str):
 @router.get("/{evaluation_id}/debug/{step}")
 def get_debug_step(evaluation_id: str, step: str):
     """返回某步骤的中间数据 JSON。"""
+    _validate_eval_id(evaluation_id)
+    # step 必须在已知步骤列表中，防止路径遍历
+    if step not in _DEBUG_STEPS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"invalid debug step: '{step}'",
+        )
     path = os.path.join(REPORTS_DIR, f"{evaluation_id}_debug_{step}.json")
     if not os.path.isfile(path):
         raise HTTPException(

@@ -107,7 +107,7 @@ async function loadDtsPage(){
     renderDtsTable();
     renderDtsPager();
   }catch(e){
-    $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">加载失败: '+e+'</div>';
+    $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">加载失败: '+esc(e)+'</div>';
     $("dts-pager").innerHTML='';
   }
 }
@@ -148,18 +148,18 @@ function renderDtsTable(){
       }
     }catch(e){}
     html+='<tr>'
-      +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
-      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+(i.vuln_title||'').replace(/"/g,'&quot;')+'">'+(i.vuln_title||'-')+'</td>'
-      +'<td style="font-size:12px;font-family:monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="'+(i.case_id||'')+'">'+(i.case_id||'-')+'</td>'
-      +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="go(\'/evals/\'+encodeURIComponent(\''+(i.evaluation_id||'')+'\'))">'+(i.evaluation_name||i.evaluation_id||'-')+'</td>'
-      +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
-      +'<td style="font-size:14px">'+dtsAgentLabel(i.agent_type)+'</td>'
-      +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
-      +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
-      +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
-      +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+lqLabel+'</span>':'-')+'</td>'
-      +'<td style="font-size:13px;color:var(--sub)">'+fmtDate(i.created_at)+'</td>'
-      +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="go(\'/dts/\'+encodeURIComponent(\''+i.dts_id+'\'))">详情</button></td>'
+      +'<td style="font-size:13px;font-family:monospace">'+esc(i.dts_id||'')+'</td>'
+      +'<td style="font-size:13px;max-width:300px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(i.vuln_title||'')+'">'+esc(i.vuln_title||'-')+'</td>'
+      +'<td style="font-size:12px;font-family:monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="'+esc(i.case_id||'')+'">'+esc(i.case_id||'-')+'</td>'
+      +'<td style="font-size:13px;cursor:pointer;color:var(--acc)" onclick="go(\'/evals/\'+encodeURIComponent(\''+esc(i.evaluation_id||'')+'\'))">'+esc(i.evaluation_name||i.evaluation_id||'-')+'</td>'
+      +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+esc(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
+      +'<td style="font-size:14px">'+esc(dtsAgentLabel(i.agent_type))+'</td>'
+      +'<td style="font-size:14px">'+esc(dtsRespLabel(i.responsibility))+'</td>'
+      +'<td style="font-size:14px">'+esc(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
+      +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+esc(DTS_STATUS_LABELS[i.status])+'</span></td>'
+      +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+esc(lqLabel)+'</span>':'-')+'</td>'
+      +'<td style="font-size:13px;color:var(--sub)">'+esc(fmtDate(i.created_at))+'</td>'
+      +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="go(\'/dts/\'+encodeURIComponent(\''+esc(i.dts_id)+'\'))">详情</button></td>'
       +'</tr>';
   });
   html+='</tbody></table>';

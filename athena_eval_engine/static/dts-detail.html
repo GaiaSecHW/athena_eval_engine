@@ -84,8 +84,8 @@ function renderKMSummary(km,title){
         +'<span class="knd" style="background:'+effInfo.bg+';color:'+effInfo.c+'">'+effInfo.t+'</span>'
         +'<span class="knd" style="background:'+ov.bg+';color:'+usedColor+'">'+usedLabel+'</span>';
       html+='</div>';
-      if(a.query){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">查询：</b>'+String(a.query).replace(/</g,'&lt;')+'</div>';}
-      if(a.returned){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">返回：</b>'+String(a.returned).replace(/</g,'&lt;')+'</div>';}
+      if(a.query){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">查询：</b>'+esc(a.query)+'</div>';}
+      if(a.returned){html+='<div style="margin-bottom:4px"><b style="color:var(--sub)">返回：</b>'+esc(a.returned)+'</div>';}
       html+='</div>';
     });
     html+='</div>';
@@ -93,7 +93,7 @@ function renderKMSummary(km,title){
   if(impact){
     html+='<div style="padding:8px 12px;border-top:1px solid var(--bd);font-size:13px">'
       +'<div style="color:var(--sub);margin-bottom:4px">对结论的影响</div>'
-      +'<div style="white-space:pre-wrap">'+String(impact).replace(/</g,'&lt;')+'</div>'
+      +'<div style="white-space:pre-wrap">'+esc(impact)+'</div>'
       +'</div>';
   }
   html+='</div>';
@@ -118,28 +118,28 @@ async function renderDtsDetailPage(dtsId){
     html+='<div class="card" style="margin-bottom:16px">'
       +'<h3>基本信息</h3>'
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
-      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+d.dts_id+'</b></div>'
-      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+statusLabel+'</span></div>'
-      +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+(d.task_id||'-')+'</b></div>'
-      +'<div><span style="color:var(--gray)">类型：</span><b>'+caseTypeLabel+'</b></div>'
-      +'<div><span style="color:var(--gray)">Agent：</span><b>'+agentLabel+'</b></div>'
-      +'<div><span style="color:var(--gray)">责任方：</span><b>'+respLabel+'</b></div>'
-      +'<div><span style="color:var(--gray)">成因：</span><b>'+causeLabel+'</b></div>'
-      +'<div><span style="color:var(--gray)">断点级别：</span><b>'+(d.breakpoint_level||'-')+'</b></div>'
-      +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+(d.case_id||'-')+'</b></div>'
-      +'<div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace;font-size:12px">'+(d.evaluation_id||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+esc(d.dts_id)+'</b></div>'
+      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span></div>'
+      +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.task_id||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">类型：</span><b>'+esc(caseTypeLabel)+'</b></div>'
+      +'<div><span style="color:var(--gray)">Agent：</span><b>'+esc(agentLabel)+'</b></div>'
+      +'<div><span style="color:var(--gray)">责任方：</span><b>'+esc(respLabel)+'</b></div>'
+      +'<div><span style="color:var(--gray)">成因：</span><b>'+esc(causeLabel)+'</b></div>'
+      +'<div><span style="color:var(--gray)">断点级别：</span><b>'+esc(d.breakpoint_level||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.case_id||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.evaluation_id||'-')+'</b></div>'
       +'</div>';
     if(caseData){
       html+='<div style="margin-top:8px;padding:8px 0;border-top:1px solid var(--bd)">'
         +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">漏洞标题</div>'
-        +'<div style="font-size:15px;font-weight:600">'+(caseData.vuln_title||'-')+'</div>';
+        +'<div style="font-size:15px;font-weight:600">'+esc(caseData.vuln_title||'-')+'</div>';
       if(caseData.summary){
         html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">漏洞摘要</div>'
-          +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(caseData.summary).replace(/</g,'&lt;')+'</div>';
+          +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(caseData.summary)+'</div>';
       }
       if(caseData.human_confirmation_summary){
         html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>'
-          +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+String(caseData.human_confirmation_summary).replace(/</g,'&lt;')+'</div>';
+          +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+esc(caseData.human_confirmation_summary)+'</div>';
       }
       html+='</div>';
     }
@@ -192,10 +192,10 @@ async function renderDtsDetailPage(dtsId){
             +'<div style="font-size:14px;color:var(--sub);margin-bottom:4px">标注不精确';
           if(lq.label){html+=' <span class="knd">'+lq.label+'</span>';}
           html+='</div>';
-          if(d.reason){html+='<div style="font-size:14px;margin-bottom:6px"><b style="color:var(--sub)">理由：</b>'+String(d.reason).replace(/</g,'&lt;')+'</div>';}
+          if(d.reason){html+='<div style="font-size:14px;margin-bottom:6px"><b style="color:var(--sub)">理由：</b>'+esc(d.reason)+'</div>';}
           if(d.follow_up_questions&&d.follow_up_questions.length){
             html+='<div style="font-size:14px"><b style="color:var(--sub)">需追问：</b><ul style="margin:4px 0 0 18px">';
-            d.follow_up_questions.forEach(function(q){html+='<li>'+String(q).replace(/</g,'&lt;')+'</li>';});
+            d.follow_up_questions.forEach(function(q){html+='<li>'+esc(q)+'</li>';});
             html+='</ul></div>';
           }
           html+='</div>';
@@ -236,7 +236,7 @@ async function renderDtsDetailPage(dtsId){
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';
           if(hypSid){
-            html+=' <span class="knd" style="background:rgba(16,185,129,.12);color:var(--green);font-family:monospace;font-size:12px">基于 '+String(hypSid).replace(/</g,'&lt;')+'</span>';
+            html+=' <span class="knd" style="background:rgba(16,185,129,.12);color:var(--green);font-family:monospace;font-size:12px">基于 '+esc(hypSid)+'</span>';
           }
           if(canResolve===false){
             html+=' <span class="knd" style="background:rgba(251,191,36,.18);color:var(--amber)">Agent无法自行解决</span>';
@@ -245,24 +245,24 @@ async function renderDtsDetailPage(dtsId){
           }
           html+='</div>';
           if(hypDesc){
-            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">假设：</b>'+String(hypDesc).replace(/</g,'&lt;')+'</div>';
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">假设：</b>'+esc(hypDesc)+'</div>';
           }
           if(evidence){
-            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+String(evidence).replace(/</g,'&lt;')+'</div>';
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+esc(evidence)+'</div>';
           }
           if(canResolve===false){
-            if(blockedBy){html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">阻塞：</b>'+String(blockedBy).replace(/</g,'&lt;')+'</div>';}
+            if(blockedBy){html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">阻塞：</b>'+esc(blockedBy)+'</div>';}
             if(neededData&&neededData.length){
-              html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">需外部数据：</b>'+neededData.map(function(x){return String(x).replace(/</g,'&lt;');}).join('、')+'</div>';
+              html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">需外部数据：</b>'+neededData.map(function(x){return esc(x);}).join('、')+'</div>';
             }
           }
           if(target||location||action||expected){
             html+='<div style="padding:10px 12px;background:rgba(37,99,235,.04);border-top:1px solid var(--bd)"><div style="font-size:14px;color:var(--sub);margin-bottom:6px">修复建议';
             if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
             html+='</div>';
-            if(location){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
-            if(action){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
-            if(expected){html+='<div style="font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+            if(location){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改位置：</b>'+esc(location)+'</div>';}
+            if(action){html+='<div style="font-size:14px;margin-bottom:4px"><b style="color:var(--sub)">修改内容：</b>'+esc(action)+'</div>';}
+            if(expected){html+='<div style="font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+esc(expected)+'</div>';}
             var hk=(chainType||'chain')+':hyp'+(idx+1);
             var hcInfo=(d.hypothesis_confirmations||{})[hk]||{};
             html+='<div style="margin-top:10px;padding-top:10px;border-top:1px dashed var(--bd);display:flex;align-items:center;gap:10px;flex-wrap:wrap">';
@@ -272,8 +272,8 @@ async function renderDtsDetailPage(dtsId){
             }else if(hcInfo.is_root===false){
               html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
             }else{
-              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
-                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+esc(d.dts_id)+'\',\''+esc(hk)+'\',true,\''+esc(causeCode||'')+'\',\''+esc(agentType||'')+'\',\''+esc(projectId||'')+'\',\''+esc(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+esc(d.dts_id)+'\',\''+esc(hk)+'\',false,\''+esc(causeCode||'')+'\',\''+esc(agentType||'')+'\',\''+esc(projectId||'')+'\',\''+esc(projectName||'')+'\',this)">✗ 非此根因</button>';
             }
             html+='</div>';
             html+='</div>';
@@ -287,8 +287,8 @@ async function renderDtsDetailPage(dtsId){
             }else if(hcInfo2.is_root===false){
               html+='<span class="knd" style="background:rgba(220,38,38,.12);color:var(--red);font-size:13px;padding:6px 14px;border-radius:8px;box-shadow:0 2px 8px rgba(220,38,38,.2)">✗ 确认为非根因</span>';
             }else{
-              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',true,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✓ 是此根因</button>'
-                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+d.dts_id+'\',\''+hk2+'\',false,\''+(causeCode||'')+'\',\''+(agentType||'')+'\',\''+(projectId||'')+'\',\''+(projectName||'')+'\',this)">✗ 非此根因</button>';
+              html+='<button class="confirm-btn confirm-btn-yes" onclick="confirmHypothesis(\''+esc(d.dts_id)+'\',\''+esc(hk2)+'\',true,\''+esc(causeCode||'')+'\',\''+esc(agentType||'')+'\',\''+esc(projectId||'')+'\',\''+esc(projectName||'')+'\',this)">✓ 是此根因</button>'
+                +'<button class="confirm-btn confirm-btn-no" onclick="confirmHypothesis(\''+esc(d.dts_id)+'\',\''+esc(hk2)+'\',false,\''+esc(causeCode||'')+'\',\''+esc(agentType||'')+'\',\''+esc(projectId||'')+'\',\''+esc(projectName||'')+'\',this)">✗ 非此根因</button>';
             }
             html+='</div></div>';
           }
@@ -302,7 +302,7 @@ async function renderDtsDetailPage(dtsId){
           html+='<div style="margin-bottom:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">根因';
           if(rc.label){html+=' <span class="knd">'+rc.label+'</span>';}
           if(rc.category){html+=' <span class="knd">'+rc.category+'</span>';}
-          html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(rc.description||'(无)').replace(/</g,'&lt;')+'</div></div>';
+          html+='</div><div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(rc.description||'(无)')+'</div></div>';
         });
         legacyFixSuggestions.forEach(function(fs){
           var fi=fs.items||{};
@@ -316,9 +316,9 @@ async function renderDtsDetailPage(dtsId){
           if(fs.label){html+=' <span class="knd">'+fs.label+'</span>';}
           if(target){html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+target+'</span>';}
           html+='</div>';
-          if(location){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改位置：</b>'+String(location).replace(/</g,'&lt;')+'</div>';}
-          if(action){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改内容：</b>'+String(action).replace(/</g,'&lt;')+'</div>';}
-          if(expected){html+='<div style="padding:8px 12px;font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+String(expected).replace(/</g,'&lt;')+'</div>';}
+          if(location){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改位置：</b>'+esc(location)+'</div>';}
+          if(action){html+='<div style="padding:8px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">修改内容：</b>'+esc(action)+'</div>';}
+          if(expected){html+='<div style="padding:8px 12px;font-size:14px"><b style="color:var(--sub)">预期效果：</b>'+esc(expected)+'</div>';}
           html+='</div>';
         });
         html+='</div>';
@@ -330,10 +330,10 @@ async function renderDtsDetailPage(dtsId){
       var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
       html+='<div class="card" style="margin-bottom:16px">'
         +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
-        +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+String(d.breakpoint_desc).replace(/</g,'&lt;')+'</div>'
+        +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(d.breakpoint_desc)+'</div>'
         +'</details>';
       if(d.evidence_uri){
-        html+='<div style="margin-top:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+String(d.evidence_uri).replace(/</g,'&lt;')+'</div></div>';
+        html+='<div style="margin-top:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+esc(d.evidence_uri)+'</div></div>';
       }
       html+='</div>';
     }
@@ -398,7 +398,7 @@ async function renderDtsDetailPage(dtsId){
           summaries.forEach(function(s,idx){
             var sumText=s.summary||s.compressed_summary||'';
             if(sumText){
-              html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px;white-space:pre-wrap">'+String(sumText).replace(/</g,'&lt;')+'</div>';
+              html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px;white-space:pre-wrap">'+esc(sumText)+'</div>';
             }
           });
           html+='</details>';
@@ -418,7 +418,7 @@ async function renderDtsDetailPage(dtsId){
           html+='<details style="margin-bottom:12px"><summary style="font-size:14px;color:var(--sub);cursor:pointer">L4 独立验证（由测评系统代为发起知识库查询）</summary>';
           html+='<div style="margin-top:8px;padding:10px 12px;background:var(--p2);border-radius:8px;font-size:13px">';
           html+='<div style="margin-bottom:8px"><span style="color:var(--gray)">验证结果：</span><b style="color:'+l4Color+'">'+l4Label+'</b>';
-          if(l4.summary){html+='<span style="color:var(--gray);margin-left:8px">('+String(l4.summary).replace(/</g,'&lt;')+')</span>';}
+          if(l4.summary){html+='<span style="color:var(--gray);margin-left:8px">('+esc(l4.summary)+')</span>';}
           html+='</div>';
           // 从 query_log 中提取项目 ID
           var l4ProjectId='';
@@ -441,14 +441,14 @@ async function renderDtsDetailPage(dtsId){
             html+='<div style="color:var(--gray);margin-bottom:4px">查询过程（问题完整 / 回复汇总）：</div>';
             ql.forEach(function(q){
               html+='<div style="margin-bottom:8px;padding:8px 10px;background:var(--p1);border-radius:6px">';
-              if(q.step){html+='<div style="font-weight:600;font-size:12px;color:var(--acc)">'+String(q.step).replace(/</g,'&lt;')+'</div>';}
+              if(q.step){html+='<div style="font-weight:600;font-size:12px;color:var(--acc)">'+esc(q.step)+'</div>';}
               // 问题：detail（含漏洞标题/误报原因/关键词）+ action（含完整 URL）
-              if(q.detail){html+='<div style="margin-top:4px;font-size:12px"><b style="color:var(--sub)">问题：</b><div style="margin-top:2px;white-space:pre-wrap">'+String(q.detail).replace(/</g,'&lt;')+'</div></div>';}
-              if(q.action){html+='<div style="margin-top:2px;font-size:12px;color:var(--gray);word-break:break-all">'+String(q.action).replace(/</g,'&lt;')+'</div>';}
+              if(q.detail){html+='<div style="margin-top:4px;font-size:12px"><b style="color:var(--sub)">问题：</b><div style="margin-top:2px;white-space:pre-wrap">'+esc(q.detail)+'</div></div>';}
+              if(q.action){html+='<div style="margin-top:2px;font-size:12px;color:var(--gray);word-break:break-all">'+esc(q.action)+'</div>';}
               // 回复：result + count 汇总
               if(q.result||q.count!==undefined){
                 html+='<div style="margin-top:4px;font-size:12px"><b style="color:var(--sub)">回复：</b>';
-                if(q.result){html+='<span style="color:var(--gray)">'+String(q.result).replace(/</g,'&lt;')+'</span>';}
+                if(q.result){html+='<span style="color:var(--gray)">'+esc(q.result)+'</span>';}
                 if(q.count!==undefined&&q.count!==null){html+=' <span class="knd">命中 '+q.count+'</span>';}
                 html+='</div>';
               }
@@ -474,10 +474,10 @@ async function renderDtsDetailPage(dtsId){
         try{
           var rd=JSON.parse(d.replay_data);
           html+='<div style="margin-top:12px;font-size:14px">';
-          if(rd.vuln_title){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+String(rd.vuln_title).replace(/</g,'&lt;')+'</div>';}
-          if(rd.vuln_description){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span><div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+String(rd.vuln_description).replace(/</g,'&lt;')+'</div></div>';}
+          if(rd.vuln_title){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+esc(rd.vuln_title)+'</div>';}
+          if(rd.vuln_description){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span><div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+esc(rd.vuln_description)+'</div></div>';}
           if(rd.is_vulnerable!==undefined){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">是否仍有漏洞：</span><b>'+(rd.is_vulnerable?'是':'否')+'</b></div>';}
-          if(rd.message){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">结论：</span>'+String(rd.message).replace(/</g,'&lt;')+'</div>';}
+          if(rd.message){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">结论：</span>'+esc(rd.message)+'</div>';}
           html+='</div>';
         }catch(e){}
       }
@@ -509,7 +509,7 @@ async function renderDtsDetailPage(dtsId){
           +'<td style="padding:6px 8px"><span style="color:'+color+';font-weight:600">'+label+'</span></td>'
           +'<td style="padding:6px 8px">'+String(h.status||'')+'</td>'
           +'<td style="padding:6px 8px;font-family:monospace;font-size:12px">'+String(h.task_id||'')+'</td>'
-          +'<td style="padding:6px 8px">'+String(h.message||'').replace(/</g,'&lt;')+'</td>'
+          +'<td style="padding:6px 8px">'+esc(h.message||'')+'</td>'
           +'</tr>';
       });
       html+='</tbody></table></div>';

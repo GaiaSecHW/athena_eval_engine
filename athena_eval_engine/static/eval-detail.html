@@ -117,7 +117,7 @@ async function selEv(id){
 
 // ===== v2 报告加载 + 渲染 =====
 async function loadV2Report(id,st,rs){
-  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info};
+  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info,task_created_at:st.task_created_at};
   if(rs.base){
     try{d.base=await jget(`/api/v2/evaluations/${id}/report`);}catch(e){d.base={};}
   }
@@ -307,6 +307,7 @@ function renderV2Report(d){
       ${evalMode==='runtime'?'':'<div><span style="color:var(--gray)">基线来源：</span><b>'+(bsrc==='vuln_center'?('漏洞中心 · '+vcProj+' / '+vcTask):'测评数据集')+'</b></div>'}
       <div><span style="color:var(--gray)">评测模式：</span><b style="color:var(--acc)">${evalMode==='dev'?'开发态':'运行态'}</b></div>
       <div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace">${d.evaluation_id}</b></div>
+      ${d.task_created_at?`<div><span style="color:var(--gray)">任务创建日期：</span><b>${fmtDate(d.task_created_at)}</b></div>`:''}
     </div>
   </div>
 
