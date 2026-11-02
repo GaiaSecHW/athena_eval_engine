@@ -126,11 +126,12 @@ _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
 # 从 400 错误中收集的 max context tokens 和 chars/token 换算率
-_max_context_tokens = None
+# 默认值与 GLM 系列模型一致，400 错误后用实际数据更新
+_max_context_tokens = 204800
 _chars_per_token = 3.0  # 默认值，400 错误后用实际数据更新
 
 def get_max_context_tokens():
-    """返回从 400 错误中收集的 max context tokens，未收集时返回 None。"""
+    """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
     return _max_context_tokens
 
 def get_chars_per_token():
@@ -850,6 +851,14 @@ def chat(messages, **kwargs) -> str:
         except Exception as e:
             last_err = str(e)[:300]
             err_lower = last_err.lower()
+            # context length / token limit 错误是确定性的，重试无意义
+            if any(kw in err_lower for kw in (
+                "context length", "too long", "maximum context",
+                "token limit", "context_window",
+                "input too long", "prompt too long",
+            )):
+                log("LLM", f"chat 输入超限，跳过重试: {last_err}")
+                raise RuntimeError(f"chat 输入超限（不可重试）: {last_err}")
             if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 if not _no_reasoning:
                     _no_reasoning = True
@@ -1079,7 +1088,7 @@ def chat_json(messages, **kwargs) -> dict:
                 "input too long", "prompt too long",
             )):
                 log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
-                break
+                raise RuntimeError(f"chat_json 输入超限（不可重试）: {last_err}")
             # content 为空 或 stream 总超时 = reasoning 太长，下次关闭推理重试
             if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 _msg_chars = sum(len(str(m.get("content", ""))) for m in msgs)
