@@ -5,8 +5,8 @@
 真实错误回滚事务、不标记已应用，下次启动重试。
 """
 from __future__ import annotations
-from ...infrastructure.database import connect
-from ...infrastructure.log_util import log
+from .database import connect
+from .log_util import log
 
 # 迁移列表：按顺序执行，每条用唯一 ID 跟踪
 MIGRATIONS = [

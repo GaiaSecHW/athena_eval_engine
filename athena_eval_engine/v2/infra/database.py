@@ -5,9 +5,6 @@ v2 迁移期创建的副本已与 v1 逐字节相同（仅 import 深度不同�
 """
 from ...infrastructure.database import (  # noqa: F401
     connect,
-    direct_connect,
-    drain_idle_connections,
-    ensure_schema,
     _get_pool,
     _pool,
 )

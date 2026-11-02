@@ -49,3 +49,42 @@ def http_get(
                 time.sleep(retry_delay)
     log(log_tag, f"❌ {retries} 次重试全部失败: {url} → {last_err}")
     raise last_err
+
+
+def http_get_raw(
+    url: str,
+    *,
+    headers: dict | None = None,
+    retries: int = 3,
+    retry_delay: float = 2.0,
+    timeout: float = 10,
+    log_tag: str = "HTTP",
+) -> dict | list:
+    """无认证 GET（自定义 headers），返回 JSON。
+
+    供 gaiasec_client 等不需要 bearer token 的场景使用。
+    与 http_get 共享重试模式，但不注入 Authorization header。
+    """
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(url, headers=headers or {})
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except HTTPError as e:
+            last_err = e
+            log(log_tag, f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            log(log_tag, f"网络错误重试 {attempt+1}/{retries}: {url} → {e}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+        except json.JSONDecodeError as e:
+            last_err = e
+            log(log_tag, f"JSON 解析失败重试 {attempt+1}/{retries}: {url} → {e}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    raise last_err
+

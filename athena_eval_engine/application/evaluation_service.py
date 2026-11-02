@@ -19,31 +19,17 @@ from ..application import platform_service as ps
 
 # ── re-export: 进度追踪（已提取到 v2/infra/progress.py）──
 from ..v2.infra.progress import (
-    set_progress as _set_progress_impl,
-    set_task_progress as _set_task_progress_impl,
     get_progress,
     clear_progress,
 )
 
-def set_progress(evaluation_id: str, text: str):
-    _set_progress_impl(evaluation_id, text)
-
-def set_task_progress(evaluation_id: str, task_run_id: str, text: str):
-    _set_task_progress_impl(evaluation_id, task_run_id, text)
-
 # ── re-export: trace 缓存（已提取到 v2/infra/trace_cache.py）──
 from ..v2.infra.trace_cache import (
     cleanup_trace_cache as _cleanup_trace_cache_impl,
-    copy_trace_to_local as _copy_trace_to_local_impl,
-    _verify_sqlite,
-    _K8S_TRACE_CACHE,
 )
 
 def _cleanup_trace_cache(evaluation_id: str = ""):
     _cleanup_trace_cache_impl(evaluation_id)
-
-def _copy_trace_to_local(remote_path: str, evaluation_id: str = "") -> str:
-    return _copy_trace_to_local_impl(remote_path, evaluation_id=evaluation_id)
 
 
 def set_cancel(evaluation_id: str):

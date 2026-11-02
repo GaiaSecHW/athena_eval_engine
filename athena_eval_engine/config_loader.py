@@ -54,7 +54,6 @@ SCHEDULE_API = os.environ.get("SCHEDULE_API", PLATFORM.get("schedule_api", "http
 # 漏洞 case 平台 API。集群内使用 Service 地址（与 vuln_center 同源）。
 VULN_API_URL = os.environ.get("VULN_API_URL", PLATFORM.get(
     "vuln_api_url", "http://secflow-platform-vuln:80"))
-SCHED_POD = os.environ.get("SCHED_POD", PLATFORM.get("sched_pod", ""))
 # 数据目录（k8s 部署时 /data 直接挂载；dev 用本地路径或 port-forward 挂载点）
 DATA_ROOT = os.environ.get("DATA_ROOT", PLATFORM.get("data_root", "/data/files"))
 

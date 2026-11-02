@@ -1,12 +1,12 @@
 """统一并发配置 — 所有线程池大小的单一数据源。
 
 用法:
-    from ..infrastructure.concurrency import get, set_val, get_all, set_all
+    from ..infrastructure.concurrency import get, set_val, get_keys
 
     pool = ThreadPoolExecutor(max_workers=get("ai_match_workers"))
     set_val("ai_match_workers", 30)  # 运行时动态修改
 
-系统配置 API 修改后，config watcher 调 set_all() 更新内存值，
+系统配置 API 修改后，config watcher 逐 key 调 set_val() 更新内存值，
 新创建的线程池立即使用新值。
 """
 from __future__ import annotations
@@ -63,21 +63,6 @@ def set_val(key: str, value: int):
     v = max(lo, min(value, hi))
     with _lock:
         _config[key] = v
-
-
-def get_all() -> dict:
-    """获取所有并发参数的当前值（副本）。"""
-    with _lock:
-        return dict(_config)
-
-
-def set_all(**kwargs):
-    """批量设置并发参数（仅更新已存在的 key）。"""
-    with _lock:
-        for k, v in kwargs.items():
-            if k in _config:
-                lo, hi = _RANGES.get(k, (1, 200))
-                _config[k] = max(lo, min(v, hi))
 
 
 def get_keys() -> set:

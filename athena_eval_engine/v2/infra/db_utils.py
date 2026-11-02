@@ -9,9 +9,8 @@ import time
 
 import pymysql
 
-from ...infrastructure.database import connect
-from ...infrastructure.log_util import log
-from ...infrastructure.log_util import log_to_file
+from .database import connect
+from .log_util import log, log_to_file
 
 
 def db_query(fn, _retries: int = 8):

@@ -16,7 +16,7 @@ import http.client
 from concurrent.futures import Future
 from urllib.parse import urlparse
 from ...config_loader import LLM_BASE_URL, LLM_MODEL, LLM_API_KEY, LLM_ENABLED
-from ...infrastructure.log_util import log
+from .log_util import log
 
 DEFAULT_API_BASE = LLM_BASE_URL
 DEFAULT_MODEL = LLM_MODEL

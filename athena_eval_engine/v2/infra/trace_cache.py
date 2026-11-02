@@ -8,7 +8,7 @@ import os
 import shutil
 import hashlib
 
-from ...infrastructure.log_util import log
+from .log_util import log
 
 # k8s 模式下 trace 文件在 NFS-backed PVC 上，SQLite 随机读极慢；
 # 拷贝到 pod 本地 /tmp 加速解析，解析完删除，pod 重启自动清理

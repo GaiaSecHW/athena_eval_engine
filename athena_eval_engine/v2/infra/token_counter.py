@@ -76,21 +76,6 @@ def count_tokens(text: str) -> int:
     return len(tok.encode(text).ids)
 
 
-def count_messages_tokens(messages: list[dict]) -> int:
-    """计算 LLM messages（system + user）的 token 数。
-
-    messages: [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]
-    """
-    # 拼接所有 message 内容，用分隔符区分
-    parts = []
-    for msg in messages:
-        role = msg.get("role", "")
-        content = msg.get("content", "")
-        parts.append(f"<|{role}|>{content}")
-    full_text = "".join(parts) + "<|assistant|>"
-    return count_tokens(full_text)
-
-
 def fit_batch_by_token(items: list[str], max_tokens: int,
                        reserve_tokens: int = 4096) -> list[list[int]]:
     """按 token 上限将文本列表分批。

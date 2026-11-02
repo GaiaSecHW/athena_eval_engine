@@ -20,12 +20,10 @@ from __future__ import annotations
 
 import json
 import os
-import time
 import urllib.parse
-import urllib.request
-from urllib.error import HTTPError, URLError
 
 from .log_util import log
+from .http_client import http_get_raw
 from ..config_loader import GAISEC_SERVER_URL
 
 
@@ -66,83 +64,46 @@ def fetch_case_session_map(case_id: str) -> dict:
         raise RuntimeError("fetch_case_session_map: case_id 为空")
 
     url = f"{_GAISEC_SERVER_URL}/api/vulnerabilities/chimera/{urllib.parse.quote(case_id)}"
-    last_err: Exception | None = None
-    for attempt in range(_MAX_RETRIES):
-        try:
-            req = urllib.request.Request(
-                url, headers={"Accept": "application/json"},
-            )
-            with urllib.request.urlopen(req, timeout=_API_TIMEOUT) as r:
-                body = r.read().decode("utf-8")
-            data = json.loads(body)
-            if not isinstance(data, dict) or not data.get("success"):
-                last_err = RuntimeError(
-                    f"API 响应非 success: {body[:200]}"
-                )
-                log("GAISEC_API",
-                    f"fetch_case_session_map case={case_id} 非成功响应，"
-                    f"重试 {attempt + 1}/{_MAX_RETRIES}: {body[:200]}")
-                if attempt + 1 < _MAX_RETRIES:
-                    time.sleep(_RETRY_DELAY)
-                continue
-            payload = data.get("data") or {}
-            if not isinstance(payload, dict):
-                last_err = RuntimeError(
-                    f"API 响应 data 非 dict: {body[:200]}"
-                )
-                if attempt + 1 < _MAX_RETRIES:
-                    time.sleep(_RETRY_DELAY)
-                continue
-            analysis_sid = payload.get("ai_analysis_session_id") or ""
-            verification_sid = payload.get("ai_verification_session_id") or ""
-            # API 权威契约：API 调用成功（200 + success=True）即视为权威数据，
-            # 即使 analysis_session 为空也返回记录（case 数据本身的状态——
-            # 如 analysis_status=UNDETERMINED/PENDING 时 analysis_session 为空，
-            # 表示该 case 的分析未启动或被 stopped）。
-            # 这种"数据不完整"不是 API 失败，不抛异常、不中止评测。
-            # 调用方（matcher）按 analysis_session 是否为空决定是否用此映射。
-            if not analysis_sid:
-                log("GAISEC_API",
-                    f"case={case_id} API 返回 analysis_session 为空 "
-                    f"(analysis_status={payload.get('ai_analysis_status')}, "
-                    f"verification_status={payload.get('ai_verification_status')})"
-                    f"—— case 数据状态不完整（如分析被 stopped），跳过 verify_sessions")
-            return {
-                "case_id": case_id,
-                "ai_analysis_session_id": analysis_sid,
-                "ai_verification_session_id": verification_sid,
-                "chimera_task_id": payload.get("chimera_task_id") or "",
-                "ai_analysis_status": payload.get("ai_analysis_status") or "",
-                "ai_verification_status": payload.get("ai_verification_status") or "",
-                "title": payload.get("title") or "",
-            }
-        except (URLError, TimeoutError, OSError) as e:
-            last_err = e
-            log("GAISEC_API",
-                f"fetch_case_session_map case={case_id} 网络错误，"
-                f"重试 {attempt + 1}/{_MAX_RETRIES}: {e}")
-            if attempt + 1 < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-        except HTTPError as e:
-            last_err = e
-            log("GAISEC_API",
-                f"fetch_case_session_map case={case_id} HTTP {e.code}，"
-                f"重试 {attempt + 1}/{_MAX_RETRIES}: {e}")
-            # 404 表示 case 不存在（数据不完整）；5xx 表示服务错误。两者都重试
-            # 直到耗尽——耗尽后抛异常由调用方 FAILED，不静默降级。
-            if attempt + 1 < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-        except json.JSONDecodeError as e:
-            last_err = e
-            log("GAISEC_API",
-                f"fetch_case_session_map case={case_id} JSON 解析失败，"
-                f"重试 {attempt + 1}/{_MAX_RETRIES}: {e}")
-            if attempt + 1 < _MAX_RETRIES:
-                time.sleep(_RETRY_DELAY)
-
-    raise RuntimeError(
-        f"fetch_case_session_map case={case_id} {_format_err(last_err)}"
+    data = http_get_raw(
+        url,
+        headers={"Accept": "application/json"},
+        retries=_MAX_RETRIES,
+        retry_delay=_RETRY_DELAY,
+        timeout=_API_TIMEOUT,
+        log_tag="GAISEC_API",
     )
+    if not isinstance(data, dict) or not data.get("success"):
+        raise RuntimeError(
+            f"fetch_case_session_map case={case_id} API 响应非 success: {str(data)[:200]}"
+        )
+    payload = data.get("data") or {}
+    if not isinstance(payload, dict):
+        raise RuntimeError(
+            f"fetch_case_session_map case={case_id} API 响应 data 非 dict: {str(data)[:200]}"
+        )
+    analysis_sid = payload.get("ai_analysis_session_id") or ""
+    verification_sid = payload.get("ai_verification_session_id") or ""
+    # API 权威契约：API 调用成功（200 + success=True）即视为权威数据，
+    # 即使 analysis_session 为空也返回记录（case 数据本身的状态——
+    # 如 analysis_status=UNDETERMINED/PENDING 时 analysis_session 为空，
+    # 表示该 case 的分析未启动或被 stopped）。
+    # 这种"数据不完整"不是 API 失败，不抛异常、不中止评测。
+    # 调用方（matcher）按 analysis_session 是否为空决定是否用此映射。
+    if not analysis_sid:
+        log("GAISEC_API",
+            f"case={case_id} API 返回 analysis_session 为空 "
+            f"(analysis_status={payload.get('ai_analysis_status')}, "
+            f"verification_status={payload.get('ai_verification_status')})"
+            f"—— case 数据状态不完整（如分析被 stopped），跳过 verify_sessions")
+    return {
+        "case_id": case_id,
+        "ai_analysis_session_id": analysis_sid,
+        "ai_verification_session_id": verification_sid,
+        "chimera_task_id": payload.get("chimera_task_id") or "",
+        "ai_analysis_status": payload.get("ai_analysis_status") or "",
+        "ai_verification_status": payload.get("ai_verification_status") or "",
+        "title": payload.get("title") or "",
+    }
 
 
 def fetch_case_session_map_batch(
@@ -177,11 +138,3 @@ def fetch_case_session_map_batch(
     log("GAISEC_API",
         f"批量查询完成: {len(result)}/{len(case_ids)} case 查到 webvuln session")
     return result
-
-
-def _format_err(e: Exception | None) -> str:
-    if e is None:
-        return "未知错误"
-    if isinstance(e, HTTPError):
-        return f"HTTP {e.code} {e.reason}"
-    return f"{type(e).__name__}: {e}"

@@ -16,8 +16,8 @@ import traceback
 
 import pymysql
 
-from .database import connect as eval_connect, direct_connect as eval_direct_connect
-from ...infrastructure.log_util import log, log_error
+from .database import connect as eval_connect
+from .log_util import log, log_error
 
 # ---------------------------------------------------------------------------
 # 常量
