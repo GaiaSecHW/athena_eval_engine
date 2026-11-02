@@ -409,22 +409,6 @@ class KnowledgeVerifier:
 
         return candidates, log_entries
 
-    def _read_athena_file(
-        self, project_id: str, doc_path: str,
-    ) -> str:
-        """通过 Athena API knowledge/file 读取文件内容。"""
-        try:
-            url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
-                   f"/knowledge/file?" +
-                   urllib.parse.urlencode({"path": doc_path}))
-            req = urllib.request.Request(url)
-            resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-            data = json.loads(resp.read())
-            return str(data.get("content", ""))[:2000]
-        except Exception as e:
-            log("KB_VERIFY", f"Athena API 读文件失败 ({doc_path}): {str(e)[:150]}")
-            return ""
-
     # ── Wiki/记忆 NFS 搜索 ──
 
     def _search_wiki(self, keywords: list[str]) -> list[dict]:
@@ -657,7 +641,8 @@ class KnowledgeVerifier:
                             *(["title"] if hit_in_title else []),
                             *(["content"] if hit_in_content else []),
                         ],
-                        "content_preview": preview[:2000],
+                        # content_preview 由后续 _read_content 读取完整内容填充，
+                        # 搜索阶段不截断存储
                     })
 
                 if len(matched) >= _MAX_CANDIDATES:
@@ -703,13 +688,7 @@ class KnowledgeVerifier:
         elif source == "wiki_nfs" and path and os.path.isfile(path):
             try:
                 with open(path, "r", encoding="utf-8", errors="replace") as f:
-                    lines = []
-                    for _ in range(_MD_PREVIEW_LINES):
-                        line = f.readline()
-                        if not line:
-                            break
-                        lines.append(line)
-                return "".join(lines)[:2000]
+                    return f.read()
             except Exception:
                 return ""
         return candidate.get("abstract", "")
@@ -723,66 +702,116 @@ class KnowledgeVerifier:
         candidates: list[dict],
         cancel_cb=None,
     ) -> dict:
-        """LLM 判定候选文章是否真正包含解决误报所需的知识。"""
-        files_desc = []
-        for i, c in enumerate(candidates):
-            hit_str = "、".join(c.get("hit_fields", [])) or "无"
-            source_label = "知识库API" if c.get("source") == "athena_api" else "记忆Wiki"
+        """LLM 判定候选文章是否真正包含解决误报所需的知识。
 
-            files_desc.append(
-                f"文章{i+1}:\n"
-                f"  来源: {source_label}\n"
-                f"  路径: {c.get('path', '')}\n"
-                f"  标题: {c.get('title', '')}\n"
-                f"  摘要: {c.get('abstract', '')}\n"
-                f"  关键词: {c.get('keywords', '')}\n"
-                f"  匹配方式: {hit_str}\n"
-                f"  内容预览:\n{c.get('content_preview', '')[:500]}\n"
+        候选文章内容不截断——截断会导致关键知识被丢弃，L4 判定错误。
+        如果所有候选内容合计超过 LLM 上下文限制，分批送 LLM 判定后合并。
+        """
+        def _build_messages(batch: list[dict]) -> list[dict]:
+            files_desc = []
+            for i, c in enumerate(batch):
+                hit_str = "、".join(c.get("hit_fields", [])) or "无"
+                source_label = "知识库API" if c.get("source") == "athena_api" else "记忆Wiki"
+                files_desc.append(
+                    f"文章{i+1}:\n"
+                    f"  来源: {source_label}\n"
+                    f"  路径: {c.get('path', '')}\n"
+                    f"  标题: {c.get('title', '')}\n"
+                    f"  摘要: {c.get('abstract', '')}\n"
+                    f"  关键词: {c.get('keywords', '')}\n"
+                    f"  匹配方式: {hit_str}\n"
+                    f"  内容预览:\n{c.get('content_preview', '')}\n"
+                )
+            user_content = (
+                f"漏洞标题: {vuln_title}\n\n"
+                f"人工标注的误报原因: {fp_reason}\n\n"
+                f"知识库候选文章 ({len(batch)} 个):\n\n"
+                f"{''.join(files_desc)}\n\n"
+                f"请判断这些文章中是否有能消减这个误报的知识。"
+                f"重点关注：文章内容是否直接涉及误报原因中提到的验证维度。"
             )
+            return [
+                {"role": "system", "content": _VERIFY_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
 
-        user_content = (
-            f"漏洞标题: {vuln_title}\n\n"
-            f"人工标注的误报原因: {fp_reason}\n\n"
-            f"知识库候选文章 ({len(candidates)} 个):\n\n"
-            f"{''.join(files_desc)}\n\n"
-            f"请判断这些文章中是否有能消减这个误报的知识。"
-            f"重点关注：文章内容是否直接涉及误报原因中提到的验证维度。"
-        )
-
-        messages = [
-            {"role": "system", "content": _VERIFY_PROMPT},
-            {"role": "user", "content": user_content},
-        ]
-
-        try:
-            result = llm_mod.chat_json(
-                messages,
-                temperature=0,
-                cancel_cb=cancel_cb,
-            )
-        except Exception as e:
-            log("KB_VERIFY", f"LLM 判定失败: {str(e)[:200]}")
-            from ..infra.pipeline_warnings import add as _add_warning
-            _add_warning("kb_verify", "llm_judgment_failed", "warning",
-                         f"KB_VERIFY LLM 判定失败，降级为关键词匹配: {str(e)[:200]}")
+        # 预检：全部候选合计是否超限
+        all_msgs = _build_messages(candidates)
+        if not llm_mod.would_exceed_context(all_msgs):
+            # 未超限：一次性送 LLM
+            try:
+                result = llm_mod.chat_json(all_msgs, temperature=0, cancel_cb=cancel_cb)
+            except Exception as e:
+                log("KB_VERIFY", f"LLM 判定失败: {str(e)[:200]}")
+                from ..infra.pipeline_warnings import add as _add_warning
+                _add_warning("kb_verify", "llm_judgment_failed", "warning",
+                             f"KB_VERIFY LLM 判定失败，降级为关键词匹配: {str(e)[:200]}")
+                return {
+                    "l4_knowledge_exists": bool(candidates),
+                    "matched_files": [
+                        {
+                            "path": c.get("path", ""),
+                            "title": c.get("title", ""),
+                            "relevance": "medium",
+                            "reason": "LLM 判定失败，关键词匹配降级",
+                        }
+                        for c in candidates
+                    ],
+                    "summary": f"LLM 判定失败，降级为关键词匹配（{len(candidates)} 个候选）",
+                }
             return {
-                "l4_knowledge_exists": bool(candidates),
-                "matched_files": [
-                    {
+                "l4_knowledge_exists": result.get("knowledge_exists", False),
+                "matched_files": result.get("matched_files") or [],
+                "summary": result.get("summary", ""),
+            }
+
+        # 超限：分批送 LLM，每批预检不超限
+        log("KB_VERIFY",
+            f"候选文章内容合计超限，分批 LLM 判定 ({len(candidates)} 个候选)")
+        batches = []
+        current_batch = []
+        for c in candidates:
+            trial = current_batch + [c]
+            if llm_mod.would_exceed_context(_build_messages(trial)) and current_batch:
+                batches.append(current_batch)
+                current_batch = [c]
+            else:
+                current_batch = trial
+        if current_batch:
+            batches.append(current_batch)
+
+        all_matched = []
+        any_knowledge_exists = False
+        summaries = []
+        for bi, batch in enumerate(batches):
+            if cancel_cb:
+                cancel_cb()
+            batch_msgs = _build_messages(batch)
+            try:
+                r = llm_mod.chat_json(batch_msgs, temperature=0, cancel_cb=cancel_cb)
+            except Exception as e:
+                log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败: {str(e)[:200]}")
+                from ..infra.pipeline_warnings import add as _add_warning
+                _add_warning("kb_verify", "llm_judgment_failed", "warning",
+                             f"KB_VERIFY 分批 {bi+1} LLM 判定失败: {str(e)[:200]}")
+                # 失败批次降级为关键词匹配
+                for c in batch:
+                    all_matched.append({
                         "path": c.get("path", ""),
                         "title": c.get("title", ""),
                         "relevance": "medium",
                         "reason": "LLM 判定失败，关键词匹配降级",
-                    }
-                    for c in candidates
-                ],
-                "summary": f"LLM 判定失败，降级为关键词匹配（{len(candidates)} 个候选）",
-            }
+                    })
+                continue
+            if r.get("knowledge_exists", False):
+                any_knowledge_exists = True
+            all_matched.extend(r.get("matched_files") or [])
+            summaries.append(r.get("summary", ""))
 
         return {
-            "l4_knowledge_exists": result.get("knowledge_exists", False),
-            "matched_files": result.get("matched_files") or [],
-            "summary": result.get("summary", ""),
+            "l4_knowledge_exists": any_knowledge_exists,
+            "matched_files": all_matched,
+            "summary": f"分批判定（{len(batches)} 批）: " + "; ".join(summaries),
         }
 
     @staticmethod
