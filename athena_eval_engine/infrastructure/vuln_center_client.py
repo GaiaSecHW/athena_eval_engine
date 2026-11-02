@@ -30,11 +30,10 @@ def _get(url: str, params: dict | None = None, retries: int = 20,
                      retry_delay=retry_delay, timeout=timeout, log_tag="VULN_CENTER")
 
 
-def get_case_raw_report(case_id: str, report_id: str = "raw-intake",
-                        evaluation_id: str = "") -> str:
+def get_case_raw_report(case_id: str, evaluation_id: str = "") -> str:
     """获取 case 的原始漏洞报告内容。
 
-    调用漏洞中心 API ``GET /api/vuln/cases/{case_id}/report?report_id=raw-intake``，
+    调用漏洞中心 API ``GET /api/vuln/cases/{case_id}/report``，
     返回 report 的 ``content`` 字段（Markdown 格式的完整漏洞报告）。
 
     失败时返回空字符串，不抛异常（原始报告是补充信息，不阻塞主流程）。
@@ -43,7 +42,6 @@ def get_case_raw_report(case_id: str, report_id: str = "raw-intake",
     try:
         data = _get(
             f"{VULN_CENTER_API_URL}/{case_id}/report",
-            params={"report_id": report_id},
             retries=3,
         )
         if isinstance(data, dict):
