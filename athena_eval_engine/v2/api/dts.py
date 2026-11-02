@@ -76,7 +76,7 @@ def list_issues(
     limit: int = 100,
     offset: int = 0,
 ):
-    """列出问题单（支持过滤、分页）。表不存在时返回空结果。"""
+    """列出问题单（支持过滤、分页）。"""
     try:
         issues, total = list_dts_issues(
             evaluation_id=evaluation_id,
@@ -90,20 +90,20 @@ def list_issues(
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
         from ...infrastructure.log_util import log
-        log("DTS_API", f"list_issues 查询失败（表可能不存在）: {str(e)[:200]}")
-        return {"issues": [], "count": 0, "total": 0, "stats": {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}}
+        log("DTS_API", f"list_issues 查询失败: {str(e)[:200]}")
+        raise HTTPException(status_code=500, detail=f"查询问题单失败: {str(e)[:200]}")
     return {"issues": issues, "count": len(issues), "total": total, "stats": stats}
 
 
 @router.get("/stats")
 def get_stats(evaluation_id: str | None = None):
-    """获取问题单统计。表不存在时返回空统计。"""
+    """获取问题单统计。"""
     try:
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
         from ...infrastructure.log_util import log
-        log("DTS_API", f"get_stats 查询失败（表可能不存在）: {str(e)[:200]}")
-        return {"by_status": {}, "by_agent_type": {}, "by_cause_code": {}, "total": 0}
+        log("DTS_API", f"get_stats 查询失败: {str(e)[:200]}")
+        raise HTTPException(status_code=500, detail=f"查询统计失败: {str(e)[:200]}")
     return stats
 
 
@@ -125,30 +125,18 @@ def get_post_fpr(evaluation_id: str):
     except Exception as e:
         from ...infrastructure.log_util import log
         log("DTS_API", f"get_post_fpr 查询失败: {str(e)[:200]}")
-        return {
-            "post_regression_fpr": None,
-            "post_regression_fnr": None,
-            "passed_count": 0,
-            "failed_count": 0,
-            "verified_total": 0,
-            "open_count": 0,
-            "total": 0,
-            "by_case_type": {
-                "FP": {"passed": 0, "failed": 0, "verified_total": 0},
-                "FN": {"passed": 0, "failed": 0, "verified_total": 0},
-            },
-        }
+        raise HTTPException(status_code=500, detail=f"查询回归误报率失败: {str(e)[:200]}")
 
 
 @router.get("/by-case/{case_id}")
 def list_by_case(case_id: str):
-    """按 case 列出问题单。表不存在时返回空列表。"""
+    """按 case 列出问题单。"""
     try:
         issues = list_dts_by_case(case_id)
     except Exception as e:
         from ...infrastructure.log_util import log
-        log("DTS_API", f"list_by_case 查询失败（表可能不存在）: {str(e)[:200]}")
-        return {"issues": [], "count": 0}
+        log("DTS_API", f"list_by_case 查询失败: {str(e)[:200]}")
+        raise HTTPException(status_code=500, detail=f"按 case 查询问题单失败: {str(e)[:200]}")
     return {"issues": issues, "count": len(issues)}
 
 
@@ -170,8 +158,8 @@ def list_by_task(task_id: str):
     try:
         issues = list_dts_by_task(task_id)
     except Exception as e:
-        log("DTS_API", f"list_by_task 查询失败（表可能不存在）: {str(e)[:200]}")
-        return {"issues": [], "count": 0}
+        log("DTS_API", f"list_by_task 查询失败: {str(e)[:200]}")
+        raise HTTPException(status_code=500, detail=f"按任务查询问题单失败: {str(e)[:200]}")
 
     reports_dir = os.environ.get("EVAL_REPORTS_DIR", "reports")
 

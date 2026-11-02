@@ -346,7 +346,9 @@ def resume_stuck_evaluations():
         finally:
             conn.close()
     except Exception as e:
-        log("STARTUP", f"扫描卡住评测失败（DB 可能未就绪）: {e}")
+        log("STARTUP", f"启动初始化失败（迁移/配置/续跑）: {e}")
+        # 迁移失败时不上报卡住评测——schema 不一致时续跑会 500
+        # pod 仍启动（健康检查通过），但评测不可用，需人工排查
 
 
 def _run_bg_resume(evaluation_id: str):

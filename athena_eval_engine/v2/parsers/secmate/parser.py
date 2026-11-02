@@ -587,34 +587,38 @@ class SecMateParser(BaseParser):
         # （agent_spawner/server.py line 986），不在 store_finding 的 input 参数中。
         db_path = self._find_findings_db()
         if db_path and os.path.isfile(db_path):
+            conn = None
             try:
-                conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
-                # finding_id -> source_session_id 映射
-                # （findings.db 是运行产物，含 session 级关联 source_session_id；
-                #   MySQL finding 表无 source_session_id，通过 source_finding_id 桥接）
-                finding_to_session: dict[str, str] = {}
-                finding_session_set: dict[str, str] = {}
-                for r in conn.execute(
-                    "SELECT id, source_session_id "
-                    "FROM findings "
-                    "WHERE source_session_id IS NOT NULL "
-                    "  AND source_session_id != ''"
-                ).fetchall():
-                    fid = str(r[0])
-                    finding_to_session[fid] = r[1]
-                    finding_session_set[fid] = r[1]
-                # finding_edges -> session 级别边
-                # source_id 是 parent finding（先创建），target_id 是 child finding（derived）
-                for r in conn.execute(
-                    "SELECT source_id, target_id FROM finding_edges"
-                ).fetchall():
-                    src_sid = finding_to_session.get(str(r[0]))
-                    tgt_sid = finding_to_session.get(str(r[1]))
-                    if src_sid and tgt_sid and src_sid != tgt_sid:
-                        graph['parent_map'][tgt_sid] = src_sid
-                        graph['edges'][tgt_sid].add(src_sid)
-                        graph['edges'][src_sid].add(tgt_sid)
-                conn.close()
+                try:
+                    conn = sqlite3.connect(f'file:{db_path}?mode=ro', uri=True)
+                    # finding_id -> source_session_id 映射
+                    # （findings.db 是运行产物，含 session 级关联 source_session_id；
+                    #   MySQL finding 表无 source_session_id，通过 source_finding_id 桥接）
+                    finding_to_session: dict[str, str] = {}
+                    finding_session_set: dict[str, str] = {}
+                    for r in conn.execute(
+                        "SELECT id, source_session_id "
+                        "FROM findings "
+                        "WHERE source_session_id IS NOT NULL "
+                        "  AND source_session_id != ''"
+                    ).fetchall():
+                        fid = str(r[0])
+                        finding_to_session[fid] = r[1]
+                        finding_session_set[fid] = r[1]
+                    # finding_edges -> session 级别边
+                    # source_id 是 parent finding（先创建），target_id 是 child finding（derived）
+                    for r in conn.execute(
+                        "SELECT source_id, target_id FROM finding_edges"
+                    ).fetchall():
+                        src_sid = finding_to_session.get(str(r[0]))
+                        tgt_sid = finding_to_session.get(str(r[1]))
+                        if src_sid and tgt_sid and src_sid != tgt_sid:
+                            graph['parent_map'][tgt_sid] = src_sid
+                            graph['edges'][tgt_sid].add(src_sid)
+                            graph['edges'][src_sid].add(tgt_sid)
+                finally:
+                    if conn:
+                        conn.close()
 
                 # ── 从 secmate MySQL 提取 finding title（权威源），桥接 session ──
                 # MySQL finding 表：title（精确标题）+ source_finding_id + tool_task_id。

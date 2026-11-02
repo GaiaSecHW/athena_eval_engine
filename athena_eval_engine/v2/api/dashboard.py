@@ -20,7 +20,7 @@ from __future__ import annotations
 import json
 import os
 
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 
 from ...infrastructure.log_util import log
 from ..persistence.dts_repo import _db_query
@@ -85,7 +85,7 @@ def _read_eval_reports() -> dict:
         eids = _db_query(_query)
     except Exception as e:
         log("DASHBOARD", f"查询已完成评测失败: {str(e)[:200]}")
-        return grouped
+        raise HTTPException(status_code=500, detail=f"查询已完成评测失败: {str(e)[:200]}")
 
     for eid in eids:
         path = os.path.join(REPORTS_DIR, f"{eid}.json")
@@ -149,7 +149,7 @@ def _read_agent_fpr() -> dict:
         eids = _db_query(_query)
     except Exception as e:
         log("DASHBOARD", f"查询已完成评测失败(agent_fpr): {str(e)[:200]}")
-        return grouped
+        raise HTTPException(status_code=500, detail=f"查询已完成评测失败(agent_fpr): {str(e)[:200]}")
 
     for eid in eids:
         mode = _eval_mode_of(eid) or "unknown"
@@ -314,13 +314,7 @@ def _query_dts_aggregate() -> dict:
         return _db_query(_do_query)
     except Exception as e:
         log("DASHBOARD", f"DTS 聚合查询失败: {str(e)[:200]}")
-        return {
-            "cause_agent_matrix": {c: {} for c in _ALL_CAUSE_CODES},
-            "agent_detail": [],
-            "post_stats": {},
-            "dts": {"by_status": {}, "by_cause_code": {}, "by_agent_type": {},
-                    "by_case_type": {}, "total": 0},
-        }
+        raise HTTPException(status_code=500, detail=f"DTS 聚合查询失败: {str(e)[:200]}")
 
 
 @router.get("/overview")

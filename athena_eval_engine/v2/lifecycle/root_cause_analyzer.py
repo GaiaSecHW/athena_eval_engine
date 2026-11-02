@@ -748,7 +748,7 @@ class RootCauseAnalyzer:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session 压缩失败: {str(e)[:200]}",
                     eval_id=evaluation_id)
-                continue
+                raise
 
             compressed_summaries.append(cs)
 
@@ -792,15 +792,17 @@ class RootCauseAnalyzer:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
+            # LLM 不可用时降级：拼接 session 摘要作为结果，但标记为低概率
+            # 不伪造 probability=1.0——那会覆盖 session 级真实分析结果
             merge_result = {
                 "summary": " | ".join(
                     s.get("summary", "") for s in compressed_summaries),
                 "hypotheses": [{
-                    "hypothesis": f"合并压缩 LLM 调用失败: {str(e)[:200]}",
-                    "probability": 1.0,
-                    "responsibility": "agent",
+                    "hypothesis": f"合并压缩 LLM 调用失败（降级）: {str(e)[:200]}",
+                    "probability": 0.1,
+                    "responsibility": "eval_process",
                     "cause_code": "H",
-                    "evidence": "",
+                    "evidence": "LLM 合并压缩失败，结果为 session 摘要拼接降级",
                     "agent_can_resolve": False,
                     "blocked_by": "LLM 调用失败",
                     "needed_external_data": [],
@@ -812,8 +814,8 @@ class RootCauseAnalyzer:
                     },
                 }],
                 "label_quality": {
-                    "precision": "precise",
-                    "reason": "",
+                    "precision": "imprecise",
+                    "reason": "合并压缩 LLM 失败，结果为降级拼接",
                     "follow_up_questions": [],
                 },
                 "l0_l7": [],

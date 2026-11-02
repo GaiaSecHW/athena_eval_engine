@@ -65,15 +65,24 @@ def _load_parser_class(agent_type: str) -> type[BaseParser]:
 
 
 def _is_webvulnverify_trace(path: str) -> bool:
-    """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。"""
+    """检测 JSONL 是否为 WebVulnVerify 格式（含 session_meta 行类型）。
+
+    扫描前 20 行寻找 type=session_meta 的行，避免因首行非 session_meta
+    而误判为非 WebVulnVerify 格式。
+    """
     try:
         with open(path, "r", encoding="utf-8") as f:
-            for line in f:
+            for _ in range(20):
+                line = f.readline()
+                if not line:
+                    break
                 line = line.strip()
                 if not line:
                     continue
                 d = json.loads(line)
-                return d.get("type") == "session_meta"
+                if d.get("type") == "session_meta":
+                    return True
+                # 继续扫描后续行
     except Exception:
         return False
     return False

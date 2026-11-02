@@ -193,8 +193,8 @@ def _is_cancelled(evaluation_id: str) -> bool:
         row = cur.fetchone()
         return row is not None and row[0] == 1
     except Exception as e:
-        log("CANCEL", f"检查取消信号失败: {e}")
-        return False
+        log("CANCEL", f"检查取消信号失败（保守取消）: {e}")
+        return True
     finally:
         if conn:
             try:
@@ -363,9 +363,11 @@ class Orchestrator:
             data_future = data_pool.submit(_collect_data)
 
             # 等待数据采集完成
-            benchmark_items, case_details, alert_center_data, case_matches = \
-                data_future.result()
-            data_pool.shutdown(wait=False)
+            try:
+                benchmark_items, case_details, alert_center_data, case_matches = \
+                    data_future.result()
+            finally:
+                data_pool.shutdown(wait=False)
             log("ORCH", f"数据采集 done: {len(benchmark_items)} benchmark_items, "
                   f"{len(case_details)} case_details")
 
@@ -428,14 +430,17 @@ class Orchestrator:
             debug_stop = cfg.get("manifest", {}).get("debug_stop_after")
             if debug_stop == "ingesting":
                 log("ORCH", f"DEBUG 断点：停在 INGESTING 之后（debug_stop_after=ingesting）")
+                parse_pool.shutdown(wait=False)
                 self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
                 _set_progress(evaluation_id, "调试断点：INGESTING 完成")
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=ingesting")
                 return
 
             # 等待 trace 解析完成
-            data_packs = parse_future.result()
-            parse_pool.shutdown(wait=False)
+            try:
+                data_packs = parse_future.result()
+            finally:
+                parse_pool.shutdown(wait=False)
             log("ORCH", f"PARSING done: {len(data_packs)} data_packs")
 
             # 将 benchmark_items 附加到每个 DataPack（并行解析时未传入）

@@ -544,6 +544,7 @@ def run_migrations():
             conn.close()
     except Exception as e:
         log("MIGRATE", f"迁移机制异常（DB 可能未就绪）: {e}")
+        raise
 
 
 def _run_one(cur, conn, migration: dict):

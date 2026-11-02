@@ -348,7 +348,6 @@ class TuringParser(BaseParser):
                 conn = self._connect(uri)
                 conn.row_factory = sqlite3.Row
                 _load_sessions(conn)
-                conn.close()
             except sqlite3.DatabaseError:
                 # 索引损坏：REINDEX 修复后重试
                 try:
@@ -359,6 +358,7 @@ class TuringParser(BaseParser):
                 conn = self._connect(uri)
                 conn.row_factory = sqlite3.Row
                 _load_sessions(conn)
+            finally:
                 conn.close()
 
         # Turing MySQL turing_task 表 — 以 task_id 为主键建树
