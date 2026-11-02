@@ -20,34 +20,14 @@ import urllib.request
 from urllib.error import URLError, HTTPError
 from ..config_loader import VULN_CENTER_API_URL, PLATFORM_TOKEN
 from .log_util import log
+from .http_client import http_get as _http_get
 
 
 def _get(url: str, params: dict | None = None, retries: int = 20,
          retry_delay: float = 5.0, timeout: float = 180) -> dict | list:
-    """带 bearer token 的 GET，返回 JSON。沿用 vbench_client 的 urllib 同步风格。
-
-    内部 Service 短暂抖动时指数退避重试。
-    """
-    if params:
-        url = f"{url}?{urllib.parse.urlencode(params)}"
-    last_err = None
-    for attempt in range(retries):
-        try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=timeout) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except HTTPError as e:
-            last_err = e
-            log("VULN_CENTER", f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-        except (URLError, TimeoutError, OSError) as e:
-            last_err = e
-            log("VULN_CENTER", f"网络错误重试 {attempt+1}/{retries}: {url} → {e}")
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-    log("VULN_CENTER", f"❌ {retries} 次重试全部失败: {url} → {last_err}")
-    raise last_err
+    """带 bearer token 的 GET，返回 JSON。"""
+    return _http_get(url, params=params, retries=retries,
+                     retry_delay=retry_delay, timeout=timeout, log_tag="VULN_CENTER")
 
 
 def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:

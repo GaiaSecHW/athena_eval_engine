@@ -74,24 +74,8 @@ def _get_sched_pod() -> str:
 
 
 def _get(url, *, retries: int = 20, retry_delay: float = 5.0):
-    last_err = None
-    for attempt in range(retries):
-        try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=180) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except HTTPError as e:
-            last_err = e
-            _logger.warning("HTTP %d 重试 %d/%d: %s", e.code, attempt + 1, retries, url)
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-        except (URLError, TimeoutError, OSError) as e:
-            last_err = e
-            _logger.warning("网络错误重试 %d/%d: %s → %s", attempt + 1, retries, url, e)
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-    _logger.error("❌ %d 次重试全部失败: %s → %s", retries, url, last_err)
-    raise last_err  # type: ignore[misc]
+    from ..infrastructure.http_client import http_get
+    return http_get(url, retries=retries, retry_delay=retry_delay, log_tag="PLATFORM")
 
 
 def get_projects(page_size: int = 1000):

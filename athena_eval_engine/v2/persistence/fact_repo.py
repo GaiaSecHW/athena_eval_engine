@@ -6,8 +6,8 @@ Fact 不可变；重新解析须新建 Evaluation。复合 FK 由 DB 强制（§
 from __future__ import annotations
 import json
 import math
-from ...infrastructure.database import connect
-from ...v2.core.facts import (
+from ..infra.database import connect
+from ..core.facts import (
     OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact,
 )
 
@@ -94,7 +94,7 @@ def insert_outcome_fact(cur, f: OutcomeFact) -> str:
     # case_results 全部存文件，DB 只存 URI
     case_results = getattr(f, "case_results", None) or []
     ev_json = _json.dumps({"case_results": case_results}, ensure_ascii=False)
-    from ...config_loader import get_reports_dir
+    from ...config_loader import get_reports_dir  # noqa: same package depth
     _reports_dir = get_reports_dir()
     _os.makedirs(_reports_dir, exist_ok=True)
     _cr_path = _os.path.join(_reports_dir, f"{f.evaluation_id}_{f.task_run_id}_cr.json")

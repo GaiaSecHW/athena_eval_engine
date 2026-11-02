@@ -16,6 +16,7 @@ import urllib.request
 from urllib.error import URLError, HTTPError
 from ..config_loader import DATA_ROOT, PLATFORM_TOKEN, VBENCH_API_URL
 from .log_util import log
+from .http_client import http_get as _http_get
 
 
 def _parse_simple_false_positive(c, i: int) -> dict:
@@ -37,26 +38,9 @@ def _parse_simple_false_positive(c, i: int) -> dict:
 
 
 def _get(path: str, retries: int = 20, retry_delay: float = 5.0) -> dict | list:
-    """通过 V-Bench API 读取（port-forward / k8s service）。内部 Service 短暂抖动时重试。"""
+    """通过 V-Bench API 读取（port-forward / k8s service）。"""
     url = f"{VBENCH_API_URL.rstrip('/')}{path}"
-    last_err = None
-    for attempt in range(retries):
-        try:
-            req = urllib.request.Request(url, headers={"Authorization": f"Bearer {PLATFORM_TOKEN}"})
-            with urllib.request.urlopen(req, timeout=180) as r:
-                return json.loads(r.read().decode("utf-8"))
-        except HTTPError as e:
-            last_err = e
-            log("VBENCH", f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-        except (URLError, TimeoutError, OSError) as e:
-            last_err = e
-            log("VBENCH", f"网络错误重试 {attempt+1}/{retries}: {url} → {e}")
-            if attempt + 1 < retries:
-                time.sleep(retry_delay)
-    log("VBENCH", f"❌ {retries} 次重试全部失败: {url} → {last_err}")
-    raise last_err
+    return _http_get(url, retries=retries, retry_delay=retry_delay, log_tag="VBENCH")
 
 
 _PAGE_SIZE = 1000

@@ -16,18 +16,10 @@ RESOLVING 阶段内完成 fact 持久化 + 因果链分析 + 问题单生成
 """
 from __future__ import annotations
 
-import dataclasses
 import json
 import os
-import sys
-import threading
-import time
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any
 
-import pymysql
-
-from ..infra.database import connect
 from ..infra.concurrency import get as _conc_get
 from ..infra.parallel import iter_completed
 from ...infrastructure.log_util import (
@@ -36,6 +28,16 @@ from ...infrastructure.log_util import (
 from .state_machine import assert_transition
 from . import stages
 from ..core.agents import MINING_AGENT_SET
+from .status_manager import (
+    TaskCancelledError, _is_cancelled, _check_cancel, _make_cancel_cb,
+    _set_failed, _set_status_safe,
+)
+from .debug_dumper import (
+    clear_debug_files as _clear_debug_files,
+    dump_debug as _dump_debug,
+    calc_agent_outcomes as _calc_agent_outcomes,
+    summarize_data_pack as _summarize_data_pack,
+)
 
 # ── 报告目录 ──────────────────────────────────────────
 
@@ -67,14 +69,6 @@ def _mining_agent_type(data_packs: list) -> str:
     return ""
 
 
-# ── 取消异常 ──────────────────────────────────────────
-
-
-class TaskCancelledError(Exception):
-    """评测任务被取消（cancel_requested flag 被 set）。"""
-    pass
-
-
 # ── DB 短连接 + 重试 ──────────────────────────────────
 
 from ..infra.db_utils import db_query as _db_query
@@ -85,97 +79,6 @@ from ..infra.db_utils import db_query as _db_query
 from ..infra.progress import set_progress as _set_progress
 from ..infra.progress import get_progress as _get_progress
 from ..infra.progress import clear_progress as _clear_progress
-
-
-# ── 取消信号 ──────────────────────────────────────────
-
-
-def _is_cancelled(evaluation_id: str) -> bool:
-    """检查 DB 中的 cancel_requested flag。"""
-    conn = None
-    try:
-        conn = connect(autocommit=True)
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT cancel_requested FROM evaluation WHERE evaluation_id=%s",
-            (evaluation_id,),
-        )
-        row = cur.fetchone()
-        return row is not None and row[0] == 1
-    except Exception as e:
-        log("CANCEL", f"检查取消信号失败（保守取消）: {e}")
-        return True
-    finally:
-        if conn:
-            try:
-                conn.close()
-            except Exception:
-                pass
-
-
-def _check_cancel(evaluation_id: str, phase: str = ""):
-    """在阶段边界检查取消信号。"""
-    if _is_cancelled(evaluation_id):
-        raise TaskCancelledError(
-            f"{evaluation_id} 在 {phase} 阶段被取消"
-        )
-
-
-def _make_cancel_cb(evaluation_id: str, phase: str = ""):
-    """创建 cancel_cb 闭包，穿透到 LLM 密集内循环。"""
-    def _cb():
-        _check_cancel(evaluation_id, phase)
-    return _cb
-
-
-# ── 状态更新 ──────────────────────────────────────────
-
-
-def _set_status(evaluation_id: str, status: str):
-    """短连接更新 evaluation 状态。"""
-
-    def _do(cur):
-        if status in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "CANCELLED"):
-            cur.execute(
-                "UPDATE evaluation SET evaluation_status=%s, "
-                "error_message=NULL, finished_at=NOW(3) "
-                "WHERE evaluation_id=%s",
-                (status, evaluation_id),
-            )
-        elif status == "FAILED":
-            cur.execute(
-                "UPDATE evaluation SET evaluation_status=%s, "
-                "finished_at=NOW(3) WHERE evaluation_id=%s",
-                (status, evaluation_id),
-            )
-        else:
-            cur.execute(
-                "UPDATE evaluation SET evaluation_status=%s, "
-                "error_message=NULL WHERE evaluation_id=%s",
-                (status, evaluation_id),
-            )
-
-    try:
-        _db_query(_do)
-    except Exception as e:
-        log("STATUS", f"设状态 {status} 失败: {e}")
-        raise
-
-
-def _set_failed(evaluation_id: str, error_msg: str):
-    """标记评测失败，写入 error_message。"""
-
-    def _do(cur):
-        cur.execute(
-            "UPDATE evaluation SET evaluation_status='FAILED', "
-            "error_message=%s, finished_at=NOW(3) WHERE evaluation_id=%s",
-            (error_msg[:2000], evaluation_id),
-        )
-
-    try:
-        _db_query(_do)
-    except Exception as e:
-        log("STATUS", f"设 FAILED 状态失败: {e}")
 
 
 # ── 编排器 ────────────────────────────────────────────
@@ -226,7 +129,7 @@ class Orchestrator:
         os.makedirs(reports_dir, exist_ok=True)
 
         # 清除旧的 debug 数据文件（重试时避免残留历史数据）
-        self._clear_debug_files(reports_dir, evaluation_id)
+        _clear_debug_files(reports_dir, evaluation_id)
 
         # 统一 cancel_cb：外部传入的优先，否则用内部创建的
         _cancel_cb = cancel_cb or _make_cancel_cb(evaluation_id, "ORCHESTRATOR")
@@ -237,8 +140,8 @@ class Orchestrator:
         try:
             # ── INGESTING（拆分：config+entries 立即返回，数据采集并行） ──
             assert_transition("VALIDATING", stages.INGESTING)
-            self._set_status_safe(evaluation_id, "VALIDATING")
-            self._set_status_safe(evaluation_id, stages.INGESTING)
+            _set_status_safe(evaluation_id, "VALIDATING")
+            _set_status_safe(evaluation_id, stages.INGESTING)
 
             # 1. 读 config + entries（快，纯 DB 读）
             cfg = self._read_config(evaluation_id)
@@ -255,7 +158,7 @@ class Orchestrator:
             # ── PARSING 线程 ──
             _check_cancel(evaluation_id, stages.PARSING)
             assert_transition(stages.INGESTING, stages.PARSING)
-            self._set_status_safe(evaluation_id, stages.PARSING)
+            _set_status_safe(evaluation_id, stages.PARSING)
 
             parse_pool = ThreadPoolExecutor(max_workers=1)
             parse_future = parse_pool.submit(
@@ -285,7 +188,7 @@ class Orchestrator:
             # （已在 _collect_baseline_and_raw 内完成，case_matches 直接返回）
 
             # debug dump：INGESTING 中间数据明细
-            self._dump_debug(reports_dir, evaluation_id, "ingesting", {
+            _dump_debug(reports_dir, evaluation_id, "ingesting", {
                 "benchmark_source": benchmark_source,
                 "eval_mode": eval_mode,
                 "benchmark_set_id": cfg.get("manifest", {}).get("benchmark_set_id"),
@@ -341,7 +244,7 @@ class Orchestrator:
             if debug_stop == "ingesting":
                 log("ORCH", f"DEBUG 断点：停在 INGESTING 之后（debug_stop_after=ingesting）")
                 parse_pool.shutdown(wait=False)
-                self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
                 _set_progress(evaluation_id, "调试断点：INGESTING 完成")
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=ingesting")
                 return
@@ -375,9 +278,9 @@ class Orchestrator:
                     dp.benchmark_item = bench[0] if bench else None
 
             # debug dump：PARSING 中间数据 — 所有 session 关系图
-            self._dump_debug(reports_dir, evaluation_id, "parsing", {
+            _dump_debug(reports_dir, evaluation_id, "parsing", {
                 "data_packs": [
-                    self._summarize_data_pack(dp)
+                    _summarize_data_pack(dp)
                     for dp in data_packs
                 ],
             })
@@ -385,7 +288,7 @@ class Orchestrator:
             # ── CASE_MATCHING（基线 case ↔ trace session）──
             _check_cancel(evaluation_id, stages.CASE_MATCHING)
             assert_transition(stages.PARSING, stages.CASE_MATCHING)
-            self._set_status_safe(evaluation_id, stages.CASE_MATCHING)
+            _set_status_safe(evaluation_id, stages.CASE_MATCHING)
             _set_progress(evaluation_id, "case-session 匹配...")
             from ..lifecycle.case_session_matcher import CaseSessionMatcher
             matcher = CaseSessionMatcher()
@@ -489,17 +392,17 @@ class Orchestrator:
                 # 供看板计算各 agent 误报率 FP/(TP+FP) 同口径）。
                 # 注：matches 仍只含 FP/FN（TP/TN 不进 matches 避免展示影响），
                 # 但 agent 级统计必须含 TP——否则误报率无法计算。
-                "agent_outcomes": self._calc_agent_outcomes(
+                "agent_outcomes": _calc_agent_outcomes(
                     case_session_matches, data_packs),
                 "matches": fn_match_cases,
             }
-            self._dump_debug(reports_dir, evaluation_id, "case_matching",
+            _dump_debug(reports_dir, evaluation_id, "case_matching",
                              case_matching_debug)
 
             # debug 断点
             if cfg.get("manifest", {}).get("debug_stop_after") == "case_matching":
                 log("ORCH", "DEBUG 断点：停在 CASE_MATCHING 之后")
-                self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
                 _set_progress(evaluation_id, "调试断点：CASE_MATCHING 完成")
                 _set_failed(evaluation_id, "调试断点：debug_stop_after=case_matching")
                 return
@@ -510,7 +413,7 @@ class Orchestrator:
             # 不重复调 LLM。
             _check_cancel(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
-            self._set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
+            _set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
             fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
             fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
 
@@ -582,7 +485,7 @@ class Orchestrator:
                 )
 
                 # debug dump：ROOT_CAUSE 中间数据（含 FN 漏报原因分析）
-                self._dump_debug(reports_dir, evaluation_id, "root_cause", {
+                _dump_debug(reports_dir, evaluation_id, "root_cause", {
                     "total_fp": len(fp_cases),
                     "total_fn": len(fn_cases),
                     "analyzed": len(root_cause_results),
@@ -600,7 +503,7 @@ class Orchestrator:
                 # debug 断点
                 if cfg.get("manifest", {}).get("debug_stop_after") == "root_cause":
                     log("ORCH", "DEBUG 断点：停在 ROOT_CAUSE 之后")
-                    self._set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                    _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
                     _set_progress(evaluation_id, "调试断点：ROOT_CAUSE 完成")
                     _set_failed(evaluation_id, "调试断点：debug_stop_after=root_cause")
                     return
@@ -619,7 +522,7 @@ class Orchestrator:
             # 持久化 session_graph + 4 种 fact 到 DB
             _check_cancel(evaluation_id, stages.RESOLVING)
             assert_transition(stages.ROOT_CAUSE_ANALYSIS, stages.RESOLVING)
-            self._set_status_safe(evaluation_id, stages.RESOLVING)
+            _set_status_safe(evaluation_id, stages.RESOLVING)
             _set_progress(evaluation_id, "持久化解析结果...")
             self._persist_data(evaluation_id, data_packs)
 
@@ -636,14 +539,14 @@ class Orchestrator:
                   f"cases with breakpoints")
 
             # debug dump：因果链分析结果
-            self._dump_debug(reports_dir, evaluation_id, "resolving", {
+            _dump_debug(reports_dir, evaluation_id, "resolving", {
                 "causal_chain": causal_chain,
             })
 
             # ── REPORTING ──
             _check_cancel(evaluation_id, stages.REPORTING)
             assert_transition(stages.RESOLVING, stages.REPORTING)
-            self._set_status_safe(evaluation_id, stages.REPORTING)
+            _set_status_safe(evaluation_id, stages.REPORTING)
 
             # 重试路径：lifecycle report 已存在 → 跳过报告组装
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
@@ -669,17 +572,17 @@ class Orchestrator:
             # ── FINALIZE ──
             _check_cancel(evaluation_id, stages.FINALIZE)
             assert_transition(stages.REPORTING, "FINALIZING")
-            self._set_status_safe(evaluation_id, "FINALIZING")
+            _set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
             self._finalize(evaluation_id, reports_dir,
                            causal_chain)
-            self._set_status_safe(evaluation_id, "COMPLETED")
+            _set_status_safe(evaluation_id, "COMPLETED")
             _set_progress(evaluation_id, "评测完成")
             log("ORCH", f"v2 pipeline 完成: {evaluation_id}")
 
         except TaskCancelledError as e:
             log("ORCH", f"评测被取消: {e}")
-            self._set_status_safe(evaluation_id, "CANCELLED")
+            _set_status_safe(evaluation_id, "CANCELLED")
             raise
         except Exception as e:
             log_error(evaluation_id, "ORCH", e)
@@ -1159,7 +1062,7 @@ class Orchestrator:
         _calculate_metrics 和 _get_packs_with_knowledge 依赖
         knowledge_interaction_fact 和 tool_action_fact。
         """
-        from ...persistence.repositories.fact_repo import (
+        from ..persistence.fact_repo import (
             insert_session_graph,
             insert_knowledge_fact, insert_tool_action_fact,
             insert_outcome_fact, insert_resource_fact,
@@ -1422,193 +1325,4 @@ class Orchestrator:
             # evaluation_report 表可能不存在（未迁移），不阻断完成
             log("FINALIZE", f"写入 evaluation_report 表失败（不阻断）: {e}")
 
-    # ── 辅助方法 ─────────────────────────────────────
-
-    def _set_status_safe(self, evaluation_id: str, status: str):
-        """安全设状态（CHECK 约束自动修复）。"""
-        try:
-            _set_status(evaluation_id, status)
-        except Exception as e:
-            # CHECK 约束可能不含新状态 → 自动修复约束后重试
-            if "Check constraint" in str(e) or "3819" in str(e):
-                log("DB", f"CHECK 约束阻止设状态 {status}，自动修复...")
-                self._fix_check_constraint(evaluation_id, status)
-            else:
-                raise
-
-    def _clear_debug_files(self, reports_dir: str, evaluation_id: str):
-        """清除该评测的所有报告与 debug 数据文件（重跑时清理历史数据）。
-
-        重跑必须全量重建报告——旧报告文件不删会导致：
-        - REPORTING 阶段 `_has_lifecycle_report` 短路跳过组装，旧报告永不更新
-        - 重跑中途失败时页面仍显示旧报告（状态 FAILED 但数据是旧的）
-
-        删除范围：{eid}_debug_*.json、{eid}.json、{eid}_lifecycle.json、
-        {eid}.html。
-
-        注意：{eid}_dts_*.json（DTS 完整根因分析数据）不删除——
-        generate_dts_issues 用 "w" 模式覆盖写入同名文件，重跑后 case 消失
-        的旧文件保留可读（DB 行通过 UPSERT 保留，analysis_data_path 指向
-        的文件需要存在）。
-        """
-        import glob
-        patterns = [
-            f"{evaluation_id}_debug_*.json",
-            f"{evaluation_id}.json",
-            f"{evaluation_id}_lifecycle.json",
-            f"{evaluation_id}.html",
-        ]
-        for pattern in patterns:
-            for f in glob.glob(os.path.join(reports_dir, pattern)):
-                try:
-                    os.remove(f)
-                except Exception:
-                    pass
-
-    def _dump_debug(self, reports_dir: str, evaluation_id: str,
-                    step: str, data: dict):
-        """将步骤中间数据 dump 到 {eid}_debug_{step}.json，供调试界面查看。"""
-        path = os.path.join(reports_dir, f"{evaluation_id}_debug_{step}.json")
-        try:
-            with open(path, "w", encoding="utf-8") as f:
-                _json_dump(data, f)
-            log("DEBUG", f"dump {step}: {path}")
-        except Exception as e:
-            log("DEBUG", f"dump {step} 失败: {e}")
-
-    def _calc_agent_outcomes(
-        self,
-        case_session_matches: list[dict],
-        data_packs: list,
-    ) -> dict:
-        """从完整 case_session_matches 统计各 agent 的 TP/FP。
-
-        case_session_matches 含全部 outcome（TP/FP/FN/TN），但 debug matches
-        只 dump FP/FN。看板计算各 agent 误报率 FP/(TP+FP) 需要 TP，
-        故在 dump 时单独统计 agent 级 outcome。
-
-        Returns:
-            {"turing": {"tp": N, "fp": N}, "argo": {...}, ...}
-        """
-        # session_id → agent_type 映射（从 data_packs 的 session_graph）
-        sid_to_agent: dict[str, str] = {}
-        for dp in data_packs:
-            at = getattr(dp, "agent_type", "") or ""
-            if not at:
-                continue
-            sg = getattr(dp, "session_graph", None) or {}
-            sessions = sg.get("sessions", {}) if isinstance(sg, dict) else {}
-            if isinstance(sessions, dict):
-                for sid in sessions:
-                    if sid:
-                        sid_to_agent[sid] = at
-
-        agent_stats: dict[str, dict] = {}
-
-        def _bump(agent: str, key: str):
-            if not agent:
-                return
-            a = agent_stats.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
-            a[key] = a.get(key, 0) + 1
-
-        for r in (case_session_matches or []):
-            outcome = r.get("outcome", "")
-            if outcome not in ("TP", "FP", "FN"):
-                continue
-            key = {"TP": "tp", "FP": "fp", "FN": "fn"}[outcome]
-            # 该 case 的挖掘 agent：mining_sessions 涉及的 agent。
-            # FN（漏报）时挖掘 session 可能为空（没上报），此时无法归因到
-            # 具体 agent——跳过（漏报率分母只统计有挖掘 session 的 FN）。
-            mining = r.get("mining_sessions", []) or []
-            bumped = set()
-            for sid in mining:
-                agent = sid_to_agent.get(sid, "")
-                if agent and agent not in bumped:
-                    bumped.add(agent)
-                    _bump(agent, key)
-        return agent_stats
-
-    def _summarize_data_pack(self, dp) -> dict:
-        """将 DataPack 序列化为 debug 可展示的摘要（含 session 关系图）。"""
-        sg = dp.session_graph or {}
-        sessions = sg.get("sessions", {})
-        edges = sg.get("edges", {})
-        parent_map = sg.get("parent_map", {})
-
-        # session 列表（含 agent、phase、parent + task 信息）
-        session_list = []
-        for sid, info in sessions.items():
-            info_d = info if isinstance(info, dict) else {}
-            session_list.append({
-                "session_id": sid,
-                "agent": info_d.get("agent", ""),
-                "session_type": info_d.get("session_type", ""),
-                "task_type": info_d.get("task_type", ""),
-                "task_id": info_d.get("task_id", ""),
-                "status": info_d.get("status", ""),
-                "is_failed_task": info_d.get("is_failed_task", False),
-                "parent_id": parent_map.get(sid, ""),
-                "phase": (dp.session_phase_labels or {}).get(sid, ""),
-            })
-
-        # 边列表
-        edge_list = []
-        for src, targets in edges.items():
-            if isinstance(targets, set):
-                targets = sorted(targets)
-            elif not isinstance(targets, list):
-                targets = list(targets)
-            for tgt in targets:
-                edge_list.append({"from": src, "to": tgt})
-
-        return {
-            "task_run_id": dp.task_run_id,
-            "task_id": dp.task_id,
-            "agent_type": dp.agent_type,
-            "condition": dp.condition,
-            "session_count": len(sessions),
-            "edge_count": len(edge_list),
-            "event_count": len(dp.events or []),
-            "sessions": session_list,
-            "edges": edge_list,
-            "fact_deps": sg.get("fact_deps", {}),  # fact 依赖图 {facts, intents, edges}，turing 为空
-        }
-
-    def _fix_check_constraint(self, evaluation_id: str, status: str):
-        """修复 evaluation 表的 CHECK 约束以包含 v2 新状态。"""
-        def _fix_and_set(cur):
-            for stmt in (
-                "ALTER TABLE evaluation DROP CHECK evaluation_chk_1",
-                "ALTER TABLE evaluation DROP CONSTRAINT evaluation_chk_1",
-                "ALTER TABLE evaluation DROP CHECK evaluation_status_chk",
-                "ALTER TABLE evaluation DROP CONSTRAINT evaluation_status_chk",
-            ):
-                try:
-                    cur.execute(stmt)
-                except Exception:
-                    pass
-            try:
-                cur.execute(
-                    "ALTER TABLE evaluation ADD CONSTRAINT evaluation_status_chk "
-                    "CHECK (evaluation_status IN "
-                    "('CREATED','QUEUED','RUNNING','VALIDATING','INGESTING',"
-                    "'PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS',"
-                    "'RESOLVING',"
-                    "'REPORTING','FINALIZING',"
-                    "'COMPLETED','COMPLETED_WITH_WARNINGS','FAILED',"
-                    "'CANCEL_REQUESTED','CANCELLING','CANCELLED'))"
-                )
-            except Exception:
-                pass
-            cur.execute(
-                "UPDATE evaluation SET evaluation_status=%s "
-                "WHERE evaluation_id=%s",
-                (status, evaluation_id),
-            )
-
-        try:
-            _db_query(_fix_and_set)
-            log("DB", f"CHECK 约束已修复，重试设状态 {status} 成功")
-        except Exception as e2:
-            log("DB", f"CHECK 约束修复后仍失败: {e2}")
-            raise
+    # 辅助方法已提取到 status_manager.py 和 debug_dumper.py

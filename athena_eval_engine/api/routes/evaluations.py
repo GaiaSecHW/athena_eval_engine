@@ -204,6 +204,67 @@ def _submit_paused_eval(evaluation_id: str):
     _try_dispatch()
 
 
+def _run_eval(evaluation_id: str, source: str, *, resume: bool = False):
+    """统一后台评测执行逻辑（create / retry / resume 共用）。
+
+    1. set_eval_ctx
+    2. 原子 UPDATE 获取状态锁（跨 worker 只有一个能跑）
+    3. _V2Orchestrator().run()
+    4. catch TaskCancelledError / Exception → _record_background_failure
+    5. finally clear_eval_ctx + clear_progress + cleanup_trace_cache
+
+    Args:
+        evaluation_id: 评测 ID。
+        source: 失败日志来源标识（"EVAL FAILED" / "EVAL RETRY FAILED" / "EVAL RESUME FAILED"）。
+        resume: True=续跑模式（状态锁条件含 CREATED/QUEUED/RUNNING+各阶段），
+                False=新建/重试模式（状态锁条件含 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED）。
+    """
+    from ...infrastructure.database import connect
+    set_eval_ctx(evaluation_id)
+    log("THREAD", f"_run_eval({source}): {evaluation_id} 开始执行")
+    try:
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            if resume:
+                _stuck = ('CREATED', 'QUEUED') + tuple(RUNNING_STATES)
+                placeholders = ','.join(['%s'] * len(_stuck))
+                cur.execute(
+                    f"UPDATE evaluation SET evaluation_status='RUNNING', "
+                    f"started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
+                    f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
+                    (evaluation_id, *_stuck))
+            else:
+                cur.execute(
+                    "UPDATE evaluation SET evaluation_status='RUNNING', "
+                    "started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
+                    "WHERE evaluation_id=%s AND evaluation_status IN "
+                    "('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
+                    (evaluation_id,))
+            if cur.rowcount == 0:
+                log("EVAL", f"{evaluation_id} 已被其他 worker 接管，退出")
+                return
+        finally:
+            conn.close()
+        try:
+            _V2Orchestrator().run(evaluation_id)
+        except _V2TaskCancelledError:
+            log("EVAL", f"{evaluation_id} 被取消（force retry 替换）")
+            _mark_cancelled_if_running(evaluation_id)
+        except Exception as e:
+            if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
+                log("EVAL", f"{evaluation_id} 失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
+                _record_background_failure(evaluation_id, e, source)
+            else:
+                import traceback
+                traceback.print_exc()
+                _record_background_failure(evaluation_id, e, source)
+    finally:
+        clear_eval_ctx()
+        es.clear_progress(evaluation_id)
+        es._cleanup_trace_cache(evaluation_id)
+
+
 def _record_background_failure(evaluation_id: str, error: Exception, source: str) -> None:
     """Mark an in-progress evaluation failed without clobbering a final report.
 
@@ -259,7 +320,7 @@ create_v2_app(app)
 
 # v2 pipeline：替代 v1 es.run()，启用 v2 编排器
 from ...v2.pipeline.orchestrator import Orchestrator as _V2Orchestrator
-from ...v2.pipeline.orchestrator import TaskCancelledError as _V2TaskCancelledError
+from ...v2.pipeline.status_manager import TaskCancelledError as _V2TaskCancelledError
 
 
 @app.on_event("startup")
@@ -349,46 +410,8 @@ def resume_stuck_evaluations():
 
 
 def _run_bg_resume(evaluation_id: str):
-    """续跑单个评测。原子获取状态锁，跨 worker 只有一个能跑。"""
-    set_eval_ctx(evaluation_id)
-    log("THREAD", f"_run_bg_resume: {evaluation_id} 开始执行")
-    from ...infrastructure.database import connect
-    stuck_states = ('CREATED', 'QUEUED', 'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                    'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
-                    'REPORTING', 'FINALIZING')
-    placeholders = ','.join(['%s'] * len(stuck_states))
-    try:
-        conn = connect(autocommit=True)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
-                f"WHERE evaluation_id=%s AND evaluation_status IN ({placeholders})",
-                (evaluation_id, *stuck_states))
-            if cur.rowcount == 0:
-                log("EVAL", f"{evaluation_id} 续跑已被其他 worker 接管，退出")
-                return
-        finally:
-            conn.close()
-    except Exception:
-        pass
-    try:
-        _V2Orchestrator().run(evaluation_id)
-    except _V2TaskCancelledError:
-        log("EVAL", f"{evaluation_id} 续跑被取消（被 force retry 替换）")
-        _mark_cancelled_if_running(evaluation_id)
-    except Exception as e:
-        if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
-            log("EVAL", f"{evaluation_id} 续跑失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
-            _record_background_failure(evaluation_id, e, "EVAL RESUME FAILED")
-        else:
-            import traceback
-            traceback.print_exc()
-            _record_background_failure(evaluation_id, e, "EVAL RESUME FAILED")
-    finally:
-        clear_eval_ctx()
-        es.clear_progress(evaluation_id)
-        es._cleanup_trace_cache(evaluation_id)
+    """续跑单个评测。"""
+    _run_eval(evaluation_id, "EVAL RESUME FAILED", resume=True)
 
 
 @app.get("/health")
@@ -426,42 +449,10 @@ def create_evaluation(req: CreateRequest):
                                    benchmark_set_id=req.benchmark_set_id,
                                    vc_source_task_id=req.vc_source_task_id,
                                    eval_mode=req.eval_mode))
-        # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
+        # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
         # 提交到线程池排队运行（最多 3 并发，超出自动排队）
         def _run_bg():
-            from ...infrastructure.database import connect
-            set_eval_ctx(req.evaluation_id)
-            # 原子获取状态锁：只有 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED 才能跳转 RUNNING
-            # 跨 worker 同步：两个 worker 同时调用，只有一个 rowcount=1
-            conn = connect(autocommit=True)
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
-                    "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
-                    (req.evaluation_id,))
-                if cur.rowcount == 0:
-                    log("EVAL", f"{req.evaluation_id} 已被其他 worker 接管，退出")
-                    return
-            finally:
-                conn.close()
-            try:
-                _V2Orchestrator().run(req.evaluation_id)
-            except _V2TaskCancelledError:
-                log("EVAL", f"{req.evaluation_id} 被取消（force retry 替换）")
-                _mark_cancelled_if_running(req.evaluation_id)
-            except Exception as e:
-                if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
-                    log("EVAL", f"{req.evaluation_id} 续跑失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
-                    _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
-                else:
-                    import traceback
-                    traceback.print_exc()
-                    _record_background_failure(req.evaluation_id, e, "EVAL FAILED")
-            finally:
-                clear_eval_ctx()
-                es.clear_progress(req.evaluation_id)
-                es._cleanup_trace_cache(req.evaluation_id)
+            _run_eval(req.evaluation_id, "EVAL FAILED")
         _submit_eval(req.evaluation_id, _run_bg)
         return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
@@ -679,41 +670,9 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
 
         # Step 4: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出
-        # 不再同步设 RUNNING——由 _run_bg 的原子 UPDATE 处理（跨 worker 同步）
+        # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
         def _run_bg():
-            from ...infrastructure.database import connect as _connect
-            set_eval_ctx(evaluation_id)
-            log("THREAD", f"_run_bg: {evaluation_id} 开始执行")
-            # 原子获取状态锁：只有 CREATED/CANCEL_REQUESTED/FAILED/CANCELLED 才能跳转 RUNNING
-            conn = _connect(autocommit=True)
-            try:
-                cur = conn.cursor()
-                cur.execute(
-                    "UPDATE evaluation SET evaluation_status='RUNNING', started_at=NOW(3), finished_at=NULL, error_message=NULL, cancel_requested=0 "
-                    "WHERE evaluation_id=%s AND evaluation_status IN ('CREATED','CANCEL_REQUESTED','FAILED','CANCELLED')",
-                    (evaluation_id,))
-                if cur.rowcount == 0:
-                    log("EVAL", f"{evaluation_id} retry 已被其他 worker 接管，退出")
-                    return
-            finally:
-                conn.close()
-            try:
-                _V2Orchestrator().run(evaluation_id)
-            except _V2TaskCancelledError:
-                log("EVAL", f"{evaluation_id} retry 被取消（又被 force retry 替换）")
-                _mark_cancelled_if_running(evaluation_id)
-            except Exception as e:
-                if isinstance(e, RuntimeError) and "cannot schedule new futures" in str(e):
-                    log("EVAL", f"{evaluation_id} retry 续跑失败：解释器正在关闭（pod 终止），标记 FAILED 等待重启后续跑")
-                    _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
-                else:
-                    import traceback
-                    traceback.print_exc()
-                    _record_background_failure(evaluation_id, e, "EVAL RETRY FAILED")
-            finally:
-                clear_eval_ctx()
-                es.clear_progress(evaluation_id)
-                es._cleanup_trace_cache(evaluation_id)
+            _run_eval(evaluation_id, "EVAL RETRY FAILED")
         _submit_eval(evaluation_id, _run_bg)
         return {"evaluation_id": evaluation_id, "status": "QUEUED"}
     except Exception as e:
