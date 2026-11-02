@@ -17,7 +17,7 @@ import re
 from fastapi import APIRouter, HTTPException
 from fastapi.responses import FileResponse
 
-from ..pipeline.orchestrator import _get_progress
+from ..infra.progress import get_progress as _get_progress
 
 router = APIRouter(prefix="/api/v2/evaluations", tags=["evaluations"])
 
@@ -184,7 +184,8 @@ _DEBUG_STEPS = ["ingesting", "parsing", "case_matching", "root_cause",
 # debug.html 所在目录
 _STATIC_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "static")
 # 可覆盖的静态文件目录（k8s 下 /data 可写，便于热更新 HTML 而无需重建镜像）
-_STATIC_OVERRIDE_DIR = os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static")
+from ...config_loader import get_static_override_dir as _get_static_override_dir
+_STATIC_OVERRIDE_DIR = _get_static_override_dir()
 
 
 @router.get("/{evaluation_id}/debug")

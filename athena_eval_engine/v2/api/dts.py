@@ -18,6 +18,7 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
+from ...infrastructure.log_util import log
 from ..persistence.dts_repo import (
     get_dts_issue,
     list_dts_issues,
@@ -89,7 +90,7 @@ def list_issues(
         )
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
-        from ...infrastructure.log_util import log
+
         log("DTS_API", f"list_issues 查询失败: {str(e)[:200]}")
         raise HTTPException(status_code=500, detail=f"查询问题单失败: {str(e)[:200]}")
     return {"issues": issues, "count": len(issues), "total": total, "stats": stats}
@@ -101,7 +102,7 @@ def get_stats(evaluation_id: str | None = None):
     try:
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
-        from ...infrastructure.log_util import log
+
         log("DTS_API", f"get_stats 查询失败: {str(e)[:200]}")
         raise HTTPException(status_code=500, detail=f"查询统计失败: {str(e)[:200]}")
     return stats
@@ -123,7 +124,7 @@ def get_post_fpr(evaluation_id: str):
     try:
         return get_post_regression_fpr(evaluation_id)
     except Exception as e:
-        from ...infrastructure.log_util import log
+
         log("DTS_API", f"get_post_fpr 查询失败: {str(e)[:200]}")
         raise HTTPException(status_code=500, detail=f"查询回归误报率失败: {str(e)[:200]}")
 
@@ -134,7 +135,7 @@ def list_by_case(case_id: str):
     try:
         issues = list_dts_by_case(case_id)
     except Exception as e:
-        from ...infrastructure.log_util import log
+
         log("DTS_API", f"list_by_case 查询失败: {str(e)[:200]}")
         raise HTTPException(status_code=500, detail=f"按 case 查询问题单失败: {str(e)[:200]}")
     return {"issues": issues, "count": len(issues)}
@@ -153,7 +154,7 @@ def list_by_task(task_id: str):
     """
     import os
     import json as _json
-    from ...infrastructure.log_util import log
+
 
     try:
         issues = list_dts_by_task(task_id)
@@ -210,7 +211,7 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
     Returns:
         匹配到的问题单 dict；无候选或 LLM 失败时返回 None。
     """
-    from ...infrastructure.log_util import log
+
     try:
         candidates = list_dts_by_task(task_id)
     except Exception as e:
@@ -265,7 +266,7 @@ def _safe_update_dts_issue(dts_id: str, fields: dict) -> bool:
     典型场景：replay_result 等列长度不足时抛 pymysql DataError，
     以前会变成未捕获的 ASGI 500，调用方只看到空响应、拿不到原因。
     """
-    from ...infrastructure.log_util import log
+
     try:
         return update_dts_issue(dts_id, fields)
     except Exception as e:
@@ -294,7 +295,7 @@ def _is_same_vulnerability(vuln_title: str, vuln_description: str,
     Returns:
         True=同一漏洞，False=不同漏洞。LLM 失败时返回 True（保守放行）。
     """
-    from ...infrastructure.log_util import log
+
     sys_prompt = (
         "你是漏洞一致性判断助手。给定两个漏洞描述（A=提交待回归的漏洞，"
         "B=问题单记录的漏洞），判断它们是否为同一个漏洞（漏洞点、接口、"
@@ -356,7 +357,7 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
         same: False 表示提交的漏洞与问题单不一致 → 回归不通过。
         result_id: 若已有「判定中」的占位记录，则原地补全而不是新增。
     """
-    from ...infrastructure.log_util import log
+
     dts_id = req.dts_id or issue.get("dts_id", "")
     case_id = req.case_id or issue.get("case_id", "")
 
@@ -449,7 +450,7 @@ def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
     返回最终响应 dict；定位失败等无法完成时返回 None。
     失败时会把占位历史记录标记为 error，避免前端一直显示「判定中」。
     """
-    from ...infrastructure.log_util import log
+
     try:
         if issue is None:
             log("DTS_API",
@@ -520,7 +521,7 @@ def regression_verify(req: RegressionVerifyRequest):
 
     纯 DB 路径（dts_id/case_id 直接命中且未提交漏洞信息）始终同步返回。
     """
-    from ...infrastructure.log_util import log
+
 
     # ── 1. 纯 DB 定位（毫秒级） ──
     issue, match_method = _locate_issue(req)

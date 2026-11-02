@@ -61,10 +61,26 @@ DATA_ROOT = os.environ.get("DATA_ROOT", PLATFORM.get("data_root", "/data/files")
 # 报告目录（统一单一来源，替代各模块 8 处 os.environ.get 分散解析）
 EVAL_REPORTS_DIR = os.environ.get("EVAL_REPORTS_DIR", "/app/reports")
 
+# 静态文件覆盖目录（k8s 下 /data/static 可写，便于热更新 HTML 而无需重建镜像）
+EVAL_STATIC_OVERRIDE = os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static")
+
+# 异常日志文件路径（k8s 中通过环境变量配置，默认 /data/logs/eval_errors.log）
+EVAL_ERROR_LOG = os.environ.get("EVAL_ERROR_LOG", "/data/logs/eval_errors.log")
+
 
 def get_reports_dir() -> str:
     """返回报告目录路径（单一来源）。"""
     return EVAL_REPORTS_DIR
+
+
+def get_static_override_dir() -> str:
+    """返回静态文件覆盖目录路径（单一来源）。"""
+    return EVAL_STATIC_OVERRIDE
+
+
+def get_error_log_path() -> str:
+    """返回异常日志文件路径（单一来源）。"""
+    return EVAL_ERROR_LOG
 
 
 # 平台 token

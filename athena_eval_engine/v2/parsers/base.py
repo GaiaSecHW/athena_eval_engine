@@ -77,27 +77,15 @@ class BaseParser(ABC):
         phase_labels, phase_source = self.label_session_phases(events, session_meta)
 
         # 6: resolver 从 events 提取 facts
-        # 延迟 import：resolver 尚未实现（#49），避免模块加载时 ImportError
-        outcome = None
-        knowledge = None
-        tool_action = None
-        resource = None
-        try:
-            from ..resolvers.outcome import OutcomeResolver
-            from ..resolvers.knowledge import KnowledgeResolver
-            from ..resolvers.tool_action import ToolActionResolver
-            from ..resolvers.resource import ResourceResolver
+        from ..resolvers.outcome import OutcomeResolver
+        from ..resolvers.knowledge import KnowledgeResolver
+        from ..resolvers.tool_action import ToolActionResolver
+        from ..resolvers.resource import ResourceResolver
 
-            outcome = OutcomeResolver().resolve(task_run, events)
-            knowledge = KnowledgeResolver().resolve(task_run, events)
-            tool_action = ToolActionResolver().resolve(task_run, events)
-            resource = ResourceResolver().resolve(task_run, session_meta)
-        except ImportError:
-            logger.debug(
-                "resolvers not yet implemented, DataPack will have None facts "
-                "(task_run_id=%s)",
-                task_run.task_run_id,
-            )
+        outcome = OutcomeResolver().resolve(task_run, events)
+        knowledge = KnowledgeResolver().resolve(task_run, events)
+        tool_action = ToolActionResolver().resolve(task_run, events)
+        resource = ResourceResolver().resolve(task_run, session_meta)
 
         # 7: 组装 DataPack
         return DataPack(

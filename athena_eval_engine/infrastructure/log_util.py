@@ -13,11 +13,12 @@ import threading
 import traceback
 from datetime import datetime
 
+from ..config_loader import get_error_log_path
+
 _ctx = threading.local()
 
-# 异常日志文件路径（k8s 中通过环境变量配置，默认 /data/logs/eval_errors.log）
-# /app 只读，用 /data/logs（PVC 挂载，可写）
-_ERROR_LOG_PATH = os.environ.get("EVAL_ERROR_LOG", "/data/logs/eval_errors.log")
+# 异常日志文件路径（统一从 config_loader 读取）
+_ERROR_LOG_PATH = get_error_log_path()
 _error_log_lock = threading.Lock()
 
 

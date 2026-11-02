@@ -7,7 +7,7 @@ from __future__ import annotations
 import json
 import math
 from ...infrastructure.database import connect
-from ...domain.facts import (
+from ...v2.core.facts import (
     OutcomeFact, KnowledgeInteractionFact, ToolActionFact, ResourceFact,
 )
 

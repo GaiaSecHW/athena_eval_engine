@@ -7,14 +7,13 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import HTMLResponse, JSONResponse
 from ...infrastructure.database import connect
 from ...v2.infra.progress import get_progress
+from ...config_loader import get_static_override_dir
 
 router = APIRouter()
 STATIC = Path(__file__).parent.parent.parent / "static"
 
 # 可覆盖的静态文件目录（k8s 下 /data/static 可写，便于热更新 HTML 而无需重建镜像）
-# 与 v2/api/routes.py 的 debug.html 热更新机制共用同一环境变量
-import os as _os
-STATIC_OVERRIDE_DIR = Path(_os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static"))
+STATIC_OVERRIDE_DIR = Path(get_static_override_dir())
 
 
 def _read_page(name: str) -> str:
