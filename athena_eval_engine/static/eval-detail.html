@@ -294,6 +294,29 @@ function renderV2Report(d){
   var vcProj=d.vc_source_project_name||(base.vc_source_project_name||'');
   var vcTask=d.vc_source_task_name||(base.vc_source_task_name||'');
 
+  // 数据质量告警（从基础报告和生命周期报告中合并）
+  var _dqWarnings=(base.data_quality_warnings||[]).concat((d.lifecycle&&d.lifecycle.data_quality_warnings)||[]);
+  var _warnHtml='';
+  if(_dqWarnings.length){
+    var _srcLabels={'vuln_center':'漏洞中心','kb_verify':'知识库验证','llm':'LLM 调用','gaiasec':'GAISEC API'};
+    var _typeLabels={'raw_report_fetch_failed':'原始报告获取失败','athena_api_failed':'Athena API 查询失败','llm_judgment_failed':'LLM 判定失败（降级）','compression_failed':'LLM 压缩失败（降级）','merge_compression_failed':'LLM 合并压缩失败（降级）'};
+    _warnHtml='<details class="card" style="margin-bottom:16px;border-color:var(--amber)" open><summary style="font-size:15px;color:var(--amber);font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">⚠ 数据质量告警（'+_dqWarnings.length+' 条）<span style="font-size:12px;color:var(--sub)">— 以下告警可能影响评测结果可信度</span></summary><div style="margin-top:12px">';
+    _dqWarnings.forEach(function(w){
+      var src=_srcLabels[w.source]||w.source||'-';
+      var tp=_typeLabels[w.type]||w.type||'-';
+      _warnHtml+='<div style="margin-bottom:8px;padding:10px 12px;background:rgba(251,191,36,.08);border:1px solid var(--amber)33;border-radius:8px;font-size:13px">'
+        +'<div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:4px">'
+        +'<span class="knd" style="background:rgba(251,191,36,.15);color:var(--amber)">'+src+'</span>'
+        +'<span class="knd" style="background:rgba(251,191,36,.15);color:var(--amber)">'+tp+'</span>'
+        +(w.case_id?'<span class="knd" style="background:var(--p2);color:var(--sub);font-family:monospace">'+String(w.case_id).replace(/</g,'&lt;')+'</span>':'')
+        +'<span style="color:var(--gray);font-size:11px">'+(w.timestamp||'')+'</span>'
+        +'</div>'
+        +'<div style="color:var(--txt)">'+String(w.message||'').replace(/</g,'&lt;')+'</div>'
+        +'</div>';
+    });
+    _warnHtml+='</div></details>';
+  }
+
   var html=`
   ${_partial&&_partial.running?`<div style="background:rgba(91,156,246,.12);border:1px solid var(--acc);border-radius:10px;padding:12px 16px;margin-bottom:16px;display:flex;align-items:center;gap:10px">
     <div style="width:20px;height:20px;border:2px solid var(--acc);border-top-color:transparent;border-radius:50%;animation:spin 1s linear infinite;flex-shrink:0"></div>
@@ -310,6 +333,8 @@ function renderV2Report(d){
       ${d.task_created_at?`<div><span style="color:var(--gray)">任务创建日期：</span><b>${fmtDate(d.task_created_at)}</b></div>`:''}
     </div>
   </div>
+
+  ${_warnHtml}
 
   <!-- 基础指标 -->
   <div class="card" style="margin-bottom:16px">
