@@ -53,6 +53,7 @@ class ReportAssembler:
         causal_chain_result: dict,
         recall_precision: dict,
         reports_dir: str,
+        data_quality_warnings: list[dict] | None = None,
     ) -> str:
         """组装生命周期分析段报告，写入 {reports_dir}/{evaluation_id}_lifecycle.json。
 
@@ -66,6 +67,8 @@ class ReportAssembler:
             recall_precision: 召回率/准确率计算结果 dict，含 recall_rate、
                               precision_rate、tp_count、fn_count、fp_count。
             reports_dir: 报告输出目录。
+            data_quality_warnings: pipeline 执行中收集的数据质量告警列表
+                                   （外部数据源失败、LLM 降级等）。
 
         Returns:
             报告文件路径。
@@ -94,6 +97,8 @@ class ReportAssembler:
                 reports_dir,
             ),
         }
+        if data_quality_warnings:
+            report["data_quality_warnings"] = data_quality_warnings
 
         # 写入文件
         os.makedirs(reports_dir, exist_ok=True)

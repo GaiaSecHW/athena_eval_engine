@@ -201,6 +201,9 @@ class Orchestrator:
             assert_transition(stages.RESOLVING, stages.REPORTING)
             _set_status_safe(evaluation_id, stages.REPORTING)
 
+            # 收集 pipeline 执行中的数据质量告警（drain 清空，后续 has_warnings 用本地变量）
+            data_quality_warnings = _pw.drain()
+
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
                     os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
                 log("ORCH", "REPORTING skipped: lifecycle + base report 已存在"
@@ -217,6 +220,7 @@ class Orchestrator:
                     evaluation_id,
                     root_cause_results, causal_chain,
                     recall_precision, reports_dir,
+                    data_quality_warnings=data_quality_warnings,
                 )
                 log("ORCH", f"REPORTING done: recall={recall_precision.get('recall_rate')}, "
                       f"precision={recall_precision.get('precision_rate')}")
@@ -227,9 +231,15 @@ class Orchestrator:
             _set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
             self._finalize(evaluation_id, reports_dir, causal_chain)
-            _set_status_safe(evaluation_id, "COMPLETED")
-            _set_progress(evaluation_id, "评测完成")
-            log("ORCH", f"v2 pipeline 完成: {evaluation_id}")
+            # 有数据质量告警时标记为 COMPLETED_WITH_WARNINGS
+            if data_quality_warnings:
+                _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
+                _set_progress(evaluation_id, "评测完成（含数据质量告警）")
+                log("ORCH", f"v2 pipeline 完成（含 {len(data_quality_warnings)} 条告警）: {evaluation_id}")
+            else:
+                _set_status_safe(evaluation_id, "COMPLETED")
+                _set_progress(evaluation_id, "评测完成")
+                log("ORCH", f"v2 pipeline 完成: {evaluation_id}")
 
         except TaskCancelledError as e:
             log("ORCH", f"评测被取消: {e}")
@@ -1234,6 +1244,7 @@ class Orchestrator:
         self, evaluation_id: str,
         root_cause_results: list, causal_chain: dict,
         recall_precision: dict, reports_dir: str,
+        data_quality_warnings: list[dict] | None = None,
     ):
         """报告组装。
 
@@ -1241,9 +1252,6 @@ class Orchestrator:
         写入 {evaluation_id}_lifecycle.json。
         """
         from ..report.assembler import ReportAssembler
-
-        # 收集 pipeline 执行中的数据质量告警
-        data_quality_warnings = _pw.drain()
 
         assembler = ReportAssembler()
 
@@ -1254,7 +1262,7 @@ class Orchestrator:
             causal_chain,
             recall_precision,
             reports_dir,
-            data_quality_warnings=data_quality_warnings,
+            data_quality_warnings=data_quality_warnings or [],
         )
 
         # 写入基础报告段
