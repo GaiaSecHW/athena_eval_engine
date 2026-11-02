@@ -26,13 +26,11 @@ import urllib.request
 from urllib.error import HTTPError, URLError
 
 from .log_util import log
+from ..config_loader import GAISEC_SERVER_URL
 
 
-# gaiasec-server 基础 URL（k8s 内部服务名，eval-engine 同 namespace 直接访问）
-# 环境变量 EVAL_GAISEC_SERVER_URL 可覆盖（dev/prod 切换）。
-_GAISEC_SERVER_URL = os.environ.get(
-    "EVAL_GAISEC_SERVER_URL", "http://gaiasec-server"
-).rstrip("/")
+# gaiasec-server 基础 URL（从 config_loader 统一读取）
+_GAISEC_SERVER_URL = GAISEC_SERVER_URL.rstrip("/")
 
 # API 超时（秒）。单 case 调用，6s 够返回（响应体几 KB）。
 _API_TIMEOUT = 10
@@ -143,7 +141,7 @@ def fetch_case_session_map(case_id: str) -> dict:
                 time.sleep(_RETRY_DELAY)
 
     raise RuntimeError(
-        f"fetch_case_session_map case={case_id} {__format_err(last_err)}"
+        f"fetch_case_session_map case={case_id} {_format_err(last_err)}"
     )
 
 

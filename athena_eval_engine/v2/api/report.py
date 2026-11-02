@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException
 from ...application import platform_service as ps
 from ...infrastructure import vuln_center_client as vc
 from ...infrastructure.log_util import log
-from ..persistence.dts_repo import _db_query
+from ..infra.db_utils import db_query as _db_query
 
 router = APIRouter(prefix="/api/v2/report", tags=["report"])
 

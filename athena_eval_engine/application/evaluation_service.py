@@ -15,7 +15,6 @@ import threading
 from dataclasses import dataclass
 from ..infrastructure.database import connect
 from ..infrastructure.log_util import log
-from ..infrastructure.concurrency import get as _conc_get
 from ..application import platform_service as ps
 
 # ── re-export: 进度追踪（已提取到 v2/infra/progress.py）──
@@ -47,23 +46,6 @@ def _copy_trace_to_local(remote_path: str, evaluation_id: str = "") -> str:
     return _copy_trace_to_local_impl(remote_path, evaluation_id=evaluation_id)
 
 
-def _extract_source_task_id(entry: dict) -> str:
-    """从 entry 的 source_uri 提取平台任务 UUID（漏洞中心 API 需要，非 benchmark task_id）。
-
-    source_uri 格式: /data/files/{project_id}/tasks/{task_uuid}/session/...
-    无法提取时返回空字符串。
-    """
-    import re
-    src = entry.get("source_uri", "") or ""
-    m = re.search(r'/tasks/([^/]+)', src)
-    return m.group(1) if m else ""
-
-
-def get_runtime_workers() -> dict:
-    """返回 parse/kg_analysis 两个常用参数（兼容旧接口）。"""
-    return {"parse": _conc_get("parse_workers"), "kg_analysis": _conc_get("kg_analysis_workers")}
-
-
 def set_cancel(evaluation_id: str):
     """标记一个评测任务为取消（force retry 时调用，通知旧线程退出）。
     跨 worker 生效：写 DB cancel_requested=1，独立于 status，不会被新线程覆盖。
@@ -89,9 +71,6 @@ def clear_cancel(evaluation_id: str):
         conn.commit()
     finally:
         conn.close()
-
-
-LOCAL_TRACE_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), "tests", "fixtures", "fetched")
 
 
 EVAL_CONFIG = {

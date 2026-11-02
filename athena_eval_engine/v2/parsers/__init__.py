@@ -10,12 +10,8 @@ from __future__ import annotations
 import json
 import logging
 import os
-from typing import TYPE_CHECKING
 
 from .base import BaseParser
-
-if TYPE_CHECKING:
-    pass
 
 logger = logging.getLogger(__name__)
 

@@ -18,6 +18,24 @@ from ..config_loader import DATA_ROOT, PLATFORM_TOKEN, VBENCH_API_URL
 from .log_util import log
 
 
+def _parse_simple_false_positive(c, i: int) -> dict:
+    """解析简版 false_positive 条目（非漏洞中心全量格式）。"""
+    desc = c.get("description", "") if isinstance(c, dict) else str(c)
+    reason = c.get("reason", "") if isinstance(c, dict) else ""
+    cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
+    _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
+    return {
+        "case_id": cid,
+        "vuln_title": _title or reason or "",
+        "description": desc,
+        "target_finding_id": "",
+        "expected_label": "NON_VULNERABLE",
+        "source_file": "",
+        "source_function": "",
+        "source_line": "",
+    }
+
+
 def _get(path: str, retries: int = 20, retry_delay: float = 5.0) -> dict | list:
     """通过 V-Bench API 读取（port-forward / k8s service）。内部 Service 短暂抖动时重试。"""
     url = f"{VBENCH_API_URL.rstrip('/')}{path}"
@@ -180,22 +198,7 @@ def _read_false_positives(zf: zipfile.ZipFile, names: list[str]) -> list[dict]:
             # 漏洞中心全量格式
             result.append(_case_to_benchmark(c, "NON_VULNERABLE"))
         else:
-            # 简版格式：description + reason（reason 是研判状态，不是漏洞类型）
-            desc = c.get("description", "") if isinstance(c, dict) else str(c)
-            reason = c.get("reason", "") if isinstance(c, dict) else ""
-            cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
-            # title 取 description 第一行（Markdown 标题），去掉 # 前缀
-            _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
-            result.append({
-                "case_id": cid,
-                "vuln_title": _title or reason or "",
-                "description": desc,
-                "target_finding_id": "",
-                "expected_label": "NON_VULNERABLE",
-                "source_file": "",
-                "source_function": "",
-                "source_line": "",
-            })
+            result.append(_parse_simple_false_positive(c, i))
     return result
 
 
@@ -274,19 +277,6 @@ def get_benchmark(benchmark_set_id: str) -> dict:
         if isinstance(c, dict) and c.get("id"):
             cases.append(_case_to_benchmark(c, "NON_VULNERABLE"))
         else:
-            desc = c.get("description", "") if isinstance(c, dict) else str(c)
-            reason = c.get("reason", "") if isinstance(c, dict) else ""
-            cid = c.get("case_id") or c.get("id") or f"fp-{i:04d}"
-            _title = desc.split("\n", 1)[0].lstrip("# ").strip() if desc else ""
-            cases.append({
-                "case_id": cid,
-                "vuln_title": _title or reason or "",
-                "description": desc,
-                "target_finding_id": "",
-                "expected_label": "NON_VULNERABLE",
-                "source_file": "",
-                "source_function": "",
-                "source_line": "",
-            })
+            cases.append(_parse_simple_false_positive(c, i))
     return {"benchmark_id": benchmark.get("benchmark_id"), "name": benchmark.get("name"),
             "schema_version": benchmark.get("schema_version"), "cases": cases}

@@ -23,6 +23,7 @@ from pydantic import BaseModel
 from ...application import evaluation_service as es
 from ...infrastructure.log_util import log, set_eval_ctx, clear_eval_ctx, log_error
 from ...infrastructure.concurrency import get as _conc_get, set_val as _conc_set
+from ...v2.pipeline.state_machine import RUNNING_STATES
 
 # 调大 GIL 切换间隔：600 线程下减少切换开销，让 HTTP 处理器能及时拿到 GIL
 sys.setswitchinterval(0.015)
@@ -327,9 +328,7 @@ def resume_stuck_evaluations():
                 log("STARTUP", f"{eid} (was QUEUED) → 加入暂停队列")
                 _submit_paused_eval(eid)
             # RUNNING_STATES = 线程已死但 DB 还显示运行中，续跑
-            stuck_states = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                            'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
-                            'REPORTING', 'FINALIZING')
+            stuck_states = tuple(RUNNING_STATES)
             placeholders = ','.join(['%s'] * len(stuck_states))
             cur.execute(f"SELECT evaluation_id, evaluation_status FROM evaluation "
                         f"WHERE evaluation_status IN ({placeholders})", stuck_states)
@@ -519,9 +518,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         from ...infrastructure.database import connect
 
         # Step 0: 检查当前状态 — 运行中禁止重跑，避免并发写冲突
-        _RUNNING_STATES = ('RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-                           'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS', 'RESOLVING',
-                           'REPORTING', 'FINALIZING')
+        _RUNNING_STATES = tuple(RUNNING_STATES)
         conn = connect(autocommit=True)
         try:
             cur = conn.cursor()

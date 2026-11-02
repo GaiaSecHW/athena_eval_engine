@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ...infrastructure.database import connect
 from ...infrastructure.log_util import log
 from ...infrastructure.concurrency import get_keys as _conc_keys, get as _conc_get, set_val as _conc_set
+from ...v2.pipeline.state_machine import RUNNING_STATES
 
 sys_r = APIRouter(prefix="/api/v1/system", tags=["system"])
 vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
@@ -25,15 +26,9 @@ class SystemConfigUpdate(BaseModel):
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
     eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)
-    source_fill_workers: int | None = Field(default=None, ge=1, le=1000)
     ac_fetch_workers: int | None = Field(default=None, ge=1, le=50)
     resolver_workers: int | None = Field(default=None, ge=1, le=1000)
-    ai_match_workers: int | None = Field(default=None, ge=1, le=1000)
-    ac_llm_workers: int | None = Field(default=None, ge=1, le=1000)
     fpr_cond_workers: int | None = Field(default=None, ge=1, le=10)
-    fpr_baseline_workers: int | None = Field(default=None, ge=1, le=1000)
-    fpr_baseline_batch: int | None = Field(default=None, ge=1, le=1000)
-    kg_analysis_workers: int | None = Field(default=None, ge=1, le=1000)
     bootstrap_workers: int | None = Field(default=None, ge=1, le=20)
     reasoning_effort: str | None = Field(default=None, pattern="^(none|low|high|max)$")
 
@@ -86,11 +81,7 @@ def _start_config_watcher():
        - 首次 tick：标记 worker 启动前已存在的运行中评测（pod 重启后的僵死）
        - 后续 tick：标记超过 2 小时的僵死评测
     """
-    _RUNNING_STATES = (
-        'RUNNING', 'VALIDATING', 'INGESTING', 'PARSING',
-        'CASE_MATCHING', 'ROOT_CAUSE_ANALYSIS',
-        'RESOLVING', 'REPORTING', 'FINALIZING',
-    )
+    _RUNNING_STATES = tuple(RUNNING_STATES)
     _TERMINAL = ('COMPLETED', 'COMPLETED_WITH_WARNINGS', 'FAILED', 'CANCELLED')
 
     def _watcher():

@@ -85,3 +85,7 @@ def get_error_log_path() -> str:
 
 # 平台 token
 PLATFORM_TOKEN = os.environ.get("PLATFORM_TOKEN", _cfg.get("platform_token", ""))
+
+# gaiasec-server（WebVulnVerify 权威 case↔session 关系源）
+GAISEC = _cfg.get("gaiasec", {})
+GAISEC_SERVER_URL = os.environ.get("EVAL_GAISEC_SERVER_URL", GAISEC.get("server_url", "http://gaiasec-server"))
