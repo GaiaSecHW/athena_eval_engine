@@ -26,10 +26,6 @@ class SystemConfigUpdate(BaseModel):
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
     eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)
-    ac_fetch_workers: int | None = Field(default=None, ge=1, le=50)
-    resolver_workers: int | None = Field(default=None, ge=1, le=1000)
-    fpr_cond_workers: int | None = Field(default=None, ge=1, le=10)
-    bootstrap_workers: int | None = Field(default=None, ge=1, le=20)
     reasoning_effort: str | None = Field(default=None, pattern="^(none|low|high|max)$")
 
 

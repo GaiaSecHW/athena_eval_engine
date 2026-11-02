@@ -21,18 +21,6 @@ _defaults = {
 
     # ── PARSING 阶段 ──
     "parse_workers": 4,              # Trace 解析并行（非 LLM）
-
-    # ── INGESTING 阶段 ──
-    "ac_fetch_workers": 4,           # 告警中心数据获取并行（非 LLM）
-
-    # ── AI_MATCHING 阶段 ──
-    "resolver_workers": 50,          # 单 trace 内 resolver 并行（非 LLM）
-
-    # ── FPR 阶段 ──
-    "fpr_cond_workers": 2,           # FPR 编排并行（非 LLM）
-
-    # ── 统计 ──
-    "bootstrap_workers": 4,          # bootstrap 统计并行（非 LLM）
 }
 
 _config = dict(_defaults)
@@ -44,10 +32,6 @@ _RANGES = {
     "max_concurrent_evals": (1, 10),
     "eval_pool_max": (1, 50),
     "parse_workers": (1, 50),
-    "ac_fetch_workers": (1, 50),
-    "resolver_workers": (1, 1000),
-    "fpr_cond_workers": (1, 10),
-    "bootstrap_workers": (1, 20),
 }
 
 
