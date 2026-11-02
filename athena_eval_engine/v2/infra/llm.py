@@ -909,6 +909,10 @@ def _escape_control_chars_in_strings(text: str) -> str:
 def _try_repair_backslash_quote(text):
     """修复 JSON 常见错误 + 结构补全。
 
+    Step -1: 截取 JSON 部分。LLM（尤其推理模型）可能在 JSON 前输出
+    思考过程（如 "We need answer in Chinese JSON..."），导致从头解析
+    立即失败。从第一个 { 开始截取，丢弃前置非 JSON 文本。
+
     Step 0: 修复字符串值中的字面控制字符（原始换行符/制表符 → 转义）。
     Step 1: 修复 \\" 转义错误（escaped backslash + unescaped quote → escaped quote）。
     当 JSON 字符串值中出现 \\" 时，\\ 被解析为转义反斜杠，后面的 " 变成
@@ -930,6 +934,14 @@ def _try_repair_backslash_quote(text):
     """
     _valid_escapes = set('"\\/bfnrtu')
     decoder = json.JSONDecoder()
+    # Step -1: 截取 JSON 部分（丢弃 LLM 前置思考过程）
+    stripped = text.lstrip()
+    if not stripped.startswith('{') and not stripped.startswith('['):
+        idx = text.find('{')
+        if idx < 0:
+            idx = text.find('[')
+        if idx > 0:
+            text = text[idx:]
     # Step 0: 修复字符串值中的字面控制字符
     repaired = _escape_control_chars_in_strings(text)
     # Step 1: 修复 \\" 转义错误 + Step 1b: 修复无效 \escape
