@@ -123,7 +123,7 @@ async function saveLlmModel(){
   var mEl=$("cfg_llm_model");
   if(!mEl)return;
   var model=mEl.value.trim();
-  if(!model){alert('请输入模型名');return;}
+  if(!model){showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.12)',iconColor:'var(--amber)',title:'提示',desc:'请输入模型名',confirmText:'知道了',confirmColor:'var(--amber)'});return;}
   try{
     await jput("/api/v1/system/llm/model",{model:model});
     if($("llm_test_result"))$("llm_test_result").innerHTML='<div style="padding:8px 14px;border-radius:6px;background:rgba(22,163,74,.1);color:var(--green);font-size:13px">✓ 模型已切换为 '+model+'</div>';
@@ -186,7 +186,7 @@ async function testDatasource(i){
 async function toggleDsEnabled(i){
   var ds=_dsData[i];if(!ds)return;
   try{await jput("/api/v2/datasources/"+ds.agent_type,{enabled:!ds.enabled});loadDatasources();}
-  catch(e){alert("切换失败: "+e);}
+  catch(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'切换失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});}
 }
 
 renderSystem();

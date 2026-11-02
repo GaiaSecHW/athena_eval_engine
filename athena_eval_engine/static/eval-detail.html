@@ -413,8 +413,8 @@ function retryEval(eid){
           var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
             jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
           setTimeout(retryPoll,500);
-        }else{alert('重试失败: '+JSON.stringify(d));}
-      }).catch(function(e){alert('重试失败: '+e);});
+        }else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
+      }).catch(function(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});});
     }
   });
 }
@@ -425,8 +425,8 @@ function deleteEval(eid,name){
     confirmText:'永久删除',confirmColor:'var(--red)',
     onConfirm:function(){
       F('/api/v1/evaluations/'+eid,{method:'DELETE'}).then(r=>r.json()).then(d=>{
-        if(d.status==='ok'){go('/evals');}else{alert('删除失败: '+JSON.stringify(d));}
-      }).catch(e=>alert('删除失败: '+e));
+        if(d.status==='ok'){go('/evals');}else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'删除失败',desc:String(JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
+      }).catch(e=>showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'删除失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'}));
     }
   });
 }
@@ -435,7 +435,7 @@ function cancelEval(eid){
     desc:'取消后评测将停止运行，状态设为已取消。此操作不可撤销。',
     confirmText:'确认取消',confirmColor:'var(--amber)',
     onConfirm:function(){
-      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.status==='CANCELLED'){go('/evals');}else{alert('取消失败: '+JSON.stringify(d));}}).catch(function(e){alert('取消失败: '+e);});
+      F('/api/v1/evaluations/'+eid+'/cancel',{method:'POST'}).then(function(r){return r.json()}).then(function(d){if(d.status==='CANCELLED'){go('/evals');}else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'取消失败',desc:String(JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}}).catch(function(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'取消失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});});
     }
   });
 }

@@ -528,11 +528,10 @@ async function confirmHypothesis(dtsId,hypKey,isRoot,causeCode,agentType,project
   btn.disabled=true;
   try{
     var res=await jpost('/api/v2/dts/'+encodeURIComponent(dtsId)+'/confirm-hypothesis',body);
-    if(res&&res.error){alert('确认失败: '+(res.error||''));btn.disabled=false;return;}
+    if(res&&res.error){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'确认失败',desc:String(res.error||''),confirmText:'知道了',confirmColor:'var(--red)',onConfirm:function(){btn.disabled=false;}});return;}
     renderDtsDetailPage(dtsId);
   }catch(e){
-    alert('确认失败: '+e);
-    btn.disabled=false;
+    showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'确认失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)',onConfirm:function(){btn.disabled=false;}});
   }
 }
 

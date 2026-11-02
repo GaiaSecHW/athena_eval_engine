@@ -115,9 +115,51 @@ function renderEvList(){
 }
 
 // 评测操作
-async function retryEval(eid){if(!confirm(`确认重跑评测 ${eid}？`))return;try{await jpost("/api/v1/evaluations/"+eid+"/retry?force=true",{});alert("已触发重跑");renderEvals();}catch(e){alert("重跑失败: "+e);}}
-async function cancelEval(eid){if(!confirm(`确认取消评测 ${eid}？`))return;try{await jpost("/api/v1/evaluations/"+eid+"/cancel",{});alert("已请求取消");renderEvals();}catch(e){alert("取消失败: "+e);}}
-async function deleteEval(eid,name){if(!confirm(`确认删除评测「${name||eid}」？此操作不可恢复！`))return;try{await jdel("/api/v1/evaluations/"+eid);alert("已删除");renderEvals();}catch(e){alert("删除失败: "+e);}}
+async function retryEval(eid){
+  showConfirm({
+    icon:'🔄',iconBg:'rgba(37,99,235,.12)',iconColor:'var(--acc)',
+    title:'重跑评测',desc:`确认重跑评测 ${eid}？`,
+    risks:['重跑会重新执行全部阶段（解析→匹配→根因分析→报告）','已生成的报告将被覆盖'],
+    confirmText:'重跑',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(){
+        renderEvals();
+      }).catch(function(e){
+        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+      });
+    }
+  });
+}
+async function cancelEval(eid){
+  showConfirm({
+    icon:'⏹️',iconBg:'rgba(251,191,36,.12)',iconColor:'var(--amber)',
+    title:'取消评测',desc:`确认取消评测 ${eid}？`,
+    risks:['取消后正在运行的阶段会停止','已完成的阶段数据保留'],
+    confirmText:'取消评测',confirmColor:'var(--amber)',
+    onConfirm:function(){
+      jpost('/api/v1/evaluations/'+eid+'/cancel',{}).then(function(){
+        renderEvals();
+      }).catch(function(e){
+        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'取消失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+      });
+    }
+  });
+}
+async function deleteEval(eid,name){
+  showConfirm({
+    icon:'🗑️',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',
+    title:'删除评测',desc:`确认删除评测「${name||eid}」？`,
+    risks:['此操作不可恢复','所有评测数据、报告、问题单将永久删除'],
+    confirmText:'永久删除',confirmColor:'var(--red)',
+    onConfirm:function(){
+      jdel('/api/v1/evaluations/'+eid).then(function(){
+        renderEvals();
+      }).catch(function(e){
+        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'删除失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+      });
+    }
+  });
+}
 
 renderEvals();
 </script>

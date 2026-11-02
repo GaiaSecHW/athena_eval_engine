@@ -249,22 +249,27 @@ async function syncNow(){
 }
 
 async function startEval(projectId, taskId, taskName){
-  if(!confirm(`确认对任务「${taskName}」启动运行态测评？`))return;
-  const eid=genId();
-  try{
-    const r=await jpost("/api/v1/evaluations",{
-      evaluation_id:eid,
-      evaluation_name:taskName||taskId,
-      kg_project_id:projectId,
-      kg_task_id:taskId,
-      benchmark_source:"vuln_center",
-      benchmark_set_id:projectId,
-      vc_source_task_id:taskId,
-      eval_mode:"runtime"
-    });
-    window.open(_INGRESS+"/evals/"+r.evaluation_id,"_blank");
-    setTimeout(load,2000);
-  }catch(e){showErr("启动测评失败: "+e);}
+  showConfirm({
+    icon:'▶️',iconBg:'rgba(37,99,235,.12)',iconColor:'var(--acc)',
+    title:'启动运行态测评',desc:`确认对任务「${taskName}」启动运行态测评？`,
+    confirmText:'启动',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      var eid=genId();
+      jpost("/api/v1/evaluations",{
+        evaluation_id:eid,
+        evaluation_name:taskName||taskId,
+        kg_project_id:projectId,
+        kg_task_id:taskId,
+        benchmark_source:"vuln_center",
+        benchmark_set_id:projectId,
+        vc_source_task_id:taskId,
+        eval_mode:"runtime"
+      }).then(function(r){
+        window.open(_INGRESS+"/evals/"+r.evaluation_id,"_blank");
+        setTimeout(load,2000);
+      }).catch(function(e){showErr("启动测评失败: "+e);});
+    }
+  });
 }
 
 renderReport();
