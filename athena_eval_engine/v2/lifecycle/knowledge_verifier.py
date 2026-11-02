@@ -347,6 +347,9 @@ class KnowledgeVerifier:
                         time.sleep(_ATHENA_RETRY_DELAY)
             if data is None:
                 log("KB_VERIFY", f"Athena API 查询失败 (kw={kw}, {_ATHENA_RETRIES}次重试后): {str(last_err)[:150]}")
+                from ..infra.pipeline_warnings import add as _add_warning
+                _add_warning("kb_verify", "athena_api_failed", "warning",
+                             f"Athena API 查询失败 (kw={kw}): {str(last_err)[:150]}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"GET {url}",
@@ -759,6 +762,9 @@ class KnowledgeVerifier:
             )
         except Exception as e:
             log("KB_VERIFY", f"LLM 判定失败: {str(e)[:200]}")
+            from ..infra.pipeline_warnings import add as _add_warning
+            _add_warning("kb_verify", "llm_judgment_failed", "warning",
+                         f"KB_VERIFY LLM 判定失败，降级为关键词匹配: {str(e)[:200]}")
             return {
                 "l4_knowledge_exists": bool(candidates),
                 "matched_files": [

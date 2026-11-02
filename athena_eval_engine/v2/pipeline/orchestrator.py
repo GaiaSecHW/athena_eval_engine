@@ -43,6 +43,7 @@ from .debug_dumper import (
 
 
 from ..infra.json_utils import json_default as _json_default, json_dump as _json_dump, json_dumps as _json_dumps
+from ..infra import pipeline_warnings as _pw
 
 
 def _get_reports_dir() -> str:
@@ -128,6 +129,7 @@ class Orchestrator:
         reports_dir = _get_reports_dir()
         os.makedirs(reports_dir, exist_ok=True)
         _clear_debug_files(reports_dir, evaluation_id)
+        _pw.reset()
         _cancel_cb = cancel_cb or _make_cancel_cb(evaluation_id, "ORCHESTRATOR")
 
         log("ORCH", f"启动 v2 pipeline: evaluation_id={evaluation_id} "
@@ -1240,6 +1242,9 @@ class Orchestrator:
         """
         from ..report.assembler import ReportAssembler
 
+        # 收集 pipeline 执行中的数据质量告警
+        data_quality_warnings = _pw.drain()
+
         assembler = ReportAssembler()
 
         # 组装生命周期分析段报告
@@ -1249,6 +1254,7 @@ class Orchestrator:
             causal_chain,
             recall_precision,
             reports_dir,
+            data_quality_warnings=data_quality_warnings,
         )
 
         # 写入基础报告段
@@ -1267,10 +1273,15 @@ class Orchestrator:
                 "cause_summary": causal_chain.get("cause_summary", {}),
             },
         }
+        if data_quality_warnings:
+            base_report["data_quality_warnings"] = data_quality_warnings
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")
         with open(base_path, "w", encoding="utf-8") as f:
             _json_dump(base_report, f)
-        log("REPORT", f"基础报告写入 {base_path}")
+        if data_quality_warnings:
+            log("REPORT", f"基础报告写入 {base_path}（含 {len(data_quality_warnings)} 条数据质量告警）")
+        else:
+            log("REPORT", f"基础报告写入 {base_path}")
 
     # ── FINALIZE ─────────────────────────────────────
 

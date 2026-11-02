@@ -137,6 +137,34 @@ def get_chars_per_token():
     """返回 chars/token 换算率，默认 3.0，400 错误后用实际数据更新。"""
     return _chars_per_token
 
+
+def estimate_tokens(text: str) -> int:
+    """预估文本的 token 数。
+
+    利用从 400 错误中收集的 chars_per_token 比率估算。
+    首次调用（未收集过比率）时用默认值 3.0，偏保守（高估 token 数）。
+    中文内容实际 chars/token 约 1.5-2.0，3.0 会高估，但高估比低估安全。
+    """
+    if not text:
+        return 0
+    return int(len(text) / _chars_per_token) + 1
+
+
+def would_exceed_context(messages: list[dict], reserved_tokens: int = 4096) -> bool:
+    """预判 messages 是否会超过 LLM 上下文限制。
+
+    reserved_tokens: 为 LLM 响应预留的 token 数（system prompt + completion）。
+    默认 4096，足够 JSON 结构化输出。
+
+    在发送前调用，避免撞 400 错误后降级。
+    """
+    max_ctx = _max_context_tokens
+    if max_ctx is None:
+        return False  # 未收集过上限，无法预判，让 LLM 自己报错
+    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
+    estimated = int(total_chars / _chars_per_token) + 1
+    return estimated + reserved_tokens > max_ctx
+
 def _collect_max_tokens(error_text, messages):
     """从 LLM 400 错误响应中解析 max context tokens 和实际 token 数，
     结合当时 messages 的字符数计算 chars/token 换算率。"""

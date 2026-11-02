@@ -688,7 +688,11 @@ class RootCauseAnalyzer:
         all_breakpoints: list[dict] = []
 
         def _compress_session(args: tuple) -> dict:
-            """压缩单个 session，返回含 step/session_id/summary 等的 dict。"""
+            """压缩单个 session，返回含 step/session_id/summary 等的 dict。
+
+            单个 session 超过 LLM 上下文限制时，按事件分片压缩再合并，
+            不截断原始文本。
+            """
             i, sid = args
             if cancel_cb:
                 cancel_cb()
@@ -710,22 +714,37 @@ class RootCauseAnalyzer:
                 {"role": "user", "content": user_content},
             ]
 
-            try:
-                result = llm_mod.chat_json(
-                    messages,
-                    temperature=0,
-                    cancel_cb=cancel_cb,
-                )
-            except Exception as e:
+            # 预检：超过上下文限制时分片压缩
+            if llm_mod.would_exceed_context(messages):
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                    f"LLM 压缩失败: {str(e)[:200]}",
+                    f"session 过大 (chars={len(session_text)})，分片压缩",
                     eval_id=evaluation_id)
-                result = {
-                    "summary": session_text[:3000] if session_text else "",
-                    "key_findings": [],
-                    "l0_l7": [],
-                }
+                result = self._compress_session_chunked(
+                    evaluation_id, case_id, chain_type, i, sid,
+                    events, vuln_title, desc, fp_reason, outcome,
+                    chain, cancel_cb,
+                )
+            else:
+                try:
+                    result = llm_mod.chat_json(
+                        messages,
+                        temperature=0,
+                        cancel_cb=cancel_cb,
+                    )
+                except Exception as e:
+                    log("ROOT_CAUSE",
+                        f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
+                        f"LLM 压缩失败: {str(e)[:200]}",
+                        eval_id=evaluation_id)
+                    from ..infra.pipeline_warnings import add as _add_warning
+                    _add_warning("llm", "compression_failed", "warning",
+                                 f"case {case_id} {chain_type} session {i+1} LLM 压缩失败，降级为规则提取: {str(e)[:200]}",
+                                 case_id=case_id)
+                    # LLM 调用失败（非超限）时降级：用规则提取知识访问标记，
+                    # 不截断原始文本。summary 保留完整 session_text 供 merge 阶段参考。
+                    result = self._degrade_compress_session(
+                        sid, events, session_text, str(e)[:200])
 
             return {
                 "session_id": sid,
@@ -792,6 +811,10 @@ class RootCauseAnalyzer:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
+            from ..infra.pipeline_warnings import add as _add_warning
+            _add_warning("llm", "merge_compression_failed", "warning",
+                         f"case {case_id} {chain_type} 合并压缩 LLM 失败，降级为摘要拼接: {str(e)[:200]}",
+                         case_id=case_id)
             # LLM 不可用时降级：拼接 session 摘要作为结果，但标记为低概率
             # 不伪造 probability=1.0——那会覆盖 session 级真实分析结果
             merge_result = {
@@ -1214,6 +1237,215 @@ class RootCauseAnalyzer:
                 "candidate_files": 0,
                 "error": str(e)[:500],
             }
+
+    def _compress_session_chunked(
+        self, evaluation_id: str, case_id: str, chain_type: str,
+        step_idx: int, session_id: str,
+        events: list[RawEvent], vuln_title: str, desc: str,
+        fp_reason: str, outcome: str,
+        chain: list[str], cancel_cb=None,
+    ) -> dict:
+        """对超大 session 按事件分片压缩，再合并分片摘要。
+
+        策略：
+        1. 按 LLM 上下文限制计算每片最大字符数
+        2. 按事件边界切分（不截断单个事件）
+        3. 每片独立调 LLM 压缩
+        4. 合并所有分片摘要为最终结果
+        """
+        max_ctx = llm_mod.get_max_context_tokens() or 204800
+        cpt = llm_mod.get_chars_per_token()
+        # system prompt + user_content 框架约 500 字符，预留 4096 token 给响应
+        usable_tokens = max_ctx - 4096
+        usable_chars = int(usable_tokens * cpt)
+        # 框架开销（漏洞标题+描述+outcome+标注原因+session头）
+        overhead = len(vuln_title) + len(desc) + len(fp_reason or "") + 200
+        chunk_char_limit = max(usable_chars - overhead, 5000)
+
+        # 按事件边界切分 session_text
+        event_texts = []
+        for ev in events:
+            et = ev.event_type or "UNKNOWN"
+            tool = ev.tool_name or ""
+            if et == "REASONING":
+                text = _extract_text(ev.output_json)
+                if text:
+                    event_texts.append(f"[推理] {text}")
+            elif et == "TEXT":
+                text = _extract_text(ev.output_json)
+                if text:
+                    event_texts.append(f"[文本] {text}")
+            elif et == "TOOL_CALL":
+                text = _extract_text(ev.input_json)
+                kg_flag = ""
+                if ev.is_kg_interaction:
+                    kg_flag = " [知识库访问]"
+                elif ev.is_memory_interaction:
+                    kg_flag = " [记忆访问]"
+                event_texts.append(f"[工具调用] {tool}{kg_flag}: {text}")
+            elif et == "TOOL_RESULT":
+                text = _extract_text(ev.output_json)
+                kg_flag = ""
+                if ev.is_kg_interaction:
+                    kg_flag = " [知识库返回]"
+                elif ev.is_memory_interaction:
+                    kg_flag = " [记忆返回]"
+                event_texts.append(f"[工具返回] {tool}{kg_flag}: {text}")
+            elif et == "SESSION_START":
+                event_texts.append(f"[会话开始] session={session_id}")
+
+        # 贪心打包事件到分片
+        chunks = []
+        current = []
+        current_len = 0
+        for et in event_texts:
+            if current_len + len(et) + 1 > chunk_char_limit and current:
+                chunks.append(current)
+                current = []
+                current_len = 0
+            current.append(et)
+            current_len += len(et) + 1
+        if current:
+            chunks.append(current)
+
+        log("ROOT_CAUSE",
+            f"case {case_id}: {chain_type} session {step_idx+1}/{len(chain)} "
+            f"分片 {len(chunks)} 片 (每片上限 {chunk_char_limit} 字符, "
+            f"{len(events)} 事件)",
+            eval_id=evaluation_id)
+
+        # 并发压缩各分片
+        def _compress_chunk(args):
+            chunk_idx, chunk_lines = args
+            if cancel_cb:
+                cancel_cb()
+            chunk_text = "\n".join(chunk_lines)
+            user_content = (
+                f"漏洞标题：{vuln_title}\n"
+                f"漏洞描述：{desc}\n"
+                f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
+                f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
+                f"Session {step_idx+1}/{len(chain)} 分片 {chunk_idx+1}/{len(chunks)} "
+                f"(session_id={session_id}):\n"
+                f"{chunk_text}"
+            )
+            msgs = [
+                {"role": "system", "content": _SYSTEM_PROMPT},
+                {"role": "user", "content": user_content},
+            ]
+            try:
+                r = llm_mod.chat_json(msgs, temperature=0, cancel_cb=cancel_cb)
+            except Exception as e:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} session {step_idx+1} "
+                    f"分片 {chunk_idx+1}/{len(chunks)} 压缩失败: {str(e)[:200]}",
+                    eval_id=evaluation_id)
+                r = self._degrade_compress_session(
+                    session_id, [], chunk_text, str(e)[:200])
+            return chunk_idx, r
+
+        chunk_tasks = [(i, c) for i, c in enumerate(chunks)]
+        chunk_futures = llm_mod.submit_llm_batch(
+            _compress_chunk, chunk_tasks, cancel_cb=cancel_cb)
+
+        chunk_results = {}
+        for fut in chunk_futures:
+            try:
+                cidx, cr = fut.result()
+                chunk_results[cidx] = cr
+            except Exception as e:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} session {step_idx+1} "
+                    f"分片压缩异常: {str(e)[:200]}",
+                    eval_id=evaluation_id)
+                raise
+
+        # 合并分片摘要
+        all_summaries = []
+        all_key_findings = []
+        all_l0_l7 = []
+        for cidx in sorted(chunk_results.keys()):
+            cr = chunk_results[cidx]
+            all_summaries.append(cr.get("summary", ""))
+            all_key_findings.extend(cr.get("key_findings") or [])
+            all_l0_l7.extend(cr.get("l0_l7") or [])
+
+        # 如果只有一片，直接返回
+        if len(chunk_results) == 1:
+            return list(chunk_results.values())[0]
+
+        # 多片合并：用 LLM 合并分片摘要
+        merge_content = (
+            f"漏洞标题：{vuln_title}\n"
+            f"漏洞描述：{desc}\n"
+            f"outcome：{outcome or 'FP'}\n"
+            f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
+            f"以下是 session {session_id} 的 {len(chunks)} 个分片的独立压缩摘要，"
+            f"请合并为一份完整的结构化摘要：\n\n"
+            + "\n---\n".join(all_summaries)
+        )
+        merge_msgs = [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": merge_content},
+        ]
+        try:
+            merged = llm_mod.chat_json(merge_msgs, temperature=0, cancel_cb=cancel_cb)
+            # 保留各分片的 l0_l7 和 key_findings
+            merged.setdefault("key_findings", all_key_findings)
+            merged.setdefault("l0_l7", all_l0_l7)
+            return merged
+        except Exception as e:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} session {step_idx+1} "
+                f"分片合并失败: {str(e)[:200]}",
+                eval_id=evaluation_id)
+            # 合并失败：拼接分片摘要作为 summary，保留各分片的 l0_l7
+            return {
+                "summary": "\n".join(all_summaries),
+                "key_findings": all_key_findings,
+                "l0_l7": all_l0_l7,
+            }
+
+    def _degrade_compress_session(
+        self, session_id: str, events: list[RawEvent],
+        session_text: str, error_msg: str,
+    ) -> dict:
+        """LLM 压缩失败时的规则降级。
+
+        不截断原始文本。用规则从事件中提取知识访问标记，
+        summary 保留完整 session_text 供 merge 阶段参考。
+        """
+        # 规则提取知识访问断点
+        l0_l7 = []
+        for ev in events:
+            if not (ev.is_kg_interaction or ev.is_memory_interaction):
+                continue
+            source = "knowledge_base" if ev.is_kg_interaction else "memory"
+            query = _extract_text(ev.input_json) if ev.event_type == "TOOL_CALL" else ""
+            returned = _extract_text(ev.output_json) if ev.event_type == "TOOL_RESULT" else ""
+            l0_l7.append({
+                "l0_source": source,
+                "l1_need": None,
+                "l2_initiated": True if ev.event_type == "TOOL_CALL" else None,
+                "l3_accurate": None,
+                "l4_exists": None,
+                "l5_retrieved": None,
+                "l6_used": None,
+                "l7_influenced": None,
+                "breakpoint": None,
+                "cause_code": None,
+                "query_content": query[:500] if query else "",
+                "returned_content": returned[:500] if returned else "",
+                "fix_suggestion": "",
+            })
+
+        return {
+            "summary": f"[LLM 压缩失败降级] {error_msg}\n\n"
+                       f"原始 session 文本（{len(session_text)} 字符）:\n"
+                       f"{session_text}",
+            "key_findings": [],
+            "l0_l7": l0_l7,
+        }
 
     def _format_session_events(
         self, session_id: str, events: list[RawEvent],

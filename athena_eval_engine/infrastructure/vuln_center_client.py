@@ -48,6 +48,9 @@ def get_case_raw_report(case_id: str, report_id: str = "raw-intake") -> str:
             return data.get("content") or ""
     except Exception as e:
         log("VULN_CENTER", f"获取原始报告失败 case={case_id}: {e}")
+        from ..v2.infra.pipeline_warnings import add as _add_warning
+        _add_warning("vuln_center", "raw_report_fetch_failed", "warning",
+                     f"case {case_id} 原始报告获取失败: {str(e)[:200]}", case_id=case_id)
     return ""
 
 
