@@ -411,7 +411,7 @@ def try_submit_llm(fn, *args, **kwargs) -> Future | None:
 
 def submit_llm_batch(fn, items, *, args_fn=None, kwargs_fn=None,
                      cancel_cb=None) -> list[Future]:
-    """逐个提交 LLM 任务，gate 满则 sleep(1) 等待，直到全部提交成功。
+    """逐个提交 LLM 任务，gate 满则阻塞等待（Condition.wait），直到全部提交成功。
 
     fn: 要执行的函数
     items: 可迭代对象，每个元素对应一个任务
@@ -421,8 +421,10 @@ def submit_llm_batch(fn, items, *, args_fn=None, kwargs_fn=None,
 
     返回 Future 列表（与 items 等长，顺序对应）。
     cancel_cb 抛异常时，已提交的 future 会被 cancel 后再传播异常。
+
+    用 submit_llm（阻塞式 acquire）替代 try_submit_llm + sleep(1) 轮询：
+    gate 释放时 Condition.notify 立即唤醒等待线程，零空窗。
     """
-    import time as _time
     futures = []
     try:
         for item in items:
@@ -430,14 +432,8 @@ def submit_llm_batch(fn, items, *, args_fn=None, kwargs_fn=None,
                 cancel_cb()
             _args = args_fn(item) if args_fn else (item,)
             _kwargs = kwargs_fn(item) if kwargs_fn else {}
-            while True:
-                if cancel_cb:
-                    cancel_cb()
-                fut = try_submit_llm(fn, *_args, **_kwargs)
-                if fut is not None:
-                    futures.append(fut)
-                    break
-                _time.sleep(1)
+            fut = submit_llm(fn, *_args, **_kwargs)
+            futures.append(fut)
     except Exception:
         for f in futures:
             f.cancel()
