@@ -126,9 +126,9 @@ _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
 # 从 400 错误中收集的 max context tokens 和 chars/token 换算率
-# 默认值偏保守（小于常见模型上限），首次 400 后自适应更新为实际值
-_max_context_tokens = 204800
-_chars_per_token = 2.0  # 中文偏保守（~2 chars/token），400 错误后用实际数据更新
+# 默认值与远程 LLM 网关一致（500K），400 错误后自适应更新为当前模型实际值
+_max_context_tokens = 500000
+_chars_per_token = 3.0  # 默认值，400 错误后用实际数据更新
 
 def get_max_context_tokens():
     """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
