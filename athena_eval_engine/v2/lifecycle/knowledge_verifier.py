@@ -119,6 +119,7 @@ class KnowledgeVerifier:
         project_id: str = "",
         cancel_cb=None,
         evaluation_id: str = "",
+        kb_search_queries: list[str] | None = None,
     ) -> dict:
         """主动搜索知识库 + 记忆/wiki，验证是否有解决该误报所需的知识。
 
@@ -131,6 +132,8 @@ class KnowledgeVerifier:
             fp_reason: 人工标注的误报原因
             project_id: 项目 ID（Athena API 查询用，空则跳过 API 查询）
             cancel_cb: 取消回调
+            kb_search_queries: LLM 从 session 分析产出的知识检索问题，
+                              为空则不查知识库（LLM 判定无需查询）
 
         Returns:
             {
@@ -151,21 +154,25 @@ class KnowledgeVerifier:
         # 查询过程日志——透明化每一步
         query_log: list[dict] = []
 
-        # 1. 提取查询关键词
-        keywords = self._extract_keywords(vuln_title, fp_reason)
+        # 1. 确定查询关键词
+        # 用 LLM 从 session 分析产出的知识检索问题（"缺什么才问什么"）
+        # 没有检索问题 = LLM 判定不需要查知识库，直接返回
+        keywords = kb_search_queries or []
         query_log.append({
-            "step": "关键词提取",
-            "action": "从漏洞标题 + 误报原因提取查询关键词",
-            "detail": (f"漏洞标题: {vuln_title}\n"
-                       f"误报原因: {fp_reason}"),
-            "result": f"提取到 {len(keywords)} 个关键词: {', '.join(keywords) if keywords else '（无）'}",
+            "step": "检索问题提取",
+            "action": "使用 LLM 从 session 分析产出的知识检索问题",
+            "detail": f"检索问题: {keywords}",
+            "result": f"{len(keywords)} 个检索问题: {', '.join(keywords) if keywords else '（无）'}",
             "count": len(keywords),
         })
         if not keywords:
-            log("KB_VERIFY", f"无法提取关键词: vuln_title={vuln_title}, fp_reason={fp_reason}")
-            empty = self._empty_result()
-            empty["query_log"] = query_log
-            return empty
+            log("KB_VERIFY",
+                f"无知识检索问题，跳过知识库验证 "
+                f"(vuln_title={vuln_title[:50]}, fp_reason={fp_reason[:50]})")
+            result = self._empty_result()
+            result["query_log"] = query_log
+            result["summary"] = "LLM 分析未产出知识检索问题，无需查询知识库"
+            return result
 
         log("KB_VERIFY",
             f"关键词: {keywords} (vuln_title={vuln_title[:50]}, "

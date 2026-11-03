@@ -60,6 +60,7 @@ _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的
 **所有分析必须基于 session 中的实际内容，禁止推测。**
 - returned_content 字段：必须直接引用或概括 session 中 `[知识库返回]`/`[记忆返回]` 标记后的实际返回文本，禁止用"可能包含"、"推测"等猜测性语言描述返回内容
 - query_content 字段：必须填写 agent 实际执行的查询命令或查询参数，从 `[知识库访问]`/`[记忆访问]` 标记后的文本中提取
+- kb_search_query 字段：当 breakpoint=L2 或 L4 时必填，其他断点填空字符串。必须是一个完整的、可直接用于知识库检索的问题（如"如何验证目标网络可达性和端口开放状态"），不是关键词碎片，不是泛泛的漏洞类型名
 - summary 和 key_findings 中的每一句话都必须能在 session 文本中找到对应的事实依据，禁止添加 session 中不存在的信息
 - 如果知识返回内容为空或无法判断，直接写"返回内容为空"或"无法从 session 文本中确认"，不要猜测
 
@@ -133,6 +134,7 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
   - 如果 L1=true（需要知识）但 L2=false（agent 没发起访问）→ 断点 L2，cause_code 填 "A"（该查没查）
     - 在 l0_l7 数组中新增一条记录，l0_source 填空，l1_need=true，l2_initiated=false，L3-L7 填 null
     - query_content 填"agent 未发起知识/记忆访问，但推理任务需要知识支撑（具体说明需要什么知识）"
+    - kb_search_query 填一个面向知识库检索的完整问题（如"如何验证目标网络可达性和端口开放状态"），基于 session 分析 agent 避免此误报所需的知识生成，用于评测引擎代为向知识库发起检索
     - returned_content 填空
   - 如果 L1=false（不需要知识），L2-L7 全部填 null，不产生知识访问断点
 - 如果 L1-L7 全部通过（L7=positive），但 agent 仍误报，执行 L8 判定：
@@ -170,6 +172,7 @@ L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
       "query_content": "agent 实际执行的查询命令或参数（从 session 文本提取，不要概括）",
+      "kb_search_query": "面向知识库检索的完整问题。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识，生成一个可直接用于知识库检索的完整问题（如'如何验证目标网络可达性和端口开放状态'）；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题（可能比 agent 实际查的更精准）；其他断点或无断点时填空字符串",
       "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）",
       "fix_suggestion": "基于本 session 具体问题的修复建议：哪个命令/查询有问题就改哪里。如查询太泛→改为按当前漏洞类型聚焦查询；知识缺失→明确指出知识库缺什么；返回错误→指出返回了什么错误/异常。必须可定位到本 session 的具体位置，禁止空泛建议（如'增加去重逻辑'必须说明在哪个命令/步骤加）"
     }
@@ -191,6 +194,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 - 每个假设的 evidence 必须引用 session 摘要中的具体事实
 - 如果 session 摘要中没有相关信息，直接说明"session 中未涉及此方面"，不要猜测
 - query_content 字段：必须填写 agent 实际执行的查询命令，不要概括为通用描述
+- kb_search_query 字段：当 breakpoint=L2 或 L4 时必填，其他断点填空字符串。必须是一个完整的、可直接用于知识库检索的问题，不是关键词碎片
 - returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
 - 禁止使用"可能"、"或许"、"推测"等不确定语言描述事实
 - 但对"假设"本身可以用概率描述不确定性，这是分析的不确定性，不是事实的不确定性
@@ -330,6 +334,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 - **如果 session 中没有知识访问行为**：
   - 判 L1：推理任务是否需要知识支撑（如验证网络可达性、判断接口暴露面、评估防护机制等需要知识库中的方法/经验）
   - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
+    - kb_search_query 填一个面向知识库检索的完整问题，基于 session 分析 agent 避免此误报所需的知识生成，用于评测引擎代为向知识库发起检索
   - L1=false → 不产生知识访问断点
 - 如果知识访问链路全程通过（L7=positive）但 agent 仍误报，必须输出 L8 断点：
   - L8 断点表示知识访问链路无问题，但存在其他非知识访问的原因导致误报/漏报
@@ -410,6 +415,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/null",
       "query_content": "agent 实际执行的查询命令（从摘要中提取原文，不要概括）",
+      "kb_search_query": "面向知识库检索的完整问题。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识，生成一个可直接用于知识库检索的完整问题；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题；其他断点或无断点时填空字符串",
       "returned_content": "知识/记忆实际返回的文本内容概括（基于摘要中的记录，不要推测）"
     }
   ]
@@ -1143,12 +1149,26 @@ class RootCauseAnalyzer:
                 "skipped_reason": "duplicate_report",
             }
 
+        # ── 从断点中提取 LLM 分析产出的知识检索问题 ──
+        # LLM 在 session 分析时已判定 agent 需要什么知识，并生成 kb_search_query
+        # 用它替代从 fp_reason 规则分词，实现"缺什么才问什么"
+        kb_search_queries: list[str] = []
+        for bp in all_breakpoints:
+            q = bp.get("kb_search_query", "").strip()
+            if q:
+                kb_search_queries.append(q)
+        # 去重保持顺序
+        seen_q = set()
+        kb_search_queries = [q for q in kb_search_queries
+                             if not (q in seen_q or seen_q.add(q))]
+
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 检测到"
             f"{'L2 断点' if has_l2_break else ''}"
             f"{'+' if has_l2_break and has_knowledge_hypothesis else ''}"
             f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
-            f"启动知识库主动验证 L4 (project_id={project_id})")
+            f"启动知识库主动验证 L4 (project_id={project_id}, "
+            f"queries={kb_search_queries})")
 
         try:
             from .knowledge_verifier import KnowledgeVerifier
@@ -1159,6 +1179,7 @@ class RootCauseAnalyzer:
                 project_id=project_id,
                 cancel_cb=cancel_cb,
                 evaluation_id=evaluation_id,
+                kb_search_queries=kb_search_queries,
             )
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} L4 独立验证完成: "
