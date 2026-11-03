@@ -131,14 +131,17 @@ _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "
 # 从 400 错误中收集的 max context tokens 和 chars/token 换算率
 # 默认值与当前模型（DeepSeek）一致，400 错误后自适应更新
 _max_context_tokens = 204800
-_chars_per_token = 3.0  # 默认值，400 错误后用实际数据更新
+# chars/token 默认值取 1.5（中文为主的最坏情况）：
+# 实测 606000 字符（中文 session 分片）触发 204800 token 上限，
+# 即实际 chars/token < 2.96。取 1.5 保守估算，宁可多分片也不撞 400。
+_chars_per_token = 1.5
 
 def get_max_context_tokens():
     """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
     return _max_context_tokens
 
 def get_chars_per_token():
-    """返回 chars/token 换算率，默认 3.0，400 错误后用实际数据更新。"""
+    """返回 chars/token 换算率，默认 1.5，400 错误后用实际数据更新。"""
     return _chars_per_token
 
 
@@ -146,8 +149,8 @@ def estimate_tokens(text: str) -> int:
     """预估文本的 token 数。
 
     利用从 400 错误中收集的 chars_per_token 比率估算。
-    首次调用（未收集过比率）时用默认值 3.0，偏保守（高估 token 数）。
-    中文内容实际 chars/token 约 1.5-2.0，3.0 会高估，但高估比低估安全。
+    首次调用（未收集过比率）时用默认值 1.5（中文为主的最坏情况）。
+    chars/token 越小，估出的 token 数越多，越保守——宁可高估不低估。
     """
     if not text:
         return 0
@@ -180,13 +183,23 @@ def _collect_max_tokens(error_text, messages):
         m = re.search(r'max_?context_?(?:length|tokens|window)\D{0,5}(\d{4,})', error_text, re.IGNORECASE)
     if m:
         _max_context_tokens = int(m.group(1))
-    # 提取实际 token 数: "your messages resulted in 150000 tokens"
-    m2 = re.search(r'(?:resulted in|have )(\d+) tokens', error_text, re.IGNORECASE)
+    # 提取实际 token 数，兼容三种文案：
+    #   "your messages resulted in 150000 tokens"
+    #   "your prompt contains at least 204800 input tokens"
+    #   "you requested 1 output tokens ... 204801 tokens"
+    m2 = re.search(r'(?:resulted in|have|contains at least|for a total of at least)\s+(\d+)'
+                   r'(?:\s+input)?\s+tokens', error_text, re.IGNORECASE)
     if m2:
         actual_tokens = int(m2.group(1))
         msg_chars = sum(len(str(msg.get("content", ""))) for msg in messages)
+        # 只有「至少 N」的报错是下限，实际可能更多 → 算出的比率是上限，需再收紧
+        _is_lower_bound = "at least" in m2.group(0).lower()
         if actual_tokens > 0 and msg_chars > 0:
-            _chars_per_token = msg_chars / actual_tokens
+            ratio = msg_chars / actual_tokens
+            if _is_lower_bound:
+                # 真实 token >= 报错值 → 真实 chars/token <= ratio，取下限更安全
+                ratio = ratio * 0.95
+            _chars_per_token = ratio
     if _max_context_tokens:
         log("LLM", f"从 400 错误中收集 max_context_tokens={_max_context_tokens} chars_per_token={_chars_per_token:.2f}")
 

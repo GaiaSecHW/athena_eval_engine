@@ -1292,11 +1292,13 @@ class RootCauseAnalyzer:
         """
         max_ctx = llm_mod.get_max_context_tokens() or 204800
         cpt = llm_mod.get_chars_per_token()
-        # system prompt + user_content 框架约 500 字符，预留 4096 token 给响应
+        # 预留 4096 token 给响应
         usable_tokens = max_ctx - 4096
         usable_chars = int(usable_tokens * cpt)
-        # 框架开销（漏洞标题+描述+outcome+标注原因+session头）
-        overhead = len(vuln_title) + len(desc) + len(fp_reason or "") + 200
+        # 框架开销：system prompt 全文 + 漏洞标题/描述/outcome/标注原因/session 头
+        overhead = (len(_SYSTEM_PROMPT)
+                    + len(vuln_title) + len(desc) + len(fp_reason or "")
+                    + len(chain_type) + len(session_id) + 300)
         chunk_char_limit = max(usable_chars - overhead, 5000)
 
         # 按事件边界切分 session_text
