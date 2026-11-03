@@ -14,7 +14,7 @@ from typing import Any
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ..core.task_run import BenchmarkItem
-from ..infra.log_util import log, with_eval_ctx, get_eval_ctx
+from ..infra.log_util import log, log_error, with_eval_ctx, get_eval_ctx
 
 # ── 默认值 ──
 
@@ -87,7 +87,7 @@ class EvidenceChain:
     """L7 方向一致性 + 知识正确性判定器。
 
     被 LifecycleAnalyzer 在 L0-L6 漏斗通过后调用，对每次知识访问执行 L7 判定。
-    LLM 不可用时降级为规则判定（confidence=0.0 触发置信度不足逻辑）。
+    LLM 不可用时抛异常，不降级。
     """
 
     def __init__(self, llm_client=None):
@@ -139,15 +139,8 @@ class EvidenceChain:
             f"(total {len(records)}, baseline_vuln_title={baseline_vuln_info.get('vuln_title', '')})",
             eval_id=evaluation_id)
 
-        # LLM 不可用时降级处理
         if not self._llm_available():
-            for r in pending:
-                self._apply_degradation(r, baseline_vuln_info)
-            log("L7",
-                f"LLM unavailable, degraded {len(pending)} records "
-                f"(confidence=0.0, all defaults)",
-                eval_id=evaluation_id)
-            return records
+            raise RuntimeError("LLM 不可用，无法执行 L7 判定")
 
         # 构建全部 LLM 调用任务
         tasks = []
@@ -187,18 +180,13 @@ class EvidenceChain:
             try:
                 results[i] = fut.result()
             except Exception as e:
-                log("L7",
-                    f"LLM call failed for record {pending[i].get('access_id', '')}: "
-                    f"{str(e)[:200]}",
-                    eval_id=evaluation_id)
-                results[i] = None  # 后续走降级
+                log_error(evaluation_id, "L7", e)
+                raise
 
         # 将 LLM 结果写入 records
         for r, result in zip(pending, results):
             if result is None:
-                # LLM 调用失败，降级
-                self._apply_degradation(r, baseline_vuln_info)
-                continue
+                raise RuntimeError("L7 LLM 判定结果为空")
 
             knowledge_correct = result.get("knowledge_correct", True)
             direction_consistent = result.get("direction_consistent", True)
@@ -441,41 +429,6 @@ class EvidenceChain:
             reasoning_effort="high",
             cancel_cb=cancel_cb,
         )
-
-    # ── 降级处理 ──
-
-    def _apply_degradation(self, record: dict, baseline_vuln_info: dict) -> None:
-        """LLM 不可用时对单条记录执行降级。
-
-        降级规则（任务规范）：
-        - knowledge_correct 降级为 True（无法判定时默认正确）
-        - direction_consistent 降级为 True
-        - confidence = 0.0（触发置信度不足逻辑）
-        - influenced 降级为 True（假设知识有影响）
-
-        结果：confidence=0.0 < threshold(0.6) → effect_label=None, cause_code=None
-        标记 l7_method=EVIDENCE_CHAIN 表示已尝试判定但证据不足。
-        """
-        knowledge_correct = True
-        direction_consistent = True
-        confidence = 0.0
-        influenced = True
-
-        effect_label, cause_code = self._derive_effect_and_cause(
-            knowledge_correct, direction_consistent, confidence, influenced)
-
-        record["l7_influenced"] = None  # confidence < threshold → 不判定
-        record["l7_method"] = "EVIDENCE_CHAIN"
-        record["effect_label"] = effect_label  # None（置信度不足）
-        record["cause_code"] = cause_code  # None（置信度不足）
-        record["evidence_json"] = {
-            "status": "l7_degraded",
-            "knowledge_correct": knowledge_correct,
-            "direction_consistent": direction_consistent,
-            "confidence": confidence,
-            "influenced": influenced,
-            "reason": "LLM 不可用，降级判定。confidence=0.0 触发置信度不足逻辑。",
-        }
 
     # ── 工具方法 ──
 

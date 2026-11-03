@@ -34,7 +34,7 @@ import urllib.request
 from typing import Any
 
 from ...config_loader import DATA_ROOT
-from ..infra.log_util import log
+from ..infra.log_util import log, log_error
 from ..infra import llm as llm_mod
 
 # ── 记忆/wiki NFS 路径 ──
@@ -179,15 +179,15 @@ class KnowledgeVerifier:
         if not keywords:
             log("KB_VERIFY",
                 f"无知识检索问题，跳过知识库验证 "
-                f"(vuln_title={vuln_title[:50]}, fp_reason={fp_reason[:50]})")
+                f"(vuln_title={vuln_title}, fp_reason={fp_reason})")
             result = self._empty_result()
             result["query_log"] = query_log
             result["summary"] = "LLM 分析未产出知识检索问题，无需查询知识库"
             return result
 
         log("KB_VERIFY",
-            f"关键词: {keywords} (vuln_title={vuln_title[:50]}, "
-            f"fp_reason={fp_reason[:50]}, project_id={project_id})")
+            f"关键词: {keywords} (vuln_title={vuln_title}, "
+            f"fp_reason={fp_reason}, project_id={project_id})")
 
         candidates: list[dict] = []
 
@@ -254,7 +254,7 @@ class KnowledgeVerifier:
         query_log.append({
             "step": "读取候选文件",
             "action": f"读取 {len(candidates)} 个候选文件内容摘要（前 {_MD_PREVIEW_LINES} 行）",
-            "detail": "; ".join(c.get("path", "")[:80] for c in candidates[:10]),
+            "detail": "; ".join(c.get("path", "") for c in candidates[:10]),
             "result": f"已读取 {len(candidates)} 个文件",
             "count": len(candidates),
         })
@@ -263,7 +263,7 @@ class KnowledgeVerifier:
         query_log.append({
             "step": "LLM 判定",
             "action": f"用 LLM 判定 {len(candidates)} 个候选文件是否含消减误报的知识",
-            "detail": f"漏洞标题: {vuln_title[:60]}; 误报原因: {fp_reason[:60]}",
+            "detail": f"漏洞标题: {vuln_title}; 误报原因: {fp_reason}",
             "result": "等待 LLM 判定...",
             "count": len(candidates),
         })
@@ -387,15 +387,15 @@ class KnowledgeVerifier:
 
         for kw, task_id, poll_data, error in raw_results:
             if task_id is None:
-                log("KB_VERIFY", f"Athena /retrieve 提交失败 (kw={kw}): {error[:150]}")
+                log("KB_VERIFY", f"Athena /retrieve 提交失败 (kw={kw}): {error}")
                 from ..infra.pipeline_warnings import add as _add_warning
                 _add_warning(evaluation_id, "kb_verify", "athena_api_failed", "warning",
-                             f"Athena /retrieve 提交失败 (kw={kw}): {error[:150]}")
+                             f"Athena /retrieve 提交失败 (kw={kw}): {error}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url}",
                     "detail": f"关键词: {kw}",
-                    "result": f"提交失败（{_ATHENA_RETRIES}次重试后）: {error[:100]}",
+                    "result": f"提交失败（{_ATHENA_RETRIES}次重试后）: {error}",
                     "count": 0,
                 })
                 continue
@@ -451,7 +451,7 @@ class KnowledgeVerifier:
                         "source": "athena_api",
                         "path": doc_path,
                         "title": title,
-                        "abstract": snippet[:200],
+                        "abstract": snippet,
                         "keywords": kw,
                         "content_preview": snippet,
                         "hit_fields": ["retrieve"],
@@ -466,7 +466,7 @@ class KnowledgeVerifier:
                     "source": "athena_api",
                     "path": f"retrieve/{task_id}",
                     "title": f"检索结果: {kw}",
-                    "abstract": content[:200],
+                    "abstract": content,
                     "keywords": kw,
                     "content_preview": content,
                     "hit_fields": ["retrieve"],
@@ -713,7 +713,7 @@ class KnowledgeVerifier:
                     matched.append({
                         "source": "wiki_nfs",
                         "title": title,
-                        "abstract": preview[:200],
+                        "abstract": preview,
                         "keywords": "",
                         "path": fpath,
                         "hit_fields": [
@@ -823,23 +823,9 @@ class KnowledgeVerifier:
             try:
                 result = llm_mod.chat_json(all_msgs, temperature=0, cancel_cb=cancel_cb)
             except Exception as e:
-                log("KB_VERIFY", f"LLM 判定失败: {str(e)[:200]}")
-                from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "llm_judgment_failed", "warning",
-                             f"KB_VERIFY LLM 判定失败，降级为关键词匹配: {str(e)[:200]}")
-                return {
-                    "l4_knowledge_exists": bool(candidates),
-                    "matched_files": [
-                        {
-                            "path": c.get("path", ""),
-                            "title": c.get("title", ""),
-                            "relevance": "medium",
-                            "reason": "LLM 判定失败，关键词匹配降级",
-                        }
-                        for c in candidates
-                    ],
-                    "summary": f"LLM 判定失败，降级为关键词匹配（{len(candidates)} 个候选）",
-                }
+                log("KB_VERIFY", "LLM 判定失败")
+                log_error(evaluation_id, "KB_VERIFY", e)
+                raise
             return {
                 "l4_knowledge_exists": result.get("knowledge_exists", False),
                 "matched_files": result.get("matched_files") or [],
@@ -871,19 +857,9 @@ class KnowledgeVerifier:
             try:
                 r = llm_mod.chat_json(batch_msgs, temperature=0, cancel_cb=cancel_cb)
             except Exception as e:
-                log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败: {str(e)[:200]}")
-                from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "llm_judgment_failed", "warning",
-                             f"KB_VERIFY 分批 {bi+1} LLM 判定失败: {str(e)[:200]}")
-                # 失败批次降级为关键词匹配
-                for c in batch:
-                    all_matched.append({
-                        "path": c.get("path", ""),
-                        "title": c.get("title", ""),
-                        "relevance": "medium",
-                        "reason": "LLM 判定失败，关键词匹配降级",
-                    })
-                continue
+                log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败")
+                log_error(evaluation_id, "KB_VERIFY", e)
+                raise
             if r.get("knowledge_exists", False):
                 any_knowledge_exists = True
             all_matched.extend(r.get("matched_files") or [])

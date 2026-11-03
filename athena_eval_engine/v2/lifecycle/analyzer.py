@@ -29,7 +29,7 @@ from ..infra.parallel import iter_completed
 from .case_filter import CaseFilter
 from .evidence_chain import L7_CONFIDENCE_THRESHOLD
 from ..persistence.kad_repo import upsert_knowledge_access_details
-from ..infra.log_util import log, with_eval_ctx, get_eval_ctx
+from ..infra.log_util import log, log_error, with_eval_ctx, get_eval_ctx
 
 # ── 安全上下文阈值（占 max_context 的比例）──
 _CONTEXT_SAFETY_RATIO = 0.6  # 只用 60% 上下文窗口给 user_content，留余量给 system prompt + 输出
@@ -254,7 +254,7 @@ class LifecycleAnalyzer:
                                              baseline_vuln_info, cancel_cb)
             except Exception as e:
                 log("LIFECYCLE",
-                    f"L1-L7 failed for event_idx={accesses[0].get('event_idx')}: {str(e)[:200]}",
+                    f"L1-L7 failed for event_idx={accesses[0].get('event_idx')}: {e}",
                     eval_id=evaluation_id)
                 raise
         else:
@@ -272,7 +272,7 @@ class LifecycleAnalyzer:
                     records[i] = fut.result()
                 except Exception as e:
                     log("LIFECYCLE",
-                        f"L1-L7 failed for event_idx={accesses[i].get('event_idx')}: {str(e)[:200]}",
+                        f"L1-L7 failed for event_idx={accesses[i].get('event_idx')}: {e}",
                         eval_id=evaluation_id)
                     raise
 
@@ -436,14 +436,8 @@ class LifecycleAnalyzer:
         # 提取调用链经过的 session 列表
         session_chain = self._extract_session_chain(events, event_idx, dp)
 
-        # LLM 不可用时降级为规则判定
         if not self._llm_available():
-            return self._run_l1_l7_degraded(access, events, dp, baseline_vuln_info,
-                                             access_id, event_idx, source_system,
-                                             l0_origin, reasoning_context,
-                                             query_content, returned_content,
-                                             reasoning_ref, judgment_conclusion,
-                                             vuln_title, session_chain)
+            raise RuntimeError("LLM 不可用，无法执行 L1-L7 判定")
 
         # ── 文本压缩：当总文本量可能超出上下文窗口时，逐字段 LLM 压缩 ──
         reasoning_context, query_content, returned_content, reasoning_ref = \
@@ -484,15 +478,8 @@ class LifecycleAnalyzer:
             result = self._call_llm_json(messages, cancel_cb=cancel_cb,
                                          reasoning_effort="low")
         except Exception as e:
-            log("LIFECYCLE",
-                f"L1-L7 LLM failed, falling back to rule: {str(e)[:200]}",
-                eval_id=dp.evaluation_id)
-            return self._run_l1_l7_degraded(access, events, dp, baseline_vuln_info,
-                                             access_id, event_idx, source_system,
-                                             l0_origin, reasoning_context,
-                                             query_content, returned_content,
-                                             reasoning_ref, judgment_conclusion,
-                                             vuln_title, session_chain)
+            log_error(dp.evaluation_id, "LIFECYCLE", e)
+            raise
 
         # 从 LLM 结果构建 record
         l1 = result.get("l1_need_knowledge")
@@ -671,58 +658,6 @@ class LifecycleAnalyzer:
                     queue.append(other_sid)
 
         return " → ".join(chain) if chain else "（无法构建调用链）"
-
-    def _run_l1_l7_degraded(self, access, events, dp, baseline_vuln_info,
-                            access_id, event_idx, source_system,
-                            l0_origin, reasoning_context,
-                            query_content, returned_content,
-                            reasoning_ref, judgment_conclusion,
-                            vuln_title, session_chain) -> dict:
-        """LLM 不可用时的降级规则判定。"""
-        # L1: 默认需要知识
-        l1 = True
-        # L2: 程序判定
-        l2 = access.get("is_kg", False) or access.get("is_mem", False)
-        if not l2:
-            return self._make_record(
-                access_id, dp, event_idx, source_system, l0_origin,
-                l1_need_knowledge=True, l2_initiated=False,
-                l3_query_accurate=None, l4_knowledge_exists=None,
-                l5_retrieved=None, l6_used=None,
-                l7_influenced=None, l7_method="RULE",
-                effect_label=None, cause_code="A",
-                query_content=query_content, returned_content=returned_content,
-                reasoning_ref=reasoning_ref,
-                judgment_conclusion=judgment_conclusion,
-                evidence_json={"degraded": True, "session_chain": session_chain},
-            )
-        # L3: 查询非空即准确
-        l3 = bool(query_content and query_content.strip())
-        # L4: 返回非空
-        l4 = bool(returned_content and returned_content.strip()
-                  and returned_content.strip() not in ("", "[]", "{}", "null"))
-        # L5: 无 error
-        l5 = not self._has_error(returned_content) if l4 else False
-        # L6: 推理引用非空
-        l6 = bool(reasoning_ref and reasoning_ref.strip()) if l5 else False
-
-        cause = None
-        if not l3: cause = "B"
-        elif not l4: cause = "C"
-        elif not l5: cause = "D"
-        elif not l6: cause = "E"
-
-        return self._make_record(
-            access_id, dp, event_idx, source_system, l0_origin,
-            l1_need_knowledge=l1, l2_initiated=l2, l3_query_accurate=l3,
-            l4_knowledge_exists=l4, l5_retrieved=l5, l6_used=l6,
-            l7_influenced=None, l7_method="RULE",
-            effect_label=None, cause_code=cause,
-            query_content=query_content, returned_content=returned_content,
-            reasoning_ref=reasoning_ref,
-            judgment_conclusion=judgment_conclusion,
-            evidence_json={"degraded": True, "session_chain": session_chain},
-        )
 
     def _determine_l0_origin(self, access: dict, interaction: dict,
                              dp: DataPack) -> str:

@@ -30,7 +30,7 @@ from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
-from ..infra.log_util import log
+from ..infra.log_util import log, log_error
 
 # ── 系统 prompt（固定）──
 
@@ -568,7 +568,7 @@ class RootCauseAnalyzer:
                     mining_result = mining_fut.result()
                 except Exception as e:
                     log("ROOT_CAUSE",
-                        f"case {case_id}: mining 链分析失败: {str(e)[:200]}",
+                        f"case {case_id}: mining 链分析失败: {e}",
                         eval_id=evaluation_id)
                     raise
 
@@ -773,16 +773,10 @@ class RootCauseAnalyzer:
                     else:
                         log("ROOT_CAUSE",
                             f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                            f"LLM 压缩失败: {err_str[:200]}",
+                            f"LLM 压缩失败",
                             eval_id=evaluation_id)
-                        from ..infra.pipeline_warnings import add as _add_warning
-                        _add_warning(evaluation_id, "llm", "compression_failed", "warning",
-                                     f"case {case_id} {chain_type} session {i+1} LLM 压缩失败，降级为规则提取: {err_str[:200]}",
-                                     case_id=case_id)
-                        # LLM 调用失败（非超限）时降级：用规则提取知识访问标记，
-                        # 不截断原始文本。summary 保留完整 session_text 供 merge 阶段参考。
-                        result = self._degrade_compress_session(
-                            sid, events, session_text, err_str[:200])
+                        log_error(evaluation_id, "ROOT_CAUSE", e)
+                        raise
 
             return {
                 "session_id": sid,
@@ -803,7 +797,7 @@ class RootCauseAnalyzer:
                 cs = fut.result()
             except Exception as e:
                 log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} session 压缩失败: {str(e)[:200]}",
+                    f"case {case_id}: {chain_type} session 压缩失败: {e}",
                     eval_id=evaluation_id)
                 raise
 
@@ -847,7 +841,7 @@ class RootCauseAnalyzer:
             )
         except Exception as e:
             log("ROOT_CAUSE",
-                f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
+                f"case {case_id}: {chain_type} 合并压缩失败: {e}",
                 eval_id=evaluation_id)
             raise
 
@@ -1270,15 +1264,15 @@ class RootCauseAnalyzer:
             return result
         except Exception as e:
             log("ROOT_CAUSE",
-                f"case {case_id}: {chain_type} L4 独立验证失败: {str(e)[:200]}")
+                f"case {case_id}: {chain_type} L4 独立验证失败: {e}")
             return {
                 "l4_knowledge_exists": None,
                 "matched_files": [],
-                "summary": f"验证失败: {str(e)[:200]}",
+                "summary": f"验证失败: {e}",
                 "kb_searched": {"athena_api": bool(project_id),
                                 "wiki_nfs": True},
                 "candidate_files": 0,
-                "error": str(e)[:500],
+                "error": str(e),
             }
 
     def _compress_session_chunked(
@@ -1381,10 +1375,10 @@ class RootCauseAnalyzer:
             except Exception as e:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {step_idx+1} "
-                    f"分片 {chunk_idx+1}/{len(chunks)} 压缩失败: {str(e)[:200]}",
+                    f"分片 {chunk_idx+1}/{len(chunks)} 压缩失败",
                     eval_id=evaluation_id)
-                r = self._degrade_compress_session(
-                    session_id, [], chunk_text, str(e)[:200])
+                log_error(evaluation_id, "ROOT_CAUSE", e)
+                raise
             return chunk_idx, r
 
         chunk_tasks = [(i, c) for i, c in enumerate(chunks)]
@@ -1399,7 +1393,7 @@ class RootCauseAnalyzer:
             except Exception as e:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {step_idx+1} "
-                    f"分片压缩异常: {str(e)[:200]}",
+                    f"分片压缩异常: {e}",
                     eval_id=evaluation_id)
                 raise
 
@@ -1440,7 +1434,7 @@ class RootCauseAnalyzer:
         except Exception as e:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} session {step_idx+1} "
-                f"分片合并失败: {str(e)[:200]}",
+                f"分片合并失败: {e}",
                 eval_id=evaluation_id)
             # 合并失败：拼接分片摘要作为 summary，保留各分片的 l0_l7
             return {
@@ -1448,47 +1442,6 @@ class RootCauseAnalyzer:
                 "key_findings": all_key_findings,
                 "l0_l7": all_l0_l7,
             }
-
-    def _degrade_compress_session(
-        self, session_id: str, events: list[RawEvent],
-        session_text: str, error_msg: str,
-    ) -> dict:
-        """LLM 压缩失败时的规则降级。
-
-        不截断原始文本。用规则从事件中提取知识访问标记，
-        summary 保留完整 session_text 供 merge 阶段参考。
-        """
-        # 规则提取知识访问断点
-        l0_l7 = []
-        for ev in events:
-            if not (ev.is_kg_interaction or ev.is_memory_interaction):
-                continue
-            source = "knowledge_base" if ev.is_kg_interaction else "memory"
-            query = _extract_text(ev.input_json) if ev.event_type == "TOOL_CALL" else ""
-            returned = _extract_text(ev.output_json) if ev.event_type == "TOOL_RESULT" else ""
-            l0_l7.append({
-                "l0_source": source,
-                "l1_need": None,
-                "l2_initiated": True if ev.event_type == "TOOL_CALL" else None,
-                "l3_accurate": None,
-                "l4_exists": None,
-                "l5_retrieved": None,
-                "l6_used": None,
-                "l7_influenced": None,
-                "breakpoint": None,
-                "cause_code": None,
-                "query_content": query[:500] if query else "",
-                "returned_content": returned[:500] if returned else "",
-                "fix_suggestion": "",
-            })
-
-        return {
-            "summary": f"[LLM 压缩失败降级] {error_msg}\n\n"
-                       f"原始 session 文本（{len(session_text)} 字符）:\n"
-                       f"{session_text}",
-            "key_findings": [],
-            "l0_l7": l0_l7,
-        }
 
     def _format_session_events(
         self, session_id: str, events: list[RawEvent],
