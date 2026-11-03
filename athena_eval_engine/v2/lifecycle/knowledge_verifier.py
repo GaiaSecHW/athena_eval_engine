@@ -60,7 +60,7 @@ _MD_PREVIEW_LINES = 40
 
 # ── API 超时 + 重试 ──
 _API_TIMEOUT = 10           # 单次 HTTP 请求超时
-_RETRIEVE_POLL_TIMEOUT = 120  # 检索轮询超时（串行模式下单查询实测 2-10s，留足余量）
+_RETRIEVE_POLL_TIMEOUT = 300  # 检索轮询超时（统一轮询，Athena 后端偶有 100s+ 慢查询）
 _RETRIEVE_POLL_INTERVAL = 2  # 轮询间隔（秒）
 _ATHENA_RETRIES = 3          # Athena API 查询重试次数（连接错误重试）
 _ATHENA_RETRY_DELAY = 1      # 重试间隔（秒）
@@ -186,7 +186,8 @@ class KnowledgeVerifier:
         # 2. 查 Athena API /retrieve（与 agent 同款端点）
         if project_id:
             api_candidates, api_log = self._search_athena_api_logged(
-                project_id, keywords, evaluation_id=evaluation_id)
+                project_id, keywords, evaluation_id=evaluation_id,
+                cancel_cb=cancel_cb)
             candidates.extend(api_candidates)
             query_log.extend(api_log)
             log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选")
@@ -291,6 +292,7 @@ class KnowledgeVerifier:
     def _search_athena_api_logged(
         self, project_id: str, keywords: list[str],
         evaluation_id: str = "",
+        cancel_cb=None,
     ) -> tuple[list[dict], list[dict]]:
         """Athena API 检索（带查询日志）。
 
@@ -302,7 +304,7 @@ class KnowledgeVerifier:
         submit_url = f"{_ATHENA_BASE}/api/athena/projects/{project_id}/retrieve"
 
         def _submit_and_poll(kw: str) -> tuple[str, str | None, dict | None, str | None]:
-            """单个关键词：提交 → 轮询 → 返回 (kw, task_id, poll_data, error)。"""
+            """提交 → 轮询到完成 → 返回。一个查询完全结束后才返回。"""
             # 提交
             task_id = None
             last_err = None
@@ -327,11 +329,13 @@ class KnowledgeVerifier:
             if not task_id:
                 return kw, None, None, str(last_err) if last_err else "unknown"
 
-            # 轮询
+            # 轮询到完成或超时
             poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
                         f"/retrieve/tasks/{task_id}")
             poll_start = _time.time()
             while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
+                if cancel_cb:
+                    cancel_cb()
                 try:
                     req = urllib.request.Request(poll_url)
                     resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
@@ -344,8 +348,8 @@ class KnowledgeVerifier:
                 _time.sleep(_RETRIEVE_POLL_INTERVAL)
             return kw, task_id, None, "timeout"
 
-        # 串行执行——Athena /retrieve 后端单任务并行度为 1
-        # 全局锁确保跨 case 也串行（最多 10 个 case 并发分析，各自调 verify）
+        # 全局锁内：逐个提交+轮询到完成，再提交下一个
+        # Athena /retrieve 后端单任务并行度为 1，必须等前一个完成才提交下一个
         raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
         with _retrieve_lock:
             for kw in keywords:
