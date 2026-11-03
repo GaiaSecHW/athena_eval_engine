@@ -299,7 +299,7 @@ function renderV2Report(d){
   var _warnHtml='';
   if(_dqWarnings.length){
     var _srcLabels={'vuln_center':'漏洞中心','kb_verify':'知识库验证','llm':'LLM 调用','gaiasec':'GAISEC API'};
-    var _typeLabels={'raw_report_fetch_failed':'原始报告获取失败','athena_api_failed':'Athena API 查询失败','llm_judgment_failed':'LLM 判定失败（降级）','compression_failed':'LLM 压缩失败（降级）','merge_compression_failed':'LLM 合并压缩失败（降级）'};
+    var _typeLabels={'raw_report_fetch_failed':'原始报告获取失败','athena_api_failed':'Athena API 查询失败','athena_api_timeout':'Athena API 轮询超时','llm_judgment_failed':'LLM 判定失败（降级）','compression_failed':'LLM 压缩失败（降级）','merge_compression_failed':'LLM 合并压缩失败（降级）'};
     _warnHtml='<details class="card" style="margin-bottom:16px;border-color:var(--amber)" open><summary style="font-size:15px;color:var(--amber);font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">⚠ 数据质量告警（'+_dqWarnings.length+' 条）<span style="font-size:12px;color:var(--sub)">— 以下告警可能影响评测结果可信度</span></summary><div style="margin-top:12px">';
     _dqWarnings.forEach(function(w){
       var src=_srcLabels[w.source]||w.source||'-';
