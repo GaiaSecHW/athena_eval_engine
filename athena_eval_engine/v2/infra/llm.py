@@ -44,7 +44,12 @@ _llm_threads_lock = threading.Lock()
 _thread_start_ts: dict[int, float] = {}
 # 线程执行状态：0=等待gate, 1=执行中, 2=已完成(待清理)
 _thread_state: dict[int, int] = {}
-_THREAD_STALE_SEC = 700  # 超过 700 秒视为卡死（STREAM_TIMEOUT=600 + 余量）
+# 线程关联的 Future，watchdog 清理时设异常防止编排线程永久阻塞
+_thread_futures: dict[int, Future] = {}
+# watchdog 阈值：仅清理等待 gate 超时的线程（state=0）。
+# 执行中（state=1）的线程不清理——LLM 自身有 SSE 超时保护
+# （FIRST_TOKEN_TIMEOUT=350s + STREAM_TIMEOUT=600s），不需要 watchdog 重复管。
+_GATE_WAIT_STALE_SEC = 300  # 等待 gate 超过 300 秒视为异常
 
 
 class _DynamicGate:
@@ -236,10 +241,19 @@ def _remove_thread(tid: int):
         _llm_threads.pop(tid, None)
         _thread_start_ts.pop(tid, None)
         _thread_state.pop(tid, None)
+        _thread_futures.pop(tid, None)
 
 
 def _cleanup_finished_locked():
-    """清理已完成或卡死的线程（调用方需持有 _llm_threads_lock）。"""
+    """清理已完成或卡死的线程（调用方需持有 _llm_threads_lock）。
+
+    只清理两类线程：
+    1. 已结束的线程（!is_alive）
+    2. 等待 gate 超时的线程（state=0 且存活>_GATE_WAIT_STALE_SEC）
+
+    执行中（state=1）的线程不清理——LLM 自身有 SSE 超时保护
+    （FIRST_TOKEN_TIMEOUT + STREAM_TIMEOUT），watchdog 不重复管。
+    """
     now = time.time()
     stale_tids = []
     for tid, t in list(_llm_threads.items()):
@@ -249,16 +263,17 @@ def _cleanup_finished_locked():
             _thread_start_ts.pop(tid, None)
             _thread_state.pop(tid, None)
             continue
-        # 检测卡死线程：存活时间超过 _THREAD_STALE_SEC
-        start_ts = _thread_start_ts.get(tid)
-        if start_ts and (now - start_ts) > _THREAD_STALE_SEC:
-            stale_tids.append(tid)
+        state = _thread_state.get(tid, 1)
+        if state == 0:
+            # 等待 gate 的线程，超时视为异常
+            start_ts = _thread_start_ts.get(tid)
+            if start_ts and (now - start_ts) > _GATE_WAIT_STALE_SEC:
+                stale_tids.append(tid)
+        # state=1（执行中）的线程不清理，LLM SSE 超时自行处理
     for tid in stale_tids:
         t = _llm_threads.get(tid)
         if t and t.is_alive():
-            # 卡死线程：强制释放 gate，从 dict 移除
-            # Thread 无法强制 kill，但可以从管理 dict 移除
-            # gate 的 release 会让等待的线程获得许可
+            # 等待 gate 超时：强制释放 gate，从 dict 移除
             try:
                 _llm_gate.release()
             except Exception:
@@ -267,10 +282,16 @@ def _cleanup_finished_locked():
                 t.join(timeout=0.1)
             except Exception:
                 pass
+        # 给 Future 设异常，防止编排线程永久阻塞在 fut.result()
+        fut = _thread_futures.pop(tid, None)
+        if fut is not None and not fut.done():
+            fut.set_exception(RuntimeError(
+                f"LLM 线程等待 gate 超时被清理（>{_GATE_WAIT_STALE_SEC}s）"))
         _llm_threads.pop(tid, None)
         _thread_start_ts.pop(tid, None)
         _thread_state.pop(tid, None)
-        log("LLM", f"watchdog: 清理卡死线程 tid={tid} (存活>{_THREAD_STALE_SEC}s)")
+        log("LLM", f"watchdog: 清理等待gate超时线程 tid={tid} "
+                  f"(等待>{_GATE_WAIT_STALE_SEC}s)")
 
 
 def watchdog_cleanup():
@@ -345,6 +366,10 @@ def submit_llm(fn, *args, **kwargs) -> Future:
         # dict 满，释放 gate 并抛异常
         _llm_gate.release()
         raise RuntimeError("LLM 线程 dict 已满（1000），无法创建新线程")
+    # 存入 Future，watchdog 清理时设异常防止编排线程永久阻塞
+    if t.ident is not None:
+        with _llm_threads_lock:
+            _thread_futures[t.ident] = fut
     return fut
 
 
@@ -406,6 +431,9 @@ def try_submit_llm(fn, *args, **kwargs) -> Future | None:
     if t is None:
         _llm_gate.release()
         return None
+    if t.ident is not None:
+        with _llm_threads_lock:
+            _thread_futures[t.ident] = fut
     return fut
 
 
