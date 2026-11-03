@@ -28,10 +28,8 @@ from __future__ import annotations
 import json
 import os
 import re
-import threading
 import urllib.parse
 import urllib.request
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from ...config_loader import DATA_ROOT
@@ -57,7 +55,7 @@ _MD_PREVIEW_LINES = 40
 
 # ── API 超时 + 重试 ──
 _API_TIMEOUT = 10           # 单次 HTTP 请求超时
-_RETRIEVE_POLL_TIMEOUT = 300  # 检索轮询超时（检索是异步的，实测 60s+，留足余量）
+_RETRIEVE_POLL_TIMEOUT = 120  # 检索轮询超时（串行模式下单查询实测 2-10s，留足余量）
 _RETRIEVE_POLL_INTERVAL = 2  # 轮询间隔（秒）
 _ATHENA_RETRIES = 3          # Athena API 查询重试次数（连接错误重试）
 _ATHENA_RETRY_DELAY = 1      # 重试间隔（秒）
@@ -271,51 +269,6 @@ class KnowledgeVerifier:
 
         return result
 
-    # ── 关键词提取 ──
-
-    def _extract_keywords(self, vuln_title: str, fp_reason: str) -> list[str]:
-        """从误报原因和漏洞类型提取知识查询关键词。
-
-        优先从 fp_reason 提取验证维度关键词（如"网络可达性"、"输入校验"），
-        这些关键词能查到"为什么是误报"的知识。
-        vuln_title 关键词作为补充（如"SSRF"），查到的是"怎么挖漏洞"的知识，
-        对误报消减参考价值较低。
-        """
-        keywords: list[str] = []
-
-        # ── 优先从误报原因提取 ──
-        # fp_reason 中的关键词指向"为什么是误报"，能查到误报消减知识
-        if fp_reason:
-            reason = re.sub(r'^(误报[：:])?\s*(其他误报原因[：:])?\s*', '', fp_reason)
-            # 按标点和空格分词
-            segments = re.split(r'[，,。.；;！!？?\s]+', reason)
-            for seg in segments:
-                seg = seg.strip()
-                if len(seg) >= 2:
-                    keywords.append(seg)
-
-        # ── 从漏洞类型提取（补充）──
-        if vuln_title:
-            vuln_lower = vuln_title.lower()
-            vuln_keywords = [
-                "sql注入", "xss", "ssrf", "csrf", "dos", "rce",
-                "命令注入", "路径穿越", "文件上传", "反序列化",
-                "信息泄露", "越权", "认证绕过", "权限提升",
-            ]
-            for kw in vuln_keywords:
-                if kw in vuln_lower or kw in vuln_title:
-                    if kw not in keywords:
-                        keywords.append(kw)
-
-        # 去重，保留顺序
-        seen = set()
-        unique = []
-        for kw in keywords:
-            if kw not in seen:
-                seen.add(kw)
-                unique.append(kw)
-        return unique
-
     # ── Athena API 搜索（/retrieve 端点，与 agent 同款）──
 
     def _search_athena_api(
@@ -336,8 +289,8 @@ class KnowledgeVerifier:
     ) -> tuple[list[dict], list[dict]]:
         """Athena API 检索（带查询日志）。
 
-        用 /retrieve 端点（与 agent 同款）。每个关键词一个线程并发提交+轮询，
-        互不阻塞，各自 300 秒超时。
+        用 /retrieve 端点（与 agent 同款）。串行提交+轮询——Athena /retrieve
+        后端单任务并行度为 1，并发提交会导致排队超时。
         """
         import time as _time
 
@@ -386,20 +339,13 @@ class KnowledgeVerifier:
                 _time.sleep(_RETRIEVE_POLL_INTERVAL)
             return kw, task_id, None, "timeout"
 
-        # 每个关键词一个线程并发执行
+        # 串行执行——Athena /retrieve 后端单任务并行度为 1
         raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
-        with ThreadPoolExecutor(max_workers=len(keywords)) as executor:
-            futures = {executor.submit(_submit_and_poll, kw): kw for kw in keywords}
-            for fut in as_completed(futures):
-                raw_results.append(fut.result())
-
-        # 按原始关键词顺序排序
-        kw_order = {kw: i for i, kw in enumerate(keywords)}
-        raw_results.sort(key=lambda r: kw_order.get(r[0], 0))
+        for kw in keywords:
+            raw_results.append(_submit_and_poll(kw))
 
         candidates: list[dict] = []
         seen_docs: set[str] = set()
-        seen_docs_lock = threading.Lock()
         log_entries: list[dict] = []
 
         for kw, task_id, poll_data, error in raw_results:
