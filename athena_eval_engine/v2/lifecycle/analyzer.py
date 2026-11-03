@@ -34,7 +34,7 @@ from ..infra.log_util import log, log_error, with_eval_ctx, get_eval_ctx
 # ── 安全上下文阈值（占 max_context 的比例）──
 _CONTEXT_SAFETY_RATIO = 0.6  # 只用 60% 上下文窗口给 user_content，留余量给 system prompt + 输出
 _DEFAULT_MAX_CONTEXT_TOKENS = 128_000  # 未从 400 错误中收集到时使用此默认值
-_COMPRESS_THRESHOLD_CHARS = 4000  # 单个文本字段超过此字符数时触发压缩
+_COMPRESS_THRESHOLD_TOKENS = 4000  # 单个文本字段超过此 token 数时触发压缩
 
 # ── 统一 LLM 调用的 system prompt ──
 
@@ -527,7 +527,7 @@ class LifecycleAnalyzer:
         """当文本总量可能超出上下文窗口时，用采样缩减文本量。
 
         策略（不截断）：
-        1. 估算总 token 数（chars / chars_per_token）
+        1. 用本地 DeepSeek V4 tokenizer 精确计算总 token 数
         2. 如超过安全阈值，对超长字段用采样（取首/尾/中间完整句子）缩减
         3. 短字段不处理
 
@@ -535,8 +535,7 @@ class LifecycleAnalyzer:
         并发控制，导致实际 LLM 并发远超 gate 上限。
         """
         max_tokens = llm_mod.get_max_context_tokens() or _DEFAULT_MAX_CONTEXT_TOKENS
-        chars_per_token = llm_mod.get_chars_per_token()
-        safe_limit_chars = int(max_tokens * _CONTEXT_SAFETY_RATIO * chars_per_token)
+        safe_limit_tokens = int(max_tokens * _CONTEXT_SAFETY_RATIO)
 
         fields = [
             ("推理上下文", reasoning_context),
@@ -545,19 +544,19 @@ class LifecycleAnalyzer:
             ("推理引用", reasoning_ref),
         ]
 
-        total_chars = sum(len(v) for _, v in fields)
-        if total_chars <= safe_limit_chars:
+        total_tokens = sum(llm_mod.estimate_tokens(v) for _, v in fields)
+        if total_tokens <= safe_limit_tokens:
             # 总量在安全范围内，无需处理
             return reasoning_context, query_content, returned_content, reasoning_ref
 
         log("LIFECYCLE",
-            f"文本总量 {total_chars} chars 超过安全阈值 {safe_limit_chars} chars "
-            f"(max_tokens={max_tokens}, c/t={chars_per_token:.2f})，开始采样",
+            f"文本总量 {total_tokens} tokens 超过安全阈值 {safe_limit_tokens} tokens "
+            f"(max_tokens={max_tokens})，开始采样",
             eval_id=evaluation_id)
 
         sampled: list[str] = []
         for label, text in fields:
-            if len(text) <= _COMPRESS_THRESHOLD_CHARS:
+            if llm_mod.estimate_tokens(text) <= _COMPRESS_THRESHOLD_TOKENS:
                 sampled.append(text)
             else:
                 result = self._sample_text(text)

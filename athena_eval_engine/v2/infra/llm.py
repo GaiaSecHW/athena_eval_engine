@@ -128,33 +128,21 @@ _active_count = 0
 _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
-# 从 400 错误中收集的 max context tokens 和 chars/token 换算率
+# 从 400 错误中收集的 max context tokens
 # 默认值与当前模型（DeepSeek）一致，400 错误后自适应更新
 _max_context_tokens = 204800
-# chars/token 默认值取 1.5（中文为主的最坏情况）：
-# 实测 606000 字符（中文 session 分片）触发 204800 token 上限，
-# 即实际 chars/token < 2.96。取 1.5 保守估算，宁可多分片也不撞 400。
-_chars_per_token = 1.5
 
 def get_max_context_tokens():
     """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
     return _max_context_tokens
 
-def get_chars_per_token():
-    """返回 chars/token 换算率，默认 1.5，400 错误后用实际数据更新。"""
-    return _chars_per_token
-
 
 def estimate_tokens(text: str) -> int:
-    """预估文本的 token 数。
-
-    利用从 400 错误中收集的 chars_per_token 比率估算。
-    首次调用（未收集过比率）时用默认值 1.5（中文为主的最坏情况）。
-    chars/token 越小，估出的 token 数越多，越保守——宁可高估不低估。
-    """
+    """计算文本的 token 数（本地 DeepSeek V4 tokenizer 精确计算）。"""
     if not text:
         return 0
-    return int(len(text) / _chars_per_token) + 1
+    from .token_counter import count_tokens
+    return count_tokens(text)
 
 
 def would_exceed_context(messages: list[dict], reserved_tokens: int = 4096) -> bool:
@@ -163,19 +151,19 @@ def would_exceed_context(messages: list[dict], reserved_tokens: int = 4096) -> b
     reserved_tokens: 为 LLM 响应预留的 token 数（system prompt + completion）。
     默认 4096，足够 JSON 结构化输出。
 
-    在发送前调用，避免撞 400 错误后降级。
+    用本地 DeepSeek V4 tokenizer 精确计算，不做 chars/token 估算。
+    在发送前调用，避免撞 400 错误。
     """
     max_ctx = _max_context_tokens
     if max_ctx is None:
         return False  # 未收集过上限，无法预判，让 LLM 自己报错
-    total_chars = sum(len(str(m.get("content", ""))) for m in messages)
-    estimated = int(total_chars / _chars_per_token) + 1
-    return estimated + reserved_tokens > max_ctx
+    from .token_counter import count_tokens
+    total = sum(count_tokens(str(m.get("content", ""))) for m in messages)
+    return total + reserved_tokens > max_ctx
 
 def _collect_max_tokens(error_text, messages):
-    """从 LLM 400 错误响应中解析 max context tokens 和实际 token 数，
-    结合当时 messages 的字符数计算 chars/token 换算率。"""
-    global _max_context_tokens, _chars_per_token
+    """从 LLM 400 错误响应中解析 max context tokens。"""
+    global _max_context_tokens
     import re
     # 提取 max context tokens: "maximum context length is 131072 tokens"
     m = re.search(r'maximum context (?:length|window) is (\d+) tokens', error_text, re.IGNORECASE)
@@ -183,25 +171,8 @@ def _collect_max_tokens(error_text, messages):
         m = re.search(r'max_?context_?(?:length|tokens|window)\D{0,5}(\d{4,})', error_text, re.IGNORECASE)
     if m:
         _max_context_tokens = int(m.group(1))
-    # 提取实际 token 数，兼容三种文案：
-    #   "your messages resulted in 150000 tokens"
-    #   "your prompt contains at least 204800 input tokens"
-    #   "you requested 1 output tokens ... 204801 tokens"
-    m2 = re.search(r'(?:resulted in|have|contains at least|for a total of at least)\s+(\d+)'
-                   r'(?:\s+input)?\s+tokens', error_text, re.IGNORECASE)
-    if m2:
-        actual_tokens = int(m2.group(1))
-        msg_chars = sum(len(str(msg.get("content", ""))) for msg in messages)
-        # 只有「至少 N」的报错是下限，实际可能更多 → 算出的比率是上限，需再收紧
-        _is_lower_bound = "at least" in m2.group(0).lower()
-        if actual_tokens > 0 and msg_chars > 0:
-            ratio = msg_chars / actual_tokens
-            if _is_lower_bound:
-                # 真实 token >= 报错值 → 真实 chars/token <= ratio，取下限更安全
-                ratio = ratio * 0.95
-            _chars_per_token = ratio
     if _max_context_tokens:
-        log("LLM", f"从 400 错误中收集 max_context_tokens={_max_context_tokens} chars_per_token={_chars_per_token:.2f}")
+        log("LLM", f"从 400 错误中收集 max_context_tokens={_max_context_tokens}")
 
 
 def reset_token_usage():

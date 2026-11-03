@@ -1285,21 +1285,21 @@ class RootCauseAnalyzer:
         """对超大 session 按事件分片压缩，再合并分片摘要。
 
         策略：
-        1. 按 LLM 上下文限制计算每片最大字符数
+        1. 用本地 DeepSeek V4 tokenizer 计算每片 token 预算
         2. 按事件边界切分（不截断单个事件）
         3. 每片独立调 LLM 压缩
         4. 合并所有分片摘要为最终结果
         """
         max_ctx = llm_mod.get_max_context_tokens() or 204800
-        cpt = llm_mod.get_chars_per_token()
         # 预留 4096 token 给响应
         usable_tokens = max_ctx - 4096
-        usable_chars = int(usable_tokens * cpt)
         # 框架开销：system prompt 全文 + 漏洞标题/描述/outcome/标注原因/session 头
-        overhead = (len(_SYSTEM_PROMPT)
-                    + len(vuln_title) + len(desc) + len(fp_reason or "")
-                    + len(chain_type) + len(session_id) + 300)
-        chunk_char_limit = max(usable_chars - overhead, 5000)
+        overhead_tokens = llm_mod.estimate_tokens(
+            _SYSTEM_PROMPT + vuln_title + desc + (fp_reason or "")
+            + chain_type + session_id + " " * 300)
+        # 再留 2% 余量吸收分片拼接时的换行/标签开销
+        chunk_token_limit = max(
+            int((usable_tokens - overhead_tokens) * 0.98), 1000)
 
         # 按事件边界切分 session_text
         event_texts = []
@@ -1333,23 +1333,24 @@ class RootCauseAnalyzer:
             elif et == "SESSION_START":
                 event_texts.append(f"[会话开始] session={session_id}")
 
-        # 贪心打包事件到分片
+        # 贪心打包事件到分片（按 token 精确计算，不做 chars 估算）
         chunks = []
         current = []
-        current_len = 0
+        current_tokens = 0
         for et in event_texts:
-            if current_len + len(et) + 1 > chunk_char_limit and current:
+            et_tokens = llm_mod.estimate_tokens(et) + 1
+            if current_tokens + et_tokens > chunk_token_limit and current:
                 chunks.append(current)
                 current = []
-                current_len = 0
+                current_tokens = 0
             current.append(et)
-            current_len += len(et) + 1
+            current_tokens += et_tokens
         if current:
             chunks.append(current)
 
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} session {step_idx+1}/{len(chain)} "
-            f"分片 {len(chunks)} 片 (每片上限 {chunk_char_limit} 字符, "
+            f"分片 {len(chunks)} 片 (每片上限 {chunk_token_limit} tokens, "
             f"{len(events)} 事件)",
             eval_id=evaluation_id)
 
