@@ -849,38 +849,7 @@ class RootCauseAnalyzer:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 合并压缩失败: {str(e)[:200]}",
                 eval_id=evaluation_id)
-            from ..infra.pipeline_warnings import add as _add_warning
-            _add_warning(evaluation_id, "llm", "merge_compression_failed", "warning",
-                         f"case {case_id} {chain_type} 合并压缩 LLM 失败，降级为摘要拼接: {str(e)[:200]}",
-                         case_id=case_id)
-            # LLM 不可用时降级：拼接 session 摘要作为结果，但标记为低概率
-            # 不伪造 probability=1.0——那会覆盖 session 级真实分析结果
-            merge_result = {
-                "summary": " | ".join(
-                    s.get("summary", "") for s in compressed_summaries),
-                "hypotheses": [{
-                    "hypothesis": f"合并压缩 LLM 调用失败（降级）: {str(e)[:200]}",
-                    "probability": 0.1,
-                    "responsibility": "eval_process",
-                    "cause_code": "H",
-                    "evidence": "LLM 合并压缩失败，结果为 session 摘要拼接降级",
-                    "agent_can_resolve": False,
-                    "blocked_by": "LLM 调用失败",
-                    "needed_external_data": [],
-                    "fix_suggestion": {
-                        "target": "agent_prompt",
-                        "location": "",
-                        "action": "",
-                        "expected_effect": "",
-                    },
-                }],
-                "label_quality": {
-                    "precision": "imprecise",
-                    "reason": "合并压缩 LLM 失败，结果为降级拼接",
-                    "follow_up_questions": [],
-                },
-                "l0_l7": [],
-            }
+            raise
 
         merge_summary = merge_result.get("summary", "")
         merge_hypotheses = merge_result.get("hypotheses") or []
