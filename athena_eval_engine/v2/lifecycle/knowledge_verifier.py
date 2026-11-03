@@ -28,6 +28,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
 from typing import Any
@@ -50,17 +51,24 @@ _ATHENA_BASE = f"http://{_ATHENA_HOST}:{_ATHENA_PORT}"
 # ── 候选文件上限 ──
 _MAX_CANDIDATES = 20
 
-# ── Athena /retrieve 全局串行锁 ──
-# Athena /retrieve 后端单任务并行度为 1，跨 case 也必须串行
-import threading as _threading
-_retrieve_lock = _threading.Lock()
+# ── Athena /retrieve 单项目并发上限 ──
+_ATHENA_MAX_CONCURRENCY = 8
+
+# ── 跨 case 全局信号量：按 project_id 限制 Athena /retrieve 并发 ──
+# 多个 case 可能同时触发 L4 验证，各自开线程查同一 project_id，
+# 总并发可能超过 Athena 单项目 8 的限制。用 per-project 信号量兜底。
+_project_sems: dict[str, threading.Semaphore] = {}
+_project_sems_lock = threading.Lock()
+
+# ── seen_docs 去重锁（_search_athena_api_logged 内部使用）──
+seen_docs_lock = threading.Lock()
 
 # ── 单个 .md 文件读取前 N 行 ──
 _MD_PREVIEW_LINES = 40
 
 # ── API 超时 + 重试 ──
 _API_TIMEOUT = 10           # 单次 HTTP 请求超时
-_RETRIEVE_POLL_TIMEOUT = 300  # 检索轮询超时（统一轮询，Athena 后端偶有 100s+ 慢查询）
+_RETRIEVE_POLL_TIMEOUT = 1200  # 检索轮询超时（Athena 后端慢查询实测可达 20 分钟）
 _RETRIEVE_POLL_INTERVAL = 2  # 轮询间隔（秒）
 _ATHENA_RETRIES = 3          # Athena API 查询重试次数（连接错误重试）
 _ATHENA_RETRY_DELAY = 1      # 重试间隔（秒）
@@ -296,64 +304,82 @@ class KnowledgeVerifier:
     ) -> tuple[list[dict], list[dict]]:
         """Athena API 检索（带查询日志）。
 
-        用 /retrieve 端点（与 agent 同款）。串行提交+轮询——Athena /retrieve
-        后端单任务并行度为 1，跨 case 用全局锁确保同一时刻只有一个检索任务。
+        用 /retrieve 端点（与 agent 同款）。并发提交+轮询，单项目并发上限 8。
+        跨 case 用 per-project 信号量控制全局并发，避免同一 project_id
+        的多个 case 各开 8 线程导致总并发超过 Athena 单项目限制。
         """
         import time as _time
+        from concurrent.futures import ThreadPoolExecutor, as_completed
 
         submit_url = f"{_ATHENA_BASE}/api/athena/projects/{project_id}/retrieve"
 
+        # 获取或创建 per-project 信号量（跨 case 共享）
+        with _project_sems_lock:
+            sem = _project_sems.get(project_id)
+            if sem is None:
+                sem = threading.Semaphore(_ATHENA_MAX_CONCURRENCY)
+                _project_sems[project_id] = sem
+
         def _submit_and_poll(kw: str) -> tuple[str, str | None, dict | None, str | None]:
-            """提交 → 轮询到完成 → 返回。一个查询完全结束后才返回。"""
-            # 提交
-            task_id = None
-            last_err = None
-            for attempt in range(_ATHENA_RETRIES):
-                try:
-                    payload = json.dumps({"message": kw}).encode("utf-8")
-                    req = urllib.request.Request(
-                        submit_url,
-                        data=payload,
-                        headers={"Content-Type": "application/json"},
-                        method="POST",
-                    )
-                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                    data = json.loads(resp.read())
-                    task_id = data.get("retrieval_task_id")
-                    if task_id:
-                        break
-                except Exception as e:
-                    last_err = e
-                    if attempt < _ATHENA_RETRIES - 1:
-                        _time.sleep(_ATHENA_RETRY_DELAY)
-            if not task_id:
-                return kw, None, None, str(last_err) if last_err else "unknown"
+            """提交 → 轮询到完成 → 返回。整个生命周期持有 per-project 信号量。"""
+            sem.acquire()
+            try:
+                # 提交
+                task_id = None
+                last_err = None
+                for attempt in range(_ATHENA_RETRIES):
+                    try:
+                        payload = json.dumps({"message": kw}).encode("utf-8")
+                        req = urllib.request.Request(
+                            submit_url,
+                            data=payload,
+                            headers={"Content-Type": "application/json"},
+                            method="POST",
+                        )
+                        resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
+                        data = json.loads(resp.read())
+                        task_id = data.get("retrieval_task_id")
+                        if task_id:
+                            break
+                    except Exception as e:
+                        last_err = e
+                        if attempt < _ATHENA_RETRIES - 1:
+                            _time.sleep(_ATHENA_RETRY_DELAY)
+                if not task_id:
+                    return kw, None, None, str(last_err) if last_err else "unknown"
 
-            # 轮询到完成或超时
-            poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
-                        f"/retrieve/tasks/{task_id}")
-            poll_start = _time.time()
-            while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
-                if cancel_cb:
-                    cancel_cb()
-                try:
-                    req = urllib.request.Request(poll_url)
-                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                    poll_data = json.loads(resp.read())
-                    status = poll_data.get("status", "")
-                    if status in ("completed", "failed"):
-                        return kw, task_id, poll_data, None
-                except Exception:
-                    pass
-                _time.sleep(_RETRIEVE_POLL_INTERVAL)
-            return kw, task_id, None, "timeout"
+                # 轮询到完成或超时
+                poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
+                            f"/retrieve/tasks/{task_id}")
+                poll_start = _time.time()
+                while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
+                    if cancel_cb:
+                        cancel_cb()
+                    try:
+                        req = urllib.request.Request(poll_url)
+                        resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
+                        poll_data = json.loads(resp.read())
+                        status = poll_data.get("status", "")
+                        if status in ("completed", "failed"):
+                            return kw, task_id, poll_data, None
+                    except Exception:
+                        pass
+                    _time.sleep(_RETRIEVE_POLL_INTERVAL)
+                return kw, task_id, None, "timeout"
+            finally:
+                sem.release()
 
-        # 全局锁内：逐个提交+轮询到完成，再提交下一个
-        # Athena /retrieve 后端单任务并行度为 1，必须等前一个完成才提交下一个
+        # 并发提交+轮询，单 case 内并发上限 8，跨 case 也受 per-project 信号量约束
+        max_workers = min(len(keywords), _ATHENA_MAX_CONCURRENCY)
         raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
-        with _retrieve_lock:
-            for kw in keywords:
-                raw_results.append(_submit_and_poll(kw))
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            futures = {executor.submit(_submit_and_poll, kw): kw for kw in keywords}
+            for fut in as_completed(futures):
+                raw_results.append(fut.result())
+
+        # 按原始顺序排序
+        kw_order = {kw: i for i, kw in enumerate(keywords)}
+        raw_results.sort(key=lambda r: kw_order.get(r[0], 0))
 
         candidates: list[dict] = []
         seen_docs: set[str] = set()

@@ -1162,6 +1162,24 @@ class RootCauseAnalyzer:
         kb_search_queries = [q for q in kb_search_queries
                              if not (q in seen_q or seen_q.add(q))]
 
+        # ── 无检索问题：不查知识库 ──
+        # LLM 判定有 knowledge 责任假设或 L2 断点，但没产出 kb_search_query，
+        # 说明 LLM 无法确定该查什么——不查 Athena（查了也是白查）。
+        if not kb_search_queries:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 检测到"
+                f"{'L2 断点' if has_l2_break else ''}"
+                f"{'+' if has_l2_break and has_knowledge_hypothesis else ''}"
+                f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
+                f"但无知识检索问题，跳过 L4 知识库验证")
+            return {
+                "l4_knowledge_exists": False,
+                "candidate_files": 0,
+                "matched_files": [],
+                "summary": "LLM 未产出知识检索问题，无法定向查询知识库",
+                "skipped_reason": "no_kb_search_queries",
+            }
+
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 检测到"
             f"{'L2 断点' if has_l2_break else ''}"
