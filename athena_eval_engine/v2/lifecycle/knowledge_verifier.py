@@ -50,6 +50,11 @@ _ATHENA_BASE = f"http://{_ATHENA_HOST}:{_ATHENA_PORT}"
 # ── 候选文件上限 ──
 _MAX_CANDIDATES = 20
 
+# ── Athena /retrieve 全局串行锁 ──
+# Athena /retrieve 后端单任务并行度为 1，跨 case 也必须串行
+import threading as _threading
+_retrieve_lock = _threading.Lock()
+
 # ── 单个 .md 文件读取前 N 行 ──
 _MD_PREVIEW_LINES = 40
 
@@ -290,7 +295,7 @@ class KnowledgeVerifier:
         """Athena API 检索（带查询日志）。
 
         用 /retrieve 端点（与 agent 同款）。串行提交+轮询——Athena /retrieve
-        后端单任务并行度为 1，并发提交会导致排队超时。
+        后端单任务并行度为 1，跨 case 用全局锁确保同一时刻只有一个检索任务。
         """
         import time as _time
 
@@ -340,9 +345,11 @@ class KnowledgeVerifier:
             return kw, task_id, None, "timeout"
 
         # 串行执行——Athena /retrieve 后端单任务并行度为 1
+        # 全局锁确保跨 case 也串行（最多 10 个 case 并发分析，各自调 verify）
         raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
-        for kw in keywords:
-            raw_results.append(_submit_and_poll(kw))
+        with _retrieve_lock:
+            for kw in keywords:
+                raw_results.append(_submit_and_poll(kw))
 
         candidates: list[dict] = []
         seen_docs: set[str] = set()
