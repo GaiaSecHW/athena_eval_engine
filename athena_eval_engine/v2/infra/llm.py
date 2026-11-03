@@ -46,10 +46,8 @@ _thread_start_ts: dict[int, float] = {}
 _thread_state: dict[int, int] = {}
 # 线程关联的 Future，watchdog 清理时设异常防止编排线程永久阻塞
 _thread_futures: dict[int, Future] = {}
-# watchdog 阈值：仅清理等待 gate 超时的线程（state=0）。
-# 执行中（state=1）的线程不清理——LLM 自身有 SSE 超时保护
-# （FIRST_TOKEN_TIMEOUT=350s + STREAM_TIMEOUT=600s），不需要 watchdog 重复管。
-_GATE_WAIT_STALE_SEC = 300  # 等待 gate 超过 300 秒视为异常
+# watchdog 只清理已结束的线程（is_alive()=False），不清理活线程。
+# LLM 自身有 SSE 超时保护（FIRST_TOKEN_TIMEOUT=350s + STREAM_TIMEOUT=600s）。
 
 
 class _DynamicGate:
@@ -218,6 +216,10 @@ def _create_thread(target, name="llm-worker") -> threading.Thread:
 
     线程必须先 start() 才有 ident，所以先创建+启动，再存入 dict。
     线程可能在线程被加入 dict 前就执行完毕，_remove_thread 用 pop(tid, None) 安全处理。
+
+    竞态处理：如果 _wrapper 在 _create_thread 获取锁之前已执行完毕并 _remove_thread，
+    此时 t.ident 不在 dict 中，_create_thread 会重新插入——但线程已结束，
+    is_alive()=False，watchdog 下一轮就会清理。不会误判为 state=0 卡死。
     """
     with _llm_threads_lock:
         _cleanup_finished_locked()
@@ -227,8 +229,10 @@ def _create_thread(target, name="llm-worker") -> threading.Thread:
     t.start()
     # start() 后 ident 才有值；线程可能已执行完毕，_remove_thread 的 pop(tid, None) 安全
     with _llm_threads_lock:
-        # 只在线程仍在 dict 中不存在时插入（避免覆盖 _wrapper 已设的状态）
-        if t.ident not in _llm_threads:
+        # 竞态防护：如果 _wrapper 已执行完毕并 _remove_thread，
+        # t.ident 不在 dict 中，但线程可能即将结束。
+        # 只在线程仍存活且不在 dict 中时插入，避免幽灵记录。
+        if t.ident not in _llm_threads and t.is_alive():
             _llm_threads[t.ident] = t
             _thread_start_ts[t.ident] = time.time()
             _thread_state[t.ident] = 0
@@ -245,53 +249,19 @@ def _remove_thread(tid: int):
 
 
 def _cleanup_finished_locked():
-    """清理已完成或卡死的线程（调用方需持有 _llm_threads_lock）。
+    """清理已结束的线程（调用方需持有 _llm_threads_lock）。
 
-    只清理两类线程：
-    1. 已结束的线程（!is_alive）
-    2. 等待 gate 超时的线程（state=0 且存活>_GATE_WAIT_STALE_SEC）
-
-    执行中（state=1）的线程不清理——LLM 自身有 SSE 超时保护
-    （FIRST_TOKEN_TIMEOUT + STREAM_TIMEOUT），watchdog 不重复管。
+    只清理 is_alive()=False 的线程。
+    活线程一律不清理——LLM 自身有 SSE 超时保护
+    （FIRST_TOKEN_TIMEOUT + STREAM_TIMEOUT），不需要 watchdog 重复管。
+    watchdog 的职责仅是回收已结束线程的 dict 槽位。
     """
-    now = time.time()
-    stale_tids = []
     for tid, t in list(_llm_threads.items()):
         if not t.is_alive():
-            # 线程已结束，直接移除
             _llm_threads.pop(tid, None)
             _thread_start_ts.pop(tid, None)
             _thread_state.pop(tid, None)
-            continue
-        state = _thread_state.get(tid, 1)
-        if state == 0:
-            # 等待 gate 的线程，超时视为异常
-            start_ts = _thread_start_ts.get(tid)
-            if start_ts and (now - start_ts) > _GATE_WAIT_STALE_SEC:
-                stale_tids.append(tid)
-        # state=1（执行中）的线程不清理，LLM SSE 超时自行处理
-    for tid in stale_tids:
-        t = _llm_threads.get(tid)
-        if t and t.is_alive():
-            # 等待 gate 超时：强制释放 gate，从 dict 移除
-            try:
-                _llm_gate.release()
-            except Exception:
-                pass
-            try:
-                t.join(timeout=0.1)
-            except Exception:
-                pass
-        # 给 Future 设异常，防止编排线程永久阻塞在 fut.result()
-        fut = _thread_futures.pop(tid, None)
-        if fut is not None and not fut.done():
-            fut.set_exception(RuntimeError(
-                f"LLM 线程等待 gate 超时被清理（>{_GATE_WAIT_STALE_SEC}s）"))
-        _llm_threads.pop(tid, None)
-        _thread_start_ts.pop(tid, None)
-        _thread_state.pop(tid, None)
-        log("LLM", f"watchdog: 清理等待gate超时线程 tid={tid} "
-                  f"(等待>{_GATE_WAIT_STALE_SEC}s)")
+            _thread_futures.pop(tid, None)
 
 
 def watchdog_cleanup():
