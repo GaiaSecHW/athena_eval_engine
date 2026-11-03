@@ -1138,7 +1138,9 @@ class RootCauseAnalyzer:
                 f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
                 f"但无知识检索问题，跳过 L4 知识库验证")
             return {
-                "l4_knowledge_exists": False,
+                # None=未判定。知识库没被查过，不能返回 False（会被上层
+                # 误读成「知识库确实没有该知识」→ 错误归因到知识库）
+                "l4_knowledge_exists": None,
                 "candidate_files": 0,
                 "matched_files": [],
                 "summary": "LLM 未产出知识检索问题，无法定向查询知识库",
@@ -1266,16 +1268,9 @@ class RootCauseAnalyzer:
             return result
         except Exception as e:
             log("ROOT_CAUSE",
-                f"case {case_id}: {chain_type} L4 独立验证失败: {e}")
-            return {
-                "l4_knowledge_exists": None,
-                "matched_files": [],
-                "summary": f"验证失败: {e}",
-                "kb_searched": {"athena_api": bool(project_id),
-                                "wiki_nfs": True},
-                "candidate_files": 0,
-                "error": str(e),
-            }
+                f"case {case_id}: {chain_type} L4 独立验证失败")
+            log_error(evaluation_id, "ROOT_CAUSE", e)
+            raise
 
     def _compress_session_chunked(
         self, evaluation_id: str, case_id: str, chain_type: str,
@@ -1443,14 +1438,9 @@ class RootCauseAnalyzer:
         except Exception as e:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} session {step_idx+1} "
-                f"分片合并失败: {e}",
-                eval_id=evaluation_id)
-            # 合并失败：拼接分片摘要作为 summary，保留各分片的 l0_l7
-            return {
-                "summary": "\n".join(all_summaries),
-                "key_findings": all_key_findings,
-                "l0_l7": all_l0_l7,
-            }
+                f"分片合并失败")
+            log_error(evaluation_id, "ROOT_CAUSE", e)
+            raise
 
     def _format_session_events(
         self, session_id: str, events: list[RawEvent],

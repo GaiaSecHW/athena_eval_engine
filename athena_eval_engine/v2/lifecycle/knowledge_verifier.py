@@ -233,13 +233,19 @@ class KnowledgeVerifier:
         })
 
         if not candidates:
+            _searched_api = bool(project_id)
+            _searched_wiki = os.path.isdir(_WIKI_ROOT)
+            # 两个数据源都没查过 → 未判定（None），不能返回 False 误报「知识缺失」
+            _l4 = False if (_searched_api or _searched_wiki) else None
             result = {
-                "l4_knowledge_exists": False,
+                "l4_knowledge_exists": _l4,
                 "matched_files": [],
-                "summary": "知识库和记忆/wiki 中均未找到与误报原因相关的知识",
+                "summary": ("知识库和记忆/wiki 中均未找到与误报原因相关的知识"
+                            if _l4 is not None else
+                            "无可用知识源（未提供 project_id 且 wiki 目录不存在），未查询"),
                 "kb_searched": {
-                    "athena_api": bool(project_id),
-                    "wiki_nfs": os.path.isdir(_WIKI_ROOT),
+                    "athena_api": _searched_api,
+                    "wiki_nfs": _searched_wiki,
                 },
                 "candidate_files": 0,
             }
@@ -352,6 +358,7 @@ class KnowledgeVerifier:
                 poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
                             f"/retrieve/tasks/{task_id}")
                 poll_start = _time.time()
+                _last_poll_err = None
                 while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
                     if cancel_cb:
                         cancel_cb()
@@ -362,9 +369,16 @@ class KnowledgeVerifier:
                         status = poll_data.get("status", "")
                         if status in ("completed", "failed"):
                             return kw, task_id, poll_data, None
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        # 轮询期间的瞬时错误继续重试，但要记录，不能静默吞掉
+                        _last_poll_err = e
+                        log("KB_VERIFY",
+                            f"Athena 轮询异常 (kw={kw}, task_id={task_id}): "
+                            f"{type(e).__name__}: {e}")
                     _time.sleep(_RETRIEVE_POLL_INTERVAL)
+                # 超时：带上最后一次轮询错误，便于区分「服务慢」和「持续报错」
+                if _last_poll_err is not None:
+                    return kw, task_id, None, f"timeout; last poll error: {_last_poll_err}"
                 return kw, task_id, None, "timeout"
             finally:
                 sem.release()
@@ -403,17 +417,17 @@ class KnowledgeVerifier:
             poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
                         f"/retrieve/tasks/{task_id}")
 
-            if error == "timeout":
+            if error == "timeout" or (error or "").startswith("timeout;"):
                 log("KB_VERIFY", f"Athena /retrieve 轮询超时 (kw={kw}, task_id={task_id}, "
-                                 f"timeout={_RETRIEVE_POLL_TIMEOUT}s)")
+                                 f"timeout={_RETRIEVE_POLL_TIMEOUT}s, detail={error})")
                 from ..infra.pipeline_warnings import add as _add_warning
                 _add_warning(evaluation_id, "kb_verify", "athena_api_timeout", "warning",
-                             f"Athena /retrieve 轮询超时 (kw={kw}): timeout={_RETRIEVE_POLL_TIMEOUT}s")
+                             f"Athena /retrieve 轮询超时 (kw={kw}): timeout={_RETRIEVE_POLL_TIMEOUT}s, detail={error}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"轮询超时（{_RETRIEVE_POLL_TIMEOUT}s）",
+                    "result": f"轮询超时（{_RETRIEVE_POLL_TIMEOUT}s）: {error}",
                     "count": 0,
                 })
                 continue
@@ -877,10 +891,16 @@ class KnowledgeVerifier:
 
     @staticmethod
     def _empty_result() -> dict:
+        """未实际查询知识库时的返回值。
+
+        l4_knowledge_exists=None 表示「未判定」——不能返回 False，
+        否则上层会误读成「知识库确实没有该知识」，进而把责任错归到知识库
+        （用户取消/未产出检索问题等场景下知识库根本没被查过）。
+        """
         return {
-            "l4_knowledge_exists": False,
+            "l4_knowledge_exists": None,
             "matched_files": [],
-            "summary": "无法提取查询关键词或知识库不可访问",
+            "summary": "未查询知识库",
             "kb_searched": {"athena_api": False, "wiki_nfs": False},
             "candidate_files": 0,
         }
