@@ -104,30 +104,15 @@ class CreateRequest:
     eval_mode: str = "dev"  # "dev"（开发态） | "runtime"（运行态）
 
 
-def _build_entries(req: CreateRequest) -> list[dict]:
+def _build_entries(req: CreateRequest, *, project_name: str = "", task_name: str = "") -> list[dict]:
     """从项目 ID + 任务 ID 自动发现 trace，构建 entries。
 
     每个 entry 包含：task_id, condition, source_uri, trace_kind, category,
     project_id, project_name, task_id_actual, task_name, benchmark_item_ids（空，INGESTING 阶段填充）, expected_label。
+
+    project_name / task_name 由 create() 查平台后传入，不在本函数重复查询。
     """
     entries: list[dict] = []
-
-    # 预收集项目名/任务名（best-effort，平台不可用时不阻断）
-    _proj_names: dict[str, str] = {}
-    _task_names: dict[str, dict[str, str]] = {}  # project_id -> {task_id -> task_name}
-    _pids = {req.kg_project_id} - {""}
-    if _pids:
-        try:
-            for p in ps.get_projects():
-                if p["id"] in _pids:
-                    _proj_names[p["id"]] = p.get("name") or p["id"]
-        except Exception:
-            pass
-        for pid in _pids:
-            try:
-                _task_names[pid] = {t["id"]: t.get("name") or t["id"] for t in ps.get_tasks(pid)}
-            except Exception:
-                _task_names[pid] = {}
 
     # 1. 挖掘 trace
     pid = req.kg_project_id
@@ -144,9 +129,9 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "trace_kind": kind,
                     "category": "mining",
                     "project_id": pid,
-                    "project_name": _proj_names.get(pid, pid),
+                    "project_name": project_name or pid,
                     "task_id_actual": tid,
-                    "task_name": _task_names.get(pid, {}).get(tid, tid),
+                    "task_name": task_name or tid,
                     "benchmark_item_ids": [],
                     "expected_label": "VULNERABLE",
                 })
@@ -162,8 +147,8 @@ def _build_entries(req: CreateRequest) -> list[dict]:
             verify_traces = ps.discover_verify_traces(pid, tid)
             for vt in verify_traces:
                 # 多个同类型验证 trace 用 source_task_id 区分，避免 task_run_id 冲突
-                tid = vt.get("source_task_id", "")
-                suffix = f"-{tid[:8]}" if tid else ""
+                vt_tid = vt.get("source_task_id", "")
+                suffix = f"-{vt_tid[:8]}" if vt_tid else ""
                 entries.append({
                     "task_id": f"verify-{vt['agent_name']}{suffix}",
                     "condition": "KG",
@@ -171,7 +156,9 @@ def _build_entries(req: CreateRequest) -> list[dict]:
                     "trace_kind": vt["trace_kind"],
                     "category": "verify",
                     "project_id": pid,
-                    "project_name": _proj_names.get(pid, pid),
+                    "project_name": project_name or pid,
+                    "task_id_actual": vt_tid or tid,
+                    "task_name": task_name or tid,
                     "benchmark_item_ids": [],
                 })
                 log("CREATE", f"自动发现验证 trace: kind={vt['trace_kind']} agent={vt['agent_name']}")
@@ -191,13 +178,7 @@ def create(req: CreateRequest):
     if not req.benchmark_set_id:
         req.benchmark_set_id = req.kg_project_id
 
-    # 2. 自动发现 trace，构建 entries
-    entries = _build_entries(req)
-    if not entries:
-        raise ValueError(
-            f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id}")
-
-    # 3. 查基线名称（best-effort）
+    # 2. 查项目名/任务名（best-effort，平台不可用时不阻断）
     vbench_project_name = ""
     vc_source_project_name = ""
     vc_source_task_name = ""
@@ -226,6 +207,14 @@ def create(req: CreateRequest):
             vbench_project_name = vp.get("name") or "" if vp else ""
         except Exception:
             pass
+
+    # 3. 自动发现 trace，构建 entries（名称从 step 2 传入，不重复查询）
+    entries = _build_entries(req,
+                             project_name=vc_source_project_name,
+                             task_name=vc_source_task_name)
+    if not entries:
+        raise ValueError(
+            f"未发现任何 trace：kg_project={req.kg_project_id} kg_task={req.kg_task_id}")
 
     # 4. benchmark_set + evaluation + snapshot
     eval_name = req.evaluation_name or f"eval-{req.evaluation_id}"
