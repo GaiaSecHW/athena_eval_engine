@@ -268,7 +268,8 @@ class MissDetailAnalyzer:
         ]
 
         try:
-            kwargs = {"temperature": 0, "reasoning_effort": "none"}
+            kwargs = {"temperature": 0, "reasoning_effort": "none",
+                      "required_keys": ["miss_sub_category"]}
             if cancel_cb:
                 kwargs["cancel_cb"] = cancel_cb
             result = llm_mod.chat_json(messages, **kwargs)

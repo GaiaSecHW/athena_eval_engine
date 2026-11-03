@@ -884,7 +884,88 @@ def _escape_control_chars_in_strings(text: str) -> str:
     return ''.join(out)
 
 
-def _try_repair_backslash_quote(text):
+def _balanced_object_slices(text):
+    """扫描文本中的顶层平衡 {} 切片，返回 [(start, end)]，按跨度降序。
+
+    "平衡"指花括号深度从 0 回到 0，跳过字符串字面量内的括号。
+    只返回顶层对象，嵌套对象不单独返回（其内容已包含在父切片中）。
+    """
+    out = []
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start >= 0:
+                out.append((start, i + 1))
+                start = -1
+    out.sort(key=lambda p: p[1] - p[0], reverse=True)
+    return out
+
+
+def _quick_parse_keys(chunk):
+    """尝试解析一个 {} 切片，返回其顶层字段名列表（失败返回空列表）。"""
+    decoder = json.JSONDecoder()
+    for cand in (chunk, _escape_control_chars_in_strings(chunk)):
+        try:
+            obj, _ = decoder.raw_decode(cand)
+        except json.JSONDecodeError:
+            continue
+        if isinstance(obj, dict):
+            return list(obj)
+    return []
+
+
+def _parse_json_dict_candidates(text, required_keys=None):
+    """从文本中解析所有顶层 JSON dict 候选，返回 [(start, obj)]。
+
+    LLM 常在 JSON 前输出散文，散文里可能内嵌小的合法 JSON（如工具入参
+    `{"file_path": "..."}`）。若只取第一个 `{` 解析，会静默返回这个内嵌
+    小对象，调用方拿不到真正的结果字段。
+
+    策略：对每个顶层平衡 {} 切片尝试解析（原样 → 控制字符转义），
+    按"含 required_keys 优先、跨度降序"排序。required_keys 为空时只按跨度降序。
+    """
+    decoder = json.JSONDecoder()
+    cands = []
+    for start, end in _balanced_object_slices(text):
+        chunk = text[start:end]
+        obj = None
+        try:
+            obj, _ = decoder.raw_decode(chunk)
+        except json.JSONDecodeError:
+            try:
+                obj, _ = decoder.raw_decode(_escape_control_chars_in_strings(chunk))
+            except json.JSONDecodeError:
+                obj = None
+        if isinstance(obj, dict):
+            cands.append((start, end, obj))
+    if not cands:
+        return []
+    if required_keys:
+        want = set(required_keys)
+        cands = [c for c in cands if want <= set(c[2])]
+    return [(start, obj) for start, _end, obj in cands]
+
+
+def _try_repair_backslash_quote(text, required_keys=None):
     """修复 JSON 常见错误 + 结构补全。
 
     Step -1: 截取 JSON 部分。LLM（尤其推理模型）可能在 JSON 前输出
@@ -913,13 +994,27 @@ def _try_repair_backslash_quote(text):
     _valid_escapes = set('"\\/bfnrtu')
     decoder = json.JSONDecoder()
     # Step -1: 截取 JSON 部分（丢弃 LLM 前置思考过程）
+    # 优先取最大的顶层平衡 {} 切片——散文里可能内嵌小的合法 JSON（如工具入参），
+    # 取第一个 { 会命中那个小对象而不是真正的结果 JSON。
+    # 无平衡切片（JSON 被截断/括号不闭合）时退回第一个 {，交给后续结构补全。
     stripped = text.lstrip()
     if not stripped.startswith('{') and not stripped.startswith('['):
-        idx = text.find('{')
-        if idx < 0:
-            idx = text.find('[')
-        if idx > 0:
-            text = text[idx:]
+        slices = _balanced_object_slices(text)
+        if required_keys and slices:
+            # 优先选含期望字段的切片（散文里内嵌的工具入参小对象不含这些字段）
+            want = set(required_keys)
+            picked = [s for s in slices
+                      if want <= set(_quick_parse_keys(text[s[0]:s[1]]))]
+            if picked:
+                slices = picked
+        if slices:
+            text = text[slices[0][0]:slices[0][1]]
+        else:
+            idx = text.find('{')
+            if idx < 0:
+                idx = text.find('[')
+            if idx > 0:
+                text = text[idx:]
     # Step 0: 修复字符串值中的字面控制字符
     repaired = _escape_control_chars_in_strings(text)
     # Step 1: 修复 \\" 转义错误 + Step 1b: 修复无效 \escape
@@ -1044,9 +1139,16 @@ def _try_repair_backslash_quote(text):
 
 
 def chat_json(messages, **kwargs) -> dict:
-    """chat 但要求 JSON 输出，自动解析。JSON 解析失败时将错误反馈给 LLM 让其自我修正。"""
+    """chat 但要求 JSON 输出，自动解析。JSON 解析失败时将错误反馈给 LLM 让其自我修正。
+
+    Args:
+        required_keys: 期望结果 JSON 必含的顶层字段（如 ["summary"]）。
+            传入后只有包含这些字段的 dict 才被接受——避免把散文里内嵌的
+            工具入参小对象（如 {"file_path": "..."}）误当成结果返回。
+    """
     if not is_enabled():
         raise RuntimeError("LLM 未启用（设置 EVAL_LLM_ENABLED=true 后才会发起请求）")
+    required_keys = kwargs.pop("required_keys", None)
     msgs = list(messages)
     if not any("json" in str(m.get("content", "")).lower() for m in msgs):
         msgs.append({"role": "user", "content": "只返回 JSON，不要任何额外文字。"})
@@ -1127,14 +1229,24 @@ def chat_json(messages, **kwargs) -> dict:
             parsed, _end = _decoder.raw_decode(raw)
         except json.JSONDecodeError as je:
             json_err = je
+        _missing_keys_err = None
+        if parsed is not None and required_keys and not (
+            isinstance(parsed, dict) and set(required_keys) <= set(parsed)
+        ):
+            # 解析到的 dict 缺期望字段（例如只有 {"file_path": ...}）——视为失败
+            _missing_keys_err = (
+                f"JSON 缺少必需字段 {list(required_keys)}，"
+                f"实际字段 {list(parsed) if isinstance(parsed, dict) else type(parsed).__name__}"
+            )
+            parsed = None
         if parsed is None:
-            # 开头有非 JSON 文字（LLM 加了自然语言分析），从第一个 { 开始解析
-            _json_start = raw.find("{")
-            if _json_start >= 0:
-                try:
-                    parsed, _end = _decoder.raw_decode(raw[_json_start:])
-                except json.JSONDecodeError as je:
-                    json_err = je
+            # 开头有非 JSON 文字（LLM 加了自然语言分析）。
+            # 不能只取第一个 {：散文里可能内嵌小的合法 JSON（工具入参），
+            # 那会静默返回错误对象。改为扫描所有顶层平衡 {} 切片，取最大且
+            # 解析成功的那个。
+            _cands = _parse_json_dict_candidates(raw, required_keys)
+            if _cands:
+                _json_start, parsed = _cands[0]
         if parsed is None:
             # 尝试从第一个 [ 解析数组
             _json_start = raw.find("[")
@@ -1146,8 +1258,10 @@ def chat_json(messages, **kwargs) -> dict:
         if parsed is not None and isinstance(parsed, dict):
             return parsed
         # 尝试修复 \\" 转义错误（LLM 无法修复此类问题，原样复制）
-        repaired = _try_repair_backslash_quote(raw)
-        if repaired is not None:
+        repaired = _try_repair_backslash_quote(raw, required_keys=required_keys)
+        if repaired is not None and (
+            not required_keys or set(required_keys) <= set(repaired)
+        ):
             log("LLM", f"chat_json JSON 转义修复成功 content_len={len(raw)}")
             return repaired
         # parsed 是 list 或 None → 视为解析失败
@@ -1157,7 +1271,12 @@ def chat_json(messages, **kwargs) -> dict:
             last_err = f"JSON 被 max_tokens 截断（finish_reason=length, content_len={len(raw)}）"
             break
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
-        err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
+        if _missing_keys_err:
+            err_detail = _missing_keys_err
+        elif json_err:
+            err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）"
+        else:
+            err_detail = "未知错误"
         _raw_escaped = raw.replace("\n", "\\n")
         log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail} "
               f"finish_reason={_fr} content_len={len(raw)} | raw: {_raw_escaped}")

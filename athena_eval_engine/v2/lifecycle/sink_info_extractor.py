@@ -115,7 +115,8 @@ class SinkInfoExtractor:
         ]
 
         try:
-            kwargs = {"temperature": 0, "reasoning_effort": "none"}
+            kwargs = {"temperature": 0, "reasoning_effort": "none",
+                      "required_keys": ["sink_files"]}
             if cancel_cb:
                 kwargs["cancel_cb"] = cancel_cb
             result = llm_mod.chat_json(messages, **kwargs)

@@ -41,6 +41,41 @@ def _extract_json_objects_from_text(text: str) -> list[dict]:
     return results
 
 
+def _balanced_object_slices(text: str) -> list[tuple[int, int]]:
+    """扫描顶层平衡 {} 切片，返回 [(start, end)]，按跨度降序。
+
+    跳过字符串字面量内的括号；只返回顶层对象。
+    """
+    out: list[tuple[int, int]] = []
+    depth = 0
+    start = -1
+    in_str = False
+    esc = False
+    for i, ch in enumerate(text):
+        if esc:
+            esc = False
+            continue
+        if ch == '\\':
+            esc = True
+            continue
+        if ch == '"':
+            in_str = not in_str
+            continue
+        if in_str:
+            continue
+        if ch == '{':
+            if depth == 0:
+                start = i
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0 and start >= 0:
+                out.append((start, i + 1))
+                start = -1
+    out.sort(key=lambda p: p[1] - p[0], reverse=True)
+    return out
+
+
 def _escape_control_chars_in_strings(text: str) -> str:
     """将 JSON 字符串值中的字面控制字符转义。"""
     _escape_map = {
@@ -82,6 +117,12 @@ def _try_repair_backslash_quote(text: str) -> dict | None:
     """
     _valid_escapes = set('"\\/bfnrtu')
     decoder = json.JSONDecoder()
+    # Step -1: 优先取最大的顶层平衡 {} 切片。散文里可能内嵌小的合法 JSON
+    # （如工具入参），取第一个 { 会命中那个小对象而不是真正的结果 JSON。
+    if not text.lstrip().startswith(('{', '[')):
+        slices = _balanced_object_slices(text)
+        if slices:
+            text = text[slices[0][0]:slices[0][1]]
     # Step 0: 修复字符串值中的字面控制字符
     repaired = _escape_control_chars_in_strings(text)
     # Step 1: 修复 \\" 转义错误 + Step 1b: 修复无效 \escape

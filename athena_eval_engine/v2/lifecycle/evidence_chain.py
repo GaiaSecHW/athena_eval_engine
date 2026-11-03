@@ -422,12 +422,14 @@ class EvidenceChain:
                 messages, temperature=0,
                 reasoning_effort="high",
                 cancel_cb=cancel_cb,
+                required_keys=["knowledge_correct"],
             )
 
         return llm_mod.chat_json(
             messages, temperature=0,
             reasoning_effort="high",
             cancel_cb=cancel_cb,
+            required_keys=["knowledge_correct"],
         )
 
     # ── 工具方法 ──

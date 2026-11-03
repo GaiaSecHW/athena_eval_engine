@@ -753,6 +753,7 @@ class RootCauseAnalyzer:
                         messages,
                         temperature=0,
                         cancel_cb=cancel_cb,
+                        required_keys=["summary"],
                     )
                 except Exception as e:
                     err_str = str(e)
@@ -838,6 +839,7 @@ class RootCauseAnalyzer:
                 merge_messages,
                 temperature=0,
                 cancel_cb=cancel_cb,
+                required_keys=["summary"],
             )
         except Exception as e:
             log("ROOT_CAUSE",
@@ -1374,7 +1376,9 @@ class RootCauseAnalyzer:
                 {"role": "user", "content": user_content},
             ]
             try:
-                r = llm_mod.chat_json(msgs, temperature=0, cancel_cb=cancel_cb)
+                r = llm_mod.chat_json(
+                    msgs, temperature=0, cancel_cb=cancel_cb,
+                    required_keys=["summary"])
             except Exception as e:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {step_idx+1} "
@@ -1429,7 +1433,9 @@ class RootCauseAnalyzer:
             {"role": "user", "content": merge_content},
         ]
         try:
-            merged = llm_mod.chat_json(merge_msgs, temperature=0, cancel_cb=cancel_cb)
+            merged = llm_mod.chat_json(
+                merge_msgs, temperature=0, cancel_cb=cancel_cb,
+                required_keys=["summary"])
             # 保留各分片的 l0_l7 和 key_findings
             merged.setdefault("key_findings", all_key_findings)
             merged.setdefault("l0_l7", all_l0_l7)

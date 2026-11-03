@@ -249,6 +249,7 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            required_keys=["dts_id"],
         )
         dts_id = str(result.get("dts_id", "") or "").strip()
         if not dts_id:
@@ -314,6 +315,7 @@ def _is_same_vulnerability(vuln_title: str, vuln_description: str,
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": user_prompt},
             ],
+            required_keys=["same"],
         )
         same = result.get("same")
         return bool(same)

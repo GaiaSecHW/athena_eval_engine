@@ -150,7 +150,9 @@ def match_cases(
         raw_title = raw_case.get("title") or raw_case.get("vuln_title") or ""
 
         try:
-            result = llm_mod.chat_json(messages, temperature=0, reasoning_effort="none")
+            result = llm_mod.chat_json(
+                messages, temperature=0, reasoning_effort="none",
+                required_keys=["matches"])
             matches = result.get("matches", [])
 
             # 收集本批所有 same_vuln=true 的候选（按 confidence 降序）

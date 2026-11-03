@@ -475,8 +475,9 @@ class LifecycleAnalyzer:
         ]
 
         try:
-            result = self._call_llm_json(messages, cancel_cb=cancel_cb,
-                                         reasoning_effort="low")
+            result = self._call_llm_json(
+                messages, cancel_cb=cancel_cb, reasoning_effort="low",
+                required_keys=["l1_need_knowledge"])
         except Exception as e:
             log_error(dp.evaluation_id, "LIFECYCLE", e)
             raise
@@ -848,6 +849,7 @@ class LifecycleAnalyzer:
         cancel_cb = kwargs.pop("cancel_cb", None)
         reasoning_effort = kwargs.pop("reasoning_effort", "none")
         max_tokens = kwargs.pop("max_tokens", None)
+        required_keys = kwargs.pop("required_keys", None)
 
         if self.llm is not None:
             # 注入的客户端
@@ -855,12 +857,14 @@ class LifecycleAnalyzer:
                 return self.llm.chat_json(messages, temperature=0,
                                           reasoning_effort=reasoning_effort,
                                           max_tokens=max_tokens,
-                                          cancel_cb=cancel_cb)
+                                          cancel_cb=cancel_cb,
+                                          required_keys=required_keys)
         # 使用模块级函数
         return llm_mod.chat_json(messages, temperature=0,
                                 reasoning_effort=reasoning_effort,
                                 max_tokens=max_tokens,
-                                cancel_cb=cancel_cb)
+                                cancel_cb=cancel_cb,
+                                required_keys=required_keys)
 
     def _make_record(self, access_id: str, dp: DataPack, event_idx: int,
                      source_system: str, l0_origin: str,

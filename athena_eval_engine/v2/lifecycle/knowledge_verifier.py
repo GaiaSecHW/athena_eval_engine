@@ -821,7 +821,9 @@ class KnowledgeVerifier:
         if not llm_mod.would_exceed_context(all_msgs):
             # 未超限：一次性送 LLM
             try:
-                result = llm_mod.chat_json(all_msgs, temperature=0, cancel_cb=cancel_cb)
+                result = llm_mod.chat_json(
+                    all_msgs, temperature=0, cancel_cb=cancel_cb,
+                    required_keys=["knowledge_exists"])
             except Exception as e:
                 log("KB_VERIFY", "LLM 判定失败")
                 log_error(evaluation_id, "KB_VERIFY", e)
@@ -855,7 +857,9 @@ class KnowledgeVerifier:
                 cancel_cb()
             batch_msgs = _build_messages(batch)
             try:
-                r = llm_mod.chat_json(batch_msgs, temperature=0, cancel_cb=cancel_cb)
+                r = llm_mod.chat_json(
+                    batch_msgs, temperature=0, cancel_cb=cancel_cb,
+                    required_keys=["knowledge_exists"])
             except Exception as e:
                 log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败")
                 log_error(evaluation_id, "KB_VERIFY", e)
