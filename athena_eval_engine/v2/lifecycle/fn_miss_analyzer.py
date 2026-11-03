@@ -111,7 +111,7 @@ class FnMissAnalyzer:
                 sink_infos[cid] = fut.result()
             except Exception as e:
                 log("FN_MISS",
-                    f"case {cid}: sink 信息提取失败: {str(e)[:200]}",
+                    f"case {cid}: sink 信息提取失败: {e}",
                     eval_id=evaluation_id)
                 sink_infos[cid] = extractor._empty_result(
                     {"case_id": cid, "description": ""})
@@ -184,7 +184,7 @@ class FnMissAnalyzer:
                     miss_detail_results[cid] = result
                 except Exception as e:
                     log("FN_MISS",
-                        f"细分成因分析失败: {str(e)[:200]}",
+                        f"细分成因分析失败: {e}",
                         eval_id=evaluation_id)
 
         # 2c: 组装最终结果
@@ -226,7 +226,7 @@ class FnMissAnalyzer:
                     "miss_sub_category_label", "其他")
                 miss_reason = (
                     f"{miss_reason}——细分漏报成因：{sub_label}"
-                    f"（{miss_detail.get('reason', '')[:150]}）"
+                    f"（{miss_detail.get('reason', '')}）"
                     if miss_detail.get("reason") else miss_reason)
             else:
                 sink_found = False

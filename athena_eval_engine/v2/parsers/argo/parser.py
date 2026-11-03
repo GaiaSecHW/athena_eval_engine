@@ -430,11 +430,11 @@ class ArgoParser(BaseParser):
                 content = str(ev.output_json)
                 # 提取任务类型
                 if sg['task_type'] is None:
-                    if content.startswith("# Investigate") or "# Investigate" in content[:50]:
+                    if content.startswith("# Investigate") or "# Investigate" in content:
                         sg['task_type'] = 'investigate'
-                    elif content.startswith("# Verify") or "# Verify" in content[:50]:
+                    elif content.startswith("# Verify") or "# Verify" in content:
                         sg['task_type'] = 'verify'
-                    elif content.startswith("# Reason") or "# Reason" in content[:50]:
+                    elif content.startswith("# Reason") or "# Reason" in content:
                         sg['task_type'] = 'reason'
                 # verify session 标记
                 if "## Finding to Verify" in content or "# Verify:" in content:
@@ -449,7 +449,7 @@ class ArgoParser(BaseParser):
                     if m:
                         fdesc = m.group(1).strip()
                         if fdesc:
-                            sg['finding_descs'][f"verify:{fdesc[:40]}"] = fdesc
+                            sg['finding_descs'][f"verify:{fdesc}"] = fdesc
                 # fact 引用（prompt 文本中引用的 fact ID）
                 # 用 negative lookbehind 避免 hex 字符串（如项目 ID 中的 f58851）误匹配
                 for fid in re.findall(r'(?<![\da-zA-Z])(f\d{3,5})(?!\d)', content):
@@ -487,7 +487,7 @@ class ArgoParser(BaseParser):
                                         sg['finding_descs'][key] = fdesc
                                     else:
                                         # key 无效时用 description 前缀作索引键兜底
-                                        sg['finding_descs'][f"desc:{fdesc[:40]}"] = fdesc
+                                        sg['finding_descs'][f"desc:{fdesc}"] = fdesc
                         # verify verdict: 存 verdict description 用于后续匹配 verified_finding
                         if "verdict" in data:
                             sg['session_type'] = 'verify'
@@ -820,7 +820,7 @@ class ArgoParser(BaseParser):
                 if isinstance(payload, dict):
                     _add(payload)
             except Exception as e:
-                _log.debug("_extract_accepted_payloads LLM fallback failed: %s", str(e)[:200])
+                _log.debug("_extract_accepted_payloads LLM fallback failed: %s", e)
 
         return results
 
@@ -856,7 +856,7 @@ class ArgoParser(BaseParser):
         if not content:
             return None
         # 取前 100 字符匹配（prompt 标题在开头）
-        prefix = content[:100].lower()
+        prefix = content.lower()
         for title_prefix, task_type in self._PROMPT_TITLE_MAP.items():
             if prefix.startswith(title_prefix):
                 return task_type
@@ -894,7 +894,7 @@ class ArgoParser(BaseParser):
             finally:
                 conn.close()
         except Exception as e:
-            _log.debug("Argo _query_task_type_from_db failed: %s", str(e)[:200])
+            _log.debug("Argo _query_task_type_from_db failed: %s", e)
             return {}
 
     def _build_parent_map_from_intents_db(self, graph: dict) -> None:
@@ -1087,7 +1087,7 @@ class ArgoParser(BaseParser):
                 for fid, ftype, fdesc in cur.fetchall():
                     fact_map[fid] = {
                         "type": ftype or "fact",
-                        "description": (fdesc or "")[:80],
+                        "description": fdesc or "",
                     }
 
                 # 2. 该 project 的全部 intents（边元数据，含 from/outputs 解析）
@@ -1103,7 +1103,7 @@ class ArgoParser(BaseParser):
                         "id": iid,
                         "task_type": itype or "investigate",
                         "session_id": isid or "",
-                        "label": (idesc or "").strip().splitlines()[0][:80]
+                        "label": (idesc or "").strip().splitlines()[0]
                         if idesc else "",
                     }
 
@@ -1173,7 +1173,7 @@ class ArgoParser(BaseParser):
             finally:
                 conn.close()
         except Exception as e:
-            _log.debug("Argo _query_fact_deps_from_db failed: %s", str(e)[:200])
+            _log.debug("Argo _query_fact_deps_from_db failed: %s", e)
             return {}
 
     def label_session_phases(

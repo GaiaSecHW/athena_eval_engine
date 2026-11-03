@@ -85,8 +85,8 @@ def _read_eval_reports() -> dict:
     try:
         eids = _db_query(_query)
     except Exception as e:
-        log("DASHBOARD", f"查询已完成评测失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"查询已完成评测失败: {str(e)[:200]}")
+        log("DASHBOARD", f"查询已完成评测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查询已完成评测失败: {e}")
 
     for eid in eids:
         path = os.path.join(REPORTS_DIR, f"{eid}.json")
@@ -104,7 +104,7 @@ def _read_eval_reports() -> dict:
             bucket["tn"] += rp.get("tn_count") or 0
             bucket["count"] += 1
         except Exception as e:
-            log("DASHBOARD", f"读取报告失败 {eid}: {str(e)[:200]}")
+            log("DASHBOARD", f"读取报告失败 {eid}: {e}")
             continue
     return grouped
 
@@ -149,8 +149,8 @@ def _read_agent_fpr() -> dict:
     try:
         eids = _db_query(_query)
     except Exception as e:
-        log("DASHBOARD", f"查询已完成评测失败(agent_fpr): {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"查询已完成评测失败(agent_fpr): {str(e)[:200]}")
+        log("DASHBOARD", f"查询已完成评测失败(agent_fpr): {e}")
+        raise HTTPException(status_code=500, detail=f"查询已完成评测失败(agent_fpr): {e}")
 
     for eid in eids:
         mode = _eval_mode_of(eid) or "unknown"
@@ -161,7 +161,7 @@ def _read_agent_fpr() -> dict:
             with open(cm_path, "r", encoding="utf-8") as f:
                 cm = json.loads(f.read())
         except Exception as e:
-            log("DASHBOARD", f"读取 case_matching 失败 {eid}: {str(e)[:200]}")
+            log("DASHBOARD", f"读取 case_matching 失败 {eid}: {e}")
             continue
 
         # 优先用 agent_outcomes（含 TP/FP/FN——新 dump 字段，直接统计各 agent）
@@ -193,7 +193,7 @@ def _read_agent_fpr() -> dict:
                         if sid and at:
                             sid_to_agent[sid] = at
             except Exception as e:
-                log("DASHBOARD", f"读取 parsing 失败 {eid}: {str(e)[:200]}")
+                log("DASHBOARD", f"读取 parsing 失败 {eid}: {e}")
 
         for m in (cm.get("matches", []) or []):
             outcome = m.get("outcome", "")
@@ -314,8 +314,8 @@ def _query_dts_aggregate() -> dict:
     try:
         return _db_query(_do_query)
     except Exception as e:
-        log("DASHBOARD", f"DTS 聚合查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"DTS 聚合查询失败: {str(e)[:200]}")
+        log("DASHBOARD", f"DTS 聚合查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"DTS 聚合查询失败: {e}")
 
 
 @router.get("/overview")

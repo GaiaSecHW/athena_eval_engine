@@ -560,7 +560,7 @@ def _run_one(cur, conn, migration: dict):
             try:
                 cur.execute(sql)
             except Exception as e:
-                err = str(e)[:200]
+                err = str(e)
                 if any(kw in err.lower() for kw in _IDEMPOTENT_KEYWORDS):
                     pass  # 幂等：已应用过，跳过
                 else:

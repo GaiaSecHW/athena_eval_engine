@@ -74,12 +74,12 @@ def fetch_case_session_map(case_id: str) -> dict:
     )
     if not isinstance(data, dict) or not data.get("success"):
         raise RuntimeError(
-            f"fetch_case_session_map case={case_id} API 响应非 success: {str(data)[:200]}"
+            f"fetch_case_session_map case={case_id} API 响应非 success: {data}"
         )
     payload = data.get("data") or {}
     if not isinstance(payload, dict):
         raise RuntimeError(
-            f"fetch_case_session_map case={case_id} API 响应 data 非 dict: {str(data)[:200]}"
+            f"fetch_case_session_map case={case_id} API 响应 data 非 dict: {data}"
         )
     analysis_sid = payload.get("ai_analysis_session_id") or ""
     verification_sid = payload.get("ai_verification_session_id") or ""

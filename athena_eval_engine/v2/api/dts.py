@@ -91,8 +91,8 @@ def list_issues(
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
 
-        log("DTS_API", f"list_issues 查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"查询问题单失败: {str(e)[:200]}")
+        log("DTS_API", f"list_issues 查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查询问题单失败: {e}")
     return {"issues": issues, "count": len(issues), "total": total, "stats": stats}
 
 
@@ -103,8 +103,8 @@ def get_stats(evaluation_id: str | None = None):
         stats = get_dts_stats(evaluation_id)
     except Exception as e:
 
-        log("DTS_API", f"get_stats 查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"查询统计失败: {str(e)[:200]}")
+        log("DTS_API", f"get_stats 查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查询统计失败: {e}")
     return stats
 
 
@@ -125,8 +125,8 @@ def get_post_fpr(evaluation_id: str):
         return get_post_regression_fpr(evaluation_id)
     except Exception as e:
 
-        log("DTS_API", f"get_post_fpr 查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"查询回归误报率失败: {str(e)[:200]}")
+        log("DTS_API", f"get_post_fpr 查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查询回归误报率失败: {e}")
 
 
 @router.get("/by-case/{case_id}")
@@ -136,8 +136,8 @@ def list_by_case(case_id: str):
         issues = list_dts_by_case(case_id)
     except Exception as e:
 
-        log("DTS_API", f"list_by_case 查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"按 case 查询问题单失败: {str(e)[:200]}")
+        log("DTS_API", f"list_by_case 查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"按 case 查询问题单失败: {e}")
     return {"issues": issues, "count": len(issues)}
 
 
@@ -159,8 +159,8 @@ def list_by_task(task_id: str):
     try:
         issues = list_dts_by_task(task_id)
     except Exception as e:
-        log("DTS_API", f"list_by_task 查询失败: {str(e)[:200]}")
-        raise HTTPException(status_code=500, detail=f"按任务查询问题单失败: {str(e)[:200]}")
+        log("DTS_API", f"list_by_task 查询失败: {e}")
+        raise HTTPException(status_code=500, detail=f"按任务查询问题单失败: {e}")
 
     from ...config_loader import get_reports_dir
     reports_dir = get_reports_dir()
@@ -184,7 +184,7 @@ def list_by_task(task_id: str):
                 except Exception as e:
                     log("DTS_API",
                         f"list_by_task 读取原始报告失败 case={case_id} "
-                        f"path={path}: {str(e)[:200]}")
+                        f"path={path}: {e}")
             raw_report_cache[case_id] = raw_report
         simplified.append({
             "dts_id": i.get("dts_id", ""),
@@ -215,7 +215,7 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
     try:
         candidates = list_dts_by_task(task_id)
     except Exception as e:
-        log("DTS_API", f"regression LLM 匹配: 查询问题单失败: {str(e)[:200]}")
+        log("DTS_API", f"regression LLM 匹配: 查询问题单失败: {e}")
         return None
     if not candidates:
         return None
@@ -256,7 +256,7 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
         matched = get_dts_issue(dts_id)
         return matched
     except Exception as e:
-        log("DTS_API", f"regression LLM 匹配失败: {str(e)[:200]}")
+        log("DTS_API", f"regression LLM 匹配失败: {e}")
         return None
 
 
@@ -270,7 +270,7 @@ def _safe_update_dts_issue(dts_id: str, fields: dict) -> bool:
     try:
         return update_dts_issue(dts_id, fields)
     except Exception as e:
-        err = str(e)[:300]
+        err = str(e)
         log("DTS_API",
             f"update_dts_issue 失败 dts_id={dts_id} err={err}")
         raise HTTPException(
@@ -318,7 +318,7 @@ def _is_same_vulnerability(vuln_title: str, vuln_description: str,
         same = result.get("same")
         return bool(same)
     except Exception as e:
-        log("DTS_API", f"regression 漏洞一致性判断失败: {str(e)[:200]}")
+        log("DTS_API", f"regression 漏洞一致性判断失败: {e}")
         return True  # LLM 失败保守放行
 
 
@@ -486,7 +486,7 @@ def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
             update_regression_result(result_id, "", "error", f"判定失败：{he.detail}", "")
         return None
     except Exception as e:
-        err = str(e)[:300]
+        err = str(e)
         log("DTS_API",
             f"regression_verify(async) 失败 dts_id={req.dts_id}: {err}")
         if result_id is not None:

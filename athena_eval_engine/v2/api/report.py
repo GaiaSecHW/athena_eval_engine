@@ -133,7 +133,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     try:
         updated_at, total, rows, kpi = _db_query(_do)
     except Exception as e:
-        log("REPORT", f"读汇总失败: {str(e)[:200]}")
+        log("REPORT", f"读汇总失败: {e}")
         return {"updated_at": None, "total": 0, "page": page,
                 "page_size": page_size, "items": [], "all_agents": [],
                 "kpi": {"project_count": 0, "task_count": 0, "vuln_total": 0,
@@ -216,7 +216,7 @@ def sync_now():
         try:
             sync_all()
         except Exception as e:
-            log("REPORT", f"后台采集失败: {str(e)[:300]}")
+            log("REPORT", f"后台采集失败: {e}")
 
     t = threading.Thread(target=_run, name="report-manual-sync", daemon=True)
     t.start()
@@ -229,8 +229,8 @@ def projects():
     try:
         return {"projects": ps.get_projects()}
     except Exception as e:
-        log("REPORT", f"拉项目列表失败: {str(e)[:200]}")
-        raise HTTPException(500, f"拉项目列表失败: {str(e)[:200]}")
+        log("REPORT", f"拉项目列表失败: {e}")
+        raise HTTPException(500, f"拉项目列表失败: {e}")
 
 
 @router.get("/tasks")
@@ -239,8 +239,8 @@ def tasks(project_id: str | None = None):
     try:
         return {"tasks": ps.get_tasks(project_id)}
     except Exception as e:
-        log("REPORT", f"拉任务列表失败: {str(e)[:200]}")
-        raise HTTPException(500, f"拉任务列表失败: {str(e)[:200]}")
+        log("REPORT", f"拉任务列表失败: {e}")
+        raise HTTPException(500, f"拉任务列表失败: {e}")
 
 
 @router.get("/fpr/{project_id}/{task_id}")
@@ -272,8 +272,8 @@ def fpr(project_id: str, task_id: str):
             confirmation_status="not_vulnerable",
         )
     except Exception as e:
-        log("REPORT", f"拉漏洞中心 case 失败: {str(e)[:200]}")
-        raise HTTPException(500, f"拉漏洞中心 case 失败: {str(e)[:200]}")
+        log("REPORT", f"拉漏洞中心 case 失败: {e}")
+        raise HTTPException(500, f"拉漏洞中心 case 失败: {e}")
 
     # TP = 人工确认漏洞（human_confirmation.result=vulnerable，API 已按 confirmation_status 过滤）
     tp = len(vuln_cases)

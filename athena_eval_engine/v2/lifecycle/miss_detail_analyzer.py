@@ -280,7 +280,7 @@ class MissDetailAnalyzer:
                 "miss_sub_category": "other",
                 "miss_sub_category_label": "其他",
                 "responsibility": "agent",
-                "reason": f"LLM 分析失败: {str(e)[:100]}",
+                "reason": f"LLM 分析失败: {e}",
                 "evidence": "",
                 "confidence": 0.0,
                 "key_events": [],

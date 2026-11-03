@@ -51,7 +51,7 @@ def get_case_raw_report(case_id: str, evaluation_id: str = "") -> str:
         if evaluation_id:
             from ..v2.infra.pipeline_warnings import add as _add_warning
             _add_warning(evaluation_id, "vuln_center", "raw_report_fetch_failed", "warning",
-                         f"case {case_id} 原始报告获取失败: {str(e)[:200]}", case_id=case_id)
+                         f"case {case_id} 原始报告获取失败: {e}", case_id=case_id)
     return ""
 
 
@@ -99,7 +99,7 @@ def list_stats(project_id: str, source_task_id: str | None = None,
                 "inconclusive": data.get("inconclusive") or 0,
             }
     except Exception as e:
-        log("VULN_CENTER", f"list_stats 失败: {str(e)[:200]}")
+        log("VULN_CENTER", f"list_stats 失败: {e}")
     return {"total": 0, "confirmed": 0, "ruled_out": 0, "inconclusive": 0}
 
 

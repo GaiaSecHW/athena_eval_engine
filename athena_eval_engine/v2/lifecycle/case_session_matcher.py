@@ -799,7 +799,7 @@ class CaseSessionMatcher:
                     self._classify_session(sid, agent_type,
                                            mining_sessions, [])
                     return (f"挖掘 session 模糊匹配成功（子串包含: "
-                            f"'{ftitle[:40]}' ↔ '{qt[:40]}'）")
+                            f"'{ftitle}' ↔ '{qt}'）")
 
         # 策略 2：关键词 Jaccard 重叠
         _STOP_WORDS = {"的", "了", "和", "与", "或", "在", "为", "是", "及",

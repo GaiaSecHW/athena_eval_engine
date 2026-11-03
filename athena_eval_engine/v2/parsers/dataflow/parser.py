@@ -840,7 +840,7 @@ class DataflowVulnScanParser(BaseParser):
                 conn.close()
         except Exception as e:
             _log.debug("DataflowVulnScan _query_session_kind_from_db failed: %s",
-                       str(e)[:200])
+                       e)
             return {}
 
     def _extract_project_id(self, trace_source: dict) -> str | None:

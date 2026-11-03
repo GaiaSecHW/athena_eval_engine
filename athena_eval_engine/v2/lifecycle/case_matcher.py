@@ -187,7 +187,7 @@ def match_cases(
             }
         except Exception as e:
             log("MATCH", f"LLM 匹配失败 raw={raw_case_id} "
-                  f"batch={batch_idx}: {str(e)[:200]}",
+                  f"batch={batch_idx}: {e}",
                 eval_id=evaluation_id)
             return {
                 "raw_idx": raw_idx,
@@ -195,7 +195,7 @@ def match_cases(
                 "raw_title": raw_title,
                 "candidates": [],
                 "batch": batch_idx,
-                "error": str(e)[:200],
+                "error": str(e),
             }
 
     # 生成所有 (raw_idx, batch_idx) 组合
@@ -245,7 +245,7 @@ def match_cases(
                 )
                 progress_cb(done_count, total_count, matched_count)
         except Exception as e:
-            log("MATCH", f"收集匹配结果失败: {str(e)[:200]}",
+            log("MATCH", f"收集匹配结果失败: {e}",
                 eval_id=evaluation_id)
 
     # 每条原始数据的候选按 confidence 降序排序

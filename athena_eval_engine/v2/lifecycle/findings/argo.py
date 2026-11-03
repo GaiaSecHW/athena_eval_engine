@@ -126,4 +126,4 @@ class ArgoFindingExtractor(FindingExtractor):
             finally:
                 conn.close()
         except Exception as e:
-            _log.warning("Argo _extract_from_facts_db failed: %s", str(e)[:200])
+            _log.warning("Argo _extract_from_facts_db failed: %s", e)

@@ -930,9 +930,9 @@ def fetch_trace_to_local(project_id: str, task_id: str, remote_path: str, local_
                 if r.returncode:
                     raise FileNotFoundError(
                         f"kubectl tar 失败（exit={r.returncode}）：{remote_path}; "
-                        f"stderr={r.stderr.decode('utf-8', 'replace')[:300]}")
+                        f"stderr={r.stderr.decode('utf-8', 'replace')}")
                 if not os.path.getsize(tmp_tar):
-                    raise FileNotFoundError(f"kubectl tar 失败（空输出）：{remote_path}; stderr={r.stderr.decode('utf-8','replace')[:300]}")
+                    raise FileNotFoundError(f"kubectl tar 失败（空输出）：{remote_path}; stderr={r.stderr.decode('utf-8','replace')}")
                 with tarfile.open(tmp_tar) as tf:
                     # filter='data' 跳过符号链接等危险文件（session 目录含 .claude/skills 符号链接）
                     tf.extractall(local_dir, filter="data")

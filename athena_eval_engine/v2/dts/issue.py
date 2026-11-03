@@ -342,7 +342,7 @@ def generate_dts_issues(
                     json.dump(full_data, f, ensure_ascii=False, indent=2)
                 analysis_data_path = file_name
             except Exception as e:
-                log("DTS", f"写入完整分析数据失败 case={case_id}: {str(e)[:200]}")
+                log("DTS", f"写入完整分析数据失败 case={case_id}: {e}")
 
         issues.append({
             "dts_id": dts_id,

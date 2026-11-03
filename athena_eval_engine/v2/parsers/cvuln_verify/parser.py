@@ -411,7 +411,7 @@ class CVulnVerifyParser(BaseParser):
             finally:
                 conn.close()
         except Exception as e:
-            _log.debug("CVulnVerify _fetch_predecessor_map failed: %s", str(e)[:200])
+            _log.debug("CVulnVerify _fetch_predecessor_map failed: %s", e)
             return {}
 
     def build_session_graph(self, events: list[RawEvent]) -> dict:
@@ -651,5 +651,5 @@ class CVulnVerifyParser(BaseParser):
             finally:
                 conn.close()
         except Exception as e:
-            _log.debug("CVulnVerify _query_worker_type_from_db failed: %s", str(e)[:200])
+            _log.debug("CVulnVerify _query_worker_type_from_db failed: %s", e)
             return {}

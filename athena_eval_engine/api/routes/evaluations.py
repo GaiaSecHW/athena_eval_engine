@@ -276,7 +276,7 @@ def _record_background_failure(evaluation_id: str, error: Exception, source: str
     log_error(evaluation_id, source, error)
 
     from ...infrastructure.database import connect
-    err_msg = str(error)[:500]
+    err_msg = str(error)
 
     def _mark_failed_db(cur):
         cur.execute("SELECT evaluation_status FROM evaluation WHERE evaluation_id=%s", (evaluation_id,))

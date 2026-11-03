@@ -537,7 +537,7 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
                     "success": True,
                     "latency_ms": latency_ms,
                     "model": mdl,
-                    "response": content[:100],
+                    "response": content,
                     "error": "",
                 }
             except Exception:
@@ -545,11 +545,11 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
                     "success": True,
                     "latency_ms": latency_ms,
                     "model": mdl,
-                    "response": resp_body[:100],
+                    "response": resp_body,
                     "error": "",
                 }
         else:
-            err_msg = resp_body[:300]
+            err_msg = resp_body
             try:
                 err_json = json.loads(resp_body)
                 err_msg = err_json.get("error", {}).get("message", err_msg)
@@ -569,7 +569,7 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
             "latency_ms": latency_ms,
             "model": mdl,
             "response": "",
-            "error": str(e)[:300],
+            "error": str(e),
         }
 
 
@@ -691,14 +691,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             if status == 500:
                 if _500_count >= MAX_500_RETRIES:
                     data = resp.read().decode("utf-8")
-                    err_preview = data[:500]
+                    err_preview = data
                     log("LLM", f"HTTP 500 重试耗尽（{MAX_500_RETRIES} 次）: {err_preview}")
                     conn.close()
                     conn = None
                     raise RuntimeError(f"LLM HTTP 500 重试耗尽（{MAX_500_RETRIES} 次）: {err_preview}")
                 _500_count += 1
                 data = resp.read().decode("utf-8")
-                err_preview = data[:200]
+                err_preview = data
                 log("LLM", f"HTTP 500 from {base}, retry {_500_count}/{MAX_500_RETRIES} in 5s: {err_preview}")
                 conn.close()
                 conn = None
@@ -706,7 +706,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
                 continue
             if status != 200:
                 data = resp.read().decode("utf-8")
-                err_preview = data[:500]
+                err_preview = data
                 if status == 400:
                     _collect_max_tokens(data, messages)
                 log("LLM", f"HTTP {status} from {base}: {err_preview}")
@@ -843,7 +843,7 @@ def chat(messages, **kwargs) -> str:
         try:
             return _chat_once(messages, **_call_kwargs)[0]
         except Exception as e:
-            last_err = str(e)[:300]
+            last_err = str(e)
             err_lower = last_err.lower()
             # context length / token limit 错误是确定性的，重试无意义
             if any(kw in err_lower for kw in (
@@ -1085,7 +1085,7 @@ def chat_json(messages, **kwargs) -> dict:
         try:
             raw, _fr = _chat_once(msgs, **_call_kwargs)
         except Exception as e:
-            last_err = str(e)[:300]
+            last_err = str(e)
             err_lower = last_err.lower()
             # context length / token limit 错误是确定性的，重试无意义
             if any(kw in err_lower for kw in (
@@ -1098,7 +1098,7 @@ def chat_json(messages, **kwargs) -> dict:
             # content 为空 或 stream 总超时 = reasoning 太长，下次关闭推理重试
             if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 _msg_chars = sum(len(str(m.get("content", ""))) for m in msgs)
-                _sys_msg = str(msgs[0].get("content", ""))[:80] if msgs else ""
+                _sys_msg = str(msgs[0].get("content", "")) if msgs else ""
                 if not _no_reasoning:
                     _no_reasoning = True
                     log("LLM", f"chat_json reasoning 过长，下次关闭推理重试 "
@@ -1174,10 +1174,9 @@ def chat_json(messages, **kwargs) -> dict:
             break
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
         err_detail = f"{json_err.msg}（line {json_err.lineno} column {json_err.colno}）" if json_err else "未知错误"
-        _head = raw[:200].replace("\n", "\\n")
-        _tail = raw[-200:].replace("\n", "\\n")
+        _raw_escaped = raw.replace("\n", "\\n")
         log("LLM", f"chat_json attempt {attempt+1}/{retries} JSON parse failed: {err_detail} "
-              f"finish_reason={_fr} content_len={len(raw)} | head: {_head} | tail: {_tail}")
+              f"finish_reason={_fr} content_len={len(raw)} | raw: {_raw_escaped}")
         # 检测 LLM 是否连续返回相同内容（correction 无效）
         if raw == _prev_raw:
             _repeat_count += 1

@@ -142,7 +142,7 @@ def sync_all() -> dict:
             tasks = ps.get_tasks(p["id"])
             return [{"project_id": p["id"], **t} for t in tasks]
         except Exception as e:
-            log("SYNC", f"项目 {p['id']} 拉任务失败: {str(e)[:200]}")
+            log("SYNC", f"项目 {p['id']} 拉任务失败: {e}")
             return []
 
     with ThreadPoolExecutor(max_workers=_FETCH_WORKERS) as pool:
@@ -169,7 +169,7 @@ def sync_all() -> dict:
             nonfp_stats = vc.list_stats(pid, source_task_id=tid,
                                         false_positive_group="non_fp")
         except Exception as e:
-            log("SYNC", f"任务 {tid} 拉统计失败: {str(e)[:200]}")
+            log("SYNC", f"任务 {tid} 拉统计失败: {e}")
             return None
 
         # 字段映射（口径与漏洞中心一致，每任务 4 次查询）：
@@ -281,5 +281,5 @@ def schedule_loop(stop_event: threading.Event | None = None) -> None:
                     try:
                         sync_all()
                     except Exception as e:
-                        log("SYNC", f"定时采集失败: {str(e)[:300]}")
+                        log("SYNC", f"定时采集失败: {e}")
         time.sleep(_SCHEDULE_CHECK_SECONDS)

@@ -164,7 +164,7 @@ def get_dts_issue(dts_id: str) -> dict | None:
             with open(file_path, "r", encoding="utf-8") as f:
                 result["analysis_data"] = _json.loads(f.read())
         except Exception as e:
-            log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {str(e)[:200]}")
+            log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {e}")
             result["analysis_data"] = None
 
     # 解析 hypothesis_confirmations JSON（假设根因确认状态）
@@ -505,7 +505,7 @@ def insert_regression_result(dts_id: str, task_id: str, case_id: str,
     except Exception as e:
         # 历史记录失败不应影响主流程（问题单已更新成功）
         log("DTS_REPO",
-            f"insert_regression_result failed dts_id={dts_id}: {str(e)[:200]}")
+            f"insert_regression_result failed dts_id={dts_id}: {e}")
         return None
 
 
@@ -531,7 +531,7 @@ def update_regression_result(result_id: int, replay_result: str, status: str,
         return _db_query(_do_update)
     except Exception as e:
         log("DTS_REPO",
-            f"update_regression_result failed id={result_id}: {str(e)[:200]}")
+            f"update_regression_result failed id={result_id}: {e}")
         return False
 
 
@@ -551,7 +551,7 @@ def list_regression_results(dts_id: str) -> list[dict]:
         rows = _db_query(_do_query) or []
     except Exception as e:
         log("DTS_REPO",
-            f"list_regression_results failed dts_id={dts_id}: {str(e)[:200]}")
+            f"list_regression_results failed dts_id={dts_id}: {e}")
         return []
 
     out = []
