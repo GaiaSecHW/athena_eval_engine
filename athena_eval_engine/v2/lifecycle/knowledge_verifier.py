@@ -28,8 +28,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 import urllib.parse
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any
 
 from ...config_loader import DATA_ROOT
@@ -327,23 +329,16 @@ class KnowledgeVerifier:
     ) -> tuple[list[dict], list[dict]]:
         """Athena API 检索（带查询日志）。
 
-        用 /retrieve 端点（与 agent 同款），而非 /knowledge/concepts。
-        /retrieve 有 auto-ensure：项目未注册时自动从平台 API 拉取创建货架。
-        /knowledge/concepts 没有 auto-ensure，对未注册项目直接 404。
-
-        检索是异步的：POST 提交 → 轮询 GET 直到 completed。
-        每个关键词发一次检索请求。
+        用 /retrieve 端点（与 agent 同款）。每个关键词一个线程并发提交+轮询，
+        互不阻塞，各自 300 秒超时。
         """
         import time as _time
 
-        candidates: list[dict] = []
-        seen_docs: set[str] = set()
-        log_entries: list[dict] = []
+        submit_url = f"{_ATHENA_BASE}/api/athena/projects/{project_id}/retrieve"
 
-        for kw in keywords:
-            submit_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
-                          f"/retrieve")
-            # 提交检索任务
+        def _submit_and_poll(kw: str) -> tuple[str, str | None, dict | None, str | None]:
+            """单个关键词：提交 → 轮询 → 返回 (kw, task_id, poll_data, error)。"""
+            # 提交
             task_id = None
             last_err = None
             for attempt in range(_ATHENA_RETRIES):
@@ -364,25 +359,12 @@ class KnowledgeVerifier:
                     last_err = e
                     if attempt < _ATHENA_RETRIES - 1:
                         _time.sleep(_ATHENA_RETRY_DELAY)
-
             if not task_id:
-                log("KB_VERIFY", f"Athena /retrieve 提交失败 (kw={kw}): {str(last_err)[:150]}")
-                from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "athena_api_failed", "warning",
-                             f"Athena /retrieve 提交失败 (kw={kw}): {str(last_err)[:150]}")
-                log_entries.append({
-                    "step": "Athena API 搜索",
-                    "action": f"POST {submit_url}",
-                    "detail": f"关键词: {kw}",
-                    "result": f"提交失败（{_ATHENA_RETRIES}次重试后）: {str(last_err)[:100]}",
-                    "count": 0,
-                })
-                continue
+                return kw, None, None, str(last_err) if last_err else "unknown"
 
-            # 轮询检索结果
+            # 轮询
             poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
                         f"/retrieve/tasks/{task_id}")
-            poll_data = None
             poll_start = _time.time()
             while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
                 try:
@@ -391,12 +373,47 @@ class KnowledgeVerifier:
                     poll_data = json.loads(resp.read())
                     status = poll_data.get("status", "")
                     if status in ("completed", "failed"):
-                        break
-                except Exception as e:
-                    last_err = e
+                        return kw, task_id, poll_data, None
+                except Exception:
+                    pass
                 _time.sleep(_RETRIEVE_POLL_INTERVAL)
-            else:
-                # 轮询超时
+            return kw, task_id, None, "timeout"
+
+        # 每个关键词一个线程并发执行
+        raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
+        with ThreadPoolExecutor(max_workers=len(keywords)) as executor:
+            futures = {executor.submit(_submit_and_poll, kw): kw for kw in keywords}
+            for fut in as_completed(futures):
+                raw_results.append(fut.result())
+
+        # 按原始关键词顺序排序
+        kw_order = {kw: i for i, kw in enumerate(keywords)}
+        raw_results.sort(key=lambda r: kw_order.get(r[0], 0))
+
+        candidates: list[dict] = []
+        seen_docs: set[str] = set()
+        seen_docs_lock = threading.Lock()
+        log_entries: list[dict] = []
+
+        for kw, task_id, poll_data, error in raw_results:
+            if task_id is None:
+                log("KB_VERIFY", f"Athena /retrieve 提交失败 (kw={kw}): {error[:150]}")
+                from ..infra.pipeline_warnings import add as _add_warning
+                _add_warning(evaluation_id, "kb_verify", "athena_api_failed", "warning",
+                             f"Athena /retrieve 提交失败 (kw={kw}): {error[:150]}")
+                log_entries.append({
+                    "step": "Athena API 搜索",
+                    "action": f"POST {submit_url}",
+                    "detail": f"关键词: {kw}",
+                    "result": f"提交失败（{_ATHENA_RETRIES}次重试后）: {error[:100]}",
+                    "count": 0,
+                })
+                continue
+
+            poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
+                        f"/retrieve/tasks/{task_id}")
+
+            if error == "timeout":
                 log("KB_VERIFY", f"Athena /retrieve 轮询超时 (kw={kw}, task_id={task_id}, "
                                  f"timeout={_RETRIEVE_POLL_TIMEOUT}s)")
                 from ..infra.pipeline_warnings import add as _add_warning
@@ -412,7 +429,7 @@ class KnowledgeVerifier:
                 continue
 
             if poll_data is None or poll_data.get("status") != "completed":
-                err = poll_data.get("error_summary") or poll_data.get("error_class") or "unknown" if poll_data else "no response"
+                err = (poll_data.get("error_summary") or poll_data.get("error_class") or "unknown") if poll_data else "no response"
                 log("KB_VERIFY", f"Athena /retrieve 检索失败 (kw={kw}, task_id={task_id}): {err}")
                 log_entries.append({
                     "step": "Athena API 搜索",
@@ -426,16 +443,19 @@ class KnowledgeVerifier:
             # 解析检索结果
             content = poll_data.get("content", "")
             recall = poll_data.get("recall") or {}
-            results = recall.get("results", []) if isinstance(recall, dict) else []
+            retrieve_results = recall.get("results", []) if isinstance(recall, dict) else []
 
             new_docs: list[str] = []
-            for r in results:
+            for r in retrieve_results:
                 doc_path = r.get("document_path") or r.get("path") or ""
                 snippet = r.get("content") or r.get("snippet") or r.get("context") or ""
-                title = r.get("title") or doc_path.split("/")[-1].replace(".md", "") if doc_path else ""
+                title = r.get("title") or (doc_path.split("/")[-1].replace(".md", "") if doc_path else "")
 
-                if doc_path and doc_path not in seen_docs:
-                    seen_docs.add(doc_path)
+                if doc_path:
+                    with seen_docs_lock:
+                        if doc_path in seen_docs:
+                            continue
+                        seen_docs.add(doc_path)
                     new_docs.append(doc_path)
                     candidates.append({
                         "source": "athena_api",
@@ -447,11 +467,11 @@ class KnowledgeVerifier:
                         "hit_fields": ["retrieve"],
                     })
 
-                if len(candidates) >= _MAX_CANDIDATES:
-                    break
+                    if len(candidates) >= _MAX_CANDIDATES:
+                        break
 
             # 如果没有 structured results 但有 content，把 content 作为候选
-            if not results and content:
+            if not retrieve_results and content:
                 candidates.append({
                     "source": "athena_api",
                     "path": f"retrieve/{task_id}",
@@ -462,7 +482,7 @@ class KnowledgeVerifier:
                     "hit_fields": ["retrieve"],
                 })
 
-            match_count = len(results) if results else (1 if content else 0)
+            match_count = len(retrieve_results) if retrieve_results else (1 if content else 0)
             log_entries.append({
                 "step": "Athena API 搜索",
                 "action": f"POST {submit_url} → GET {poll_url}",
