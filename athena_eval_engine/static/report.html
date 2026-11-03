@@ -149,7 +149,9 @@ async function load(page){
   if(pj)params.set("keyword",pj);
   if(tk)params.set("keyword",tk);
   if(ag)params.set("agent",ag);
-  const [sb,sd]=sortVal.split("_");
+  const li=sortVal.lastIndexOf("_");
+  const sb=sortVal.slice(0,li);
+  const sd=sortVal.slice(li+1);
   params.set("sort_by",sb);
   params.set("sort_dir",sd);
   try{
