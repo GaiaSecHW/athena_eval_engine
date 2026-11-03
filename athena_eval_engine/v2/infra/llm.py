@@ -1127,6 +1127,7 @@ def chat_json(messages, **kwargs) -> dict:
             continue
         # ── JSON 解析（失败时将错误反馈给 LLM 让它重新生成）──
         raw = raw.strip()
+        # 剥离 markdown code fence（```json ... ``` 或 ``` ... ```）
         if raw.startswith("```"):
             raw = raw.split("```")[1]
             if raw.startswith("json"):
@@ -1135,25 +1136,27 @@ def chat_json(messages, **kwargs) -> dict:
         parsed = None
         json_err = None
         _decoder = json.JSONDecoder()
+        # 记录 JSON 实际起始位置（用于 correction 时定位出错行的真实内容）
+        _json_start = 0
         # raw_decode 只解析第一个完整 JSON 值，忽略尾部额外内容（不抛 "Extra data"）
         try:
             parsed, _end = _decoder.raw_decode(raw)
         except json.JSONDecodeError as je:
             json_err = je
         if parsed is None:
-            # 开头有非 JSON 文字，从第一个 { 开始解析
-            start = raw.find("{")
-            if start >= 0:
+            # 开头有非 JSON 文字（LLM 加了自然语言分析），从第一个 { 开始解析
+            _json_start = raw.find("{")
+            if _json_start >= 0:
                 try:
-                    parsed, _end = _decoder.raw_decode(raw[start:])
+                    parsed, _end = _decoder.raw_decode(raw[_json_start:])
                 except json.JSONDecodeError as je:
                     json_err = je
         if parsed is None:
             # 尝试从第一个 [ 解析数组
-            start = raw.find("[")
-            if start >= 0:
+            _json_start = raw.find("[")
+            if _json_start >= 0:
                 try:
-                    parsed, _end = _decoder.raw_decode(raw[start:])
+                    parsed, _end = _decoder.raw_decode(raw[_json_start:])
                 except json.JSONDecodeError as je:
                     json_err = je
         if parsed is not None and isinstance(parsed, dict):
@@ -1186,19 +1189,20 @@ def chat_json(messages, **kwargs) -> dict:
             _repeat_count = 0
         _prev_raw = raw
         # 提取出错位置附近的上下文，帮 LLM 定位具体问题
+        # 从 JSON 实际内容（去掉自然语言前缀）中取出错行，避免行号错位
         _err_ctx = ""
         if json_err:
-            _lines = raw.split("\n")
+            _json_content = raw[_json_start:] if _json_start > 0 else raw
+            _lines = _json_content.split("\n")
             _el = json_err.lineno - 1
             if 0 <= _el < len(_lines):
-                _err_ctx = _lines[_el].strip()[:300]
+                _err_ctx = _lines[_el].strip()
         msgs.append({"role": "assistant", "content": raw})
-        _ctx_hint = f"出错行内容：{_err_ctx}。" if _err_ctx else ""
+        _ctx_hint = f"出错行内容（第{json_err.lineno}行）：{_err_ctx}。" if _err_ctx else ""
         msgs.append({"role": "user", "content": (
             f"你返回的 JSON 有语法错误：{err_detail}。"
             f"{_ctx_hint}"
-            "常见原因：字符串值中包含未转义的双引号、反斜杠或换行符。"
-            "请修复后只返回完整正确的 JSON。"
+            "请根据以上错误信息修复 JSON 语法问题，只返回完整正确的 JSON。"
         )})
         last_err = f"JSON 解析失败: {err_detail}"
     log("LLM", f"chat_json exhausted after {attempt+1} attempts (max={retries}): {last_err}")
