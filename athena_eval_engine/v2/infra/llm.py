@@ -126,9 +126,9 @@ _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
 # 从 400 错误中收集的 max context tokens 和 chars/token 换算率
-# 默认值与 GLM 系列模型一致，400 错误后用实际数据更新
-_max_context_tokens = 500000
-_chars_per_token = 3.0  # 默认值，400 错误后用实际数据更新
+# 默认值偏保守（小于常见模型上限），首次 400 后自适应更新为实际值
+_max_context_tokens = 204800
+_chars_per_token = 2.0  # 中文偏保守（~2 chars/token），400 错误后用实际数据更新
 
 def get_max_context_tokens():
     """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
@@ -1203,5 +1203,5 @@ def chat_json(messages, **kwargs) -> dict:
             "请修复后只返回完整正确的 JSON。"
         )})
         last_err = f"JSON 解析失败: {err_detail}"
-    log("LLM", f"chat_json exhausted {retries} retries: {last_err}")
-    raise RuntimeError(f"chat_json 失败（{retries} 次重试后）: {last_err}")
+    log("LLM", f"chat_json exhausted after {attempt+1} attempts (max={retries}): {last_err}")
+    raise RuntimeError(f"chat_json 失败（{attempt+1} 次重试后）: {last_err}")

@@ -749,18 +749,34 @@ class RootCauseAnalyzer:
                         cancel_cb=cancel_cb,
                     )
                 except Exception as e:
-                    log("ROOT_CAUSE",
-                        f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                        f"LLM 压缩失败: {str(e)[:200]}",
-                        eval_id=evaluation_id)
-                    from ..infra.pipeline_warnings import add as _add_warning
-                    _add_warning(evaluation_id, "llm", "compression_failed", "warning",
-                                 f"case {case_id} {chain_type} session {i+1} LLM 压缩失败，降级为规则提取: {str(e)[:200]}",
-                                 case_id=case_id)
-                    # LLM 调用失败（非超限）时降级：用规则提取知识访问标记，
-                    # 不截断原始文本。summary 保留完整 session_text 供 merge 阶段参考。
-                    result = self._degrade_compress_session(
-                        sid, events, session_text, str(e)[:200])
+                    err_str = str(e)
+                    # 400 context length 错误触发自适应后重试分片压缩：
+                    # _collect_max_tokens 已从 400 响应更新 _max_context_tokens，
+                    # 此时 would_exceed_context 用更新后的值重新预判，走分片路径。
+                    if "输入超限" in err_str or "context length" in err_str.lower():
+                        log("ROOT_CAUSE",
+                            f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
+                            f"LLM 400 超限，自适应后重试分片压缩 "
+                            f"(max_ctx 更新为 {llm_mod.get_max_context_tokens()})",
+                            eval_id=evaluation_id)
+                        result = self._compress_session_chunked(
+                            evaluation_id, case_id, chain_type, i, sid,
+                            events, vuln_title, desc, fp_reason, outcome,
+                            chain, cancel_cb,
+                        )
+                    else:
+                        log("ROOT_CAUSE",
+                            f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
+                            f"LLM 压缩失败: {err_str[:200]}",
+                            eval_id=evaluation_id)
+                        from ..infra.pipeline_warnings import add as _add_warning
+                        _add_warning(evaluation_id, "llm", "compression_failed", "warning",
+                                     f"case {case_id} {chain_type} session {i+1} LLM 压缩失败，降级为规则提取: {err_str[:200]}",
+                                     case_id=case_id)
+                        # LLM 调用失败（非超限）时降级：用规则提取知识访问标记，
+                        # 不截断原始文本。summary 保留完整 session_text 供 merge 阶段参考。
+                        result = self._degrade_compress_session(
+                            sid, events, session_text, err_str[:200])
 
             return {
                 "session_id": sid,
