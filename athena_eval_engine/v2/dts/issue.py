@@ -11,6 +11,7 @@ import json
 import os
 import uuid
 
+from ..causal_chain.analyzer import CAUSE_TO_LEVEL
 from ..infra.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
@@ -253,11 +254,13 @@ def generate_dts_issues(
             case_outcomes[case_id] = "FP"
         breakpoints = case_entry.get("breakpoints", [])
 
+        # 即使没有断点也要建 key——只有假设的 case 同样要生成问题单
+        grouped.setdefault(case_id, [])
         for bp in breakpoints:
             cause_code = bp.get("cause_code", "")
             if not cause_code:
                 continue
-            grouped.setdefault(case_id, []).append(bp)
+            grouped[case_id].append(bp)
 
     # 跨 agent 去重：同一 case 内 cause_code + break_level + evidence 完全相同的断点只保留一条
     # （mining 和 verification 可能各自产生相同的 L8 断点，内容一样无需重复展示）
@@ -276,20 +279,24 @@ def generate_dts_issues(
     for case_id, bps in grouped.items():
         # 按严重度排序，最严重的排前面
         bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
-        primary = bps[0]
+        # 可能没有任何断点（只有假设的 case）
+        primary = bps[0] if bps else {}
         vuln_title = case_vuln_titles.get(case_id, "")
         primary_cause_code = primary.get("cause_code", "")
-        break_level = primary.get("break_level", "")
+        primary_break_level = primary.get("break_level", "")
 
-        # 多假设：优先取最高概率假设的 cause_code 作为主 cause_code
-        # 若无假设（旧格式），回退到断点的 primary cause_code
+        # 顶层 cause_code 与 break_level 同源：都取最高概率假设。
+        # 两者分开取（cause_code 用假设、break_level 用最严重断点）会导致
+        # 问题单顶部与正文自相矛盾（如假设 C/L4 但断点 H/L8）。
         hypotheses = case_hypotheses.get(case_id, [])
         label_quality = case_label_quality.get(case_id, {})
         if hypotheses:
             top_hyp = max(hypotheses, key=lambda h: h.get("probability", 0))
             cause_code = top_hyp.get("cause_code", "") or primary_cause_code
+            break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
         else:
             cause_code = primary_cause_code
+            break_level = primary_break_level
 
         # 所有断点逐条列出，供开发人员排查
         bp_lines = []
@@ -311,6 +318,13 @@ def generate_dts_issues(
             at = bp.get("agent_type", "")
             if at and at not in agent_types:
                 agent_types.append(at)
+        if not agent_types:
+            # 无断点（只有假设）：从 case 原始数据的 mining/verification 取
+            full = case_full_data.get(case_id) or {}
+            for chain_type in ("mining", "verification"):
+                at = (full.get(chain_type) or {}).get("agent_type", "")
+                if at and at not in agent_types:
+                    agent_types.append(at)
         agent_type = ",".join(agent_types)
 
         # 责任方：优先从假设的 responsibility 推导（多值逗号分隔）

@@ -209,6 +209,13 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
   * 禁止堆砌具体资产名（IP、端口、文件名、函数名）
   * 正确示例："如何判断路径参数是否已被有效校验"
   * 错误示例："comm_mgr 的 TCP 8888 端口是否对外暴露，file_name 是否已被上游过滤"
+- **supporting_breakpoints 字段（重要）**：该假设**直接依据**的断点编号列表。
+  * 只能引用上方 `L0-L7 判定` 中实际出现的 `BP-n` 编号，**禁止编造**
+  * 一个假设可引用多条；不同假设可以共享同一条
+  * 与假设无关的断点不要列进来
+  * 如果假设描述的是**非知识访问类**问题（流程缺陷、重复上报未识别、模型幻觉、
+    调用链中断、验证维度遗漏等），通常没有可依据的 L0-L7 断点，此时填**空数组 `[]`**。
+    空数组是合法值 —— 表示"该假设不基于任何知识访问断点"，不是缺省
 - returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
 - 禁止使用"可能"、"或许"、"推测"等不确定语言描述事实
 - 但对"假设"本身可以用概率描述不确定性，这是分析的不确定性，不是事实的不确定性
@@ -419,6 +426,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
       "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
       "session_id": "该假设主要基于的 session_id（从上方 Session 摘要中引用，可逗号分隔多个；若证据来自多个 session 的合并判断则列全，禁止编造不存在的 session_id）",
+      "supporting_breakpoints": ["BP-1", "BP-3"],
       "agent_can_resolve": true/false,
       "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
       "needed_external_data": ["如果 agent_can_resolve=false，列出需要的外部数据（如'网关配置'、'Ingress 路由'）；如果 true 则填空数组"],
@@ -840,16 +848,6 @@ class RootCauseAnalyzer:
 
             compressed_summaries.append(cs)
 
-            # 收集断点
-            l0_l7 = cs.get("l0_l7") or []
-            for kp in l0_l7:
-                if isinstance(kp, dict) and kp.get("breakpoint") \
-                        and kp.get("breakpoint") != "null":
-                    all_breakpoints.append({
-                        "session_id": cs["session_id"],
-                        **kp,
-                    })
-
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} session {cs['step']}/{len(chain)} "
                 f"独立压缩完成 (summary {len(cs.get('summary', ''))} 字, "
@@ -859,10 +857,29 @@ class RootCauseAnalyzer:
         # 按 step 排序，保证拓扑序
         compressed_summaries.sort(key=lambda x: x["step"])
 
+        # 断点在排序之后重建，保证与 _build_bp_registry / merge prompt
+        # 的遍历顺序完全一致（同一份 compressed_summaries，同源同序）
+        bp_registry = self._build_bp_registry(compressed_summaries)
+        ref_by_pos = {(i["session_id"], i["l0_l7_index"]): ref
+                      for ref, i in bp_registry.items()}
+        for s in compressed_summaries:
+            sid = s["session_id"]
+            for idx, kp in enumerate(s.get("l0_l7") or []):
+                if not isinstance(kp, dict):
+                    continue
+                brk = kp.get("breakpoint")
+                if not brk or brk == "null":
+                    continue
+                all_breakpoints.append({
+                    "session_id": sid,
+                    "_bp_ref": ref_by_pos.get((sid, idx), ""),
+                    **kp,
+                })
+
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
             chain_type, vuln_title, desc, fp_reason, outcome,
-            compressed_summaries,
+            compressed_summaries, bp_registry,
         )
 
         merge_messages = [
@@ -901,6 +918,25 @@ class RootCauseAnalyzer:
         # merge 断点是合并阶段对同一知识访问的重复判定，与 session 压缩级断点
         # 内容重复，且修复点无法定位到真实 session。断点只保留 session 级——
         # 它们带真实查询命令与返回内容，可回溯到具体 session。
+
+        # ── 校验假设的 supporting_breakpoints 引用 ──
+        # 丢弃不存在的 BP 编号（LLM 可能编造），保留「字段缺失」与「空数组」的区别：
+        #   空数组 = LLM 明确表示此假设不基于任何断点
+        #   字段缺失 = 协议不完备，后续由因果链回退到 session_id 匹配
+        _valid_refs = set(bp_registry)
+        for h in merge_hypotheses:
+            if "supporting_breakpoints" not in h:
+                continue
+            raw_refs = h.get("supporting_breakpoints") or []
+            if not isinstance(raw_refs, list):
+                raw_refs = []
+            kept = [r for r in raw_refs if isinstance(r, str) and r in _valid_refs]
+            dropped = [r for r in raw_refs if r not in kept]
+            if dropped:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} 假设引用了不存在的断点编号，"
+                    f"已丢弃 {dropped}（有效编号共 {len(_valid_refs)} 个）")
+            h["supporting_breakpoints"] = kept
 
         # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
         # 取最高概率假设作为 root_cause（向后兼容）
@@ -1039,6 +1075,37 @@ class RootCauseAnalyzer:
         return category_map.get(cause, "reasoning_flaw")
 
     @staticmethod
+    @staticmethod
+    def _build_bp_registry(compressed_summaries: list[dict]) -> dict[str, dict]:
+        """按 merge prompt 的展示顺序给断点编号（BP-1, BP-2, ...）。
+
+        编号顺序必须与 _build_merge_prompt 的展示顺序完全一致：按
+        compressed_summaries 的当前顺序（须已按 step 排序），逐个 session
+        逐个 l0_l7 条目递增。只对 breakpoint 非空且不为 "null" 的条目编号。
+
+        Returns:
+            {bp_ref: {"session_id", "l0_l7_index", "cause_code", "breakpoint"}}
+        """
+        registry: dict[str, dict] = {}
+        seq = 0
+        for s in compressed_summaries:
+            sid = s.get("session_id", "")
+            for idx, kp in enumerate(s.get("l0_l7") or []):
+                if not isinstance(kp, dict):
+                    continue
+                brk = kp.get("breakpoint")
+                if not brk or brk == "null":
+                    continue
+                seq += 1
+                registry[f"BP-{seq}"] = {
+                    "session_id": sid,
+                    "l0_l7_index": idx,
+                    "cause_code": kp.get("cause_code", ""),
+                    "breakpoint": brk,
+                }
+        return registry
+
+    @staticmethod
     def _build_merge_prompt(
         chain_type: str,
         vuln_title: str,
@@ -1046,8 +1113,13 @@ class RootCauseAnalyzer:
         fp_reason: str,
         outcome: str,
         compressed_summaries: list[dict],
+        bp_registry: dict[str, dict] | None = None,
     ) -> str:
-        """构建合并压缩的用户消息。"""
+        """构建合并压缩的用户消息。
+
+        bp_registry: 断点编号表，用于给 L0-L7 判定加 BP-n 前缀，
+        让 LLM 在假设里引用「supporting_breakpoints」时能精确定位。
+        """
         parts = [
             f"漏洞标题：{vuln_title}",
             f"漏洞描述：{desc}",
@@ -1057,6 +1129,11 @@ class RootCauseAnalyzer:
             f"的独立压缩摘要：\n",
         ]
 
+        # 建立 (session_id, l0_l7_index) → bp_ref 反查，用于打印编号
+        ref_by_pos: dict[tuple[str, int], str] = {}
+        for ref, info in (bp_registry or {}).items():
+            ref_by_pos[(info["session_id"], info["l0_l7_index"])] = ref
+
         for s in compressed_summaries:
             parts.append(
                 f"--- Session {s['step']} (session_id={s['session_id']}) ---"
@@ -1065,8 +1142,23 @@ class RootCauseAnalyzer:
             if s.get("key_findings"):
                 parts.append(
                     f"关键发现: {'; '.join(s['key_findings'])}")
-            if s.get("l0_l7"):
-                parts.append(f"L0-L7 判定: {json.dumps(s['l0_l7'], ensure_ascii=False)}")
+            l0_l7 = s.get("l0_l7") or []
+            if l0_l7:
+                if bp_registry:
+                    # 逐条打印并附 BP 编号，供假设的 supporting_breakpoints 引用
+                    parts.append("L0-L7 判定（用 BP-n 编号引用）:")
+                    for idx, kp in enumerate(l0_l7):
+                        if not isinstance(kp, dict):
+                            continue
+                        ref = ref_by_pos.get((s["session_id"], idx))
+                        body = json.dumps(kp, ensure_ascii=False)
+                        if ref:
+                            parts.append(f"  {ref}: {body}")
+                        else:
+                            parts.append(f"  (无断点，不编号): {body}")
+                else:
+                    parts.append(
+                        f"L0-L7 判定: {json.dumps(l0_l7, ensure_ascii=False)}")
             parts.append("")
 
         parts.append(

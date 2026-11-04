@@ -136,6 +136,85 @@ class CausalChainAnalyzer:
 
     # ── 扁平化断点 ──
 
+    @staticmethod
+    def _hypothesis_refs(case: dict) -> dict:
+        """汇总该 case 两条链所有假设对断点的引用。
+
+        Returns:
+            {
+              "refs": set[str],           被引用的 _bp_ref 集合
+              "sids": set[str],           回退用：被引用的 session_id
+              "causes": set[str],         FN 合成断点用：被引用断点的 cause_code
+              "has_field": bool,          是否至少有一条假设带 supporting_breakpoints 字段
+              "hyp_by_ref": dict[str, list[int]],   bp_ref → 引用它的假设序号(1-based)
+              "hyp_by_sid": dict[str, list[int]],   session_id → 假设序号
+              "ordered": list[dict],      按 probability 降序的假设列表（序号基准）
+            }
+        """
+        ordered: list[dict] = []
+        for chain_type in ("mining", "verification"):
+            ch = case.get(chain_type) or {}
+            if not isinstance(ch, dict):
+                continue
+            hs = ch.get("hypotheses") or []
+            if isinstance(hs, list):
+                ordered.extend([h for h in hs if isinstance(h, dict)])
+        # 按 probability 降序 = 前端卡片顺序
+        ordered.sort(key=lambda h: h.get("probability") or 0, reverse=True)
+
+        bp_sessions: dict[str, str] = {}
+        for chain_type in ("mining", "verification"):
+            ch = case.get(chain_type) or {}
+            for bp in (ch.get("l0_l7_breakpoints") or []):
+                if isinstance(bp, dict) and bp.get("_bp_ref"):
+                    bp_sessions[bp["_bp_ref"]] = bp.get("session_id", "")
+        # FN 合成断点：bp_ref 不存在，靠 cause_code 匹配
+        fn_causes = set()
+        fn = case.get("fn_miss") or {}
+        if fn.get("miss_category"):
+            fn_causes.add(_FN_SUB_TO_CAUSE.get(
+                (fn.get("miss_detail") or {}).get("miss_sub_category", ""), "H"))
+
+        refs: set[str] = set()
+        sids: set[str] = set()
+        causes: set[str] = set()
+        has_field = False
+        hyp_by_ref: dict[str, list[int]] = defaultdict(list)
+        hyp_by_sid: dict[str, list[int]] = defaultdict(list)
+
+        for seq, h in enumerate(ordered, 1):
+            if "supporting_breakpoints" in h:
+                has_field = True
+                for r in (h.get("supporting_breakpoints") or []):
+                    if isinstance(r, str) and r:
+                        refs.add(r)
+                        hyp_by_ref[r].append(seq)
+                        sid = bp_sessions.get(r)
+                        if sid:
+                            sids.add(sid)
+                            hyp_by_sid[sid].append(seq)
+                        cause = next((bp.get("cause_code") for ch in
+                                      case.values() if isinstance(ch, dict)
+                                      for bp in (ch.get("l0_l7_breakpoints") or [])
+                                      if isinstance(bp, dict) and bp.get("_bp_ref") == r), "")
+                        if cause:
+                            causes.add(cause)
+            # session_id 始终收集（供“字段缺失”回退）
+            raw = str(h.get("session_id") or "")
+            for s in raw.split(","):
+                s = s.strip()
+                if s:
+                    sids.add(s)
+                    if seq not in hyp_by_sid[s]:
+                        hyp_by_sid[s].append(seq)
+
+        return {
+            "refs": refs, "sids": sids, "causes": causes,
+            "has_field": has_field, "fn_causes": fn_causes,
+            "hyp_by_ref": hyp_by_ref, "hyp_by_sid": hyp_by_sid,
+            "ordered": ordered,
+        }
+
     def _flatten_breakpoints(
         self, root_cause_results: list[dict],
     ) -> list[dict]:
@@ -143,6 +222,14 @@ class CausalChainAnalyzer:
 
         每个 root_cause_result 含 mining 和 verification 两段，
         每段含 l0_l7_breakpoints 列表。
+
+        **过滤规则**（假设是问题，断点是它引用的证据）：
+        - 该 case 有假设 → 只保留被假设引用的断点
+          * 普通断点：_bp_ref 在假设的 supporting_breakpoints 中
+          * 假设「字段缺失」→ 回退按 session_id 精确匹配
+          * FN 合成断点：cause_code 在假设引用的断点 cause_code 集合中
+            （字段缺失时按假设自身的 cause_code 匹配）
+        - 该 case 无假设 → 保留全部断点（LLM 未产出假设时的兜底）
 
         Returns:
             扁平断点记录列表，每条含：
@@ -152,6 +239,7 @@ class CausalChainAnalyzer:
             - cause_code, breakpoint, l0_source
             - query_content, returned_content
             - l7_influenced (effect_label)
+            - supports_hypotheses: list[int]  引用它的假设序号（1-based）
         """
         flat: list[dict] = []
         # 去重键：(case_id, chain_type, cause_code, breakpoint, query_content)
@@ -161,6 +249,7 @@ class CausalChainAnalyzer:
         for case in root_cause_results:
             case_id = case.get("case_id", "")
             vuln_title = case.get("vuln_title", "")
+            refs = self._hypothesis_refs(case)
 
             # ── FN 漏报原因（sink 精确命中分析）→ 合成断点 ──
             # 漏报与误报走同一流程：FN case 的 fn_miss（sink 漏报原因）
@@ -218,6 +307,22 @@ class CausalChainAnalyzer:
                     }
                     dedup_key = (
                         case_id, "mining", fn_cause_code, "L8", fn_query)
+                    # FN 合成断点没有 _bp_ref，按 cause_code 过滤：
+                    #   - 无假设 → 保留（兜底）
+                    #   - 有假设 → 只保留 cause_code 被引用的
+                    if refs["ordered"]:
+                        causes = (refs["causes"] if refs["has_field"]
+                                  else {h.get("cause_code", "")
+                                        for h in refs["ordered"]})
+                        if fn_cause_code not in causes:
+                            continue
+                        fn_supports = [
+                            seq for seq, h in enumerate(refs["ordered"], 1)
+                            if h.get("cause_code", "") == fn_cause_code
+                        ]
+                    else:
+                        fn_supports = []
+                    fn_bp["supports_hypotheses"] = fn_supports
                     if dedup_key not in seen_keys:
                         seen_keys.add(dedup_key)
                         flat.append(fn_bp)
@@ -236,6 +341,24 @@ class CausalChainAnalyzer:
                     # LLM 可能返回 "null" 字符串表示无断点
                     if not cause_code or cause_code == "null":
                         continue
+
+                    # 按假设引用过滤（假设是问题，断点是它引用的证据）
+                    if refs["ordered"]:
+                        if refs["has_field"]:
+                            # 新协议：按 _bp_ref 精确匹配
+                            bp_ref = bp.get("_bp_ref", "")
+                            supports = refs["hyp_by_ref"].get(bp_ref, []) \
+                                if bp_ref else []
+                            if not supports:
+                                continue
+                        else:
+                            # 旧报告：字段缺失 → 回退按 session_id 精确匹配
+                            sid = bp.get("session_id", "")
+                            supports = refs["hyp_by_sid"].get(sid, [])
+                            if not supports:
+                                continue
+                    else:
+                        supports = []  # 无假设 → 保留全部（兜底）
 
                     dedup_key = (
                         case_id, chain_type,
@@ -259,6 +382,7 @@ class CausalChainAnalyzer:
                         "returned_content": bp.get("returned_content", ""),
                         "l7_influenced": bp.get("l7_influenced"),
                         "session_id": bp.get("session_id", ""),
+                        "supports_hypotheses": supports,
                         "root_cause": chain_data.get("root_cause", {}),
                         # 只取断点自身携带的修复建议（合成断点带假设的
                         # fix_suggestion）。不回退 chain 级 fix_suggestion——
@@ -513,7 +637,19 @@ class CausalChainAnalyzer:
                 case_outcomes[cid] = outcome
 
         result: list[dict] = []
-        for case_id, records in case_map.items():
+        # 遍历全部 case（含没有断点、只有假设的），
+        # 只有「断点空 + 假设也空」才跳过
+        all_case_ids: list[str] = []
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            if cid and cid not in all_case_ids:
+                all_case_ids.append(cid)
+
+        for case_id in all_case_ids:
+            records = case_map.get(case_id, [])
+            if not records and not case_hypotheses.get(case_id):
+                continue
+
             vuln_title = ""
             breakpoints: list[dict] = []
 
@@ -532,9 +668,16 @@ class CausalChainAnalyzer:
                     "break_level": level,
                     "cause_code": cause_code,
                     "session_id": rec.get("session_id", ""),
+                    "l0_source": rec.get("l0_source", ""),
+                    "supports_hypotheses": rec.get("supports_hypotheses") or [],
                     "fix_suggestion": rec.get("fix_suggestion") or [],
                     "evidence": evidence,
                 })
+
+            if not vuln_title:
+                vuln_title = next(
+                    (c.get("vuln_title", "") for c in root_cause_results
+                     if c.get("case_id") == case_id), "")
 
             case_entry = {
                 "case_id": case_id,

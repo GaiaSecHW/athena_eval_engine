@@ -205,8 +205,20 @@ async function renderDtsDetailPage(dtsId){
       }
 
       if(allHypotheses.length){
+        // 断点证据：因果链已按假设引用过滤，supports_hypotheses 为 1-based 序号
+        var allBreakpoints=chainsForRC.reduce(function(acc,ch){
+          var bps=(ch.data.l0_l7_breakpoints||[]);
+          bps.forEach(function(bp){
+            if(bp&&typeof bp==='object'){
+              acc.push({label:ch.label,data:bp});
+            }
+          });
+          return acc;
+        },[]);
+
         html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
           +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>';
+        // 序号基准必须与后端的 supports_hypotheses 一致：按概率降序，全局编号
         allHypotheses.sort(function(a,b){return (b.data.probability||0)-(a.data.probability||0);});
         allHypotheses.forEach(function(h,idx){
           var hdata=h.data||{};
@@ -250,6 +262,30 @@ async function renderDtsDetailPage(dtsId){
           }
           if(evidence){
             html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+esc(evidence)+'</div>';
+          }
+          // 支撑断点：因果链已过滤为「只含被假设引用的断点」
+          var myBps=allBreakpoints.filter(function(b){
+            var sup=b.data.supports_hypotheses||[];
+            return sup.indexOf(idx+1)>=0;
+          });
+          if(myBps.length){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">支撑断点（'+myBps.length+' 条）：</b>';
+            myBps.forEach(function(b){
+              var bd=b.data;
+              var bCause=DTS_CAUSE_LABELS[bd.cause_code]||bd.cause_code||'-';
+              html+='<div style="margin-top:6px;padding:8px 10px;background:var(--p2);border-radius:8px">'
+                +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+                +'<span class="knd">'+esc(b.label)+'</span>'
+                +'<span class="knd">'+(bd.break_level||'-')+'</span>'
+                +'<span class="knd">'+esc(bCause)+'</span>'
+                +'<span class="knd" style="font-family:monospace;font-size:12px">'+esc(bd.session_id||'-')+'</span>'
+                +'</div>';
+              if(bd.evidence){html+='<div style="margin-top:4px;font-size:13px;color:var(--sub);white-space:pre-wrap">'+esc(bd.evidence)+'</div>';}
+              html+='</div>';
+            });
+            html+='</div>';
+          }else if(hdata.supporting_breakpoints&&hdata.supporting_breakpoints.length===0){
+            html+='<div style="padding:10px 12px;font-size:14px;color:var(--sub);border-bottom:1px solid var(--bd)">该假设不基于知识访问断点（流程/推理类问题）</div>';
           }
           if(canResolve===false){
             if(blockedBy){html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">阻塞：</b>'+esc(blockedBy)+'</div>';}
@@ -327,8 +363,9 @@ async function renderDtsDetailPage(dtsId){
     }
 
     var _hasHypotheses=typeof allHypotheses!=='undefined'&&allHypotheses&&allHypotheses.length>0;
-    if(d.breakpoint_desc&&!_hasHypotheses){
-      var bpTitle=d.case_type==='FN'?'漏报原因分析':'误报原因分析';
+    // 断点证据：只含被假设引用的断点（因果链已过滤），无假设时是全部断点的兜底
+    if(d.breakpoint_desc){
+      var bpTitle=_hasHypotheses?'支撑断点证据':(d.case_type==='FN'?'漏报原因分析':'误报原因分析');
       html+='<div class="card" style="margin-bottom:16px">'
         +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
         +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(d.breakpoint_desc)+'</div>'
