@@ -11,7 +11,7 @@ import json
 import os
 import uuid
 
-from ..causal_chain.analyzer import CAUSE_TO_LEVEL
+from ..causal_chain.analyzer import CAUSE_TO_LEVEL, _FN_SUB_TO_CAUSE
 from ..infra.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
@@ -218,6 +218,52 @@ def generate_dts_issues(
             lq = chain_data.get("label_quality") or {}
             if lq.get("precision") == "imprecise":
                 label_quality = lq
+
+        # ── FN 快捷路径合成假设 ──
+        # sink_not_found / sink_found_no_report 由程序判定，不走 merge 阶段的
+        # LLM 假设生成，导致 FN 问题单 hypotheses 为空。按「假设是问题载体」
+        # 的原则，把 fn_miss 的漏报原因合成为一条假设供开发人员执行。
+        if not all_hypotheses:
+            fn = case.get("fn_miss") or {}
+            if fn.get("miss_category"):
+                sub = (fn.get("miss_detail") or {}).get("miss_sub_category", "")
+                sub_label = (fn.get("miss_detail") or {}).get(
+                    "miss_sub_category_label", "")
+                cause = _FN_SUB_TO_CAUSE.get(sub, "H")
+                reason = fn.get("miss_reason", "")
+                _fn_agent = ""
+                for _ct in ("mining", "verification"):
+                    _at = (case.get(_ct) or {}).get("agent_type", "")
+                    if _at:
+                        _fn_agent = _at
+                        break
+                all_hypotheses.append({
+                    "hypothesis": reason or f"漏报：{fn.get('miss_category')}",
+                    "probability": 0.9,
+                    "responsibility": CAUSE_TO_RESPONSIBILITY.get(cause, "agent"),
+                    "cause_code": cause,
+                    "evidence": (
+                        f"fn_miss 程序判定：miss_category={fn.get('miss_category')}"
+                        + (f"，细分成因={sub_label}" if sub_label else "")
+                    ),
+                    # FN 合成断点不是知识访问断点，不引用 L0-L7
+                    "supporting_breakpoints": [],
+                    "agent_can_resolve": True,
+                    "blocked_by": "",
+                    "needed_external_data": [],
+                    "fix_suggestion": {
+                        "target": "agent_code",
+                        "agent_type": _fn_agent,
+                        "knowledge_source": "",
+                        "location": "挖掘范围/路径覆盖（sink 点未命中）",
+                        "action": (
+                            f"扩大挖掘覆盖：{reason}" if reason
+                            else "扩大挖掘覆盖，确保 sink 点被读到"
+                        ),
+                        "expected_effect": "agent 能覆盖到该 sink 点，避免漏报",
+                    },
+                    "_synthesized_from_fn_miss": True,
+                })
 
         case_hypotheses[cid] = all_hypotheses
         case_label_quality[cid] = label_quality

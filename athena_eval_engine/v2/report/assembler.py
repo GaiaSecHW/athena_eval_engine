@@ -90,6 +90,8 @@ class ReportAssembler:
                 {code: 0 for code in _ALL_CAUSES},
             ),
             "recall_precision": recall_precision,
+            "skipped_cases": self._build_skipped_cases(
+                root_cause_results, causal_chain_result),
         }
         if data_quality_warnings:
             report["data_quality_warnings"] = data_quality_warnings
@@ -109,6 +111,66 @@ class ReportAssembler:
         return out_path
 
     # ── 私有方法 ────────────────────────────────────────
+
+    @staticmethod
+    def _build_skipped_cases(
+        root_cause_results: list[dict],
+        causal_chain_result: dict,
+    ) -> list[dict]:
+        """列出「参与根因分析但没有生成问题单」的 case 及原因。
+
+        问题单由 per_case_breakpoints 驱动。若某 case 既没有假设、也没有
+        可用的断点，就不会出现在问题单列表里——开发人员会疑惑「这个 case
+        为什么没有单」。这里显式列出，说明原因。
+
+        Returns:
+            [{"case_id", "vuln_title", "outcome", "reason", "detail"}, ...]
+        """
+        # 已生成问题单的 case（per_case_breakpoints 里断点或假设非空的）
+        covered = set()
+        for entry in causal_chain_result.get("per_case_breakpoints", []):
+            cid = entry.get("case_id", "")
+            if not cid:
+                continue
+            if entry.get("breakpoints") or entry.get("hypotheses"):
+                covered.add(cid)
+
+        skipped: list[dict] = []
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            if not cid or cid in covered:
+                continue
+            mining = case.get("mining") or {}
+            verify = case.get("verification") or {}
+            has_hyp = bool(mining.get("hypotheses") or verify.get("hypotheses"))
+            bp_count = len(mining.get("l0_l7_breakpoints") or []) + \
+                len(verify.get("l0_l7_breakpoints") or [])
+            fn = case.get("fn_miss") or {}
+
+            if has_hyp:
+                reason, detail = "断点全部未被假设引用", (
+                    f"有假设但 {bp_count} 条断点均未挂到假设上，"
+                    f"过滤后无证据可展示")
+            elif fn.get("miss_category"):
+                reason, detail = "FN 快捷路径无断点", (
+                    f"miss_category={fn.get('miss_category')}，"
+                    f"程序判定漏报原因，无 L0-L7 断点")
+            elif bp_count:
+                reason, detail = "有断点但无假设", (
+                    f"{bp_count} 条断点均未被任何假设引用，"
+                    f"且 merge 阶段未产出假设")
+            else:
+                reason, detail = "无假设且无断点", (
+                    "根因分析未产出假设，也没有知识访问断点")
+
+            skipped.append({
+                "case_id": cid,
+                "vuln_title": case.get("vuln_title", ""),
+                "outcome": case.get("outcome", ""),
+                "reason": reason,
+                "detail": detail,
+            })
+        return skipped
 
     def _build_l0_distribution(
         self, causal_chain_result: dict,
