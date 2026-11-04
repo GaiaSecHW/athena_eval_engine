@@ -41,6 +41,13 @@ from ..infra import llm as llm_mod
 _WIKI_ROOT = os.path.join(DATA_ROOT, "secocto-evo", "compiled_knowledge")
 _AGENTS_MD = os.path.join(_WIKI_ROOT, "AGENTS.md")
 
+# ── wiki 检索开关 ──
+# 暂停：现有 _match_index/_scan_files_direct 用整句做子串匹配，LLM 产出的
+# 完整问句永远命中不了标题/摘要（实测 21 个索引条目全部 0 命中）。匹配方案
+# 尚不成熟，暂时停用 wiki 检索。恢复时改为「索引全文（2.2K tokens）+ LLM
+# 选文」或「索引 Keywords 列映射」，不做中文分词。
+_WIKI_SEARCH_ENABLED = False
+
 # ── Athena API ──
 # k8s 环境变量自动注入：ATHENA_API_SERVICE_HOST + ATHENA_API_SERVICE_PORT_HTTP
 # fallback 用 Service DNS 域名（ClusterIP 在服务重建后会变，域名稳定）
@@ -272,10 +279,21 @@ class KnowledgeVerifier:
             })
 
         # 3. 查 NFS compiled_knowledge (wiki/记忆)
-        wiki_candidates, wiki_log = self._search_wiki_logged(keywords)
-        candidates.extend(wiki_candidates)
-        query_log.extend(wiki_log)
-        log("KB_VERIFY", f"Wiki NFS: {len(wiki_candidates)} 候选")
+        # 暂停：wiki 检索用整句做子串匹配，永远命中不了（实测 0/21），
+        # 匹配方案尚不成熟。恢复时改走"索引全文 + LLM 选文"或索引 Keywords 映射。
+        if _WIKI_SEARCH_ENABLED:
+            wiki_candidates, wiki_log = self._search_wiki_logged(keywords)
+            candidates.extend(wiki_candidates)
+            query_log.extend(wiki_log)
+            log("KB_VERIFY", f"Wiki NFS: {len(wiki_candidates)} 候选")
+        else:
+            query_log.append({
+                "step": "Wiki/记忆 NFS 搜索",
+                "action": "跳过（检索方案暂停）",
+                "detail": "wiki 检索匹配方案尚不成熟，暂时停用",
+                "result": "未查询",
+                "count": 0,
+            })
 
         # 去重（按 path）
         seen_paths = set()
@@ -298,7 +316,8 @@ class KnowledgeVerifier:
         if not candidates:
             # Athena 是否真的查过：有 project_id 且存在可查的方法类问题
             _searched_api = bool(project_id) and bool(athena_queries)
-            _searched_wiki = os.path.isdir(_WIKI_ROOT)
+            # wiki 检索已暂停，未查过就不能计入"已搜索"
+            _searched_wiki = _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT)
             # 全部问题都是环境事实类 → 知识库根本没法回答，未判定（None），
             # 不能返回 False 误报「知识缺失」。
             _all_env_fact = bool(keywords) and not athena_queries
@@ -308,7 +327,7 @@ class KnowledgeVerifier:
                             "未做知识存在性判定")
             elif _searched_api or _searched_wiki:
                 _l4 = False
-                _summary = "知识库和记忆/wiki 中均未找到与误报原因相关的知识"
+                _summary = "知识库中未找到与误报原因相关的知识"
             else:
                 _l4 = None
                 _summary = "无可用知识源（未提供 project_id 且 wiki 目录不存在），未查询"
@@ -350,8 +369,8 @@ class KnowledgeVerifier:
         result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb,
                                   evaluation_id=evaluation_id)
         result["kb_searched"] = {
-            "athena_api": bool(project_id),
-            "wiki_nfs": os.path.isdir(_WIKI_ROOT),
+            "athena_api": bool(project_id) and bool(athena_queries),
+            "wiki_nfs": _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT),
         }
         result["candidate_files"] = len(candidates)
         result["query_log"] = query_log
