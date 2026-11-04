@@ -104,6 +104,42 @@ def clamp_max_tokens_from_error(err, current_max_tokens: int | None):
     return clamped
 
 
+# 输入 + 输出 + 该余量必须 ≤ 上下文上限。网关自身还有 safety buffer，
+# 这里再留一点避免边界抖动。
+_MAX_TOKENS_SAFETY_MARGIN = 2048
+
+
+def _clamp_max_tokens_for_input(messages, requested: int) -> int:
+    """按「上下文上限 - 实际输入 - 余量」给出本次可用的输出空间。
+
+    两件事同时做：
+    1. **上限收缩**：输入很大时，requested（如 20% 算出的 209715）可能让
+       输入+输出超过上下文，必须收到 available。
+    2. **下限放宽**：输入很小时，20% 的预留过于保守——实测输出需求可达
+       26 万 token，被 209715 卡住截断（finish_reason=length）。
+       此时应放宽到 available，让模型能写完整结果。
+
+    即：max_tokens 取 available（不再被 20% 的 requested 限制），
+    但不超过上下文的一半，避免极端值。
+    """
+    max_ctx = _max_context_tokens
+    if not max_ctx:
+        return requested
+    try:
+        from .token_counter import count_tokens
+        input_tokens = sum(
+            count_tokens(str(m.get("content", ""))) for m in messages)
+    except Exception:
+        return requested
+    available = max_ctx - input_tokens - _MAX_TOKENS_SAFETY_MARGIN
+    if available <= 0:
+        # 输入已经吃满上下文：返回最小值，让网关报输入超限，
+        # 由 chat/chat_json 的重试换后端逻辑处理
+        return 1
+    # 输出不超过上下文的一半（防止把整窗都留给输出导致输入被挤压）
+    return max(min(available, max_ctx // 2), 1)
+
+
 def _worth_retry_for_larger_ctx(messages) -> bool:
     """输入是否小到可能被最大上下文后端（1M）接受。
 
@@ -711,6 +747,10 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         _payload["chat_template_kwargs"] = {"enable_thinking": False}
         _payload["enable_thinking"] = False
     if max_tokens is not None:
+        # 动态收缩：实际可用输出 = 上下文上限 - 输入 token - 安全余量。
+        # 固定的 max_tokens（如按 20% 算出的 209715）在输入很大时会超过
+        # 实际可用空间，网关按该值截断输出（finish_reason=length）。
+        max_tokens = _clamp_max_tokens_for_input(messages, max_tokens)
         _payload["max_tokens"] = max_tokens
     body = json.dumps(_payload).encode("utf-8")
 
