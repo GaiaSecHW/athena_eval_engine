@@ -872,7 +872,9 @@ class RootCauseAnalyzer:
                     continue
                 all_breakpoints.append({
                     "session_id": sid,
-                    "_bp_ref": ref_by_pos.get((sid, idx), ""),
+                    # 链前缀保证跨链唯一（mining/verification 各自从 BP-1 编号）
+                    "_bp_ref": self._scoped_ref(
+                        ref_by_pos.get((sid, idx), ""), chain_type),
                     **kp,
                 })
 
@@ -923,15 +925,23 @@ class RootCauseAnalyzer:
         # 丢弃不存在的 BP 编号（LLM 可能编造），保留「字段缺失」与「空数组」的区别：
         #   空数组 = LLM 明确表示此假设不基于任何断点
         #   字段缺失 = 协议不完备，后续由因果链回退到 session_id 匹配
-        _valid_refs = set(bp_registry)
+        # LLM 看到的是链内编号（BP-1），落库前统一加链前缀转成跨链唯一引用
+        _valid_refs = {self._scoped_ref(r, chain_type) for r in bp_registry}
         for h in merge_hypotheses:
             if "supporting_breakpoints" not in h:
                 continue
             raw_refs = h.get("supporting_breakpoints") or []
             if not isinstance(raw_refs, list):
                 raw_refs = []
-            kept = [r for r in raw_refs if isinstance(r, str) and r in _valid_refs]
-            dropped = [r for r in raw_refs if r not in kept]
+            kept, dropped = [], []
+            for r in raw_refs:
+                if not isinstance(r, str) or not r:
+                    continue
+                scoped = self._scoped_ref(r, chain_type)
+                if scoped in _valid_refs:
+                    kept.append(scoped)
+                else:
+                    dropped.append(r)
             if dropped:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} 假设引用了不存在的断点编号，"
@@ -1075,13 +1085,17 @@ class RootCauseAnalyzer:
         return category_map.get(cause, "reasoning_flaw")
 
     @staticmethod
-    @staticmethod
     def _build_bp_registry(compressed_summaries: list[dict]) -> dict[str, dict]:
         """按 merge prompt 的展示顺序给断点编号（BP-1, BP-2, ...）。
 
         编号顺序必须与 _build_merge_prompt 的展示顺序完全一致：按
         compressed_summaries 的当前顺序（须已按 step 排序），逐个 session
         逐个 l0_l7 条目递增。只对 breakpoint 非空且不为 "null" 的条目编号。
+
+        注意：本方法每条链各调用一次（mining / verification 分开 merge），
+        编号必然重复。落库前必须用 _scoped_ref 拼上链前缀，保证跨链唯一——
+        否则因果链汇总时同号断点会互相干扰（实测：verification 的 BP-1
+        让 mining 的 BP-1 误判为被引用，过滤失效）。
 
         Returns:
             {bp_ref: {"session_id", "l0_l7_index", "cause_code", "breakpoint"}}
@@ -1104,6 +1118,15 @@ class RootCauseAnalyzer:
                     "breakpoint": brk,
                 }
         return registry
+
+    @staticmethod
+    def _scoped_ref(bp_ref: str, chain_type: str) -> str:
+        """把链内编号转成跨链唯一的引用（MINING-BP-1 / VERIFICATION-BP-1）。"""
+        if not bp_ref:
+            return ""
+        prefix = {"mining": "MINING",
+                  "verification": "VERIFICATION"}.get(chain_type, "OTHER")
+        return f"{prefix}-{bp_ref}"
 
     @staticmethod
     def _build_merge_prompt(
@@ -1145,8 +1168,9 @@ class RootCauseAnalyzer:
             l0_l7 = s.get("l0_l7") or []
             if l0_l7:
                 if bp_registry:
-                    # 逐条打印并附 BP 编号，供假设的 supporting_breakpoints 引用
-                    parts.append("L0-L7 判定（用 BP-n 编号引用）:")
+                    # 逐条打印并附链内 BP 编号，供假设的 supporting_breakpoints
+                    # 引用（落库时会自动加链前缀转成跨链唯一）
+                    parts.append("L0-L7 判定（用下方 BP-n 编号引用）:")
                     for idx, kp in enumerate(l0_l7):
                         if not isinstance(kp, dict):
                             continue
