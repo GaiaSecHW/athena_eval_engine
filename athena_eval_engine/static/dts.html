@@ -159,7 +159,7 @@ function renderDtsTable(){
       +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+esc(DTS_STATUS_LABELS[i.status])+'</span></td>'
       +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+esc(lqLabel)+'</span>':'-')+'</td>'
       +'<td style="font-size:13px;color:var(--sub)">'+esc(fmtDate(i.created_at))+'</td>'
-      +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="go(\'/dts/\'+encodeURIComponent(\''+esc(i.dts_id)+'\'))">详情</button></td>'
+      +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="goDtsFrom(\''+esc(i.dts_id)+'\',\'dts\')">详情</button></td>'
       +'</tr>';
   });
   html+='</tbody></table>';

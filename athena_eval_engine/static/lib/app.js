@@ -126,6 +126,32 @@ function renderNav(currentPath){
   const sb=$("sys-btn");if(sb)sb.style.display=DEBUG?"":"none";
 }
 
+// 打开问题单详情，记录来源页以便详情页的「返回」能回到正确位置
+// from: 'evals' | 'dts'（默认 dts 列表）
+function goDtsFrom(dtsId, from, returnUrl){
+  try{
+    sessionStorage.setItem("dts-from", JSON.stringify({
+      from: from||'dts',
+      url: returnUrl || (from==='evals' ? location.pathname+location.search : _INGRESS+'/dts')
+    }));
+  }catch(e){}
+  go('/dts/'+encodeURIComponent(dtsId));
+}
+
+// 读取问题单详情的来源信息
+function dtsBackInfo(){
+  var fallback={from:'dts', label:'问题单列表', url:_INGRESS+'/dts'};
+  try{
+    var raw=sessionStorage.getItem("dts-from");
+    if(!raw)return fallback;
+    var o=JSON.parse(raw)||{};
+    if(o.from==='evals'){
+      return {from:'evals', label:'评测详情', url:o.url||(_INGRESS+'/evals')};
+    }
+    return {from:'dts', label:'问题单列表', url:o.url||(_INGRESS+'/dts')};
+  }catch(e){return fallback;}
+}
+
 // 返回（路径映射）
 function goBack(defaultPath){
   const path=location.pathname.replace(_INGRESS,'')||'/';

@@ -119,7 +119,10 @@ def get_evaluation(evaluation_id: str):
                 {
                     "condition": e.get("condition"),
                     "project_name": e.get("project_name", ""),
+                    "project_id": e.get("project_id", ""),
                     "task_name": e.get("task_name", ""),
+                    "task_id": e.get("task_id", ""),
+                    "task_id_actual": e.get("task_id_actual", ""),
                     "category": e.get("category", ""),
                 }
                 for e in entries
