@@ -75,7 +75,7 @@ _MD_PREVIEW_LINES = 40
 
 # ── API 超时 + 重试 ──
 _API_TIMEOUT = 10           # 单次 HTTP 请求超时
-_RETRIEVE_POLL_TIMEOUT = 1200  # 检索轮询超时（Athena 后端慢查询实测可达 20 分钟）
+_RETRIEVE_POLL_TIMEOUT = 1300  # 检索轮询超时（Athena 后端慢查询实测可达 20 分钟以上）
 _RETRIEVE_POLL_INTERVAL = 2  # 轮询间隔（秒）
 _ATHENA_RETRIES = 3          # Athena API 查询重试次数（连接错误重试）
 _ATHENA_RETRY_DELAY = 1      # 重试间隔（秒）
@@ -126,7 +126,7 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 # ── 环境事实类问题判定 ──
 # 知识库存的是方法论与漏洞模式，不是某个客户的部署现状。像"8888 端口是否
 # 对外暴露""file_name 是否已被上游过滤"这类问题，知识库永远答不了，查了
-# 只会让 Athena 后端做无效深度检索 → 慢 → 超时（实测 1200s 仍无结果）。
+# 只会让 Athena 后端做无效深度检索 → 慢 → 查询失败（实测 1200s 仍无结果）。
 #
 # 判定顺序很重要：先认强信号（具体 IP / 部署现状措辞），再排除方法论问句
 # （"如何判断路径参数是否已被校验"虽然含"是否…校验"，问的却是方法）。
@@ -248,7 +248,7 @@ class KnowledgeVerifier:
 
         # 2. 查 Athena API /retrieve（与 agent 同款端点）
         # 环境事实类问题（"某端口是否暴露"等）知识库答不了，跳过 Athena 避免
-        # 无效深度检索导致 1200s 超时，只保留 wiki 检索。
+        # 无效深度检索导致查询失败，只保留 wiki 检索。
         env_fact_queries = [q for q in keywords if _is_environment_fact_query(q)]
         athena_queries = [q for q in keywords if not _is_environment_fact_query(q)]
         if env_fact_queries:
