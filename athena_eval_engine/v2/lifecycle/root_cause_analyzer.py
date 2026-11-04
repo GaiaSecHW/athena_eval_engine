@@ -851,7 +851,7 @@ class RootCauseAnalyzer:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} session {cs['step']}/{len(chain)} "
                 f"独立压缩完成 (summary {len(cs.get('summary', ''))} 字, "
-                f"{len(l0_l7)} 条知识访问)",
+                f"{len(cs.get('l0_l7') or [])} 条知识访问)",
                 eval_id=evaluation_id)
 
         # 按 step 排序，保证拓扑序

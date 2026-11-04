@@ -8,6 +8,7 @@ LLM 调用通过 submit_llm_batch（逐个提交+gate 控制）或 submit_pool�
 """
 from __future__ import annotations
 import json
+import re
 import time
 import socket
 import select
@@ -71,6 +72,36 @@ def is_context_overflow_error(err) -> bool:
     """判断异常是否为「输入超出模型上下文」。"""
     s = str(err).lower()
     return any(kw in s for kw in _CTX_OVERFLOW_KW)
+
+
+# 网关报错："max_tokens=209715 cannot be greater than
+#           max_model_len=max_total_tokens=204800"
+_MAX_TOKENS_TOO_LARGE_RE = re.compile(
+    r"max_tokens=(\d+) cannot be greater than "
+    r"max_model_len=max_total_tokens=(\d+)", re.IGNORECASE)
+
+# 按上下文预留比例计算的 max_tokens 可能超过本次路由到的后端上限
+# （1M 后端算出 209715，204800 后端只允许 204800）。收到该报错时
+# 把 max_tokens 收缩到后端允许值再重试，而不是死等一个能容纳它的后端。
+_MAX_TOKENS_CLAMP_MARGIN = 4096
+
+
+def clamp_max_tokens_from_error(err, current_max_tokens: int | None):
+    """从「max_tokens 超过后端上限」的 400 报错中收缩 max_tokens。
+
+    Returns:
+        新的 max_tokens（int）；无法解析或无需收缩时返回 None。
+    """
+    if current_max_tokens is None:
+        return None
+    m = _MAX_TOKENS_TOO_LARGE_RE.search(str(err))
+    if not m:
+        return None
+    limit = int(m.group(2))
+    clamped = max(limit - _MAX_TOKENS_CLAMP_MARGIN, 1)
+    if clamped >= current_max_tokens:
+        return None
+    return clamped
 
 
 def _worth_retry_for_larger_ctx(messages) -> bool:
@@ -916,6 +947,14 @@ def chat(messages, **kwargs) -> str:
             # 输入超限：网关随机路由到小上下文后端。重试会重新路由，
             # 可能命中 1M 后端，而不是直接失败。
             if is_context_overflow_error(last_err):
+                # max_tokens 超过本次后端上限 → 收缩后立即重试
+                _clamped = clamp_max_tokens_from_error(
+                    last_err, _call_kwargs.get("max_tokens"))
+                if _clamped is not None:
+                    log("LLM", f"chat max_tokens 超过后端上限，"
+                               f"收缩 {_call_kwargs.get('max_tokens')} → {_clamped} 重试")
+                    kwargs["max_tokens"] = _clamped
+                    continue
                 if (not _worth_retry_for_larger_ctx(messages)
                         or _ctx_retries >= CONTEXT_OVERRIDE_RETRIES):
                     log("LLM", f"chat 输入超限，不再重试"
@@ -1266,6 +1305,16 @@ def chat_json(messages, **kwargs) -> dict:
             # 输入超限：网关随机路由到小上下文后端。重试会重新路由，
             # 可能命中 1M 后端，而不是直接失败。
             if is_context_overflow_error(last_err):
+                # 情况 A：max_tokens 超过本次后端上限（如 1M 算出的 209715
+                # 落到 204800 的 GLM）→ 收缩 max_tokens 立即重试，不必换后端
+                _clamped = clamp_max_tokens_from_error(
+                    last_err, _call_kwargs.get("max_tokens"))
+                if _clamped is not None:
+                    log("LLM", f"chat_json max_tokens 超过后端上限，"
+                               f"收缩 {_call_kwargs.get('max_tokens')} → {_clamped} 重试")
+                    kwargs["max_tokens"] = _clamped
+                    continue
+                # 情况 B：输入本身超限 → 重试换后端
                 if (not _worth_retry_for_larger_ctx(msgs)
                         or _ctx_retries >= CONTEXT_OVERRIDE_RETRIES):
                     log("LLM", f"chat_json 输入超限，不再重试"
