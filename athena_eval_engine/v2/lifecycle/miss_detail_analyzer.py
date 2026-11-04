@@ -136,6 +136,16 @@ def _format_session_events(session_id: str, events: list[RawEvent]) -> str:
             elif ev.is_memory_interaction:
                 kg_flag = " [记忆访问]"
             lines.append(f"[工具调用] {tool}{kg_flag}: {text}")
+            # opencode/turing 格式的 tool part 把 input 和 output 放在同一个
+            # TOOL_CALL 事件里，只打 input 会丢失知识库/记忆的返回内容。
+            result_text = _extract_text(ev.output_json)
+            if result_text:
+                ret_flag = ""
+                if ev.is_kg_interaction:
+                    ret_flag = " [知识库返回]"
+                elif ev.is_memory_interaction:
+                    ret_flag = " [记忆返回]"
+                lines.append(f"[工具返回] {tool}{ret_flag}: {result_text}")
         elif et == "TOOL_RESULT":
             text = _extract_text(ev.output_json)
             kg_flag = ""

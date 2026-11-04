@@ -1638,6 +1638,18 @@ class RootCauseAnalyzer:
                 elif ev.is_memory_interaction:
                     kg_flag = " [记忆访问]"
                 lines.append(f"[工具调用] {tool}{kg_flag}: {text}")
+                # opencode/turing 格式：tool part 带 state 时 input 和 output
+                # 同在一个 TOOL_CALL 事件里（parser._classify 返回 TOOL_CALL）。
+                # 只打 input 会让知识库/记忆的返回内容彻底丢失，LLM 只能报
+                # 「无法确认返回内容」，进而误判 L4/L6。这里补打 output。
+                result_text = _extract_text(ev.output_json)
+                if result_text:
+                    ret_flag = ""
+                    if ev.is_kg_interaction:
+                        ret_flag = " [知识库返回]"
+                    elif ev.is_memory_interaction:
+                        ret_flag = " [记忆返回]"
+                    lines.append(f"[工具返回] {tool}{ret_flag}: {result_text}")
             elif et == "TOOL_RESULT":
                 text = _extract_text(ev.output_json)
                 # 标记知识访问返回
