@@ -116,6 +116,54 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 
 只返回 JSON，不要任何额外文字。"""
 
+# ── 环境事实类问题判定 ──
+# 知识库存的是方法论与漏洞模式，不是某个客户的部署现状。像"8888 端口是否
+# 对外暴露""file_name 是否已被上游过滤"这类问题，知识库永远答不了，查了
+# 只会让 Athena 后端做无效深度检索 → 慢 → 超时（实测 1200s 仍无结果）。
+#
+# 判定顺序很重要：先认强信号（具体 IP / 部署现状措辞），再排除方法论问句
+# （"如何判断路径参数是否已被校验"虽然含"是否…校验"，问的却是方法）。
+_IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
+# "在实际部署中是否…" / "网关层面是否存在…" —— 问客户环境现状
+_DEPLOY_STATE_RE = re.compile(
+    r"(在实际部署中|部署环境|部署现状|网关层面|安全组|防火墙|网段)"
+    r"[^，。？?]{0,20}(是否|有无|有没有)")
+# 方法论问句开头
+_METHOD_QUESTION_RE = re.compile(
+    r"^(如何|怎么|怎样|如何判断|如何验证|如何识别|如何评估|能否|是否足以)")
+# 具体端口 + 对外状态
+_PORT_EXPOSURE_RE = re.compile(
+    r"(端口|port|\b\d{2,5}\b)[^，。？?]{0,25}(对外暴露|暴露|可达|对外开放|对外开放访问)")
+# 是否 + 部署状态词
+_STATE_WORD_RE = re.compile(
+    r"(是否|有无|有没有)[^，。？?]{0,20}"
+    r"(对外暴露|暴露|部署|开放|可达|隔离|上线|启用)")
+
+
+def _is_environment_fact_query(query: str) -> bool:
+    """判断检索问题是否属于「环境事实类」——知识库无法回答的部署现状问题。
+
+    这类问题问的是某个具体环境里端口/接口/网关的实际状态，不是方法论。
+    知识库存方法论与漏洞模式，答不了这类问题，应跳过 Athena 检索。
+    """
+    q = (query or "").strip()
+    if not q:
+        return False
+    # 强信号 1：含具体 IP —— 一定在问某个具体环境
+    if _IP_RE.search(q):
+        return True
+    # 强信号 2：明确的部署现状措辞
+    if _DEPLOY_STATE_RE.search(q):
+        return True
+    # 方法论问句（"如何判断…"）问的是方法，知识库能答，不算环境事实
+    if _METHOD_QUESTION_RE.match(q):
+        return False
+    # 具体端口 + 对外状态
+    if _PORT_EXPOSURE_RE.search(q):
+        return True
+    # 是否 + 部署状态词
+    return bool(_STATE_WORD_RE.search(q))
+
 
 class KnowledgeVerifier:
     """知识库主动验证器。
@@ -192,14 +240,29 @@ class KnowledgeVerifier:
         candidates: list[dict] = []
 
         # 2. 查 Athena API /retrieve（与 agent 同款端点）
-        if project_id:
+        # 环境事实类问题（"某端口是否暴露"等）知识库答不了，跳过 Athena 避免
+        # 无效深度检索导致 1200s 超时，只保留 wiki 检索。
+        env_fact_queries = [q for q in keywords if _is_environment_fact_query(q)]
+        athena_queries = [q for q in keywords if not _is_environment_fact_query(q)]
+        if env_fact_queries:
+            query_log.append({
+                "step": "Athena API 搜索",
+                "action": "跳过环境事实类问题",
+                "detail": f"以下问题问的是具体部署现状，知识库无法回答: {env_fact_queries}",
+                "result": f"{len(env_fact_queries)} 个问题跳过 Athena 检索",
+                "count": 0,
+            })
+            log("KB_VERIFY",
+                f"跳过 Athena（环境事实类问题，知识库无法回答）: {env_fact_queries}")
+
+        if project_id and athena_queries:
             api_candidates, api_log = self._search_athena_api_logged(
-                project_id, keywords, evaluation_id=evaluation_id,
+                project_id, athena_queries, evaluation_id=evaluation_id,
                 cancel_cb=cancel_cb)
             candidates.extend(api_candidates)
             query_log.extend(api_log)
             log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选")
-        else:
+        elif not project_id:
             query_log.append({
                 "step": "Athena API 搜索",
                 "action": "跳过（无 project_id）",
@@ -233,16 +296,26 @@ class KnowledgeVerifier:
         })
 
         if not candidates:
-            _searched_api = bool(project_id)
+            # Athena 是否真的查过：有 project_id 且存在可查的方法类问题
+            _searched_api = bool(project_id) and bool(athena_queries)
             _searched_wiki = os.path.isdir(_WIKI_ROOT)
-            # 两个数据源都没查过 → 未判定（None），不能返回 False 误报「知识缺失」
-            _l4 = False if (_searched_api or _searched_wiki) else None
+            # 全部问题都是环境事实类 → 知识库根本没法回答，未判定（None），
+            # 不能返回 False 误报「知识缺失」。
+            _all_env_fact = bool(keywords) and not athena_queries
+            if _all_env_fact:
+                _l4 = None
+                _summary = ("检索问题均属环境事实类（部署现状），知识库无法回答，"
+                            "未做知识存在性判定")
+            elif _searched_api or _searched_wiki:
+                _l4 = False
+                _summary = "知识库和记忆/wiki 中均未找到与误报原因相关的知识"
+            else:
+                _l4 = None
+                _summary = "无可用知识源（未提供 project_id 且 wiki 目录不存在），未查询"
             result = {
                 "l4_knowledge_exists": _l4,
                 "matched_files": [],
-                "summary": ("知识库和记忆/wiki 中均未找到与误报原因相关的知识"
-                            if _l4 is not None else
-                            "无可用知识源（未提供 project_id 且 wiki 目录不存在），未查询"),
+                "summary": _summary,
                 "kb_searched": {
                     "athena_api": _searched_api,
                     "wiki_nfs": _searched_wiki,
