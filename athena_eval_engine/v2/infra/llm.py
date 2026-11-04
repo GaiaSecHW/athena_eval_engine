@@ -31,6 +31,11 @@ RETRY_DELAY = 5  # 秒，重试间隔
 CONTEXT_OVERRIDE_RETRIES = 15   # 最多重试次数
 CONTEXT_OVERRIDE_DELAY = 2      # 秒
 
+# LLM 输出预留 token 数。必须显式声明，不能依赖网关按「剩余空间」分配——
+# 输入吃到接近上限时剩余空间极小，JSON 输出会被 max_tokens 截断。
+# 实测 session 压缩的截断输出达 178K~310K 字符（约 7~12 万 token）。
+LLM_RESPONSE_RESERVE_TOKENS = 131072
+
 # 判定「输入超限」错误的关键词（两类后端报错文案不同）
 _CTX_OVERFLOW_KW = (
     "context length", "too long", "maximum context",
@@ -181,14 +186,16 @@ def estimate_tokens(text: str) -> int:
     return count_tokens(text)
 
 
-def would_exceed_context(messages: list[dict], reserved_tokens: int = 4096) -> bool:
+def would_exceed_context(messages: list[dict],
+                         reserved_tokens: int = LLM_RESPONSE_RESERVE_TOKENS) -> bool:
     """预判 messages 是否会超过 LLM 上下文限制。
 
-    reserved_tokens: 为 LLM 响应预留的 token 数（system prompt + completion）。
-    默认 4096，足够 JSON 结构化输出。
+    reserved_tokens: 为 LLM 响应预留的 token 数，默认 LLM_RESPONSE_RESERVE_TOKENS。
+    这个值必须与实际输出需求匹配——预留太小会导致输入吃满上下文、
+    输出被 max_tokens 截断（实测 JSON 压缩输出可达 12 万 token）。
 
     用本地 DeepSeek V4 tokenizer 精确计算，不做 chars/token 估算。
-    在发送前调用，避免撞 400 错误。
+    在发送前调用，避免撞 400 错误或输出截断。
     """
     max_ctx = _max_context_tokens
     if max_ctx is None:
@@ -789,9 +796,12 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             line_str = line.decode("utf-8", errors="replace").strip()
             if not line_str:
                 continue  # SSE 事件分隔空行
-            if not line_str.startswith("data: "):
+            # SSE 规范中 `data:` 后的空格是可选的。本网关返回 `data:{...}`
+            # （冒号后无空格），硬要求 "data: " 会把所有数据行丢弃，
+            # 导致 content 和 reasoning 全为空 → 压缩全部失败。
+            if not line_str.startswith("data:"):
                 continue  # 非 data 行（含 SSE keepalive 注释）
-            data_str = line_str[6:]
+            data_str = line_str[5:].strip()
             if data_str == "[DONE]":
                 break
             try:
