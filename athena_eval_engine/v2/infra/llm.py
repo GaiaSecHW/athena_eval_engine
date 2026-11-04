@@ -31,10 +31,31 @@ RETRY_DELAY = 5  # 秒，重试间隔
 CONTEXT_OVERRIDE_RETRIES = 15   # 最多重试次数
 CONTEXT_OVERRIDE_DELAY = 2      # 秒
 
-# LLM 输出预留 token 数。必须显式声明，不能依赖网关按「剩余空间」分配——
-# 输入吃到接近上限时剩余空间极小，JSON 输出会被 max_tokens 截断。
-# 实测 session 压缩的截断输出达 178K~310K 字符（约 7~12 万 token）。
-LLM_RESPONSE_RESERVE_TOKENS = 131072
+# LLM 输出预留占上下文窗口的比例。必须显式声明，不能依赖网关按
+# 「剩余空间」分配——输入吃到接近上限时剩余空间极小，JSON 输出会被
+# max_tokens 截断（实测 session 压缩输出达 178K~310K 字符，约 7~12 万 token）。
+# 按比例而非固定值：1M 上下文留 20%（约 21 万 token），204800 留 20%（约 4 万）。
+LLM_RESPONSE_RESERVE_RATIO = 0.2
+# 预留下限：小上下文模型（如 204800）也要保证至少这么多输出空间
+LLM_RESPONSE_RESERVE_FLOOR = 32768
+
+
+def get_response_reserve_tokens(max_ctx: int | None = None) -> int:
+    """按上下文窗口比例计算输出预留 token 数。
+
+    Args:
+        max_ctx: 上下文上限，None 时取当前全局值。
+
+    Returns:
+        int(max_ctx * LLM_RESPONSE_RESERVE_RATIO)，但不低于
+        LLM_RESPONSE_RESERVE_FLOOR。
+    """
+    if max_ctx is None:
+        max_ctx = _max_context_tokens
+    if not max_ctx:
+        max_ctx = 204800
+    return max(int(max_ctx * LLM_RESPONSE_RESERVE_RATIO),
+               LLM_RESPONSE_RESERVE_FLOOR)
 
 # 判定「输入超限」错误的关键词（两类后端报错文案不同）
 _CTX_OVERFLOW_KW = (
@@ -187,12 +208,12 @@ def estimate_tokens(text: str) -> int:
 
 
 def would_exceed_context(messages: list[dict],
-                         reserved_tokens: int = LLM_RESPONSE_RESERVE_TOKENS) -> bool:
+                         reserved_tokens: int | None = None) -> bool:
     """预判 messages 是否会超过 LLM 上下文限制。
 
-    reserved_tokens: 为 LLM 响应预留的 token 数，默认 LLM_RESPONSE_RESERVE_TOKENS。
-    这个值必须与实际输出需求匹配——预留太小会导致输入吃满上下文、
-    输出被 max_tokens 截断（实测 JSON 压缩输出可达 12 万 token）。
+    reserved_tokens: 为 LLM 响应预留的 token 数。None 时按上下文窗口的
+    20% 动态计算（get_response_reserve_tokens）。预留太小会导致输入吃满
+    上下文、输出被 max_tokens 截断。
 
     用本地 DeepSeek V4 tokenizer 精确计算，不做 chars/token 估算。
     在发送前调用，避免撞 400 错误或输出截断。
@@ -200,6 +221,8 @@ def would_exceed_context(messages: list[dict],
     max_ctx = _max_context_tokens
     if max_ctx is None:
         return False  # 未收集过上限，无法预判，让 LLM 自己报错
+    if reserved_tokens is None:
+        reserved_tokens = get_response_reserve_tokens(max_ctx)
     from .token_counter import count_tokens
     total = sum(count_tokens(str(m.get("content", ""))) for m in messages)
     return total + reserved_tokens > max_ctx

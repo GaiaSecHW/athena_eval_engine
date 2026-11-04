@@ -954,7 +954,7 @@ class KnowledgeVerifier:
             try:
                 result = llm_mod.chat_json(
                     all_msgs, temperature=0, cancel_cb=cancel_cb,
-                    max_tokens=llm_mod.LLM_RESPONSE_RESERVE_TOKENS,
+                    max_tokens=llm_mod.get_response_reserve_tokens(),
                     required_keys=["knowledge_exists"])
             except Exception as e:
                 log("KB_VERIFY", "LLM 判定失败")
@@ -991,7 +991,7 @@ class KnowledgeVerifier:
             try:
                 r = llm_mod.chat_json(
                     batch_msgs, temperature=0, cancel_cb=cancel_cb,
-                    max_tokens=llm_mod.LLM_RESPONSE_RESERVE_TOKENS,
+                    max_tokens=llm_mod.get_response_reserve_tokens(),
                     required_keys=["knowledge_exists"])
             except Exception as e:
                 log("KB_VERIFY", f"分批 {bi+1}/{len(batches)} LLM 判定失败")

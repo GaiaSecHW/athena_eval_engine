@@ -767,7 +767,7 @@ class RootCauseAnalyzer:
                         messages,
                         temperature=0,
                         cancel_cb=cancel_cb,
-                        max_tokens=llm_mod.LLM_RESPONSE_RESERVE_TOKENS,
+                        max_tokens=llm_mod.get_response_reserve_tokens(),
                         required_keys=["summary"],
                     )
                 except Exception as e:
@@ -1314,8 +1314,10 @@ class RootCauseAnalyzer:
         max_ctx_override: 强制指定上下文上限（如 400 超限后按 204800 重切）。
         """
         max_ctx = max_ctx_override or llm_mod.get_max_context_tokens() or 1048576
-        # 预留输出空间（实测压缩 JSON 输出可达 12 万 token，不能用 4096）
-        usable_tokens = max_ctx - llm_mod.LLM_RESPONSE_RESERVE_TOKENS
+        # 预留输出空间：按上下文窗口的 20% 动态计算（1M→约 21 万，
+        # 204800→约 4 万），不能用固定的 4096
+        _reserve = llm_mod.get_response_reserve_tokens(max_ctx)
+        usable_tokens = max_ctx - _reserve
         # 框架开销：system prompt 全文 + 漏洞标题/描述/outcome/标注原因/session 头
         overhead_tokens = llm_mod.estimate_tokens(
             _SYSTEM_PROMPT + vuln_title + desc + (fp_reason or "")
@@ -1399,7 +1401,7 @@ class RootCauseAnalyzer:
             try:
                 r = llm_mod.chat_json(
                     msgs, temperature=0, cancel_cb=cancel_cb,
-                    max_tokens=llm_mod.LLM_RESPONSE_RESERVE_TOKENS,
+                    max_tokens=llm_mod.get_response_reserve_tokens(),
                     required_keys=["summary"])
             except Exception as e:
                 log("ROOT_CAUSE",
