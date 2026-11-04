@@ -771,19 +771,19 @@ class RootCauseAnalyzer:
                     )
                 except Exception as e:
                     err_str = str(e)
-                    # 400 context length 错误触发自适应后重试分片压缩：
-                    # _collect_max_tokens 已从 400 响应更新 _max_context_tokens，
-                    # 此时 would_exceed_context 用更新后的值重新预判，走分片路径。
-                    if "输入超限" in err_str or "context length" in err_str.lower():
+                    # llm.chat_json 已对输入超限做过多次重试切换后端；
+                    # 仍失败说明多次都没命中大上下文后端。此时改为按最保守的
+                    # 204800 上下文分片压缩，而不是依赖全局默认值。
+                    if llm_mod.is_context_overflow_error(err_str):
                         log("ROOT_CAUSE",
                             f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                            f"LLM 400 超限，自适应后重试分片压缩 "
-                            f"(max_ctx 更新为 {llm_mod.get_max_context_tokens()})",
+                            f"LLM 输入超限（重试后仍未命中大上下文后端），"
+                            f"改按 204800 上下文分片压缩",
                             eval_id=evaluation_id)
                         result = self._compress_session_chunked(
                             evaluation_id, case_id, chain_type, i, sid,
                             events, vuln_title, desc, fp_reason, outcome,
-                            chain, cancel_cb,
+                            chain, cancel_cb, max_ctx_override=204800,
                         )
                     else:
                         log("ROOT_CAUSE",
@@ -1300,6 +1300,7 @@ class RootCauseAnalyzer:
         events: list[RawEvent], vuln_title: str, desc: str,
         fp_reason: str, outcome: str,
         chain: list[str], cancel_cb=None,
+        max_ctx_override: int | None = None,
     ) -> dict:
         """对超大 session 按事件分片压缩，再合并分片摘要。
 
@@ -1308,8 +1309,10 @@ class RootCauseAnalyzer:
         2. 按事件边界切分（不截断单个事件）
         3. 每片独立调 LLM 压缩
         4. 合并所有分片摘要为最终结果
+
+        max_ctx_override: 强制指定上下文上限（如 400 超限后按 204800 重切）。
         """
-        max_ctx = llm_mod.get_max_context_tokens() or 204800
+        max_ctx = max_ctx_override or llm_mod.get_max_context_tokens() or 1048576
         # 预留 4096 token 给响应
         usable_tokens = max_ctx - 4096
         # 框架开销：system prompt 全文 + 漏洞标题/描述/outcome/标注原因/session 头

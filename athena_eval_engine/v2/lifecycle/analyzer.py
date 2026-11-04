@@ -33,7 +33,7 @@ from ..infra.log_util import log, log_error, with_eval_ctx, get_eval_ctx
 
 # ── 安全上下文阈值（占 max_context 的比例）──
 _CONTEXT_SAFETY_RATIO = 0.6  # 只用 60% 上下文窗口给 user_content，留余量给 system prompt + 输出
-_DEFAULT_MAX_CONTEXT_TOKENS = 128_000  # 未从 400 错误中收集到时使用此默认值
+_DEFAULT_MAX_CONTEXT_TOKENS = 1_048_576  # get_max_context_tokens() 返回 None 时的回退值
 _COMPRESS_THRESHOLD_TOKENS = 4000  # 单个文本字段超过此 token 数时触发压缩
 
 # ── 统一 LLM 调用的 system prompt ──

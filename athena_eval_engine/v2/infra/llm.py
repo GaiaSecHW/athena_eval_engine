@@ -25,6 +25,40 @@ DEFAULT_API_KEY = LLM_API_KEY
 MAX_RETRIES = 20
 RETRY_DELAY = 5  # 秒，重试间隔
 
+# 上下文超限重试：网关按别名随机分发后端模型（实测 pro/mini/max/ds-v4-flush
+# 都会落到 1M 的 DeepSeek-V4 或 204800 的 GLM-V5.1）。遇到输入超限时重试，
+# 每次重试都会重新路由，有概率命中 1M 后端，而不是直接失败。
+CONTEXT_OVERRIDE_RETRIES = 15   # 最多重试次数
+CONTEXT_OVERRIDE_DELAY = 2      # 秒
+
+# 判定「输入超限」错误的关键词（两类后端报错文案不同）
+_CTX_OVERFLOW_KW = (
+    "context length", "too long", "maximum context",
+    "token limit", "context_window", "context window",
+    "input too long", "prompt too long",
+    "max_model_len", "max_total_tokens",
+    "contains at least", "maximum context length",
+)
+
+
+def is_context_overflow_error(err) -> bool:
+    """判断异常是否为「输入超出模型上下文」。"""
+    s = str(err).lower()
+    return any(kw in s for kw in _CTX_OVERFLOW_KW)
+
+
+def _worth_retry_for_larger_ctx(messages) -> bool:
+    """输入是否小到可能被最大上下文后端（1M）接受。
+
+    输入本身就超过最大后端上限时，再怎么切换后端都会超限，直接失败更省时。
+    """
+    try:
+        from .token_counter import count_tokens
+        total = sum(count_tokens(str(m.get("content", ""))) for m in messages)
+    except Exception:
+        return True
+    return total < _max_context_tokens
+
 # SSE 流式超时（秒）
 FIRST_TOKEN_TIMEOUT = 350   # 首 token 超时：5 分 50 秒
 STREAM_TIMEOUT = 600        # 后续 token 断流超时：10 分钟
@@ -129,11 +163,13 @@ _token_lock = threading.Lock()
 _token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0, "call_count": 0}
 
 # 从 400 错误中收集的 max context tokens
-# 默认值与当前模型（DeepSeek）一致，400 错误后自适应更新
-_max_context_tokens = 204800
+# 默认值取 DeepSeek-V4 的 1048576（网关实测：DeepSeek-V4 报 1048576，
+# GLM-V5.1 报 204800）。网关按别名随机分发后端模型，所以 400 错误后
+# 自适应更新会把该值降到实际路由模型的上限。
+_max_context_tokens = 1048576
 
 def get_max_context_tokens():
-    """返回 LLM 最大上下文 token 数。默认 204800，400 错误后用实际数据更新。"""
+    """返回 LLM 最大上下文 token 数。默认 1048576，400 错误后用实际数据更新。"""
     return _max_context_tokens
 
 
@@ -162,17 +198,31 @@ def would_exceed_context(messages: list[dict], reserved_tokens: int = 4096) -> b
     return total + reserved_tokens > max_ctx
 
 def _collect_max_tokens(error_text, messages):
-    """从 LLM 400 错误响应中解析 max context tokens。"""
-    global _max_context_tokens
+    """解析 400 错误中「本次实际路由到的后端模型」的上下文上限，仅用于日志。
+
+    不修改全局 _max_context_tokens：网关按别名随机分发后端（1M 的 DeepSeek-V4
+    或 204800 的 GLM-V5.1），单次报错只代表这一次路由到的模型。用它覆盖全局值
+    会让后续所有请求都按小上下文保守切分。超限处理由 chat/chat_json 的
+    重试切换后端机制负责。
+    """
     import re
-    # 提取 max context tokens: "maximum context length is 131072 tokens"
+    # "Decoder's maximum context length is 1048576 tokens"
     m = re.search(r'maximum context (?:length|window) is (\d+) tokens', error_text, re.IGNORECASE)
-    if not m:
-        m = re.search(r'max_?context_?(?:length|tokens|window)\D{0,5}(\d{4,})', error_text, re.IGNORECASE)
+    observed = None
     if m:
-        _max_context_tokens = int(m.group(1))
-    if _max_context_tokens:
-        log("LLM", f"从 400 错误中收集 max_context_tokens={_max_context_tokens}")
+        observed = int(m.group(1))
+    else:
+        # "max_tokens=2000000 cannot be greater than max_model_len=max_total_tokens=204800"
+        m = re.search(r'max_model_len=max_total_tokens=(\d+)', error_text)
+        if m:
+            observed = int(m.group(1))
+        else:
+            m = re.search(r'max_?context_?(?:length|tokens|window)\D{0,5}(\d{4,})', error_text, re.IGNORECASE)
+            if m:
+                observed = int(m.group(1))
+    if observed:
+        log("LLM", f"本次路由模型的上下文上限={observed} "
+                  f"(全局默认值保持 {_max_context_tokens})")
 
 
 def reset_token_usage():
@@ -818,6 +868,7 @@ def chat(messages, **kwargs) -> str:
     retries = kwargs.get("retries", MAX_RETRIES)
     _cancel_cb = kwargs.get("cancel_cb")
     _no_reasoning = False  # reasoning 过长后关闭推理重试
+    _ctx_retries = 0       # 上下文超限的重试计数（独立于 retries）
     for attempt in range(retries):
         if _cancel_cb:
             _cancel_cb()
@@ -829,14 +880,19 @@ def chat(messages, **kwargs) -> str:
         except Exception as e:
             last_err = str(e)
             err_lower = last_err.lower()
-            # context length / token limit 错误是确定性的，重试无意义
-            if any(kw in err_lower for kw in (
-                "context length", "too long", "maximum context",
-                "token limit", "context_window",
-                "input too long", "prompt too long",
-            )):
-                log("LLM", f"chat 输入超限，跳过重试: {last_err}")
-                raise RuntimeError(f"chat 输入超限（不可重试）: {last_err}")
+            # 输入超限：网关随机路由到小上下文后端。重试会重新路由，
+            # 可能命中 1M 后端，而不是直接失败。
+            if is_context_overflow_error(last_err):
+                if (not _worth_retry_for_larger_ctx(messages)
+                        or _ctx_retries >= CONTEXT_OVERRIDE_RETRIES):
+                    log("LLM", f"chat 输入超限，不再重试"
+                               f"(重试={_ctx_retries}): {last_err}")
+                    raise RuntimeError(f"chat 输入超限: {last_err}")
+                _ctx_retries += 1
+                log("LLM", f"chat 输入超限，重试切换后端 "
+                      f"({_ctx_retries}/{CONTEXT_OVERRIDE_RETRIES}): {last_err}")
+                time.sleep(CONTEXT_OVERRIDE_DELAY)
+                continue
             if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 if not _no_reasoning:
                     _no_reasoning = True
@@ -1160,6 +1216,7 @@ def chat_json(messages, **kwargs) -> dict:
     _prev_err = None
     _empty_repeat = 0
     _no_reasoning = False  # reasoning 占满后关闭推理重试
+    _ctx_retries = 0       # 上下文超限的重试计数（独立于 retries）
     for attempt in range(retries):
         # 取消检查：外部超时后立即停止重试，释放信号量
         if _cancel_cb:
@@ -1173,14 +1230,19 @@ def chat_json(messages, **kwargs) -> dict:
         except Exception as e:
             last_err = str(e)
             err_lower = last_err.lower()
-            # context length / token limit 错误是确定性的，重试无意义
-            if any(kw in err_lower for kw in (
-                "context length", "too long", "maximum context",
-                "token limit", "context_window",
-                "input too long", "prompt too long",
-            )):
-                log("LLM", f"chat_json 输入超限，跳过重试: {last_err}")
-                raise RuntimeError(f"chat_json 输入超限（不可重试）: {last_err}")
+            # 输入超限：网关随机路由到小上下文后端。重试会重新路由，
+            # 可能命中 1M 后端，而不是直接失败。
+            if is_context_overflow_error(last_err):
+                if (not _worth_retry_for_larger_ctx(msgs)
+                        or _ctx_retries >= CONTEXT_OVERRIDE_RETRIES):
+                    log("LLM", f"chat_json 输入超限，不再重试"
+                               f"(重试={_ctx_retries}): {last_err}")
+                    raise RuntimeError(f"chat_json 输入超限: {last_err}")
+                _ctx_retries += 1
+                log("LLM", f"chat_json 输入超限，重试切换后端 "
+                      f"({_ctx_retries}/{CONTEXT_OVERRIDE_RETRIES}): {last_err}")
+                time.sleep(CONTEXT_OVERRIDE_DELAY)
+                continue
             # content 为空 或 stream 总超时 = reasoning 太长，下次关闭推理重试
             if "content 为空" in err_lower or "stream 总超时" in err_lower:
                 _msg_chars = sum(len(str(m.get("content", ""))) for m in msgs)
