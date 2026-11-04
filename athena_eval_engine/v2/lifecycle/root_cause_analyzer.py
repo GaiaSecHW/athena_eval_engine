@@ -1187,7 +1187,15 @@ class RootCauseAnalyzer:
 
             # ── 闭环反馈：根据 L4 验证结果修正断点 ──
             l4_exists = result.get("l4_knowledge_exists")
-            if l4_exists is False:
+            if l4_exists is None:
+                # 未判定：知识库查询失败 / 问题属环境事实类 / 无可用知识源。
+                # 此时既不能说「知识库有」（不修正 A），也不能说「知识库没有」
+                # （不修正成 C）。保持原断点，并在 L4 结果里标明原因，
+                # 让报告能区分「知识库确实缺失」和「知识库没查成」。
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 未判定（{result.get('summary', '')}），"
+                    f"断点不做修正")
+            elif l4_exists is False:
                 # 知识库没有相关知识 → 责任在知识库（覆盖度缺口）
                 # L2 断点（该查没查，cause_code A）→ L4 断点（查了没得，cause_code C）
                 changed = 0

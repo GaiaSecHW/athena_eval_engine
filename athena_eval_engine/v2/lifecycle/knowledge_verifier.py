@@ -262,13 +262,15 @@ class KnowledgeVerifier:
             log("KB_VERIFY",
                 f"跳过 Athena（环境事实类问题，知识库无法回答）: {env_fact_queries}")
 
+        athena_failed = 0
         if project_id and athena_queries:
-            api_candidates, api_log = self._search_athena_api_logged(
+            api_candidates, api_log, athena_failed = self._search_athena_api_logged(
                 project_id, athena_queries, evaluation_id=evaluation_id,
                 cancel_cb=cancel_cb)
             candidates.extend(api_candidates)
             query_log.extend(api_log)
-            log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选")
+            log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选"
+                             f"（{athena_failed}/{len(athena_queries)} 次查询失败）")
         elif not project_id:
             query_log.append({
                 "step": "Athena API 搜索",
@@ -321,10 +323,18 @@ class KnowledgeVerifier:
             # 全部问题都是环境事实类 → 知识库根本没法回答，未判定（None），
             # 不能返回 False 误报「知识缺失」。
             _all_env_fact = bool(keywords) and not athena_queries
+            # 有查询失败 → 知识库没能给出结果，不是「知识库确实没有」。
+            # 必须返回 None（未判定）：把查询失败当成知识缺失，会把根因错误
+            # 归到「知识覆盖度不足」（cause_code C），掩盖知识库自身的故障。
+            _some_failed = athena_failed > 0
             if _all_env_fact:
                 _l4 = None
                 _summary = ("检索问题均属环境事实类（部署现状），知识库无法回答，"
                             "未做知识存在性判定")
+            elif _some_failed:
+                _l4 = None
+                _summary = (f"知识库查询失败（{athena_failed}/{len(athena_queries)} 次"
+                            f"未返回结果），无法判定知识是否存在")
             elif _searched_api or _searched_wiki:
                 _l4 = False
                 _summary = "知识库中未找到与误报原因相关的知识"
@@ -339,6 +349,7 @@ class KnowledgeVerifier:
                     "athena_api": _searched_api,
                     "wiki_nfs": _searched_wiki,
                 },
+                "failed_queries": athena_failed,
                 "candidate_files": 0,
             }
             result["query_log"] = query_log
@@ -372,6 +383,7 @@ class KnowledgeVerifier:
             "athena_api": bool(project_id) and bool(athena_queries),
             "wiki_nfs": _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT),
         }
+        result["failed_queries"] = athena_failed
         result["candidate_files"] = len(candidates)
         result["query_log"] = query_log
 
@@ -392,19 +404,24 @@ class KnowledgeVerifier:
              GET /api/athena/projects/{project_id}/retrieve/tasks/{task_id} → 轮询结果
         与 agent 使用的端点完全一致，走 auto-ensure 机制。
         """
-        candidates, _ = self._search_athena_api_logged(project_id, keywords)
+        candidates, _, _ = self._search_athena_api_logged(project_id, keywords)
         return candidates
 
     def _search_athena_api_logged(
         self, project_id: str, keywords: list[str],
         evaluation_id: str = "",
         cancel_cb=None,
-    ) -> tuple[list[dict], list[dict]]:
+    ) -> tuple[list[dict], list[dict], int]:
         """Athena API 检索（带查询日志）。
 
         用 /retrieve 端点（与 agent 同款）。并发提交+轮询，单项目并发上限 8。
         跨 case 用 per-project 信号量控制全局并发，避免同一 project_id
         的多个 case 各开 8 线程导致总并发超过 Athena 单项目限制。
+
+        Returns:
+            (candidates, log_entries, failed_query_count)
+            failed_query_count = 提交失败 + 轮询失败 + 检索失败的查询数。
+            调用方据此区分「知识库查过但没有」和「知识库查询本身失败」。
         """
         import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -490,18 +507,20 @@ class KnowledgeVerifier:
         candidates: list[dict] = []
         seen_docs: set[str] = set()
         log_entries: list[dict] = []
+        failed_queries = 0
 
         for kw, task_id, poll_data, error in raw_results:
             if task_id is None:
-                log("KB_VERIFY", f"Athena /retrieve 提交失败 (kw={kw}): {error}")
+                failed_queries += 1
+                log("KB_VERIFY", f"知识库查询失败：提交失败 (kw={kw}): {error}")
                 from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "athena_api_failed", "warning",
-                             f"Athena /retrieve 提交失败 (kw={kw}): {error}")
+                _add_warning(evaluation_id, "kb_verify", "kb_query_failed", "warning",
+                             f"知识库查询失败（提交失败） (kw={kw}): {error}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url}",
                     "detail": f"关键词: {kw}",
-                    "result": f"提交失败（{_ATHENA_RETRIES}次重试后）: {error}",
+                    "result": f"知识库查询失败（提交失败，{_ATHENA_RETRIES}次重试后）: {error}",
                     "count": 0,
                 })
                 continue
@@ -510,28 +529,34 @@ class KnowledgeVerifier:
                         f"/retrieve/tasks/{task_id}")
 
             if error == "timeout" or (error or "").startswith("timeout;"):
-                log("KB_VERIFY", f"Athena /retrieve 轮询超时 (kw={kw}, task_id={task_id}, "
-                                 f"timeout={_RETRIEVE_POLL_TIMEOUT}s, detail={error})")
+                failed_queries += 1
+                log("KB_VERIFY", f"知识库查询失败：{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果 "
+                                 f"(kw={kw}, task_id={task_id}, detail={error})")
                 from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "athena_api_timeout", "warning",
-                             f"Athena /retrieve 轮询超时 (kw={kw}): timeout={_RETRIEVE_POLL_TIMEOUT}s, detail={error}")
+                _add_warning(evaluation_id, "kb_verify", "kb_query_failed", "warning",
+                             f"知识库查询失败（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果） "
+                             f"(kw={kw}): task_id={task_id}, detail={error}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"轮询超时（{_RETRIEVE_POLL_TIMEOUT}s）: {error}",
+                    "result": f"知识库查询失败（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果）: {error}",
                     "count": 0,
                 })
                 continue
 
             if poll_data is None or poll_data.get("status") != "completed":
+                failed_queries += 1
                 err = (poll_data.get("error_summary") or poll_data.get("error_class") or "unknown") if poll_data else "no response"
-                log("KB_VERIFY", f"Athena /retrieve 检索失败 (kw={kw}, task_id={task_id}): {err}")
+                log("KB_VERIFY", f"知识库查询失败：检索失败 (kw={kw}, task_id={task_id}): {err}")
+                from ..infra.pipeline_warnings import add as _add_warning
+                _add_warning(evaluation_id, "kb_verify", "kb_query_failed", "warning",
+                             f"知识库查询失败（检索失败） (kw={kw}): {err}")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"检索失败: {err}",
+                    "result": f"知识库查询失败（检索失败）: {err}",
                     "count": 0,
                 })
                 continue
@@ -593,7 +618,7 @@ class KnowledgeVerifier:
             if len(candidates) >= _MAX_CANDIDATES:
                 break
 
-        return candidates, log_entries
+        return candidates, log_entries, failed_queries
 
     # ── Wiki/记忆 NFS 搜索 ──
 
