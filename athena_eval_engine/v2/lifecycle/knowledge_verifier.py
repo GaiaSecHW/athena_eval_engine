@@ -80,6 +80,12 @@ _RETRIEVE_POLL_INTERVAL = 2  # 轮询间隔（秒）
 _ATHENA_RETRIES = 3          # Athena API 查询重试次数（连接错误重试）
 _ATHENA_RETRY_DELAY = 1      # 重试间隔（秒）
 
+# 首轮 1300s 超时后重新提交，重试 2 轮，每轮只等 120s：
+# 实测部分任务在首轮超时后重新提交能很快完成（重新排队可能命中更空闲的后端），
+# 再等 1300s 收益低且会让单条查询最坏耗时翻倍。
+_RETRIEVE_TIMEOUT_RETRIES = 2      # 超时后重新提交的轮数
+_RETRIEVE_RETRY_POLL_TIMEOUT = 120  # 每轮重试的轮询超时（秒）
+
 # LLM 判定 prompt
 _VERIFY_PROMPT = """你是知识库内容判定专家。
 
@@ -264,9 +270,10 @@ class KnowledgeVerifier:
 
         athena_failed = 0
         athena_timed_out = 0
+        athena_timeout_secs = 0.0
         if project_id and athena_queries:
-            (api_candidates, api_log,
-             athena_failed, athena_timed_out) = self._search_athena_api_logged(
+            (api_candidates, api_log, athena_failed,
+             athena_timed_out, athena_timeout_secs) = self._search_athena_api_logged(
                 project_id, athena_queries, evaluation_id=evaluation_id,
                 cancel_cb=cancel_cb)
             candidates.extend(api_candidates)
@@ -338,8 +345,10 @@ class KnowledgeVerifier:
             elif _some_timeout:
                 # 超时结论 = 知识库没有这个知识（+ 标明是访问超时，不是确认没有）
                 _l4 = False
+                _secs = int(round(athena_timeout_secs))
                 _summary = (f"知识库中没有该知识"
-                            f"（访问 {_RETRIEVE_POLL_TIMEOUT}s 超时，"
+                            f"（访问 {_secs}s 超时，已重试 "
+                            f"{_RETRIEVE_TIMEOUT_RETRIES} 轮，"
                             f"{athena_timed_out}/{len(athena_queries)} 次查询未返回结果）")
             elif _some_failed:
                 _l4 = None
@@ -362,7 +371,7 @@ class KnowledgeVerifier:
                 "failed_queries": athena_failed,
                 # 超时标记：上层据此在报告里区分「确认没有」与「查询超时」
                 "query_timeout": _some_timeout,
-                "query_timeout_secs": _RETRIEVE_POLL_TIMEOUT if _some_timeout else 0,
+                "query_timeout_secs": int(round(athena_timeout_secs)) if _some_timeout else 0,
                 "timed_out_queries": athena_timed_out,
                 "candidate_files": 0,
             }
@@ -400,7 +409,7 @@ class KnowledgeVerifier:
         result["failed_queries"] = athena_failed
         result["query_timeout"] = athena_timed_out > 0
         result["query_timeout_secs"] = (
-            _RETRIEVE_POLL_TIMEOUT if athena_timed_out > 0 else 0)
+            int(round(athena_timeout_secs)) if athena_timed_out > 0 else 0)
         result["timed_out_queries"] = athena_timed_out
         result["candidate_files"] = len(candidates)
         result["query_log"] = query_log
@@ -422,24 +431,28 @@ class KnowledgeVerifier:
              GET /api/athena/projects/{project_id}/retrieve/tasks/{task_id} → 轮询结果
         与 agent 使用的端点完全一致，走 auto-ensure 机制。
         """
-        candidates, _, _, _ = self._search_athena_api_logged(project_id, keywords)
+        candidates, _, _, _, _ = self._search_athena_api_logged(project_id, keywords)
         return candidates
 
     def _search_athena_api_logged(
         self, project_id: str, keywords: list[str],
         evaluation_id: str = "",
         cancel_cb=None,
-    ) -> tuple[list[dict], list[dict], int, int]:
+    ) -> tuple[list[dict], list[dict], int, int, float]:
         """Athena API 检索（带查询日志）。
 
         用 /retrieve 端点（与 agent 同款）。并发提交+轮询，单项目并发上限 8。
         跨 case 用 per-project 信号量控制全局并发，避免同一 project_id
         的多个 case 各开 8 线程导致总并发超过 Athena 单项目限制。
 
+        首轮轮询 1300s 超时后重新提交，最多重试 2 轮、每轮只等 120s。
+
         Returns:
-            (candidates, log_entries, failed_query_count, timed_out_query_count)
+            (candidates, log_entries, failed_query_count,
+             timed_out_query_count, timed_out_secs)
             failed_query_count = 提交失败 + 检索失败（计入数据质量告警）。
             timed_out_query_count = 轮询超时（按「未找到知识」处理，不计告警）。
+            timed_out_secs = 超时查询的累计等待时长（取最长的一条）。
         """
         import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -453,66 +466,103 @@ class KnowledgeVerifier:
                 sem = threading.Semaphore(_ATHENA_MAX_CONCURRENCY)
                 _project_sems[project_id] = sem
 
-        def _submit_and_poll(kw: str) -> tuple[str, str | None, dict | None, str | None]:
-            """提交 → 轮询到完成 → 返回。整个生命周期持有 per-project 信号量。"""
-            sem.acquire()
-            try:
-                # 提交
-                task_id = None
-                last_err = None
-                for attempt in range(_ATHENA_RETRIES):
-                    try:
-                        payload = json.dumps({"message": kw}).encode("utf-8")
-                        req = urllib.request.Request(
-                            submit_url,
-                            data=payload,
-                            headers={"Content-Type": "application/json"},
-                            method="POST",
-                        )
-                        resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                        data = json.loads(resp.read())
-                        task_id = data.get("retrieval_task_id")
-                        if task_id:
-                            break
-                    except Exception as e:
-                        last_err = e
-                        if attempt < _ATHENA_RETRIES - 1:
-                            _time.sleep(_ATHENA_RETRY_DELAY)
-                if not task_id:
-                    return kw, None, None, str(last_err) if last_err else "unknown"
+        def _submit_once(kw: str) -> tuple[str | None, str | None]:
+            """提交一次检索任务，返回 (task_id, error)。"""
+            last_err = None
+            for attempt in range(_ATHENA_RETRIES):
+                try:
+                    payload = json.dumps({"message": kw}).encode("utf-8")
+                    req = urllib.request.Request(
+                        submit_url,
+                        data=payload,
+                        headers={"Content-Type": "application/json"},
+                        method="POST",
+                    )
+                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
+                    data = json.loads(resp.read())
+                    task_id = data.get("retrieval_task_id")
+                    if task_id:
+                        return task_id, None
+                except Exception as e:
+                    last_err = e
+                    if attempt < _ATHENA_RETRIES - 1:
+                        _time.sleep(_ATHENA_RETRY_DELAY)
+            return None, str(last_err) if last_err else "unknown"
 
-                # 轮询到完成或超时
-                poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
-                            f"/retrieve/tasks/{task_id}")
-                poll_start = _time.time()
-                _last_poll_err = None
-                while _time.time() - poll_start < _RETRIEVE_POLL_TIMEOUT:
+        def _poll_once(kw: str, task_id: str, timeout: float):
+            """轮询单个任务，返回 (poll_data, error)。"""
+            poll_url = (f"{_ATHENA_BASE}/api/athena/projects/{project_id}"
+                        f"/retrieve/tasks/{task_id}")
+            poll_start = _time.time()
+            _last_poll_err = None
+            while _time.time() - poll_start < timeout:
+                if cancel_cb:
+                    cancel_cb()
+                try:
+                    req = urllib.request.Request(poll_url)
+                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
+                    poll_data = json.loads(resp.read())
+                    status = poll_data.get("status", "")
+                    if status in ("completed", "failed"):
+                        return poll_data, None
+                except Exception as e:
+                    # 轮询期间的瞬时错误继续重试，但要记录，不能静默吞掉
+                    _last_poll_err = e
+                    log("KB_VERIFY",
+                        f"Athena 轮询异常 (kw={kw}, task_id={task_id}): "
+                        f"{type(e).__name__}: {e}")
+                _time.sleep(_RETRIEVE_POLL_INTERVAL)
+            # 超时：带上最后一次轮询错误，便于区分「服务慢」和「持续报错」
+            if _last_poll_err is not None:
+                return None, f"timeout; last poll error: {_last_poll_err}"
+            return None, "timeout"
+
+        def _submit_and_poll(kw: str) -> tuple[str, str | None, dict | None, str | None, float]:
+            """提交 → 轮询到完成 → 返回。整个生命周期持有 per-project 信号量。
+
+            首轮轮询 1300s 超时后重新提交，最多重试 2 轮、每轮只等 120s。
+            返回 (kw, task_id, poll_data, error, elapsed_secs)。
+            """
+            sem.acquire()
+            _start = _time.time()
+            try:
+                task_id, err = _submit_once(kw)
+                if not task_id:
+                    return kw, None, None, err, _time.time() - _start
+
+                poll_data, err = _poll_once(kw, task_id, _RETRIEVE_POLL_TIMEOUT)
+                if poll_data is not None:
+                    return kw, task_id, poll_data, None, _time.time() - _start
+
+                # 首轮超时 → 重新提交重试（每轮只等 120s）
+                for retry_i in range(_RETRIEVE_TIMEOUT_RETRIES):
                     if cancel_cb:
                         cancel_cb()
-                    try:
-                        req = urllib.request.Request(poll_url)
-                        resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                        poll_data = json.loads(resp.read())
-                        status = poll_data.get("status", "")
-                        if status in ("completed", "failed"):
-                            return kw, task_id, poll_data, None
-                    except Exception as e:
-                        # 轮询期间的瞬时错误继续重试，但要记录，不能静默吞掉
-                        _last_poll_err = e
+                    log("KB_VERIFY",
+                        f"Athena 首轮 {_RETRIEVE_POLL_TIMEOUT}s 超时，"
+                        f"重新提交重试 {retry_i + 1}/{_RETRIEVE_TIMEOUT_RETRIES} "
+                        f"(kw={kw}, 本轮等待 {_RETRIEVE_RETRY_POLL_TIMEOUT}s)")
+                    retry_tid, submit_err = _submit_once(kw)
+                    if not retry_tid:
+                        err = submit_err or err
+                        continue
+                    poll_data, retry_err = _poll_once(
+                        kw, retry_tid, _RETRIEVE_RETRY_POLL_TIMEOUT)
+                    if poll_data is not None:
                         log("KB_VERIFY",
-                            f"Athena 轮询异常 (kw={kw}, task_id={task_id}): "
-                            f"{type(e).__name__}: {e}")
-                    _time.sleep(_RETRIEVE_POLL_INTERVAL)
-                # 超时：带上最后一次轮询错误，便于区分「服务慢」和「持续报错」
-                if _last_poll_err is not None:
-                    return kw, task_id, None, f"timeout; last poll error: {_last_poll_err}"
-                return kw, task_id, None, "timeout"
+                            f"Athena 重试 {retry_i + 1} 成功 "
+                            f"(kw={kw}, task_id={retry_tid})")
+                        return kw, retry_tid, poll_data, None, _time.time() - _start
+                    err = retry_err or err
+
+                # 首轮 + 全部重试都超时
+                return kw, task_id, None, err or "timeout", _time.time() - _start
             finally:
                 sem.release()
 
         # 并发提交+轮询，单 case 内并发上限 8，跨 case 也受 per-project 信号量约束
         max_workers = min(len(keywords), _ATHENA_MAX_CONCURRENCY)
-        raw_results: list[tuple[str, str | None, dict | None, str | None]] = []
+        raw_results: list[tuple[str, str | None, dict | None, str | None, float]] = []
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
             futures = {executor.submit(_submit_and_poll, kw): kw for kw in keywords}
             for fut in as_completed(futures):
@@ -527,8 +577,10 @@ class KnowledgeVerifier:
         log_entries: list[dict] = []
         failed_queries = 0
         timed_out_queries = 0
+        # 超时查询的实际累计等待时长（首轮 1300s + 重试轮次）
+        timed_out_secs = 0.0
 
-        for kw, task_id, poll_data, error in raw_results:
+        for kw, task_id, poll_data, error, elapsed in raw_results:
             if task_id is None:
                 failed_queries += 1
                 log("KB_VERIFY", f"知识库查询失败：提交失败 (kw={kw}): {error}")
@@ -552,15 +604,19 @@ class KnowledgeVerifier:
                 # 告警、不降级评测状态；在 query_log 与 result.query_timeout
                 # 里标明是超时，让报告读者能区分「确认没有」与「查询超时」。
                 timed_out_queries += 1
-                log("KB_VERIFY", f"知识库查询超时：{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果，"
+                timed_out_secs = max(timed_out_secs, elapsed)
+                log("KB_VERIFY", f"知识库查询超时：累计等待 {elapsed:.0f}s "
+                                 f"（首轮 {_RETRIEVE_POLL_TIMEOUT}s + "
+                                 f"{_RETRIEVE_TIMEOUT_RETRIES} 轮 × "
+                                 f"{_RETRIEVE_RETRY_POLL_TIMEOUT}s）仍未返回，"
                                  f"结论记为「知识库中没有该知识」"
                                  f" (kw={kw}, task_id={task_id}, detail={error})")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"知识库中没有该知识（访问 {_RETRIEVE_POLL_TIMEOUT}s 超时，"
-                              f"未返回结果）: {error}",
+                    "result": f"知识库中没有该知识（访问 {elapsed:.0f}s 超时，"
+                              f"已重试 {_RETRIEVE_TIMEOUT_RETRIES} 轮，未返回结果）: {error}",
                     "count": 0,
                 })
                 continue
@@ -638,7 +694,8 @@ class KnowledgeVerifier:
             if len(candidates) >= _MAX_CANDIDATES:
                 break
 
-        return candidates, log_entries, failed_queries, timed_out_queries
+        return (candidates, log_entries, failed_queries,
+                timed_out_queries, timed_out_secs)
 
     # ── Wiki/记忆 NFS 搜索 ──
 
