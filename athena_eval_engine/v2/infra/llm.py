@@ -104,9 +104,11 @@ def clamp_max_tokens_from_error(err, current_max_tokens: int | None):
     return clamped
 
 
-# 输入 + 输出 + 该余量必须 ≤ 上下文上限。网关自身还有 safety buffer，
-# 这里再留一点避免边界抖动。
-_MAX_TOKENS_SAFETY_MARGIN = 2048
+# 输入 + 输出 + 该余量必须 ≤ 上下文上限。
+# 网关自身在 prompt 编码后还会预留 4096 safety-buffer（报错原文：
+# "the proxy reserves 4096 safety-buffer tokens after ... prompt encoding"），
+# 所以这里必须 > 4096，再留一倍余量避免边界抖动。
+_MAX_TOKENS_SAFETY_MARGIN = 8192
 
 
 def _clamp_max_tokens_for_input(messages, requested: int) -> int:
@@ -119,8 +121,9 @@ def _clamp_max_tokens_for_input(messages, requested: int) -> int:
        26 万 token，被 209715 卡住截断（finish_reason=length）。
        此时应放宽到 available，让模型能写完整结果。
 
-    即：max_tokens 取 available（不再被 20% 的 requested 限制），
-    但不超过上下文的一半，避免极端值。
+    requested 仍作为上限参与计算：调用方（或 clamp_max_tokens_from_error
+    按后端报错收缩后的值）可以主动压低 max_tokens，此时不能被重新放大，
+    否则重试会一直用同一个值反复失败。
     """
     max_ctx = _max_context_tokens
     if not max_ctx:
@@ -136,6 +139,9 @@ def _clamp_max_tokens_for_input(messages, requested: int) -> int:
         # 输入已经吃满上下文：返回最小值，让网关报输入超限，
         # 由 chat/chat_json 的重试换后端逻辑处理
         return 1
+    if requested:
+        # 调用方给的上限更严时以它为准（不放大）
+        available = min(available, requested)
     # 输出不超过上下文的一半（防止把整窗都留给输出导致输入被挤压）
     return max(min(available, max_ctx // 2), 1)
 
