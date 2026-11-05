@@ -336,9 +336,11 @@ class KnowledgeVerifier:
                 _summary = ("检索问题均属环境事实类（部署现状），知识库无法回答，"
                             "未做知识存在性判定")
             elif _some_timeout:
+                # 超时结论 = 知识库没有这个知识（+ 标明是访问超时，不是确认没有）
                 _l4 = False
-                _summary = (f"知识库查询超时（{athena_timed_out}/{len(athena_queries)} 次"
-                            f"未返回结果），按未找到知识处理")
+                _summary = (f"知识库中没有该知识"
+                            f"（访问 {_RETRIEVE_POLL_TIMEOUT}s 超时，"
+                            f"{athena_timed_out}/{len(athena_queries)} 次查询未返回结果）")
             elif _some_failed:
                 _l4 = None
                 _summary = (f"知识库查询失败（{athena_failed}/{len(athena_queries)} 次"
@@ -360,6 +362,7 @@ class KnowledgeVerifier:
                 "failed_queries": athena_failed,
                 # 超时标记：上层据此在报告里区分「确认没有」与「查询超时」
                 "query_timeout": _some_timeout,
+                "query_timeout_secs": _RETRIEVE_POLL_TIMEOUT if _some_timeout else 0,
                 "timed_out_queries": athena_timed_out,
                 "candidate_files": 0,
             }
@@ -396,6 +399,8 @@ class KnowledgeVerifier:
         }
         result["failed_queries"] = athena_failed
         result["query_timeout"] = athena_timed_out > 0
+        result["query_timeout_secs"] = (
+            _RETRIEVE_POLL_TIMEOUT if athena_timed_out > 0 else 0)
         result["timed_out_queries"] = athena_timed_out
         result["candidate_files"] = len(candidates)
         result["query_log"] = query_log
@@ -548,13 +553,14 @@ class KnowledgeVerifier:
                 # 里标明是超时，让报告读者能区分「确认没有」与「查询超时」。
                 timed_out_queries += 1
                 log("KB_VERIFY", f"知识库查询超时：{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果，"
-                                 f"按未找到知识处理 (kw={kw}, task_id={task_id}, detail={error})")
+                                 f"结论记为「知识库中没有该知识」"
+                                 f" (kw={kw}, task_id={task_id}, detail={error})")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"知识库查询超时（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果），"
-                              f"按未找到知识处理: {error}",
+                    "result": f"知识库中没有该知识（访问 {_RETRIEVE_POLL_TIMEOUT}s 超时，"
+                              f"未返回结果）: {error}",
                     "count": 0,
                 })
                 continue

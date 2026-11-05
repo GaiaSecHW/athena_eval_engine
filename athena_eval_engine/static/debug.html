@@ -1404,7 +1404,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `<tr>`;
       html += `<td style="font-family:monospace;font-size:12px">${esc(bp.session_id || "")}</td>`;
       html += `<td style="color:${bpColor};font-weight:bold">${esc(lvl)}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold">${esc(code)}${bp.query_timeout ? '<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库查询超时，按未找到知识处理">（超时）</span>' : ''}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold">${esc(code)}${bp.query_timeout ? `<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库中没有该知识（访问超时）">（${bp.query_timeout_secs ? `访问 ${bp.query_timeout_secs}s 超时` : "访问超时"}）</span>` : ''}</td>`;
       html += `<td>${bp.l1_need === true ? "✓" : bp.l1_need === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l2_initiated === true ? "✓" : bp.l2_initiated === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l3_accurate === true ? "✓" : bp.l3_accurate === false ? "✗" : "—"}</td>`;
@@ -1597,9 +1597,11 @@ RENDERERS.resolving = function(el, data) {
         if (bp.session_id === "hypothesis" || bp.session_id === "merge") continue;
         const code = bp.cause_code || "—";
         const bpColor = code !== "—" ? "#e74c3c" : "#888";
-        // 知识库查询超时：L4 按「未找到知识」处理，但标明是超时导致
+        // 知识库查询超时：结论是「知识库没有该知识」，但要标明是访问超时导致
+        const _toSecs = bp.query_timeout_secs;
+        const _toText = _toSecs ? `访问 ${_toSecs}s 超时` : "访问超时";
         const codeLabel = bp.query_timeout
-          ? `${code}<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库查询超时，按未找到知识处理">（超时）</span>`
+          ? `${code}<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库中没有该知识（${_toText}）">（${_toText}）</span>`
           : code;
         const sid = bp.session_id || "";
         // 同根因合并：主 session + 被合并的其余 session

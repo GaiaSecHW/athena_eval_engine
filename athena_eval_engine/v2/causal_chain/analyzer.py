@@ -386,6 +386,7 @@ class CausalChainAnalyzer:
                         # 知识库查询超时：L4 按「未找到知识」处理，但需标明
                         # 是查询超时导致的，不是知识库确认过没有
                         "query_timeout": bool(bp.get("query_timeout")),
+                        "query_timeout_secs": bp.get("query_timeout_secs") or 0,
                         "root_cause": chain_data.get("root_cause", {}),
                         # 只取断点自身携带的修复建议（合成断点带假设的
                         # fix_suggestion）。不回退 chain 级 fix_suggestion——
@@ -730,6 +731,7 @@ class CausalChainAnalyzer:
                     "evidence": evidence,
                     # 知识库查询超时（L4 按未找到知识处理，但需标明是超时）
                     "query_timeout": bool(rec.get("query_timeout")),
+                    "query_timeout_secs": rec.get("query_timeout_secs") or 0,
                 }
                 # 同根因合并：保留被合并的其余 session，供前端展示"等 N 个 session"
                 if rec.get("merged_count"):

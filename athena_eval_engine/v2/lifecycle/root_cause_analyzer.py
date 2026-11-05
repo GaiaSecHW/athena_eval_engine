@@ -1339,7 +1339,11 @@ class RootCauseAnalyzer:
                 # 查询超时也按「没有该知识」处理，但带上 query_timeout 标记，
                 # 让报告读者知道这是查询没拿到结果，不是知识库确认过没有。
                 _timed_out = bool(result.get("query_timeout"))
-                _timeout_note = "（查询超时，按未找到知识处理）" if _timed_out else ""
+                _timeout_secs = result.get("query_timeout_secs")
+                _timeout_note = (
+                    f"（知识库访问 {_timeout_secs}s 超时，未返回结果）"
+                    if _timed_out and _timeout_secs else
+                    ("（知识库访问超时，未返回结果）" if _timed_out else ""))
                 changed = 0
                 for bp in all_breakpoints:
                     if bp.get("breakpoint") == "L2" \
@@ -1349,6 +1353,7 @@ class RootCauseAnalyzer:
                         bp["l4_exists"] = False
                         if _timed_out:
                             bp["query_timeout"] = True
+                            bp["query_timeout_secs"] = _timeout_secs
                         # 改写 query_content 消除矛盾：C（查了没得）的语义是
                         # 知识库缺知识，不能保留 L2 的"agent 未发起访问"表述。
                         # 提取"推理任务需要什么知识"部分，改为知识库缺口的描述。
