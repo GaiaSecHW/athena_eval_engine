@@ -391,7 +391,60 @@ class CausalChainAnalyzer:
                         "fix_suggestion": bp.get("fix_suggestion") or [],
                     })
 
-        return flat
+        return self._merge_same_root_cause(flat)
+
+    # ── 同根因断点合并 ──
+
+    @staticmethod
+    def _merge_same_root_cause(flat: list[dict]) -> list[dict]:
+        """合并「同一假设 + 同 cause + 同断点级别」的多条断点。
+
+        一个 case 的多条 session 常各自产出断点，但若它们支撑的是**同一个
+        假设**（假设即问题，断点即证据），说明是同一根因在多个 session 上的
+        重复取证，展示时应合并为一条，避免同一根因被计成 4 条断点。
+
+        只按 (cause_code, breakpoint) 分组是不够的——不同根因可能恰好同为
+        L8/H（如"未证明前置条件"与"用单元测试替代真实接口"），会被误合。
+        必须带上支撑假设集合才能区分。
+
+        合并后保留第一条为主记录，其余断点的 session 明细收进
+        ``merged_sessions``（不丢证据）。
+        无假设引用（孤儿）或引用假设集合不同的断点不合并。
+
+        Args:
+            flat: 已过滤的扁平断点记录
+
+        Returns:
+            合并后的扁平断点记录（保持原顺序）
+        """
+        groups: dict[tuple, list[int]] = defaultdict(list)
+        for idx, rec in enumerate(flat):
+            hyps = tuple(sorted(rec.get("supports_hypotheses") or []))
+            if not hyps:
+                continue  # 无假设引用 → 孤儿，不参与合并
+            key = (
+                rec.get("case_id", ""),
+                rec.get("chain_type", ""),
+                rec.get("cause_code", ""),
+                rec.get("breakpoint", ""),
+                hyps,
+            )
+            groups[key].append(idx)
+
+        drop: set[int] = set()
+        for key, idxs in groups.items():
+            if len(idxs) < 2:
+                continue
+            head = flat[idxs[0]]
+            merged = [{
+                "session_id": flat[i].get("session_id", ""),
+                "query_content": flat[i].get("query_content", ""),
+            } for i in idxs[1:]]
+            head["merged_sessions"] = merged
+            head["merged_count"] = len(idxs)
+            drop.update(idxs[1:])
+
+        return [rec for i, rec in enumerate(flat) if i not in drop]
 
     # ── 交叉归因矩阵 ──
 
@@ -662,7 +715,7 @@ class CausalChainAnalyzer:
 
                 evidence = self._build_evidence(rec)
 
-                breakpoints.append({
+                bp_entry = {
                     "agent_type": rec.get("agent_type", ""),
                     "chain_type": rec.get("chain_type", ""),
                     "break_level": level,
@@ -672,7 +725,12 @@ class CausalChainAnalyzer:
                     "supports_hypotheses": rec.get("supports_hypotheses") or [],
                     "fix_suggestion": rec.get("fix_suggestion") or [],
                     "evidence": evidence,
-                })
+                }
+                # 同根因合并：保留被合并的其余 session，供前端展示"等 N 个 session"
+                if rec.get("merged_count"):
+                    bp_entry["merged_count"] = rec["merged_count"]
+                    bp_entry["merged_sessions"] = rec.get("merged_sessions") or []
+                breakpoints.append(bp_entry)
 
             if not vuln_title:
                 vuln_title = next(
