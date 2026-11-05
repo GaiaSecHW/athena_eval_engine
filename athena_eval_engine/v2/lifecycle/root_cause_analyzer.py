@@ -1336,6 +1336,10 @@ class RootCauseAnalyzer:
             elif l4_exists is False:
                 # 知识库没有相关知识 → 责任在知识库（覆盖度缺口）
                 # L2 断点（该查没查，cause_code A）→ L4 断点（查了没得，cause_code C）
+                # 查询超时也按「没有该知识」处理，但带上 query_timeout 标记，
+                # 让报告读者知道这是查询没拿到结果，不是知识库确认过没有。
+                _timed_out = bool(result.get("query_timeout"))
+                _timeout_note = "（查询超时，按未找到知识处理）" if _timed_out else ""
                 changed = 0
                 for bp in all_breakpoints:
                     if bp.get("breakpoint") == "L2" \
@@ -1343,6 +1347,8 @@ class RootCauseAnalyzer:
                         bp["breakpoint"] = "L4"
                         bp["cause_code"] = "C"
                         bp["l4_exists"] = False
+                        if _timed_out:
+                            bp["query_timeout"] = True
                         # 改写 query_content 消除矛盾：C（查了没得）的语义是
                         # 知识库缺知识，不能保留 L2 的"agent 未发起访问"表述。
                         # 提取"推理任务需要什么知识"部分，改为知识库缺口的描述。
@@ -1360,7 +1366,7 @@ class RootCauseAnalyzer:
                         bp["query_content"] = (
                             f"知识库缺少该知识（推理任务需要：{need_part}）"
                             f" | L4 独立验证（由测评系统代为发起知识库查询）："
-                            f"知识库中未找到能消减此误报的知识"
+                            f"知识库中未找到能消减此误报的知识{_timeout_note}"
                             f"（{result.get('summary', '')}）"
                         )
                         changed += 1
@@ -1375,13 +1381,15 @@ class RootCauseAnalyzer:
                 for h in (hypotheses or []):
                     if h.get("cause_code") == "A":
                         h["cause_code"] = "C"
+                        if _timed_out:
+                            h["query_timeout"] = True
                         old_evid = h.get("evidence", "")
                         h["evidence"] = (
                             f"{old_evid} | L4 独立验证（由测评系统代为发起"
                             f"知识库查询）：知识库中未找到"
-                            f"能消减此误报的知识"
+                            f"能消减此误报的知识{_timeout_note}"
                             f"（{result.get('summary', '')}），"
-                            f"知识确实缺失，责任在知识库（查了没得）"
+                            f"按知识缺失处理，责任在知识库（查了没得）"
                         )
                         # 修正 fix_suggestion：若 target=agent_prompt（改 prompt 增加
                         # 查询意识），但知识确实缺失，应改为补知识

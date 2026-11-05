@@ -263,14 +263,17 @@ class KnowledgeVerifier:
                 f"跳过 Athena（环境事实类问题，知识库无法回答）: {env_fact_queries}")
 
         athena_failed = 0
+        athena_timed_out = 0
         if project_id and athena_queries:
-            api_candidates, api_log, athena_failed = self._search_athena_api_logged(
+            (api_candidates, api_log,
+             athena_failed, athena_timed_out) = self._search_athena_api_logged(
                 project_id, athena_queries, evaluation_id=evaluation_id,
                 cancel_cb=cancel_cb)
             candidates.extend(api_candidates)
             query_log.extend(api_log)
             log("KB_VERIFY", f"Athena API: {len(api_candidates)} 候选"
-                             f"（{athena_failed}/{len(athena_queries)} 次查询失败）")
+                             f"（失败 {athena_failed}，超时 {athena_timed_out}"
+                             f"/{len(athena_queries)}）")
         elif not project_id:
             query_log.append({
                 "step": "Athena API 搜索",
@@ -323,14 +326,19 @@ class KnowledgeVerifier:
             # 全部问题都是环境事实类 → 知识库根本没法回答，未判定（None），
             # 不能返回 False 误报「知识缺失」。
             _all_env_fact = bool(keywords) and not athena_queries
-            # 有查询失败 → 知识库没能给出结果，不是「知识库确实没有」。
-            # 必须返回 None（未判定）：把查询失败当成知识缺失，会把根因错误
-            # 归到「知识覆盖度不足」（cause_code C），掩盖知识库自身的故障。
+            # 超时 → 按「知识库没有该知识」处理（l4=False），并带 query_timeout
+            # 标记，让读者知道这是查询没拿到结果，不是知识库确认过没有。
+            # 其他失败（提交失败/检索失败）仍返回 None（未判定）并计入告警。
+            _some_timeout = athena_timed_out > 0
             _some_failed = athena_failed > 0
             if _all_env_fact:
                 _l4 = None
                 _summary = ("检索问题均属环境事实类（部署现状），知识库无法回答，"
                             "未做知识存在性判定")
+            elif _some_timeout:
+                _l4 = False
+                _summary = (f"知识库查询超时（{athena_timed_out}/{len(athena_queries)} 次"
+                            f"未返回结果），按未找到知识处理")
             elif _some_failed:
                 _l4 = None
                 _summary = (f"知识库查询失败（{athena_failed}/{len(athena_queries)} 次"
@@ -350,6 +358,9 @@ class KnowledgeVerifier:
                     "wiki_nfs": _searched_wiki,
                 },
                 "failed_queries": athena_failed,
+                # 超时标记：上层据此在报告里区分「确认没有」与「查询超时」
+                "query_timeout": _some_timeout,
+                "timed_out_queries": athena_timed_out,
                 "candidate_files": 0,
             }
             result["query_log"] = query_log
@@ -384,6 +395,8 @@ class KnowledgeVerifier:
             "wiki_nfs": _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT),
         }
         result["failed_queries"] = athena_failed
+        result["query_timeout"] = athena_timed_out > 0
+        result["timed_out_queries"] = athena_timed_out
         result["candidate_files"] = len(candidates)
         result["query_log"] = query_log
 
@@ -404,14 +417,14 @@ class KnowledgeVerifier:
              GET /api/athena/projects/{project_id}/retrieve/tasks/{task_id} → 轮询结果
         与 agent 使用的端点完全一致，走 auto-ensure 机制。
         """
-        candidates, _, _ = self._search_athena_api_logged(project_id, keywords)
+        candidates, _, _, _ = self._search_athena_api_logged(project_id, keywords)
         return candidates
 
     def _search_athena_api_logged(
         self, project_id: str, keywords: list[str],
         evaluation_id: str = "",
         cancel_cb=None,
-    ) -> tuple[list[dict], list[dict], int]:
+    ) -> tuple[list[dict], list[dict], int, int]:
         """Athena API 检索（带查询日志）。
 
         用 /retrieve 端点（与 agent 同款）。并发提交+轮询，单项目并发上限 8。
@@ -419,9 +432,9 @@ class KnowledgeVerifier:
         的多个 case 各开 8 线程导致总并发超过 Athena 单项目限制。
 
         Returns:
-            (candidates, log_entries, failed_query_count)
-            failed_query_count = 提交失败 + 轮询失败 + 检索失败的查询数。
-            调用方据此区分「知识库查过但没有」和「知识库查询本身失败」。
+            (candidates, log_entries, failed_query_count, timed_out_query_count)
+            failed_query_count = 提交失败 + 检索失败（计入数据质量告警）。
+            timed_out_query_count = 轮询超时（按「未找到知识」处理，不计告警）。
         """
         import time as _time
         from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -508,6 +521,7 @@ class KnowledgeVerifier:
         seen_docs: set[str] = set()
         log_entries: list[dict] = []
         failed_queries = 0
+        timed_out_queries = 0
 
         for kw, task_id, poll_data, error in raw_results:
             if task_id is None:
@@ -529,18 +543,18 @@ class KnowledgeVerifier:
                         f"/retrieve/tasks/{task_id}")
 
             if error == "timeout" or (error or "").startswith("timeout;"):
-                failed_queries += 1
-                log("KB_VERIFY", f"知识库查询失败：{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果 "
-                                 f"(kw={kw}, task_id={task_id}, detail={error})")
-                from ..infra.pipeline_warnings import add as _add_warning
-                _add_warning(evaluation_id, "kb_verify", "kb_query_failed", "warning",
-                             f"知识库查询失败（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果） "
-                             f"(kw={kw}): task_id={task_id}, detail={error}")
+                # 超时按「知识库没有该知识」处理（l4=False），不计入数据质量
+                # 告警、不降级评测状态；在 query_log 与 result.query_timeout
+                # 里标明是超时，让报告读者能区分「确认没有」与「查询超时」。
+                timed_out_queries += 1
+                log("KB_VERIFY", f"知识库查询超时：{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果，"
+                                 f"按未找到知识处理 (kw={kw}, task_id={task_id}, detail={error})")
                 log_entries.append({
                     "step": "Athena API 搜索",
                     "action": f"POST {submit_url} → GET {poll_url}",
                     "detail": f"关键词: {kw}, task_id={task_id}",
-                    "result": f"知识库查询失败（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果）: {error}",
+                    "result": f"知识库查询超时（{_RETRIEVE_POLL_TIMEOUT}s 内未返回结果），"
+                              f"按未找到知识处理: {error}",
                     "count": 0,
                 })
                 continue
@@ -618,7 +632,7 @@ class KnowledgeVerifier:
             if len(candidates) >= _MAX_CANDIDATES:
                 break
 
-        return candidates, log_entries, failed_queries
+        return candidates, log_entries, failed_queries, timed_out_queries
 
     # ── Wiki/记忆 NFS 搜索 ──
 
