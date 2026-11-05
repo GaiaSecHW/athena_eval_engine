@@ -111,6 +111,15 @@ def clamp_max_tokens_from_error(err, current_max_tokens: int | None):
 _MAX_TOKENS_SAFETY_MARGIN = 8192
 
 
+def _count_input_tokens(messages) -> int:
+    """统计 messages 的输入 token 数（本地 tokenizer）。"""
+    try:
+        from .token_counter import count_tokens
+        return sum(count_tokens(str(m.get("content", ""))) for m in messages)
+    except Exception:
+        return 0
+
+
 def _clamp_max_tokens_for_input(messages, requested: int) -> int:
     """按「上下文上限 - 实际输入 - 余量」给出本次可用的输出空间。
 
@@ -181,6 +190,19 @@ _thread_state: dict[int, int] = {}
 _thread_futures: dict[int, Future] = {}
 # watchdog 只清理已结束的线程（is_alive()=False），不清理活线程。
 # LLM 自身有 SSE 超时保护（FIRST_TOKEN_TIMEOUT=350s + STREAM_TIMEOUT=600s）。
+
+
+class LLMOutputTruncatedError(RuntimeError):
+    """输出被 max_tokens 截断（finish_reason=length）。
+
+    这不是「调用失败」，而是「本次输入对应的输出写不完」——
+    重试同样的输入只会重复截断。调用方应把输入切得更小后重试
+    （如 root_cause_analyzer 的 session 压缩按事件再二分）。
+    """
+
+    def __init__(self, message: str, content_len: int = 0):
+        super().__init__(message)
+        self.content_len = content_len
 
 
 class _DynamicGate:
@@ -752,12 +774,20 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         _payload["thinking"] = {"type": "disabled"}
         _payload["chat_template_kwargs"] = {"enable_thinking": False}
         _payload["enable_thinking"] = False
+    _input_tokens = 0
     if max_tokens is not None:
         # 动态收缩：实际可用输出 = 上下文上限 - 输入 token - 安全余量。
         # 固定的 max_tokens（如按 20% 算出的 209715）在输入很大时会超过
         # 实际可用空间，网关按该值截断输出（finish_reason=length）。
+        _requested_max_tokens = max_tokens
+        _input_tokens = _count_input_tokens(messages)
         max_tokens = _clamp_max_tokens_for_input(messages, max_tokens)
         _payload["max_tokens"] = max_tokens
+        # 诊断日志：定位 finish_reason=length 时必须知道三个数
+        # （输入 token / 实际 max_tokens / 全局上下文上限）
+        log("LLM", f"请求参数 input_tokens={_input_tokens} "
+                   f"max_tokens={max_tokens}（原 {_requested_max_tokens}）"
+                   f" max_ctx={_max_context_tokens}")
     body = json.dumps(_payload).encode("utf-8")
 
     headers = {
@@ -860,6 +890,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         content_parts = []
         reasoning_parts = []
         finish_reason = None
+        _last_usage = None  # 后端返回的 usage（诊断 finish_reason=length 用）
         _last_content_ts = time.time()  # 从 Phase 2 开始计时，keepalive 不重置
         _stream_start_ts = None  # 首 token 到达时间，用于总超时
         STREAM_TOTAL_TIMEOUT = 1800  # 首 token 后 30 分钟内必须完成全部输出
@@ -919,6 +950,7 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
             # 提取 token 用量（usage 通常在最后一个 chunk，choices 为空）
             usage = chunk.get("usage")
             if usage:
+                _last_usage = usage
                 with _token_lock:
                     _token_usage["prompt_tokens"] += usage.get("prompt_tokens", 0)
                     _token_usage["completion_tokens"] += usage.get("completion_tokens", 0)
@@ -947,7 +979,14 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
 
         if finish_reason and finish_reason != "stop":
             _rl = len("".join(reasoning_parts)) if reasoning_parts else 0
-            log("LLM", f"非正常结束 finish_reason={finish_reason} content_len={len(content)} reasoning_len={_rl} max_tokens={max_tokens}")
+            _u = _last_usage or {}
+            log("LLM", f"非正常结束 finish_reason={finish_reason} "
+                       f"content_len={len(content)} reasoning_len={_rl} "
+                       f"max_tokens={max_tokens} "
+                       f"input_tokens={_input_tokens} "
+                       f"prompt_tokens={_u.get('prompt_tokens')} "
+                       f"completion_tokens={_u.get('completion_tokens')} "
+                       f"total_tokens={_u.get('total_tokens')}")
 
         if content:
             _ft = f"first_token={_first_token_ts - _req_ts:.1f}s" if _first_token_ts else "first_token=N/A"
@@ -1457,9 +1496,15 @@ def chat_json(messages, **kwargs) -> dict:
         # parsed 是 list 或 None → 视为解析失败
         # finish_reason=length 意味着 max_tokens 截断了输出，correction 重试只会重复截断
         if _fr == "length":
-            log("LLM", f"chat_json JSON 截断（finish_reason=length, content_len={len(raw)}），跳过 correction 重试")
-            last_err = f"JSON 被 max_tokens 截断（finish_reason=length, content_len={len(raw)}）"
-            break
+            # 输出被截断：抛专用异常让业务层区分「输出写不完」与「调用失败」，
+            # 由业务层决定是否重发（网关随机分发后端，重试可能命中更大上下文）。
+            log("LLM", f"chat_json JSON 截断（finish_reason=length, "
+                       f"content_len={len(raw)}），交由调用方处理")
+            raise LLMOutputTruncatedError(
+                f"JSON 被 max_tokens 截断（finish_reason=length, "
+                f"content_len={len(raw)}）",
+                content_len=len(raw),
+            )
         # JSON 解析失败 — 将错误信息反馈给 LLM，让它修正后重新生成
         if _missing_keys_err:
             err_detail = _missing_keys_err

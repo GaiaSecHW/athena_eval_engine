@@ -23,6 +23,7 @@ session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不
 from __future__ import annotations
 
 import json
+import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
@@ -31,6 +32,13 @@ from ..core.raw_event import RawEvent
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ..infra.log_util import log, log_error
+
+# ── 输出截断重试 ──
+# finish_reason=length 说明本次路由到的后端输出空间不够。网关按别名随机
+# 分发后端（1M 的 DeepSeek-V4 / 204800 的 GLM），重发同一请求可能命中
+# 上下文更大的后端。重试上限独立于 chat_json 内部的 JSON 修正重试。
+_TRUNCATION_RETRIES = 5
+_TRUNCATION_RETRY_DELAY = 3
 
 # ── 系统 prompt（固定）──
 
@@ -791,37 +799,59 @@ class RootCauseAnalyzer:
                     chain, cancel_cb,
                 )
             else:
-                try:
-                    result = llm_mod.chat_json(
-                        messages,
-                        temperature=0,
-                        cancel_cb=cancel_cb,
-                        max_tokens=llm_mod.get_response_reserve_tokens(),
-                        required_keys=["summary"],
-                    )
-                except Exception as e:
-                    err_str = str(e)
-                    # llm.chat_json 已对输入超限做过多次重试切换后端；
-                    # 仍失败说明多次都没命中大上下文后端。此时改为按最保守的
-                    # 204800 上下文分片压缩，而不是依赖全局默认值。
-                    if llm_mod.is_context_overflow_error(err_str):
-                        log("ROOT_CAUSE",
-                            f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                            f"LLM 输入超限（重试后仍未命中大上下文后端），"
-                            f"改按 204800 上下文分片压缩",
-                            eval_id=evaluation_id)
-                        result = self._compress_session_chunked(
-                            evaluation_id, case_id, chain_type, i, sid,
-                            events, vuln_title, desc, fp_reason, outcome,
-                            chain, cancel_cb, max_ctx_override=204800,
+                # 输出截断重试：网关随机分发后端，重发同一请求可能命中
+                # 上下文更大的后端。重试耗尽后再走输入超限的分片兜底。
+                for _trunc_attempt in range(_TRUNCATION_RETRIES + 1):
+                    try:
+                        result = llm_mod.chat_json(
+                            messages,
+                            temperature=0,
+                            cancel_cb=cancel_cb,
+                            max_tokens=llm_mod.get_response_reserve_tokens(),
+                            required_keys=["summary"],
                         )
-                    else:
+                        break
+                    except llm_mod.LLMOutputTruncatedError as e:
+                        if _trunc_attempt >= _TRUNCATION_RETRIES:
+                            log("ROOT_CAUSE",
+                                f"case {case_id}: {chain_type} "
+                                f"session {i+1}/{len(chain)} 输出截断，"
+                                f"{_TRUNCATION_RETRIES} 次重试后仍失败",
+                                eval_id=evaluation_id)
+                            log_error(evaluation_id, "ROOT_CAUSE", e)
+                            raise
                         log("ROOT_CAUSE",
-                            f"case {case_id}: {chain_type} session {i+1}/{len(chain)} "
-                            f"LLM 压缩失败",
+                            f"case {case_id}: {chain_type} "
+                            f"session {i+1}/{len(chain)} 输出截断 "
+                            f"(content_len={e.content_len})，"
+                            f"重试 {_trunc_attempt+1}/{_TRUNCATION_RETRIES}",
                             eval_id=evaluation_id)
-                        log_error(evaluation_id, "ROOT_CAUSE", e)
-                        raise
+                        time.sleep(_TRUNCATION_RETRY_DELAY)
+                    except Exception as e:
+                        err_str = str(e)
+                        # llm.chat_json 已对输入超限做过多次重试切换后端；
+                        # 仍失败说明多次都没命中大上下文后端。此时改为按最保守的
+                        # 204800 上下文分片压缩，而不是依赖全局默认值。
+                        if llm_mod.is_context_overflow_error(err_str):
+                            log("ROOT_CAUSE",
+                                f"case {case_id}: {chain_type} "
+                                f"session {i+1}/{len(chain)} "
+                                f"LLM 输入超限（重试后仍未命中大上下文后端），"
+                                f"改按 204800 上下文分片压缩",
+                                eval_id=evaluation_id)
+                            result = self._compress_session_chunked(
+                                evaluation_id, case_id, chain_type, i, sid,
+                                events, vuln_title, desc, fp_reason, outcome,
+                                chain, cancel_cb, max_ctx_override=204800,
+                            )
+                        else:
+                            log("ROOT_CAUSE",
+                                f"case {case_id}: {chain_type} "
+                                f"session {i+1}/{len(chain)} LLM 压缩失败",
+                                eval_id=evaluation_id)
+                            log_error(evaluation_id, "ROOT_CAUSE", e)
+                            raise
+                        break
 
             return {
                 "session_id": sid,
@@ -1529,9 +1559,9 @@ class RootCauseAnalyzer:
             f"{len(events)} 事件)",
             eval_id=evaluation_id)
 
-        # 并发压缩各分片
-        def _compress_chunk(args):
-            chunk_idx, chunk_lines = args
+        # 压缩单个分片；输出被截断时重试（网关随机路由，重试可能落到
+        # 上下文更大的后端，输出空间就够了）。
+        def _compress_one(chunk_lines, label):
             if cancel_cb:
                 cancel_cb()
             chunk_text = "\n".join(chunk_lines)
@@ -1540,7 +1570,7 @@ class RootCauseAnalyzer:
                 f"漏洞描述：{desc}\n"
                 f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
                 f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
-                f"Session {step_idx+1}/{len(chain)} 分片 {chunk_idx+1}/{len(chunks)} "
+                f"Session {step_idx+1}/{len(chain)} {label} "
                 f"(session_id={session_id}):\n"
                 f"{chunk_text}"
             )
@@ -1548,11 +1578,35 @@ class RootCauseAnalyzer:
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
             ]
+            last_err = None
+            for attempt in range(_TRUNCATION_RETRIES + 1):
+                try:
+                    return llm_mod.chat_json(
+                        msgs, temperature=0, cancel_cb=cancel_cb,
+                        max_tokens=llm_mod.get_response_reserve_tokens(),
+                        required_keys=["summary"])
+                except llm_mod.LLMOutputTruncatedError as e:
+                    last_err = e
+                    if attempt >= _TRUNCATION_RETRIES:
+                        break
+                    log("ROOT_CAUSE",
+                        f"case {case_id}: {chain_type} session {step_idx+1} "
+                        f"{label} 输出截断 (content_len={e.content_len})，"
+                        f"重试 {attempt+1}/{_TRUNCATION_RETRIES}",
+                        eval_id=evaluation_id)
+                    time.sleep(_TRUNCATION_RETRY_DELAY)
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} session {step_idx+1} "
+                f"{label} 输出截断，{_TRUNCATION_RETRIES} 次重试后仍失败",
+                eval_id=evaluation_id)
+            raise last_err
+
+        # 并发压缩各分片
+        def _compress_chunk(args):
+            chunk_idx, chunk_lines = args
             try:
-                r = llm_mod.chat_json(
-                    msgs, temperature=0, cancel_cb=cancel_cb,
-                    max_tokens=llm_mod.get_response_reserve_tokens(),
-                    required_keys=["summary"])
+                r = _compress_one(
+                    chunk_lines, f"分片 {chunk_idx+1}/{len(chunks)}")
             except Exception as e:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} session {step_idx+1} "
