@@ -643,6 +643,9 @@ class KnowledgeVerifier:
             retrieve_results = recall.get("results", []) if isinstance(recall, dict) else []
 
             new_docs: list[str] = []
+            # 本次检索新增的候选文档名（title 优先，无 title 用文件名），
+            # 用于在 query_log 里直接列出命中了哪些文档
+            new_names: list[str] = []
             for r in retrieve_results:
                 doc_path = r.get("document_path") or r.get("path") or ""
                 snippet = r.get("content") or r.get("snippet") or r.get("context") or ""
@@ -654,6 +657,7 @@ class KnowledgeVerifier:
                             continue
                         seen_docs.add(doc_path)
                     new_docs.append(doc_path)
+                    new_names.append(title or doc_path.split("/")[-1])
                     candidates.append({
                         "source": "athena_api",
                         "path": doc_path,
@@ -669,10 +673,12 @@ class KnowledgeVerifier:
 
             # 如果没有 structured results 但有 content，把 content 作为候选
             if not retrieve_results and content:
+                _fallback_title = f"检索结果: {kw}"
+                new_names.append(_fallback_title)
                 candidates.append({
                     "source": "athena_api",
                     "path": f"retrieve/{task_id}",
-                    "title": f"检索结果: {kw}",
+                    "title": _fallback_title,
                     "abstract": content,
                     "keywords": kw,
                     "content_preview": content,
@@ -685,10 +691,9 @@ class KnowledgeVerifier:
                 "action": f"POST {submit_url} → GET {poll_url}",
                 "detail": f"关键词: {kw}, task_id={task_id}",
                 "result": (f"检索完成，返回 {match_count} 个结果，"
-                           f"命中 {len(new_docs)} 个文档"
-                           + (f": {', '.join(d.split('/')[-1] for d in new_docs[:3])}"
-                              if new_docs else "")),
-                "count": len(new_docs),
+                           f"命中 {len(new_names)} 个文档"
+                           + (f": {', '.join(new_names)}" if new_names else "")),
+                "count": len(new_names),
             })
 
             if len(candidates) >= _MAX_CANDIDATES:
