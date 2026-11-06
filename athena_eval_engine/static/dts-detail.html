@@ -147,6 +147,22 @@ async function renderDtsDetailPage(dtsId){
     html+='</div>';
 
     if(caseData){
+      var insufficientChains=[];
+      [['挖掘',caseData.mining||{}],['验证',caseData.verification||{}]].forEach(function(x){
+        if(x[1].insufficient_evidence){
+          insufficientChains.push({label:x[0],reason:(x[1].root_cause||{}).description||''});
+        }
+      });
+      if(insufficientChains.length){
+        html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)"><h3>证据不足，未生成结论</h3>';
+        insufficientChains.forEach(function(x){
+          html+='<div style="font-size:14px;margin-bottom:8px"><b>'+esc(x.label)+'链：</b>'+esc(x.reason||'证据不足，无法判定根因')+'</div>';
+        });
+        html+='<div style="font-size:13px;color:var(--sub)">该 case 不会自动生成问题单。</div></div>';
+      }
+    }
+
+    if(caseData){
       var chainsForRC=[
         {label:'挖掘',data:caseData.mining||{}},
         {label:'验证',data:caseData.verification||{}}
@@ -158,12 +174,30 @@ async function renderDtsDetailPage(dtsId){
       var legacyFixSuggestions=[];
       var projectId=(d.project_id||d.task_id||'').split(':')[0];
       var projectName=d.evaluation_name||'';
+      var evidenceMap={};
+      chainsForRC.forEach(function(ch){
+        (ch.data.compressed_summaries||[]).forEach(function(s){
+          (s.evidence_cards||[]).forEach(function(c){
+            if(c&&c.evidence_id){
+              evidenceMap[c.evidence_id]={session_id:s.session_id,source:c.source,event_idx:c.event_idx,quote:c.quote,fact_type:c.fact_type};
+            }
+          });
+        });
+      });
       chainsForRC.forEach(function(ch){
         var hypList=ch.data.hypotheses||[];
+        var primaryCause=ch.data.primary_cause||'';
+        var primaryHyp=ch.data.primary_hypothesis||'';
+        var primaryMarked=false;
         if(Array.isArray(hypList)&&hypList.length){
           hypList.forEach(function(h){
             if(h&&typeof h==='object'){
-              allHypotheses.push({label:ch.label,chainType:ch.label,agentType:ch.data.agent_type||'',data:h});
+              var isPrimary=!primaryMarked && (
+                (primaryHyp && h.hypothesis===primaryHyp) ||
+                (!primaryHyp && primaryCause && h.cause_code===primaryCause)
+              );
+              if(isPrimary){primaryMarked=true;}
+              allHypotheses.push({label:ch.label,chainType:ch.label,agentType:ch.data.agent_type||'',isPrimary:!!isPrimary,data:h});
             }
           });
         }else{
@@ -245,6 +279,7 @@ async function renderDtsDetailPage(dtsId){
             +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">假设 '+(idx+1)+'</span>';
           if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
+          if(h.isPrimary){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">主因</span>';}
           html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">P='+prob+'</span>'
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';
@@ -262,6 +297,26 @@ async function renderDtsDetailPage(dtsId){
           }
           if(evidence){
             html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据：</b>'+esc(evidence)+'</div>';
+          }
+          var evRefs=hdata.evidence_refs||[];
+          if(evRefs.length){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">证据卡（'+evRefs.length+' 张）：</b>';
+            evRefs.forEach(function(rid){
+              var c=evidenceMap[rid];
+              if(!c){
+                html+='<div style="margin-top:6px;padding:8px 10px;background:var(--p2);border-radius:8px;color:var(--amber)">'+esc(rid)+'（未找到对应证据卡）</div>';
+                return;
+              }
+              html+='<div style="margin-top:6px;padding:8px 10px;background:var(--p2);border-radius:8px">'
+                +'<div style="font-size:12px;color:var(--sub);font-family:monospace">'+esc(c.fact_type||'')+' · '+esc(c.source||'')+' · '+esc(c.session_id||'')+' · event '+esc(String(c.event_idx==null?'-':c.event_idx))+'</div>'
+                +'<div style="font-size:13px;margin-top:4px;white-space:pre-wrap">'+esc(c.quote||'')+'</div>'
+                +'</div>';
+            });
+            html+='</div>';
+          }
+          var counterEv=hdata.counter_evidence||'';
+          if(counterEv){
+            html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">反证：</b>'+esc(counterEv)+'</div>';
           }
           // 支撑断点：因果链已过滤为「只含被假设引用的断点」
           var myBps=allBreakpoints.filter(function(b){

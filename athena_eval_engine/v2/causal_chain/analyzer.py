@@ -123,6 +123,20 @@ class CausalChainAnalyzer:
             "hypothesis_summary": hypothesis_summary,
             "label_quality_summary": label_quality_summary,
             "per_case_breakpoints": per_case_breakpoints,
+            "insufficient_cases": [
+                {
+                    "case_id": case.get("case_id", ""),
+                    "vuln_title": case.get("vuln_title", ""),
+                    "outcome": case.get("outcome", ""),
+                    "chain": chain,
+                    "reason": ((case.get(chain) or {}).get("root_cause")
+                               or {}).get("description", ""),
+                }
+                for case in root_cause_results
+                for chain in ("mining", "verification")
+                if isinstance(case.get(chain), dict)
+                and case[chain].get("insufficient_evidence")
+            ],
         }
 
         log("CAUSAL_CHAIN",
@@ -676,7 +690,29 @@ class CausalChainAnalyzer:
             case_hypotheses[cid] = all_hypotheses
             case_label_quality[cid] = label_quality
             if all_hypotheses:
-                top = max(all_hypotheses, key=lambda h: h.get("probability", 0)) if all_hypotheses else None
+                # 主因按各链的 primary_cause 选取，不看 probability；
+                # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
+                primary_codes = {
+                    c.get("primary_cause") for c in (mining, verify)
+                    if isinstance(c, dict) and c.get("primary_cause")
+                }
+                primary_hyps = {
+                    c.get("primary_hypothesis") for c in (mining, verify)
+                    if isinstance(c, dict) and c.get("primary_hypothesis")
+                }
+                top = next(
+                    (h for h in all_hypotheses
+                     if h.get("hypothesis") in primary_hyps), None)
+                if top is None:
+                    top = next(
+                        (h for h in all_hypotheses
+                         if h.get("cause_code") in primary_codes), None)
+                if top is None:
+                    top = sorted(
+                        all_hypotheses,
+                        key=lambda h: (-len(h.get("evidence_refs") or []),
+                                       str(h.get("cause_code") or "Z")),
+                    )[0]
                 if top and isinstance(top, dict):
                     root_causes = {
                         "hypothesis": top.get("hypothesis", ""),
@@ -695,6 +731,21 @@ class CausalChainAnalyzer:
             if cid and outcome:
                 case_outcomes[cid] = outcome
 
+        # 证据不足的 case 不进正常断点统计，单独列出供报告说明"未生成单"。
+        # 两条链独立：只有「有 session 的链全部证据不足」才整体跳过；
+        # 一条链证据不足、另一条有结论时，仍按有结论的链统计。
+        insufficient_ids: set[str] = set()
+        for case in root_cause_results:
+            cid = case.get("case_id", "")
+            active = [
+                case.get(chain) or {}
+                for chain in ("mining", "verification")
+                if (case.get(chain) or {}).get("session_chain")
+            ]
+            if active and all(
+                    c.get("insufficient_evidence") for c in active):
+                insufficient_ids.add(cid)
+
         result: list[dict] = []
         # 遍历全部 case（含没有断点、只有假设的），
         # 只有「断点空 + 假设也空」才跳过
@@ -705,6 +756,8 @@ class CausalChainAnalyzer:
                 all_case_ids.append(cid)
 
         for case_id in all_case_ids:
+            if case_id in insufficient_ids:
+                continue
             records = case_map.get(case_id, [])
             if not records and not case_hypotheses.get(case_id):
                 continue
@@ -873,4 +926,5 @@ class CausalChainAnalyzer:
                 "total": 0,
             },
             "per_case_breakpoints": [],
+            "insufficient_cases": [],
         }

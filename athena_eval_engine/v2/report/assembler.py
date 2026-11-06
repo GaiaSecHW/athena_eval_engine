@@ -92,6 +92,9 @@ class ReportAssembler:
             "recall_precision": recall_precision,
             "skipped_cases": self._build_skipped_cases(
                 root_cause_results, causal_chain_result),
+            # 证据不足、未生成问题单的 case，报告里必须说明原因
+            "insufficient_cases": causal_chain_result.get(
+                "insufficient_cases", []),
         }
         if data_quality_warnings:
             report["data_quality_warnings"] = data_quality_warnings
@@ -147,7 +150,17 @@ class ReportAssembler:
                 len(verify.get("l0_l7_breakpoints") or [])
             fn = case.get("fn_miss") or {}
 
-            if has_hyp:
+            insufficient = bool(
+                mining.get("insufficient_evidence")
+                or verify.get("insufficient_evidence"))
+            if insufficient:
+                reason = "证据不足，未生成结论"
+                detail = (
+                    (mining.get("root_cause") or {}).get("description")
+                    or (verify.get("root_cause") or {}).get("description")
+                    or "没有任何假设能关联到证据卡"
+                )
+            elif has_hyp:
                 reason, detail = "断点全部未被假设引用", (
                     f"有假设但 {bp_count} 条断点均未挂到假设上，"
                     f"过滤后无证据可展示")

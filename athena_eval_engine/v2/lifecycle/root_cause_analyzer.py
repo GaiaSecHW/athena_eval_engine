@@ -40,6 +40,20 @@ from ..infra.log_util import log, log_error
 _TRUNCATION_RETRIES = 5
 _TRUNCATION_RETRY_DELAY = 3
 
+# ── 证据卡预算（每 case 每条链）──
+# 原文太大、分块压缩后证据卡可能无限增长。按 case 设总预算，
+# 超出时按 fact_type 优先级保留，并记录截断数量。
+_EVIDENCE_CARD_BUDGET = 300
+_EVIDENCE_QUOTE_MAX = 200
+_EVIDENCE_PRIORITY = {
+    "deployment_fact": 0,
+    "knowledge_access": 1,
+    "agent_conclusion": 2,
+    "omission": 3,
+    "counter_evidence": 4,
+    "repo_fact": 5,
+}
+
 # ── 系统 prompt（固定）──
 
 _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的原因。
@@ -61,7 +75,7 @@ _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的
 **重点保留**：知识与记忆访问的总结与影响——agent 查了什么知识/记忆、返回了什么内容、这些内容是否影响了 agent 的推理和判定。
 
 同时，对这个 session 里的每次知识访问，执行 L0-L7 逐级判定。
-如果 session 中没有知识访问断点，但存在其他导致误报的问题（如验证维度遗漏、推理逻辑错误、验证不充分等），执行 L8 判定。
+如果 session 中没有知识访问断点，但存在其他导致误报的问题（如推理逻辑错误、验证不充分等），执行 L8 判定；如果"验证维度遗漏"是因为所需事实**根本没访问**，那是 L2/A，不是 L8。
 
 # 事实依据要求
 
@@ -78,6 +92,31 @@ _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的
   * 错误示例："comm_mgr 的 TCP 8888 端口是否对外暴露，file_name 是否已被上游过滤"
 - summary 和 key_findings 中的每一句话都必须能在 session 文本中找到对应的事实依据，禁止添加 session 中不存在的信息
 - 如果知识返回内容为空或无法判断，直接写"返回内容为空"或"无法从 session 文本中确认"，不要猜测
+
+# 压缩保留清单与证据卡（强制）
+
+压缩不是自由摘要。你必须先在 session 原文中逐项核对下列内容，再把原文证据落成"证据卡"：
+
+- agent 读取/执行过的文件与命令，及其与判定相关的输出
+- 配置文件、默认值、部署/暴露面相关原文
+- 知识/记忆访问：来源、查询、返回内容、是否被引用
+- agent 的判定结论及其依据
+- agent 明确跳过的检查、自相矛盾之处
+- 与人工标注直接相关的事实
+- 与已有结论冲突的反证
+
+每张证据卡必须包含：
+- evidence_id：本 session 内唯一（如 E-<session 前 8 位>-<序号>）
+- event_idx：原文事件位置（原文每行以 `[En]` 开头，填对应的 n）
+- source：文件/命令/工具
+- quote：原文逐字摘录，最长 200 字，禁止转述
+- fact_type：repo_fact / deployment_fact / knowledge_access / agent_conclusion / omission / counter_evidence
+
+规则：
+- 原文中出现的清单项必须保留；原文没有的写"材料中未出现"，不许补。
+- 找不到原文依据的内容，不得写进 summary 或假设。
+- summary 只能基于证据卡，不得引入证据卡之外的信息。
+- 每个 session 的证据卡数量服从全局预算；超出时优先保留 deployment_fact、knowledge_access、agent_conclusion、omission，其次 counter_evidence、repo_fact，并记录 truncated 数量。
 
 # 知识库与记忆访问的识别
 
@@ -112,7 +151,7 @@ session 文本中，评测引擎已在工具调用和工具返回的文本里标
 | 级别 | 追问 | 判定方法 | 断了是什么成因 | 责任方 |
 |------|------|---------|---------------|--------|
 | L0 | 知识来源？ | 从知识返回内容的来源标记判断 | —（不产生断链） | — |
-| L1 | 需要知识？ | 推理任务是否需要外部知识支撑 | —（不产生断链） | — |
+| L1 | 事实是否已访问？ | 正确结论所需的事实，agent 在 trace 中是否实际访问过（读过/查过） | 未访问 → A（具体断点记在 L2） | Agent |
 | L2 | 发起访问？ | agent 是否实际调用了知识库/记忆工具 | A 该查没查 | Agent |
 | L3 | 查询准确？ | 查询内容是否聚焦当前任务（含具体漏洞类型/框架名/函数名等） | B 查询太泛/不聚焦 | Agent |
 | L4 | 知识存在？ | 知识库是否有对应知识（返回内容非空且相关） | C 查了没得 | 知识方 |
@@ -162,21 +201,22 @@ L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一�
 
 判定规则：
 - 逐级判定，不通过的级别即为断点，后续级别填 null
+- **L1 判定边界（强制）**：L1 只看"正确结论所需的事实，agent 在本次 session/trace 中是否实际访问过"。
+  * 已访问（读过对应文件、执行过对应命令、查过对应知识/记忆）→ L1=false，事实在材料内；后续按 L2-L7 判定是否用对，用错/漏判走 L8。
+  * 未访问（材料中没有任何对应访问记录）→ L1=true，断点 L2，cause_code "A"（该查没查）。
+  * **不允许**用"仓库里存在该文件"或"理论上可读"来认定已访问；只有 trace 里的实际访问记录才算。
+  * 判定"未访问"时必须写明核验范围（检查了哪些 session、哪些工具调用、哪些文件），不能只写"没查到"。
+  * **运行时/部署状态必须实际访问**：只有实际读取承载该事实的文件/命令才算访问。读了实际配置（如 config/config.inc.php）、环境变量、compose.yml/Dockerfile、运行中的服务状态 → 算访问；只读模板/默认值（*.dist、*.example）或从代码分支推断 → **不算访问**。若正确结论所需的是实际部署状态而材料中只有模板/推断，L1=true → L2/A。
 - **session 中没有知识访问行为时的判定（关键）**：
-  - 仍要判 L1：推理任务是否需要外部知识支撑？判断标准：agent 面对的推理任务是否需要知识库/记忆中已有的方法、模式、经验来支撑。包括：
-    * 验证网络可达性 → 需要接口暴露面知识（业务环境知识）
-    * 判断接口暴露面 → 需要不可调用文档（记忆）
-    * 评估防护机制有效性 → 需要部署架构约束知识
-    * 识别漏洞模式 → 需要漏洞挖掘模式知识
-  - 如果 L1=true（需要知识）但 L2=false（agent 没发起访问）→ 断点 L2，cause_code 填 "A"（该查没查）
+  - 如果正确结论所需的事实未被访问 → 断点 L2，cause_code "A"
     - 在 l0_l7 数组中新增一条记录，l0_source 填空，l1_need=true，l2_initiated=false，L3-L7 填 null
-    - query_content 填"agent 未发起知识/记忆访问，但推理任务需要知识支撑（具体说明需要什么知识）"
+    - query_content 填"agent 未访问正确结论所需的事实来源（具体说明缺什么事实、检查了哪些范围）"
     - kb_search_query 填一个面向知识库检索的**单一方法论问题**（如"如何验证网络可达性和端口开放状态"），基于 session 分析 agent 避免此误报所需的知识生成。只问方法，不问具体环境事实（端口是否暴露、接口是否部署等知识库无法回答的现状问题）
     - returned_content 填空
-  - 如果 L1=false（不需要知识），L2-L7 全部填 null，不产生知识访问断点
-- 如果 L1-L7 全部通过（L7=positive）或 L1=false（不需要知识），但 agent 仍误报，执行 L8 判定：
+  - 如果所需事实已在 trace 中被访问 → L1=false，L2-L7 全部填 null；若 agent 访问了但未用对/未识别，执行 L8 判定。
+- 如果 L1-L7 全部通过（L7=positive）或 L1=false（事实已访问且知识链路无问题），但 agent 仍误报，执行 L8 判定：
   - L8 断点表示知识访问链路无问题，但存在其他导致误报的原因
-  - 常见场景：推理逻辑错误、验证条件不充分等（注意：验证维度遗漏不一定是 L8——如果遗漏的维度需要知识支撑，应是 L2 断点）
+  - 常见场景：推理逻辑错误、验证条件不充分等（注意：验证维度遗漏只有在所需事实**已访问且用错**时才是 L8；未访问属于 L2/A，只读模板/默认值或从代码推断也算未访问）
   - **cause_code 必须从 H/I/J/K 中选最匹配的，不要一律填 H**：
     * **H** — 流程缺陷：重复上报未识别、挖掘方向偏差、未做去重、流程跳步
     * **I** — 调用链中断：找到 sink 但未追踪到 source 入口，或调用链在某处断裂
@@ -199,8 +239,20 @@ L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一�
 
 压缩模式返回 JSON：
 {
-  "summary": "结构化摘要，3000字以内。必须包含知识与记忆访问的总结与影响",
+  "summary": "结构化摘要，3000字以内。必须包含知识与记忆访问的总结与影响；只能基于证据卡，不得引入证据卡之外的信息",
   "key_findings": ["关键发现1", "关键发现2"],
+  "evidence_cards": [
+    {
+      "evidence_id": "E-<session 前 8 位>-<序号>",
+      "event_idx": 0,
+      "source": "文件/命令/工具",
+      "quote": "原文逐字摘录，最长 200 字，禁止转述",
+      "fact_type": "repo_fact/deployment_fact/knowledge_access/agent_conclusion/omission/counter_evidence"
+    }
+  ],
+  "retention_check": [
+    {"item": "配置/部署事实", "status": "preserved/absent", "evidence_ids": ["E-..."]}
+  ],
   "l0_l7": [
     {
       "l0_source": "来源标记（如无则空字符串）",
@@ -213,12 +265,15 @@ L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一�
       "l7_influenced": "positive/negative/null",
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
+      "evidence_refs": ["支撑本级判定的证据卡 ID；无证据则空数组"],
       "query_content": "agent 实际执行的查询命令或参数（从 session 文本提取，不要概括）",
       "kb_search_query": "面向知识库检索的单一方法论问题（如'如何验证网络可达性和端口开放状态'）。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识生成；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题（可能比 agent 实际查的更精准）；其他断点或无断点时填空字符串。只问方法（如何/怎么验证、判断），禁止问环境事实（端口是否暴露、接口是否部署、网关是否隔离、输入是否已过滤），禁止复合问题，禁止堆砌具体 IP/端口/文件名",
       "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）",
       "fix_suggestion": "基于本 session 具体问题的修复建议：哪个命令/查询有问题就改哪里。如查询太泛→改为按当前漏洞类型聚焦查询；知识缺失→明确指出知识库缺什么；返回错误→指出返回了什么错误/异常。必须可定位到本 session 的具体位置，禁止空泛建议（如'增加去重逻辑'必须说明在哪个命令/步骤加）"
     }
-  ]
+  ],
+  "insufficient_evidence": false,
+  "insufficient_reason": "为 true 时说明缺什么事实、检查了哪些范围；否则空字符串"
 }
 
 只返回 JSON，不要任何额外文字。"""
@@ -249,20 +304,35 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
   * 一个假设可引用多条；不同假设可以共享同一条
   * 与假设无关的断点不要列进来
   * 如果假设描述的是**非知识访问类**问题（流程缺陷、重复上报未识别、模型幻觉、
-    调用链中断、验证维度遗漏等），通常没有可依据的 L0-L7 断点，此时填**空数组 `[]`**。
-    空数组是合法值 —— 表示"该假设不基于任何知识访问断点"，不是缺省
+    调用链中断等），通常没有可依据的 L0-L7 断点，此时填**空数组 `[]`**。
+    空数组是合法值 —— 表示"该假设不基于任何知识访问断点"，不是缺省。
+    但如果是"所需事实未访问"导致的 A，必须引用对应的 L2 断点，不能填空数组。
 - returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
 - 禁止使用"可能"、"或许"、"推测"等不确定语言描述事实
 - 但对"假设"本身可以用概率描述不确定性，这是分析的不确定性，不是事实的不确定性
 
-**probability 语义（重要）**：probability 是该假设是**根因的置信度**（0-1），
-表示"该假设成为这个 case 真正根因的可能性有多大"。**各假设概率不要求
-归一（和不需要等于 1）**——多个假设可以都高（多因素叠加）或都低
-（证据不足）。判定依据：
-- 0.7-1.0：证据充分，强烈支持该假设是根因
-- 0.4-0.6：有部分证据支持，可能是根因之一
-- 0.1-0.3：证据不足，可能性较低
-- 0.05：微弱可能，作为兜底考虑
+- **证据卡门槛（强制）**：每个假设必须通过 `evidence_refs` 引用至少一张 session 摘要中实际存在的证据卡 ID。
+  * 找不到可引用的证据卡，**禁止输出该假设**；宁可不给假设，也不许猜。
+  * `evidence_refs` 只能引用摘要中出现的 `evidence_id`，禁止编造。
+  * `evidence` 字段必须逐条对应 `evidence_refs` 中的原文。
+
+- **反证（强制）**：每个假设必须填写 `counter_evidence`。
+  * 材料中存在反证 → 说明为什么它不足以推翻该假设；
+  * 材料中没有反证 → 写明检查范围（看过哪些 session / 事件），不能只写"未发现"。
+
+- **人工标注只定性质，不作归因证据**：标注笼统（如"误报：其他误报原因"）时，禁止从标注文字推断具体原因；归因只能来自证据卡。
+
+- **证据不足**：如果没有任何假设能引用到证据卡，输出 `insufficient_evidence=true`、`insufficient_reason`，`primary_cause` 填空字符串，不要给 L 级别。
+
+**probability 语义（重要）**：probability 只作展示，**不参与主因选择**。只允许离散值：0.9 / 0.7 / 0.5 / 0.3 / 0.1。
+
+**主因选择（强制）**：必须输出唯一的 `primary_cause` 和 `primary_hypothesis`，按以下顺序：
+1. 假设必须至少有一张证据卡；
+2. 优先选择证据卡数量更多的假设；
+3. 仍并列时，按 cause_code 字母序取第一个；
+4. `probability` 不参与选择。
+`primary_hypothesis` 必须与 hypotheses 中某一条的 hypothesis 原文完全一致。
+其余假设全部列入 `secondary_causes`。
 
 # 任务
 
@@ -373,6 +443,8 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 - precise：标注精确，可直接定位根因
 - imprecise：标注笼统，需追问细化（如"网络不可达"未说明具体是防火墙/网关/内网隔离/认证门槛）
 - 如果 imprecise，列出需要追问的具体问题（follow_up_questions）
+- **needs_label_confirmation**：如果最终结论取决于人工的真实意图（材料无法判断人说的是"不构成漏洞"还是"设计功能"等），置为 true，并在 follow_up_questions 说明需要确认什么；不要替人补全原因。
+- 人工标注只用来确定 FP/FN 和复核背景，**不作为归因证据**。
 
 ## 修复建议
 
@@ -408,12 +480,17 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 ## L0-L8 断点判定
 
 - 如果知识访问链路有断点（L2-L7），照常输出
+- **L1 判定边界（强制）**：L1 只看"正确结论所需的事实，agent 在本次 session/trace 中是否实际访问过"。
+  - 已访问（读过对应文件、执行过对应命令、查过对应知识/记忆）→ L1=false，事实在材料内；后续按 L2-L7 判定是否用对，用错/漏判走 L8。
+  - 未访问（材料中没有任何对应访问记录）→ L1=true，断点 L2，cause_code "A"（该查没查）。
+  - **不允许**用"仓库里存在该文件"或"理论上可读"来认定已访问；只有 trace 里的实际访问记录才算。
+  - 判定"未访问"时必须写明核验范围（检查了哪些 session、哪些工具调用、哪些文件），不能只写"没查到"。
+  - **运行时/部署状态必须实际访问**：只有实际读取承载该事实的文件/命令才算访问。读了实际配置（如 config/config.inc.php）、环境变量、compose.yml/Dockerfile、运行中的服务状态 → 算访问；只读模板/默认值（*.dist、*.example）或从代码分支推断 → **不算访问**。若正确结论所需的是实际部署状态而材料中只有模板/推断，L1=true → L2/A。
 - **如果 session 中没有知识访问行为**：
-  - 判 L1：推理任务是否需要知识支撑（如验证网络可达性、判断接口暴露面、评估防护机制等需要知识库中的方法/经验）
-  - L1=true 且 L2=false → 断点 L2，cause_code "A"（该查没查）
+  - 正确结论所需的事实未被访问 → 断点 L2，cause_code "A"（该查没查）
     - kb_search_query 填一个面向知识库检索的**单一方法论问题**，基于 session 分析 agent 避免此误报所需的知识生成。只问方法，不问具体环境事实
-  - L1=false → 不产生知识访问断点
-- 如果知识访问链路全程通过（L7=positive）**或 L1=false（不需要知识）**，但 agent 仍误报，
+  - 所需事实已在 trace 中被访问 → L1=false，不产生知识访问断点；若访问了但未用对/未识别，走 L8
+- 如果知识访问链路全程通过（L7=positive）**或 L1=false（事实已访问且知识链路无问题）**，但 agent 仍误报，
   必须输出 L8 断点：
   - L8 断点表示知识访问链路无问题，但存在其他非知识访问的原因导致误报/漏报
   - **cause_code 必须从 H/I/J/K 中选最匹配的，不要一律填 H**：
@@ -426,7 +503,7 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
   - l0_source 填空字符串
 - L8 仅覆盖知识访问链路确实无问题的场景（L7=positive 或 L1=false）。
   如果 L6/L7 有断点（查到没用、用了没推动、知识误导），断点就在 L6/L7，**不是 L8**
-- **注意：验证维度遗漏不一定是 L8**——如果遗漏的验证维度需要知识支撑（如不知道怎么查网络可达性），应判 L2 断点（该查没查），不是 L8
+- **注意：验证维度遗漏只有在所需事实已访问且用错时才是 L8；未访问属于 L2/A，不是 L8（只读模板/默认值或从代码推断也算未访问）**
 
 ### L7 判定与 cause_code 映射
 
@@ -459,6 +536,16 @@ L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
 合并模式返回 JSON：
 {
   "summary": "合并后的最终摘要，3000字以内",
+  "primary_cause": "唯一主因的 cause_code（A-K）；证据不足时填空字符串",
+  "primary_hypothesis": "主因假设的原文（必须与 hypotheses 中某一条完全一致）；证据不足时填空字符串",
+  "secondary_causes": ["其他假设的 cause_code"],
+  "insufficient_evidence": false,
+  "insufficient_reason": "为 true 时说明缺什么证据、检查了哪些范围；否则空字符串",
+  "audit": [
+    {"rule": "primary_unique", "pass": true, "note": ""},
+    {"rule": "evidence_grounded", "pass": true, "note": ""},
+    {"rule": "counter_evidence_checked", "pass": true, "note": ""}
+  ],
   "knowledge_memory_summary": {
     "access_count": "整条链的知识/记忆访问总次数（所有 session 累加）",
     "accesses": [
@@ -477,9 +564,11 @@ L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
   "hypotheses": [
     {
       "hypothesis": "假设描述（如'Agent 将路由定义等同于公网可达'）。必须是独立缺陷，禁止与其他假设存在包含/父子关系",
-      "probability": 0.4,  # 根因置信度（0-1），不要求归一
+      "probability": 0.9,  # 仅展示，不参与主因选择；只允许 0.9/0.7/0.5/0.3/0.1
       "responsibility": "agent|knowledge|external_data_source|eval_process",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
+      "evidence_refs": ["E-...", "E-..."],  # 必须引用摘要中实际存在的证据卡 ID；无证据不得输出该假设
+      "counter_evidence": "材料中的反证；没有反证则写明检查范围（看过哪些 session/事件）",
       "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
       "session_id": "该假设主要基于的 session_id（从上方 Session 摘要中引用，可逗号分隔多个；若证据来自多个 session 的合并判断则列全，禁止编造不存在的 session_id）",
       "supporting_breakpoints": ["BP-1", "BP-3"],
@@ -498,6 +587,7 @@ L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
   ],
   "label_quality": {
     "precision": "precise|imprecise",
+    "needs_label_confirmation": false,
     "reason": "评估理由（如'网络不可达未说明具体是防火墙/网关/内网隔离/认证门槛'）",
     "follow_up_questions": ["追问问题1", "追问问题2"]
   },
@@ -513,6 +603,7 @@ L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
       "l7_influenced": "positive/negative/null",
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/null",
+      "evidence_refs": ["支撑本级判定的证据卡 ID；无证据则空数组"],
       "query_content": "agent 实际执行的查询命令（从摘要中提取原文，不要概括）",
       "kb_search_query": "面向知识库检索的单一方法论问题。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识生成；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题；其他断点或无断点时填空字符串。只问方法，禁止问环境事实（端口是否暴露、接口是否部署等），禁止复合问题",
       "returned_content": "知识/记忆实际返回的文本内容概括（基于摘要中的记录，不要推测）"
@@ -906,6 +997,11 @@ class RootCauseAnalyzer:
                 "step": i + 1,
                 "summary": result.get("summary", ""),
                 "key_findings": result.get("key_findings") or [],
+                "evidence_cards": result.get("evidence_cards") or [],
+                "retention_check": result.get("retention_check") or [],
+                "insufficient_evidence": bool(
+                    result.get("insufficient_evidence")),
+                "insufficient_reason": result.get("insufficient_reason") or "",
                 "l0_l7": result.get("l0_l7") or [],
             }
 
@@ -934,6 +1030,15 @@ class RootCauseAnalyzer:
 
         # 按 step 排序，保证拓扑序
         compressed_summaries.sort(key=lambda x: x["step"])
+
+        # 按 case 总预算截断证据卡（超出按 fact_type 优先级保留）
+        card_total, card_truncated = self._enforce_evidence_budget(
+            compressed_summaries)
+        if card_truncated:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 证据卡超预算，"
+                f"截断 {card_truncated} 张（保留 {card_total} 张）",
+                eval_id=evaluation_id)
 
         # 断点在排序之后重建，保证与 _build_bp_registry / merge prompt
         # 的遍历顺序完全一致（同一份 compressed_summaries，同源同序）
@@ -1057,18 +1162,71 @@ class RootCauseAnalyzer:
                     f"已丢弃 {dropped}（有效编号共 {len(_valid_refs)} 个）")
             h["supporting_breakpoints"] = kept
 
+        # ── 证据门槛：没有证据卡的假设一律丢弃 ──
+        # prompt 已禁止输出无证据假设，这里做程序兜底。
+        grounded = []
+        for h in merge_hypotheses:
+            refs = h.get("evidence_refs") or []
+            if isinstance(refs, list) and any(
+                    isinstance(r, str) and r for r in refs):
+                grounded.append(h)
+            else:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} 假设无证据卡，已丢弃: "
+                    f"{str(h.get('hypothesis', ''))[:60]}")
+        merge_hypotheses = grounded
+
         # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
-        # 取最高概率假设作为 root_cause（向后兼容）
-        top_hypothesis = max(merge_hypotheses, key=lambda h: h.get("probability", 0)) \
-            if merge_hypotheses else None
-        merge_root_cause = {
-            "category": self._hypothesis_to_category(top_hypothesis) if top_hypothesis else "unknown",
-            "description": top_hypothesis.get("hypothesis", "无最终分析结果") if top_hypothesis else "无最终分析结果",
-            "human_confirmation_reason": fp_reason,
-        } if top_hypothesis else {
-            "category": "unknown",
-            "description": "无最终分析结果",
-        }
+        # 主因按 primary_cause 选取，不看 probability；probability 仅作展示。
+        insufficient = bool(merge_result.get("insufficient_evidence"))
+        primary_cause = (merge_result.get("primary_cause") or "").strip()
+        primary_hypothesis = (
+            merge_result.get("primary_hypothesis") or "").strip()
+        top_hypothesis = None
+        if not insufficient and merge_hypotheses:
+            # 优先按主因假设原文精确匹配（cause_code 可能重复，原文唯一）
+            if primary_hypothesis:
+                top_hypothesis = next(
+                    (h for h in merge_hypotheses
+                     if h.get("hypothesis") == primary_hypothesis), None)
+            if top_hypothesis is None and primary_cause:
+                top_hypothesis = next(
+                    (h for h in merge_hypotheses
+                     if h.get("cause_code") == primary_cause), None)
+            if top_hypothesis is None:
+                # primary_cause 缺失或与假设不一致：选证据最多者，
+                # 并列按 cause_code 字母序（确定性 tie-break）。
+                top_hypothesis = sorted(
+                    merge_hypotheses,
+                    key=lambda h: (-len(h.get("evidence_refs") or []),
+                                   str(h.get("cause_code") or "Z")),
+                )[0]
+
+        if insufficient:
+            merge_root_cause = {
+                "category": "insufficient_evidence",
+                "description": (merge_result.get("insufficient_reason")
+                                or "证据不足，无法判定根因"),
+                "human_confirmation_reason": fp_reason,
+                "insufficient_evidence": True,
+            }
+        elif top_hypothesis:
+            merge_root_cause = {
+                "category": self._hypothesis_to_category(top_hypothesis),
+                "description": top_hypothesis.get("hypothesis", "无最终分析结果"),
+                "human_confirmation_reason": fp_reason,
+                "insufficient_evidence": False,
+            }
+        else:
+            merge_root_cause = {
+                "category": "insufficient_evidence",
+                "description": "没有任何假设能关联到证据卡，无法判定根因",
+                "human_confirmation_reason": fp_reason,
+                "insufficient_evidence": True,
+            }
+
+        # 以 root_cause 的最终状态为准：无假设/无证据也视为证据不足。
+        insufficient = bool(merge_root_cause.get("insufficient_evidence"))
 
         # fix_suggestion 合并所有假设的修复点
         merge_fix = []
@@ -1137,19 +1295,52 @@ class RootCauseAnalyzer:
             evaluation_id=evaluation_id,
         )
 
-        # ── 假设可信度筛选 ──
-        # 只保留 P>=0.6 的假设；若全部 <0.6，保留 P 最高的那条。
-        # top 假设（merge_root_cause 用的）一定被保留，故 merge_root_cause 不变。
-        high_conf = [h for h in merge_hypotheses
-                     if (h.get("probability") or 0) >= 0.6]
-        if high_conf:
-            merge_hypotheses = high_conf
-        elif merge_hypotheses:
-            top_h = max(merge_hypotheses,
-                        key=lambda h: h.get("probability") or 0)
-            merge_hypotheses = [top_h]
-        else:
+        # ── 假设筛选：只保留有证据卡的假设 ──
+        # probability 不再参与筛选；无证据的假设已在上面丢弃。
+        # 证据不足的 case 不保留任何假设，避免下游误生成问题单。
+        if insufficient:
             merge_hypotheses = []
+
+        # ── 最终状态重算 ──
+        # L4/重复上报可能改了 cause_code；报告头部必须与最终假设一致，
+        # 不能再沿用 L4 之前算出的 root_cause.category。
+        if merge_hypotheses:
+            final_top = None
+            # L4/重复上报可能改了 cause_code，但对象还是同一个；
+            # 优先沿用 L4 之前选定的主因对象。
+            if top_hypothesis is not None and top_hypothesis in merge_hypotheses:
+                final_top = top_hypothesis
+            elif primary_hypothesis:
+                final_top = next(
+                    (h for h in merge_hypotheses
+                     if h.get("hypothesis") == primary_hypothesis), None)
+            if final_top is None and primary_cause:
+                final_top = next(
+                    (h for h in merge_hypotheses
+                     if h.get("cause_code") == primary_cause), None)
+            if final_top is None:
+                final_top = sorted(
+                    merge_hypotheses,
+                    key=lambda h: (-len(h.get("evidence_refs") or []),
+                                   str(h.get("cause_code") or "Z")),
+                )[0]
+            top_hypothesis = final_top
+            merge_root_cause = {
+                "category": self._hypothesis_to_category(final_top),
+                "description": final_top.get("hypothesis", "无最终分析结果"),
+                "human_confirmation_reason": fp_reason,
+                "insufficient_evidence": False,
+            }
+            insufficient = False
+        elif insufficient:
+            merge_root_cause = {
+                "category": "insufficient_evidence",
+                "description": (merge_root_cause.get("description")
+                                or "证据不足，无法判定根因"),
+                "human_confirmation_reason": fp_reason,
+                "insufficient_evidence": True,
+            }
+
         # 重算 fix_suggestion（只保留筛选后假设的修复建议）
         merge_fix = []
         for h in merge_hypotheses:
@@ -1161,6 +1352,10 @@ class RootCauseAnalyzer:
             "session_chain": chain,
             "root_cause": merge_root_cause,
             "hypotheses": merge_hypotheses,
+            "primary_cause": (top_hypothesis or {}).get("cause_code", ""),
+            "primary_hypothesis": (top_hypothesis or {}).get("hypothesis", ""),
+            "audit": merge_result.get("audit") or [],
+            "insufficient_evidence": insufficient,
             "label_quality": merge_label_quality,
             "fix_suggestion": merge_fix,
             "compressed_summaries": compressed_summaries,
@@ -1192,6 +1387,44 @@ class RootCauseAnalyzer:
             "K": "verification_dimension_missing",  # 验证否定真漏洞（agent 侧）
         }
         return category_map.get(cause, "reasoning_flaw")
+
+    @staticmethod
+    def _enforce_evidence_budget(
+        compressed_summaries: list[dict],
+    ) -> tuple[int, int]:
+        """按 case 总预算截断证据卡，返回 (保留数, 截断数)。
+
+        优先级：部署/配置 > 知识访问 > agent 结论 > 缺失检查 > 反证 > 仓库事实。
+        排序是**全局**的（跨 session），避免前面的 session 用低优先级卡片
+        挤掉后面 session 的高优先级卡片；同一优先级保持原顺序（稳定）。
+        """
+        entries: list[tuple[int, int, dict]] = []
+        for si, s in enumerate(compressed_summaries):
+            for ci, c in enumerate(s.get("evidence_cards") or []):
+                if isinstance(c, dict):
+                    entries.append((si, ci, c))
+        entries.sort(key=lambda e: _EVIDENCE_PRIORITY.get(
+            e[2].get("fact_type"), 99))
+        keep = {(si, ci) for si, ci, _ in entries[:_EVIDENCE_CARD_BUDGET]}
+
+        total = 0
+        truncated = 0
+        for si, s in enumerate(compressed_summaries):
+            raw = [c for c in (s.get("evidence_cards") or [])
+                   if isinstance(c, dict)]
+            kept = []
+            for ci, c in enumerate(raw):
+                if (si, ci) not in keep:
+                    continue
+                quote = str(c.get("quote") or "")
+                if len(quote) > _EVIDENCE_QUOTE_MAX:
+                    c["quote"] = quote[:_EVIDENCE_QUOTE_MAX] + "…"
+                kept.append(c)
+            s["evidence_cards"] = kept
+            s["truncated_evidence"] = len(raw) - len(kept)
+            total += len(kept)
+            truncated += s["truncated_evidence"]
+        return total, truncated
 
     @staticmethod
     def _build_bp_registry(compressed_summaries: list[dict]) -> dict[str, dict]:
@@ -1274,6 +1507,23 @@ class RootCauseAnalyzer:
             if s.get("key_findings"):
                 parts.append(
                     f"关键发现: {'; '.join(s['key_findings'])}")
+            cards = s.get("evidence_cards") or []
+            if cards:
+                parts.append(
+                    "证据卡（假设的 evidence_refs 只能引用下列 evidence_id）:")
+                for c in cards:
+                    if not isinstance(c, dict):
+                        continue
+                    parts.append("  - " + json.dumps({
+                        "evidence_id": c.get("evidence_id", ""),
+                        "event_idx": c.get("event_idx"),
+                        "source": c.get("source", ""),
+                        "quote": c.get("quote", ""),
+                        "fact_type": c.get("fact_type", ""),
+                    }, ensure_ascii=False))
+            if s.get("insufficient_evidence"):
+                parts.append(
+                    f"本 session 证据不足：{s.get('insufficient_reason', '')}")
             l0_l7 = s.get("l0_l7") or []
             if l0_l7:
                 if bp_registry:
@@ -1334,27 +1584,27 @@ class RootCauseAnalyzer:
         hypotheses: list[dict] | None = None,
         evaluation_id: str = "",
     ) -> dict | None:
-        """L4 独立验证：当 L2 断点或 knowledge 责任假设存在时，主动搜索知识库验证。
+        """L4 独立验证：当存在 L2/A 断点时，主动搜索知识库验证。
 
         触发条件（任一满足即触发）：
         - L2 断点（cause_code A，agent 该查没查）
-        - 假设 responsibility=knowledge（知识方责任，知识缺失）
+        - 假设 cause_code=A（该查没查）
+
+        只回答一个问题：agent 没查的那个来源里，到底有没有对应知识。
+        G（知识/记忆内容错误）不触发 L4，也不允许被 L4 改判为 A。
 
         闭环逻辑：
         - L2 断点（cause_code A）→ 主动查知识库
           - 知识库有知识（l4=true）→ 责任在 agent，cause_code 保持 A
           - 知识库没有知识（l4=false）→ 责任在知识库，cause_code 改为 C
-        - 假设 responsibility=knowledge → 主动查知识库
-          - 知识库有知识 → 假设不成立（知识存在但 agent 没查到），修正 responsibility=agent
-          - 知识库没有知识 → 假设成立（知识确实缺失），保持 responsibility=knowledge
         """
         has_l2_break = any(
             bp.get("breakpoint") == "L2" for bp in all_breakpoints
         )
-        has_knowledge_hypothesis = any(
-            h.get("responsibility") == "knowledge" for h in (hypotheses or [])
+        has_a_hypothesis = any(
+            h.get("cause_code") == "A" for h in (hypotheses or [])
         )
-        if not has_l2_break and not has_knowledge_hypothesis:
+        if not has_l2_break and not has_a_hypothesis:
             return None
 
         # ── 重复上报豁免：人工标注为"重复上报"时，不触发 L4 知识库验证 ──
@@ -1389,14 +1639,14 @@ class RootCauseAnalyzer:
                              if not (q in seen_q or seen_q.add(q))]
 
         # ── 无检索问题：不查知识库 ──
-        # LLM 判定有 knowledge 责任假设或 L2 断点，但没产出 kb_search_query，
+        # LLM 判定有 L2 断点或 A 假设，但没产出 kb_search_query，
         # 说明 LLM 无法确定该查什么——不查 Athena（查了也是白查）。
         if not kb_search_queries:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 检测到"
                 f"{'L2 断点' if has_l2_break else ''}"
-                f"{'+' if has_l2_break and has_knowledge_hypothesis else ''}"
-                f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
+                f"{'+' if has_l2_break and has_a_hypothesis else ''}"
+                f"{'A/该查没查假设' if has_a_hypothesis else ''}，"
                 f"但无知识检索问题，跳过 L4 知识库验证")
             return {
                 # None=未判定。知识库没被查过，不能返回 False（会被上层
@@ -1411,8 +1661,8 @@ class RootCauseAnalyzer:
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 检测到"
             f"{'L2 断点' if has_l2_break else ''}"
-            f"{'+' if has_l2_break and has_knowledge_hypothesis else ''}"
-            f"{'knowledge 责任假设' if has_knowledge_hypothesis else ''}，"
+            f"{'+' if has_l2_break and has_a_hypothesis else ''}"
+            f"{'A/该查没查假设' if has_a_hypothesis else ''}，"
             f"启动知识库主动验证 L4 (project_id={project_id}, "
             f"queries={kb_search_queries})")
 
@@ -1495,6 +1745,7 @@ class RootCauseAnalyzer:
                 for h in (hypotheses or []):
                     if h.get("cause_code") == "A":
                         h["cause_code"] = "C"
+                        h["responsibility"] = "knowledge"
                         if _timed_out:
                             h["query_timeout"] = True
                         old_evid = h.get("evidence", "")
@@ -1523,8 +1774,10 @@ class RootCauseAnalyzer:
                     f"知识库有相关知识，L2 断点保持 cause_code A"
                     f"（agent 该查没查，责任在 agent）")
                 # knowledge 责任假设：知识存在但 agent 没查到 → 责任在 agent
+                # 只修正 cause_code=A 的假设；G（知识/记忆内容错误）不得被改判。
                 for h in (hypotheses or []):
-                    if h.get("responsibility") == "knowledge":
+                    if h.get("cause_code") == "A" \
+                            and h.get("responsibility") == "knowledge":
                         h["responsibility"] = "agent"
                         h["cause_code"] = "A"
                         old_evid = h.get("evidence", "")
@@ -1715,11 +1968,21 @@ class RootCauseAnalyzer:
         all_summaries = []
         all_key_findings = []
         all_l0_l7 = []
+        all_evidence_cards = []
+        all_retention = []
+        any_insufficient = False
+        insufficient_reasons = []
         for cidx in sorted(chunk_results.keys()):
             cr = chunk_results[cidx]
             all_summaries.append(cr.get("summary", ""))
             all_key_findings.extend(cr.get("key_findings") or [])
             all_l0_l7.extend(cr.get("l0_l7") or [])
+            all_evidence_cards.extend(cr.get("evidence_cards") or [])
+            all_retention.extend(cr.get("retention_check") or [])
+            if cr.get("insufficient_evidence"):
+                any_insufficient = True
+                if cr.get("insufficient_reason"):
+                    insufficient_reasons.append(cr["insufficient_reason"])
 
         # 如果只有一片，直接返回
         if len(chunk_results) == 1:
@@ -1746,6 +2009,12 @@ class RootCauseAnalyzer:
             # 保留各分片的 l0_l7 和 key_findings
             merged.setdefault("key_findings", all_key_findings)
             merged.setdefault("l0_l7", all_l0_l7)
+            merged.setdefault("evidence_cards", all_evidence_cards)
+            merged.setdefault("retention_check", all_retention)
+            merged.setdefault("insufficient_evidence", any_insufficient)
+            merged.setdefault(
+                "insufficient_reason",
+                "；".join(insufficient_reasons) if insufficient_reasons else "")
             return merged
         except Exception as e:
             log("ROOT_CAUSE",
@@ -1762,19 +2031,21 @@ class RootCauseAnalyzer:
             return f"（session {session_id} 无事件）"
 
         lines = []
-        for ev in events:
+        for idx, ev in enumerate(events):
             et = ev.event_type or "UNKNOWN"
             ts = ev.timestamp_ms or 0
             tool = ev.tool_name or ""
+            # 事件索引前缀：证据卡必须能回指到具体事件（event_idx）
+            p = f"[E{idx}] "
 
             if et == "REASONING":
                 text = _extract_text(ev.output_json)
                 if text:
-                    lines.append(f"[推理] {text}")
+                    lines.append(f"{p}[推理] {text}")
             elif et == "TEXT":
                 text = _extract_text(ev.output_json)
                 if text:
-                    lines.append(f"[文本] {text}")
+                    lines.append(f"{p}[文本] {text}")
             elif et == "TOOL_CALL":
                 text = _extract_text(ev.input_json)
                 # 标记知识访问
@@ -1783,7 +2054,7 @@ class RootCauseAnalyzer:
                     kg_flag = " [知识库访问]"
                 elif ev.is_memory_interaction:
                     kg_flag = " [记忆访问]"
-                lines.append(f"[工具调用] {tool}{kg_flag}: {text}")
+                lines.append(f"{p}[工具调用] {tool}{kg_flag}: {text}")
                 # opencode/turing 格式：tool part 带 state 时 input 和 output
                 # 同在一个 TOOL_CALL 事件里（parser._classify 返回 TOOL_CALL）。
                 # 只打 input 会让知识库/记忆的返回内容彻底丢失，LLM 只能报
@@ -1795,7 +2066,8 @@ class RootCauseAnalyzer:
                         ret_flag = " [知识库返回]"
                     elif ev.is_memory_interaction:
                         ret_flag = " [记忆返回]"
-                    lines.append(f"[工具返回] {tool}{ret_flag}: {result_text}")
+                    lines.append(
+                        f"{p}[工具返回] {tool}{ret_flag}: {result_text}")
             elif et == "TOOL_RESULT":
                 text = _extract_text(ev.output_json)
                 # 标记知识访问返回
@@ -1804,9 +2076,9 @@ class RootCauseAnalyzer:
                     kg_flag = " [知识库返回]"
                 elif ev.is_memory_interaction:
                     kg_flag = " [记忆返回]"
-                lines.append(f"[工具返回] {tool}{kg_flag}: {text}")
+                lines.append(f"{p}[工具返回] {tool}{kg_flag}: {text}")
             elif et == "SESSION_START":
-                lines.append(f"[会话开始] session={session_id}")
+                lines.append(f"{p}[会话开始] session={session_id}")
 
         return "\n".join(lines) if lines else f"（session {session_id} 无有效事件）"
 

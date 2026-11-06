@@ -140,6 +140,7 @@ def generate_dts_issues(
     case_fix: dict[str, str] = {}
     case_hypotheses: dict[str, list] = {}
     case_label_quality: dict[str, dict] = {}
+    insufficient_cases: set[str] = set()
     for case in root_cause_results:
         cid = case.get("case_id", "")
         if not cid:
@@ -148,6 +149,15 @@ def generate_dts_issues(
         case_full_data[cid] = case
         mining = case.get("mining", {}) or {}
         verify = case.get("verification", {}) or {}
+
+        # 证据不足的 case 不生成问题单，只在报告里列出原因。
+        # 两条链独立：只有「有 session 的链全部证据不足」才完全不生成单；
+        # 一条链证据不足、另一条有结论时，仍按有结论的链生成。
+        active_chains = [c for c in (mining, verify) if c.get("session_chain")]
+        if active_chains and all(
+                c.get("insufficient_evidence") for c in active_chains):
+            insufficient_cases.add(cid)
+            continue
 
         # ── 从多假设提取根因和修复建议 ──
         all_hypotheses = []
@@ -269,14 +279,36 @@ def generate_dts_issues(
         case_label_quality[cid] = label_quality
         # 兼容旧格式：如果没有假设但有 root_causes
         if all_hypotheses:
-            # 从最高概率假设提取 root_cause
-            top = max(all_hypotheses, key=lambda h: h.get("probability", 0)) if all_hypotheses else None
+            # 主因按各链的 primary_cause 选取，不看 probability；
+            # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
+            primary_codes = {
+                c.get("primary_cause") for c in (mining, verify)
+                if isinstance(c, dict) and c.get("primary_cause")
+            }
+            primary_hyps = {
+                c.get("primary_hypothesis") for c in (mining, verify)
+                if isinstance(c, dict) and c.get("primary_hypothesis")
+            }
+            top = next(
+                (h for h in all_hypotheses
+                 if h.get("hypothesis") in primary_hyps), None)
+            if top is None:
+                top = next(
+                    (h for h in all_hypotheses
+                     if h.get("cause_code") in primary_codes), None)
+            if top is None:
+                top = sorted(
+                    all_hypotheses,
+                    key=lambda h: (-len(h.get("evidence_refs") or []),
+                                   str(h.get("cause_code") or "Z")),
+                )[0]
             if top:
                 root_causes = {
                     "hypothesis": top.get("hypothesis", ""),
                     "probability": top.get("probability", 0),
                     "responsibility": top.get("responsibility", ""),
                     "evidence": top.get("evidence", ""),
+                    "cause_code": top.get("cause_code", ""),
                 }
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
@@ -289,6 +321,9 @@ def generate_dts_issues(
         case_id = case_entry.get("case_id", "")
         vuln_title = case_entry.get("vuln_title", "")
         if not case_id:
+            continue
+        # 证据不足的 case 不生成问题单
+        if case_id in insufficient_cases:
             continue
         if vuln_title and case_id not in case_vuln_titles:
             case_vuln_titles[case_id] = vuln_title
@@ -331,13 +366,22 @@ def generate_dts_issues(
         primary_cause_code = primary.get("cause_code", "")
         primary_break_level = primary.get("break_level", "")
 
-        # 顶层 cause_code 与 break_level 同源：都取最高概率假设。
+        # 顶层 cause_code 与 break_level 同源：都取主因假设。
         # 两者分开取（cause_code 用假设、break_level 用最严重断点）会导致
         # 问题单顶部与正文自相矛盾（如假设 C/L4 但断点 H/L8）。
         hypotheses = case_hypotheses.get(case_id, [])
         label_quality = case_label_quality.get(case_id, {})
         if hypotheses:
-            top_hyp = max(hypotheses, key=lambda h: h.get("probability", 0))
+            pc = (case_root_cause.get(case_id) or {}).get("cause_code", "")
+            top_hyp = next(
+                (h for h in hypotheses if h.get("cause_code") == pc),
+                None) if pc else None
+            if top_hyp is None:
+                top_hyp = sorted(
+                    hypotheses,
+                    key=lambda h: (-len(h.get("evidence_refs") or []),
+                                   str(h.get("cause_code") or "Z")),
+                )[0]
             cause_code = top_hyp.get("cause_code", "") or primary_cause_code
             break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
         else:
