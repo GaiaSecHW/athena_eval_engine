@@ -44,7 +44,6 @@ _TRUNCATION_RETRY_DELAY = 3
 # 原文太大、分块压缩后证据卡可能无限增长。按 case 设总预算，
 # 超出时按 fact_type 优先级保留，并记录截断数量。
 _EVIDENCE_CARD_BUDGET = 300
-_EVIDENCE_QUOTE_MAX = 200
 _EVIDENCE_PRIORITY = {
     "deployment_fact": 0,
     "knowledge_access": 1,
@@ -109,7 +108,7 @@ _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的
 - evidence_id：本 session 内唯一（如 E-<session 前 8 位>-<序号>）
 - event_idx：原文事件位置（原文每行以 `[En]` 开头，填对应的 n）
 - source：文件/命令/工具
-- quote：原文逐字摘录，最长 200 字，禁止转述
+- quote：原文逐字摘录（保留完整句子，禁止转述、禁止截断）
 - fact_type：repo_fact / deployment_fact / knowledge_access / agent_conclusion / omission / counter_evidence
 
 规则：
@@ -246,7 +245,7 @@ L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一�
       "evidence_id": "E-<session 前 8 位>-<序号>",
       "event_idx": 0,
       "source": "文件/命令/工具",
-      "quote": "原文逐字摘录，最长 200 字，禁止转述",
+      "quote": "原文逐字摘录（保留完整句子，禁止转述、禁止截断）",
       "fact_type": "repo_fact/deployment_fact/knowledge_access/agent_conclusion/omission/counter_evidence"
     }
   ],
@@ -1061,37 +1060,6 @@ class RootCauseAnalyzer:
                     **kp,
                 })
 
-        # ── 校验 L8 归类（程序兜底，防 LLM 不遵守 prompt 规则）──
-        # prompt 规定 L8 仅适用于「知识链路完全正常」（L7=positive 或 L1=false）。
-        # LLM 偶尔会把 l1=True 且 l7 非 positive 的条目也判成 L8，等于绕过了
-        # 知识链路上的断点。只标记不自动改判——改判需要判断该归 L6/E 还是
-        # L7/F/G，属语义判断，程序做不了。
-        for bp in all_breakpoints:
-            if bp.get("breakpoint") != "L8":
-                continue
-            l1v = bp.get("l1_need")
-            l7v = bp.get("l7_influenced")
-            # 豁免：重复上报按业务规则必须归 L8/H（知识/记忆里有历史记录，
-            # 问题在 agent 未识别重复，不是知识链路上的断点），不受此校验约束。
-            _qc = str(bp.get("query_content") or "")
-            if bp.get("cause_code") == "H" and any(
-                    k in _qc for k in ("重复上报", "已上报", "重复问题")):
-                continue
-            # l1=None 表示该 session 无知识访问、未做 L1 判定，属合法 L8 场景；
-            # 只有明确 l1=True（需要知识）且 l7 未达 positive 才是违规。
-            if l1v is True and l7v != "positive":
-                bp["classification_warning"] = (
-                    f"L8 归类待复核：L8 仅适用于 L7=positive 或 L1=false，"
-                    f"当前 l1_need=True, l7_influenced={l7v}。"
-                    f"若该知识访问与误报直接相关，断点应为 L6/E 或 L7/F/G"
-                )
-                log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} "
-                    f"{bp.get('_bp_ref')} L8 归类待复核 "
-                    f"(l1_need=True, l7_influenced={l7v}, "
-                    f"cause_code={bp.get('cause_code')})",
-                    eval_id=evaluation_id)
-
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
             chain_type, vuln_title, desc, fp_reason, outcome,
@@ -1410,20 +1378,24 @@ class RootCauseAnalyzer:
         total = 0
         truncated = 0
         for si, s in enumerate(compressed_summaries):
-            raw = [c for c in (s.get("evidence_cards") or [])
-                   if isinstance(c, dict)]
+            # 索引必须与 entries 一致（entries 用的是原始列表下标），
+            # 所以这里不能先过滤非 dict 项——否则 ci 错位，
+            # keep 命中错误的卡片，高优先级卡片会被误丢。
+            raw = s.get("evidence_cards") or []
             kept = []
+            dropped = 0
             for ci, c in enumerate(raw):
-                if (si, ci) not in keep:
+                if not isinstance(c, dict):
+                    dropped += 1
                     continue
-                quote = str(c.get("quote") or "")
-                if len(quote) > _EVIDENCE_QUOTE_MAX:
-                    c["quote"] = quote[:_EVIDENCE_QUOTE_MAX] + "…"
+                if (si, ci) not in keep:
+                    dropped += 1
+                    continue
                 kept.append(c)
             s["evidence_cards"] = kept
-            s["truncated_evidence"] = len(raw) - len(kept)
+            s["truncated_evidence"] = dropped
             total += len(kept)
-            truncated += s["truncated_evidence"]
+            truncated += dropped
         return total, truncated
 
     @staticmethod
