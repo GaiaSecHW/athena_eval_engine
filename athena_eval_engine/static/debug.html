@@ -1404,7 +1404,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
       html += `<tr>`;
       html += `<td style="font-family:monospace;font-size:12px">${esc(bp.session_id || "")}</td>`;
       html += `<td style="color:${bpColor};font-weight:bold">${esc(lvl)}</td>`;
-      html += `<td style="color:${bpColor};font-weight:bold">${esc(code)}${bp.query_timeout ? `<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库中没有该知识（访问超时）">（${bp.query_timeout_secs ? `访问 ${bp.query_timeout_secs}s 超时` : "访问超时"}）</span>` : ''}</td>`;
+      html += `<td style="color:${bpColor};font-weight:bold">${esc(code)}${bp.query_timeout ? `<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库中没有该知识（访问超时）">（${bp.query_timeout_secs ? `访问 ${bp.query_timeout_secs}s 超时` : "访问超时"}）</span>` : ''}${bp.classification_warning ? `<span style="font-weight:normal;color:#e67e22;font-size:11px;margin-left:4px" title="${esc(bp.classification_warning)}">⚠待复核</span>` : ''}</td>`;
       html += `<td>${bp.l1_need === true ? "✓" : bp.l1_need === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l2_initiated === true ? "✓" : bp.l2_initiated === false ? "✗" : "—"}</td>`;
       html += `<td>${bp.l3_accurate === true ? "✓" : bp.l3_accurate === false ? "✗" : "—"}</td>`;
@@ -1600,9 +1600,13 @@ RENDERERS.resolving = function(el, data) {
         // 知识库查询超时：结论是「知识库没有该知识」，但要标明是访问超时导致
         const _toSecs = bp.query_timeout_secs;
         const _toText = _toSecs ? `访问 ${_toSecs}s 超时` : "访问超时";
-        const codeLabel = bp.query_timeout
+        const codeLabel = (bp.query_timeout
           ? `${code}<span style="font-weight:normal;color:#f39c12;font-size:11px" title="知识库中没有该知识（${_toText}）">（${_toText}）</span>`
-          : code;
+          : code)
+          // L8 归类待复核：程序校验发现 l1=True 且 l7≠positive
+          + (bp.classification_warning
+             ? `<span style="font-weight:normal;color:#e67e22;font-size:11px;margin-left:4px" title="${esc(bp.classification_warning)}">⚠待复核</span>`
+             : "");
         const sid = bp.session_id || "";
         // 同根因合并：主 session + 被合并的其余 session
         const mergedOthers = (bp.merged_sessions || []).map(m => m.session_id).filter(Boolean);

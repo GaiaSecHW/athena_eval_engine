@@ -956,6 +956,37 @@ class RootCauseAnalyzer:
                     **kp,
                 })
 
+        # ── 校验 L8 归类（程序兜底，防 LLM 不遵守 prompt 规则）──
+        # prompt 规定 L8 仅适用于「知识链路完全正常」（L7=positive 或 L1=false）。
+        # LLM 偶尔会把 l1=True 且 l7 非 positive 的条目也判成 L8，等于绕过了
+        # 知识链路上的断点。只标记不自动改判——改判需要判断该归 L6/E 还是
+        # L7/F/G，属语义判断，程序做不了。
+        for bp in all_breakpoints:
+            if bp.get("breakpoint") != "L8":
+                continue
+            l1v = bp.get("l1_need")
+            l7v = bp.get("l7_influenced")
+            # 豁免：重复上报按业务规则必须归 L8/H（知识/记忆里有历史记录，
+            # 问题在 agent 未识别重复，不是知识链路上的断点），不受此校验约束。
+            _qc = str(bp.get("query_content") or "")
+            if bp.get("cause_code") == "H" and any(
+                    k in _qc for k in ("重复上报", "已上报", "重复问题")):
+                continue
+            # l1=None 表示该 session 无知识访问、未做 L1 判定，属合法 L8 场景；
+            # 只有明确 l1=True（需要知识）且 l7 未达 positive 才是违规。
+            if l1v is True and l7v != "positive":
+                bp["classification_warning"] = (
+                    f"L8 归类待复核：L8 仅适用于 L7=positive 或 L1=false，"
+                    f"当前 l1_need=True, l7_influenced={l7v}。"
+                    f"若该知识访问与误报直接相关，断点应为 L6/E 或 L7/F/G"
+                )
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} "
+                    f"{bp.get('_bp_ref')} L8 归类待复核 "
+                    f"(l1_need=True, l7_influenced={l7v}, "
+                    f"cause_code={bp.get('cause_code')})",
+                    eval_id=evaluation_id)
+
         # ── 第二步：合并所有 session 摘要，输出最终根因 ──
         merge_user_content = self._build_merge_prompt(
             chain_type, vuln_title, desc, fp_reason, outcome,
