@@ -37,11 +37,20 @@ sink 点是漏洞的最终触发位置——漏洞被利用时执行的代码位
 3. sink_lines: sink 点的行号列表
    - 格式为行号数字（如 1022）或行号区间字符串（如 "1022-1042"）
    - 只提取 sink 点的行号，不要提取调用链其他位置的行号
+4. source_entries: **source 入口**信息（用于判断 agent 是否追到了入口）
+   - 漏洞描述中提到的触发入口：HTTP 接口/URL 路径、RPC 方法、命令行参数、
+     消息队列 topic、文件上传字段等
+   - 每项写成「入口类型 + 标识」的形式，如
+     "HTTP POST /api/upload（参数 file_name）"、"RPC AgentGovTopoQuery"、
+     "CLI --clusterId 参数"
+   - 只提取描述中**明确写出**的入口，不要猜测；描述未提及则返回空列表
 
 注意：
-- 漏洞描述可能很长，包含大量上下文。只提取 sink 点信息，不提取入口点信息
+- 漏洞描述可能很长，包含大量上下文
 - sink 点是漏洞链的终点——数据最终到达并造成危害的代码位置
+- source 入口是漏洞链的起点——外部输入进入系统的位置
 - 如果描述中没有明确的 sink 信息，返回空列表
+- source_entries 独立于 sink，用于下游判断「调用链是否完整」
 
 只返回 JSON：
 {
@@ -49,6 +58,7 @@ sink 点是漏洞的最终触发位置——漏洞被利用时执行的代码位
   "sink_functions": ["ClassName.methodName", "otherMethod"],
   "sink_lines": ["1022", "1040-1050"],
   "sink_description": "简要描述 sink 点是什么",
+  "source_entries": ["HTTP POST /api/upload（参数 file_name）"],
   "confidence": 0.0-1.0
 }
 """
@@ -129,6 +139,7 @@ class SinkInfoExtractor:
         sink_functions = result.get("sink_functions") or []
         sink_lines = result.get("sink_lines") or []
         sink_desc = result.get("sink_description") or ""
+        source_entries = result.get("source_entries") or []
         confidence = float(result.get("confidence") or 0)
 
         # 如果 LLM 没提取到 sink_files 但原始 source_file 有值，用它兜底
@@ -139,13 +150,16 @@ class SinkInfoExtractor:
         log("SINK_EXTRACT",
             f"case {case.get('case_id', '')}: "
             f"files={len(sink_files)}, funcs={len(sink_functions)}, "
-            f"lines={len(sink_lines)}, conf={confidence:.2f}")
+            f"lines={len(sink_lines)}, sources={len(source_entries)}, "
+            f"conf={confidence:.2f}")
 
         return {
             "sink_files": sink_files,
             "sink_functions": sink_functions,
             "sink_lines": sink_lines,
             "sink_description": sink_desc,
+            # source 入口：供漏报成因分析判断「调用链是否完整」
+            "source_entries": source_entries,
             "confidence": confidence,
             "source_file_raw": source_file_raw,
         }
@@ -181,6 +195,7 @@ class SinkInfoExtractor:
             "sink_functions": [],
             "sink_lines": [],
             "sink_description": "",
+            "source_entries": [],
             "confidence": 0.0,
             "source_file_raw": case.get("source_file") or "",
         }

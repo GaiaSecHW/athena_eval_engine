@@ -63,11 +63,10 @@ athena_eval_engine/v2/
 │   ├── m5_m13.py                  # 现有指标（从老代码拷贝）
 │   └── m15_m26.py                 # 新增指标
 │
-├── lifecycle/                     # L0–L7 误报根因全链路分析
+├── lifecycle/                     # L0–L8 误报根因分析
 │   ├── __init__.py
-│   ├── analyzer.py                # L0–L7 分析主逻辑
 │   ├── case_filter.py             # 有效 case 筛选
-│   └── evidence_chain.py          # L7 判定（LLM 方向一致性 + 知识正确性）
+│   ├── root_cause_analyzer.py     # L0–L8 判定主逻辑（session 压缩 + 合并）
 │
 ├── causal_chain/                  # 因果链分析
 │   ├── __init__.py
@@ -398,9 +397,8 @@ class Orchestrator:
 
 | 模块 | v2 位置 | 说明 |
 |------|---------|------|
-| L0–L7 分析 | `v2/lifecycle/analyzer.py` | 漏斗过滤 + LLM 批处理 + L7 判定 |
+| L0–L8 判定 | `v2/lifecycle/root_cause_analyzer.py` | session 压缩（逐 session 判 L0–L8）+ 合并压缩（多假设） |
 | 有效 case 筛选 | `v2/lifecycle/case_filter.py` | 从漏洞中心基线出发，FP/FN 判定 + 双匹配路径（纯代码/LLM） |
-| L7 判定 | `v2/lifecycle/evidence_chain.py` | LLM 方向一致性 + 知识正确性 |
 | 因果链分析 | `v2/causal_chain/analyzer.py` | 交叉归因矩阵 + M26 |
 | 知识盘点 | `v2/knowledge_inventory/inventory.py` | 覆盖度 + 质量判定 |
 | 新指标 | `v2/metrics/m15_m26.py` | M15–M21, M26 |

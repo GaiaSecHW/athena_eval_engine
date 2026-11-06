@@ -40,10 +40,10 @@ MISS_SUB_CATEGORIES = {
 }
 
 # 细分漏报成因的 LLM 输入 token 预算——
-# 精确命中 session 事件可能巨大（110+ session），超 LLM 上下文（400K tokens）
-# 用 count_tokens 预计算，动态适配 session 数量
-_DETAIL_MAX_TOKENS = 60_000     # 给细分漏报成因的最大上下文（远小于 400K 主限制）
-_DETAIL_RESERVE_TOKENS = 8_000  # 预留给 system prompt + 输出 + 格式
+# 精确命中 session 事件可能巨大（110+ session）。预算按运行时实际上下文
+# 动态计算（网关实测 1M，硬编码 60K 会白白丢弃大量 session）。
+# 输出预留取 llm 模块的统一常量，与分片压缩保持同一口径。
+_DETAIL_RESERVE_TOKENS = None   # None = 用 llm_mod.get_response_reserve_tokens()
 
 # 每个成因 → 责任方
 MISS_SUB_RESPONSIBILITY = {
@@ -67,7 +67,9 @@ agent 在 trace 中**确实读到过 sink 点**（漏洞的最终触发位置—
 你会收到：
 - 漏洞标题：基线漏洞标题
 - 漏洞描述：基线的漏洞描述（含 sink 点位置）
-- sink 信息：LLM 从描述提取的 sink 文件、函数、行号
+- sink 信息：LLM 从描述提取的 sink 文件、函数、行号，
+  以及 **source 入口**（漏洞链的起点：HTTP 接口/RPC 方法/CLI 参数等）。
+  source 入口用于判断「agent 是否追到了入口」——这是 chain_break 的核心判据。
 - 精确命中 session 的事件：agent 分析过程中读到 sink 点前后的事件序列
   （含推理文本、工具调用、工具返回、知识/记忆访问）
 
@@ -237,9 +239,16 @@ class MissDetailAnalyzer:
                 if text and text not in session_texts:
                     session_texts.append(text)
 
-        # 按 token 排序（小→大），从小的开始取，塞满预算
+        # 按 token 排序（小→大），从小的开始取，塞满预算。
+        # 预算按运行时实际上下文动态计算：硬编码 60K 在 1M 上下文的网关上
+        # 会丢弃绝大部分 session，导致漏报成因判断缺少关键证据。
         session_texts.sort(key=lambda t: count_tokens(t))
-        budget = _DETAIL_MAX_TOKENS - _DETAIL_RESERVE_TOKENS
+        _max_ctx = llm_mod.get_max_context_tokens() or 1048576
+        _reserve = (_DETAIL_RESERVE_TOKENS
+                    if _DETAIL_RESERVE_TOKENS is not None
+                    else llm_mod.get_response_reserve_tokens())
+        # 再留 8K 给 system prompt + 漏洞标题/描述/sink 信息等框架开销
+        budget = max(_max_ctx - _reserve - 8192, 8192)
         selected: list[str] = []
         used_tokens = 0
         for text in session_texts:
@@ -324,12 +333,17 @@ class MissDetailAnalyzer:
 
 
 def _sink_info_to_text(sink_info: dict) -> str:
-    """将 sink_info 转为 LLM 可读文本。"""
+    """将 sink_info 转为 LLM 可读文本。
+
+    source_entries 用于判断「调用链是否完整」（chain_break 成因），
+    没有入口信息时 LLM 无法确认 agent 是否追到了 source。
+    """
     parts = []
     files = sink_info.get("sink_files") or []
     funcs = sink_info.get("sink_functions") or []
     lines = sink_info.get("sink_lines") or []
     desc = sink_info.get("sink_description") or ""
+    entries = sink_info.get("source_entries") or []
     if files:
         parts.append(f"文件: {', '.join(files)}")
     if funcs:
@@ -338,4 +352,6 @@ def _sink_info_to_text(sink_info: dict) -> str:
         parts.append(f"行号: {', '.join(lines)}")
     if desc:
         parts.append(f"描述: {desc}")
+    if entries:
+        parts.append(f"source 入口: {'; '.join(entries)}")
     return "; ".join(parts) if parts else "（无）"
