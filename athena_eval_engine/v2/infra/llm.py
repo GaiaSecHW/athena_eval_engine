@@ -609,6 +609,8 @@ _runtime_cfg = {
     "llm_enabled": LLM_ENABLED,
     "reasoning_effort": "none",  # "none" | "low" | "high" | "max"
     "model": DEFAULT_MODEL,
+    "temperature": 0.0,          # 默认 0；调用方显式传值时以调用方为准
+    "seed": None,                # None = 不发送 seed；整数 = 固定种子
 }
 
 
@@ -732,20 +734,26 @@ def test_connection(api_base: str = "", api_key: str = "", model: str = "") -> d
         }
 
 
-def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
+def _chat_once(messages, *, model=None, temperature=None, max_tokens=None,
             api_base=None, api_key=None, timeout=None, reasoning_effort=None,
-            cancel_cb=None, **_unused) -> tuple[str, str | None]:
+            cancel_cb=None, seed=None, **_unused) -> tuple[str, str | None]:
     """单次 LLM 调用（SSE 流式），不重试。返回 (content, finish_reason)。
 
     ``timeout`` 可覆盖首 token 超时；后续 token 仍使用 STREAM_TIMEOUT。
     ``reasoning_effort`` 控制 LLM 推理深度（"none"/"low"/"high"/"max"），None 时
     从 _runtime_cfg["reasoning_effort"] 读取全局设置。
+    ``temperature`` / ``seed`` 为 None 时从 _runtime_cfg 读取系统配置；
+    调用方显式传值则以调用方为准（如 case matcher 固定 0）。
     ``cancel_cb`` 可选，在 SSE 读取循环中每 5 秒检查一次，被取消时立即抛 TaskCancelledError。
     429 限流最多重试 MAX_RATE_LIMIT_RETRIES 次（3 秒间隔，不占用 MAX_RETRIES 额度）。
     LLM 并发受全局 gate 控制（DB 配 llm_max_concurrency）。
     """
     if reasoning_effort is None:
         reasoning_effort = _runtime_cfg.get("reasoning_effort", "none")
+    if temperature is None:
+        temperature = _runtime_cfg.get("temperature", 0.0)
+    if seed is None:
+        seed = _runtime_cfg.get("seed")
     base = api_base or DEFAULT_API_BASE
     parsed = urlparse(base)
     host = parsed.hostname
@@ -762,6 +770,8 @@ def _chat_once(messages, *, model=None, temperature=0, max_tokens=None,
         "stream": True,
         "stream_options": {"include_usage": True},
     }
+    if seed is not None:
+        _payload["seed"] = seed
     if reasoning_effort and reasoning_effort != "none":
         # 开启推理模式（兼容各厂商参数，换模型无需改代码）
         _payload["thinking"] = {"type": "enabled"}

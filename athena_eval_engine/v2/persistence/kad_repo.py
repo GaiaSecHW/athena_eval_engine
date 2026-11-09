@@ -1,5 +1,9 @@
 """knowledge_access_detail 表持久化。
 
+DEPRECATED：本表是旧版 L0-L7 明细表，v2 pipeline **不写入**。
+保留仅为兼容存量库/旧数据读取；新代码不要调用 upsert_knowledge_access_details。
+v2 的 L0-L8 判定以 root_cause_analyzer 输出的 l0_l7 JSON 为准。
+
 写入约束（参考 docs/knowledge-effect-eval-requirements.md §3.1 / docs/ddl-final.md §1.6）：
 - 幂等写入：INSERT ... ON DUPLICATE KEY UPDATE，冲突键 UNIQUE(task_run_id, event_idx)
 - 大字段文件存储：query_content/returned_content/reasoning_ref/evidence_json 超过 64KB

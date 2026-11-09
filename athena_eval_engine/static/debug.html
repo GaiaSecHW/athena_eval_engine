@@ -1170,12 +1170,14 @@ RENDERERS.root_cause = function(el, data) {
   }
 
   const catLabels = {
-    "knowledge_gap": "该查没查",
-    "query_inaccurate": "查询不准",
-    "knowledge_error": "知识错误",
+    "knowledge_gap": "知识缺失（查了没得）",
+    "query_inaccurate": "查询不准（查询太泛）",
+    "knowledge_error": "知识错误（知识误导）",
     "reasoning_flaw": "推理缺陷",
     "verification_dimension_missing": "验证维度遗漏",
     "verification_insufficient": "验证不足",
+    "process_flaw": "流程缺陷/其他",
+    "link_error": "链路问题",
     "no_session": "无 session",
     "llm_error": "LLM 错误",
     "unknown": "未知",
@@ -1187,6 +1189,8 @@ RENDERERS.root_cause = function(el, data) {
     "reasoning_flaw": "#e74c3c",
     "verification_dimension_missing": "#e67e22",
     "verification_insufficient": "#9b59b6",
+    "process_flaw": "#e67e22",
+    "link_error": "#f39c12",
     "no_session": "#999",
     "llm_error": "#999",
     "unknown": "#999",

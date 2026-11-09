@@ -69,8 +69,10 @@ MIGRATIONS = [
         ],
     },
     {
+        # DEPRECATED: knowledge_access_detail 是旧版 L0-L7 明细表，
+        # v2 pipeline 不写入；保留迁移仅为兼容存量库。
         "id": "007_knowledge_access_detail",
-        "desc": "新增知识访问明细表",
+        "desc": "新增知识访问明细表（已废弃，v2 不写入）",
         "sql": [
             # 1. 创建 knowledge_access_detail 表
             "CREATE TABLE IF NOT EXISTS knowledge_access_detail ("

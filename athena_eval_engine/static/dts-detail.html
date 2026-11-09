@@ -253,7 +253,17 @@ async function renderDtsDetailPage(dtsId){
         html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
           +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>';
         // 序号基准必须与后端的 supports_hypotheses 一致：按概率降序，全局编号
-        allHypotheses.sort(function(a,b){return (b.data.probability||0)-(a.data.probability||0);});
+        // probability 排序已废弃；与后端一致：最早 L 级别 → 证据数 → cause_code
+        var DTS_LEVEL_RANK={A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};
+        allHypotheses.sort(function(a,b){
+          var la=DTS_LEVEL_RANK[a.data.cause_code]||99, lb=DTS_LEVEL_RANK[b.data.cause_code]||99;
+          if(la!==lb) return la-lb;
+          var ra=(a.data.evidence_refs||[]).length, rb=(b.data.evidence_refs||[]).length;
+          if(ra!==rb) return rb-ra;
+          var ca=String(a.data.cause_code||'Z'), cb=String(b.data.cause_code||'Z');
+          if(ca!==cb) return ca<cb?-1:1;
+          return (b.data.confidence||0)-(a.data.confidence||0);
+        });
         allHypotheses.forEach(function(h,idx){
           var hdata=h.data||{};
           var prob=hdata.probability||0;

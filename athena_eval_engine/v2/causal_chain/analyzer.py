@@ -34,6 +34,10 @@ CAUSE_TO_LEVEL = {
     "K": "L8",   # 验证否定真漏洞——L8 断（挖掘 CONFIRMED 但验证否定）
 }
 
+# L 级别从早到晚；跨链选主因必须按这个顺序，不能按链顺序。
+_LEVEL_RANK = {"L2": 2, "L3": 3, "L4": 4, "L5": 5,
+               "L6": 6, "L7": 7, "L8": 8}
+
 # 所有 L 级别（列头）
 _ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
@@ -162,7 +166,7 @@ class CausalChainAnalyzer:
               "has_field": bool,          是否至少有一条假设带 supporting_breakpoints 字段
               "hyp_by_ref": dict[str, list[int]],   bp_ref → 引用它的假设序号(1-based)
               "hyp_by_sid": dict[str, list[int]],   session_id → 假设序号
-              "ordered": list[dict],      按 probability 降序的假设列表（序号基准）
+              "ordered": list[dict],      按最早 L 级别/证据数/cause_code 排序的假设列表（序号基准）
             }
         """
         ordered: list[dict] = []
@@ -173,8 +177,15 @@ class CausalChainAnalyzer:
             hs = ch.get("hypotheses") or []
             if isinstance(hs, list):
                 ordered.extend([h for h in hs if isinstance(h, dict)])
-        # 按 probability 降序 = 前端卡片顺序
-        ordered.sort(key=lambda h: h.get("probability") or 0, reverse=True)
+        # probability 排序已废弃；统一按最早 L 级别、证据数、cause_code 排序，
+        # 与 dts/issue.py 的主因选择保持一致（supports_hypotheses 编号也按此顺序）。
+        ordered.sort(key=lambda h: (
+            _LEVEL_RANK.get(
+                CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),
+            -len(h.get("evidence_refs") or []),
+            str(h.get("cause_code") or "Z"),
+            -(h.get("confidence") or 0),
+        ))
 
         bp_sessions: dict[str, str] = {}
         for chain_type in ("mining", "verification"):
@@ -690,27 +701,19 @@ class CausalChainAnalyzer:
             if all_hypotheses:
                 # 主因按各链的 primary_cause 选取，不看 probability；
                 # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
-                primary_codes = {
-                    c.get("primary_cause") for c in (mining, verify)
-                    if isinstance(c, dict) and c.get("primary_cause")
-                }
-                primary_hyps = {
-                    c.get("primary_hypothesis") for c in (mining, verify)
-                    if isinstance(c, dict) and c.get("primary_hypothesis")
-                }
-                top = next(
-                    (h for h in all_hypotheses
-                     if h.get("hypothesis") in primary_hyps), None)
-                if top is None:
-                    top = next(
-                        (h for h in all_hypotheses
-                         if h.get("cause_code") in primary_codes), None)
-                if top is None:
-                    top = sorted(
-                        all_hypotheses,
-                        key=lambda h: (-len(h.get("evidence_refs") or []),
-                                       str(h.get("cause_code") or "Z")),
-                    )[0]
+                # 跨链主因：按最早断裂的 L 级别选，不能按链顺序取第一个。
+                eligible = [h for h in all_hypotheses
+                            if float(h.get("confidence", 0.7) or 0) >= 0.7]
+                top = sorted(
+                    eligible or all_hypotheses,
+                    key=lambda h: (
+                        _LEVEL_RANK.get(
+                            CAUSE_TO_LEVEL.get(
+                                str(h.get("cause_code") or ""), ""), 99),
+                        -len(h.get("evidence_refs") or []),
+                        str(h.get("cause_code") or "Z"),
+                    ),
+                )[0] if all_hypotheses else None
                 if top and isinstance(top, dict):
                     root_causes = {
                         "hypothesis": top.get("hypothesis", ""),

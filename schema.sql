@@ -544,6 +544,8 @@ CREATE INDEX idx_sg_eval ON session_graph(evaluation_id);
 
 -- ===== Knowledge Access Detail (知识访问明细) =====
 
+-- DEPRECATED: knowledge_access_detail 是旧版 L0-L7 明细表，v2 pipeline 不写入。
+-- 保留建表语句仅为兼容存量库；新逻辑以 root_cause_analyzer 的 l0_l7 JSON 为准。
 CREATE TABLE IF NOT EXISTS knowledge_access_detail (
     access_id            VARCHAR(128) PRIMARY KEY,
     evaluation_id        VARCHAR(64) NOT NULL,

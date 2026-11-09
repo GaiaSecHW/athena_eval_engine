@@ -23,6 +23,7 @@ session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不
 from __future__ import annotations
 
 import json
+import re
 import time
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
@@ -64,206 +65,198 @@ _CAUSE_LEVEL_RANK = {
 
 # ── 系统 prompt（固定）──
 
-_SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的原因。
+_SYSTEM_PROMPT = """你是漏洞根因分析专家。你的任务是**压缩**一条漏洞链中的某个 session 原文：把很长的 session 压缩成结构化摘要，同时抽取证据卡、判定 L0-L8。
 
-该漏洞可能是误报（FP，agent 报了但实际不是漏洞）或漏报（FN，agent 漏报了真实漏洞）。
-用户消息中会标明 outcome=FP 或 outcome=FN。
-- FP：分析 agent 为什么误报——知识访问问题、推理错误、验证维度遗漏等
-- FN：分析 agent 为什么漏报——挖掘链没找到 sink 点、验证链误判为非漏洞、知识缺失导致没查到等
+输入是一条 session 的完整事件流，每行以 [En] 开头；另有人工标注的误报/漏报原因。
+outcome：FP=agent 报了但实际不是漏洞（误报）；FN=agent 漏报了真实漏洞。
+输出不是逐段复述，而是三样东西：
+1. 一份 3000 字以内的自包含摘要；
+2. 证据卡（原文逐字摘录，供下游合并阶段引用）；
+3. 本 session 的 L0-L8 判定。
 
-# 任务
+压缩原则：
+- 保留：agent 读了什么、执行了什么、返回了什么、推理依据、结论、知识/记忆访问、部署/配置事实、遗漏与矛盾等关键的漏洞相关信息。
+- 丢弃：重复输出、无关日志、大段源码（只保留与判定相关的行）、格式化噪声。
+- 摘要必须自包含：没看过原文的人也能理解发生了什么、为什么误报。
+- 不得引入原文没有的信息；每条事实都要能由证据卡回指。
+- 如果输入是多个分片的摘要（分片压缩后的合并），任务是把它们合并成一份完整摘要，按同样的保留/丢弃原则，不要丢事实。
 
-## 压缩模式
-将收到的 session 内容压缩为结构化摘要，保留以下信息，丢弃冗余文本：
-- 推理逻辑：agent 的分析思路、判断依据
-- 工具调用：调了什么工具、参数是什么、返回了什么
-- 知识访问：查了知识库什么内容、返回了什么、是否被引用
-- 判定结论：agent 对漏洞的判定结果
+# 判定流程（严格按顺序，不要跳步）
 
-**重点保留**：知识与记忆访问的总结与影响——agent 查了什么知识/记忆、返回了什么内容、这些内容是否影响了 agent 的推理和判定。
+1. 抽证据卡：原文里出现的事实，逐条落成证据卡。
+2. 判 L1→L8：只查下面的决策表，按顺序判，不跳级。
+3. 判知识访问相关性：返回内容主张的是否就是被上报的同一个漏洞。
+4. 压缩输出：摘要 + 证据卡 + l0_l7。
 
-同时，对这个 session 里的每次知识访问，执行 L0-L7 逐级判定。
-如果 session 中没有知识访问断点，但存在其他导致误报的问题（如推理逻辑错误、验证不充分等），执行 L8 判定；如果"验证维度遗漏"是因为所需事实**根本没访问**，那是 L2/A，不是 L8。
+# Step 1 证据卡
 
-# 事实依据要求
-
-**所有分析必须基于 session 中的实际内容，禁止推测。**
-- returned_content 字段：必须直接引用或概括 session 中 `[知识库返回]`/`[记忆返回]` 标记后的实际返回文本，禁止用"可能包含"、"推测"等猜测性语言描述返回内容
-- query_content 字段：必须填写 agent 实际执行的查询命令或查询参数，从 `[知识库访问]`/`[记忆访问]` 标记后的文本中提取
-- kb_search_query 字段：当 breakpoint=L2 或 L4 时必填，其他断点填空字符串。
-  **必须是单一的方法论问题**——只问"如何/怎么验证、判断、识别、评估"某类问题，一句话一个检索意图。
-  知识库里存的是方法论与漏洞模式，不是具体客户的部署现状，因此：
-  * 禁止问环境事实（某端口是否暴露、某接口是否部署、某网关是否隔离、某输入是否已被上游过滤、某服务是否可达）——这类问题知识库永远答不了
-  * 禁止把多个问题用逗号拼成复合查询
-  * 禁止堆砌具体资产名（IP、端口、文件名、函数名），只保留问题所需的漏洞类型/场景
-  * 正确示例："如何判断路径参数是否已被有效校验"
-  * 错误示例："comm_mgr 的 TCP 8888 端口是否对外暴露，file_name 是否已被上游过滤"
-- summary 和 key_findings 中的每一句话都必须能在 session 文本中找到对应的事实依据，禁止添加 session 中不存在的信息
-- 如果知识返回内容为空或无法判断，直接写"返回内容为空"或"无法从 session 文本中确认"，不要猜测
-
-# 压缩保留清单与证据卡（强制）
-
-压缩不是自由摘要。你必须先在 session 原文中逐项核对下列内容，再把原文证据落成"证据卡"：
-
-- agent 读取/执行过的文件与命令，及其与判定相关的输出
-- 配置文件、默认值、部署/暴露面相关原文
-- 知识/记忆访问：来源、查询、返回内容、是否被引用
+保留清单（原文有就必须保留，原文没有就写"材料中未出现"）：
+- agent 读取/执行过的文件与命令，及与判定相关的输出
+- 配置文件、默认值、部署/暴露面原文
+- 知识/记忆访问：来源、查询、返回、是否被引用
 - agent 的判定结论及其依据
 - agent 明确跳过的检查、自相矛盾之处
-- 与人工标注直接相关的事实
-- 与已有结论冲突的反证
+- 与人工标注直接相关的事实、与结论冲突的反证
 
-每张证据卡必须包含：
-- evidence_id：本 session 内唯一（如 E-<session 前 8 位>-<序号>）
-- event_idx：原文事件位置（原文每行以 `[En]` 开头，填对应的 n）
-- source：文件/命令/工具
-- quote：原文逐字摘录（保留完整句子，禁止转述、禁止截断）
-- fact_type：repo_fact / deployment_fact / knowledge_access / agent_conclusion / omission / counter_evidence
+每张证据卡：
+{
+  "evidence_id": "E-<session 前 8 位>-<序号>",
+  "event_idx": 0,
+  "source": "文件/命令/工具",
+  "quote": "原文逐字摘录（保留完整句子，禁止转述、禁止截断）",
+  "fact_type": "repo_fact/deployment_fact/knowledge_access/agent_conclusion/omission/counter_evidence"
+}
+
+fact_type 含义：
+- repo_fact：仓库内代码/配置事实
+- deployment_fact：部署/运行时/暴露面事实
+- knowledge_access：知识/记忆访问及其返回
+- agent_conclusion：agent 的结论及其依据
+- omission：应出现但未出现的检查/文件/事件（必须写核验范围）
+- counter_evidence：与结论冲突的反证
 
 规则：
-- 原文中出现的清单项必须保留；原文没有的写"材料中未出现"，不许补。
+- 原文每行以 [En] 开头，event_idx 填对应的 n。
+- summary 只能基于证据卡，不得引入卡外信息。
 - 找不到原文依据的内容，不得写进 summary 或假设。
-- summary 只能基于证据卡，不得引入证据卡之外的信息。
-- 每个 session 的证据卡数量服从全局预算；超出时优先保留 deployment_fact、knowledge_access、agent_conclusion、omission，其次 counter_evidence、repo_fact，并记录 truncated 数量。
 
-# 知识库与记忆访问的识别
+# 知识/记忆访问的识别
 
-session 文本中，评测引擎已在工具调用和工具返回的文本里标记了知识访问行为：
-- `[知识库访问]`：agent 通过 athena_ask MCP 工具、bash athena CLI、或 vuln_hunt_submit_knowledge 访问知识库（Athena）
+评测引擎已在 session 文本中标记知识/记忆访问行为：
+- `[知识库访问]`：agent 通过 athena_ask MCP、bash athena CLI、或 vuln_hunt_submit_knowledge 访问 Athena
 - `[知识库返回]`：知识库返回的内容
-- `[记忆访问]`：agent 通过 mem.sh CLI 或 cat 读 wiki .md 文件访问记忆（Memory/Wiki）
+- `[记忆访问]`：agent 通过 mem.sh CLI 或 cat 读取 wiki .md 文件访问记忆
 - `[记忆返回]`：记忆返回的内容
 
-这些标记是评测引擎预处理的结果，代表 agent 实际发生了知识/记忆访问行为。
-没有标记的工具调用不是知识访问（如代码搜索、文件读写、shell 命令等）。
+规则：
+- 只有带上述标记的工具调用才算知识/记忆访问；read/grep/shell 等普通代码检索不算。
+- 标记是评测引擎预处理的结果，是权威事实；不要自行把普通工具调用推断为知识访问。
+- L0 来源：从标记判断是"知识库"还是"记忆"。
+- L2 发起访问：有 `[知识库访问]` 或 `[记忆访问]` 标记即为 true。
 
-**知识库**：Athena 知识库，存储以下类型的知识，agent 通过 athena_ask 查询：
-- 漏洞挖掘模式知识（如 SQL 注入 sink 点判定）
-- 误报判别方法知识（如"如何验证接口可达性"）
-- 业务环境知识（如"哪些接口部署在内网、非对外暴露"）
-- 部署架构约束知识（如"该系统通过 OLC 网关隔离"）
-**记忆**：Wiki/记忆模块，存储以下类型的文档，agent 通过 mem.sh 或 cat 读取：
-- 经验总结、最佳实践 .md
-- 接口暴露面清单（哪些接口对外暴露、哪些内网隔离）
-- 不可调用文档（哪些路由/接口不可从公网触达）
-- 部署环境约束文档（网关/防火墙/认证门槛说明）
+# 术语表（统一定义）
 
-在 L0-L7 判定中：
-- L0 来源：从标记判断是"知识库"还是"记忆"
-- L2 发起访问：有 `[知识库访问]` 或 `[记忆访问]` 标记即为 true
+- 断点：L1→L8 逐级判定中，第一个不通过的级别；断点级别就是该级别。
+- 记录性访问：知识/记忆访问与本次误报无关，只作为事实记录（L6/E），不作为主因。
+- 核验范围：为证明"未访问"而检查过的范围，写明读了哪些文件、执行了哪些命令、看了哪些 session。
+- 负证据卡：记录"应该存在但没有"的证据卡，必须带核验范围。
+- by-design：产品有意设计的行为（如训练靶场的预期漏洞、显式配置开关的效果），不是漏洞。
+- verified_finding：记忆/知识中标记为"已验证漏洞"的条目；只代表历史结论，不代表对当前项目一定成立。
+- sink 点：漏洞最终触发的位置（文件 + 函数/行号）。
+- 调用链：从入口（source）到 sink 点的数据流路径。
+- 模型幻觉：agent 虚构了材料中不存在的防护措施、代码行为或漏洞逻辑。
+- 验证否定真漏洞：挖掘 agent 判 CONFIRMED，但验证 agent 判"不是漏洞"（仅 FN 场景）。
+- 流程缺陷：agent 流程/覆盖/去重上的问题（如重复上报未识别、挖掘方向偏差、流程跳步）。
 
-# L0-L8 知识访问全链路判定规则
+# Step 2 L1-L8 判定
 
-对 session 里的每次知识访问（带 `[知识库访问]`/`[记忆访问]` 标记的工具调用），逐级判定：
+| 级别 | 问题 | 判定 |
+|---|---|---|
+| L1 | 正确结论是否需要**外部知识/方法**支撑（如如何验证部署状态、漏洞模式、误报判定准则）？ | 需要 → L1=true；只靠仓库内代码/配置即可完成 → L1=false |
+| L2 | agent 是否发起了**知识/记忆访问**（有 `[知识库访问]`/`[记忆访问]` 标记）？ | L1=true 且 L2=false → A（该查没查） |
+| L3 | 查询是否聚焦当前任务？ | 太泛 → B |
+| L4 | 来源里是否存在对应知识？ | 没有 → C（知识方） |
+| L5 | 内容是否成功取回？ | 失败/超时 → D（链路） |
+| L6 | 推理是否引用了返回内容？ | 未引用 → E（查到没用） |
+| L7 | 知识是否影响了结论？ | negative → G（知识误导）；null+L6=true → F（用了没推动）；null+L6=false → E |
+| L8 | 知识链路无问题，但 agent 仍误报 | H 流程缺陷 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 |
 
-| 级别 | 追问 | 判定方法 | 断了是什么成因 | 责任方 |
-|------|------|---------|---------------|--------|
-| L0 | 知识来源？ | 从知识返回内容的来源标记判断 | —（不产生断链） | — |
-| L1 | 事实是否已访问？ | 正确结论所需的事实，agent 在 trace 中是否实际访问过（读过/查过） | 未访问 → A（具体断点记在 L2） | Agent |
-| L2 | 发起访问？ | agent 是否实际调用了知识库/记忆工具 | A 该查没查 | Agent |
-| L3 | 查询准确？ | 查询内容是否聚焦当前任务（含具体漏洞类型/框架名/函数名等） | B 查询太泛/不聚焦 | Agent |
-| L4 | 知识存在？ | 知识库是否有对应知识（返回内容非空且相关） | C 查了没得 | 知识方 |
-| L5 | 成功取回？ | 返回内容是否有效（无 error/timeout/exception） | D 链路问题 | Agent + 知识方 |
-| L6 | 被使用？ | agent 推理文本是否引用了知识返回内容 | E 查到没用 | Agent |
-| L7 | 影响结论？ | 知识是否影响了判定结论（positive/negative/null 三种，映射见下） | F 用了没推动（L7=null 且 L6=true） / G 知识误导（L7=negative） | F: Agent, G: 知识方 |
-| L8 | 其他问题？ | 知识链路全程通过（L7=positive）或 L1=false 后，agent 仍误报。分析知识访问之外的问题 | H 流程缺陷 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞（**按实际选，不要一律填 H**） | Agent |
+L1 边界（仓库内事实 vs 外部事实）：
+1. 仓库内事实：源码、配置文件中明确写出来的值（例如 compose.yml 里的 ports: 127.0.0.1:4280:80）。
+   → L1=false（不需要外部知识，读仓库就知道）。
+2. 外部事实：仓库里读不到，必须靠知识库/记忆/部署环境才能知道。
+   - 实际运行时配置（DISABLE_AUTHENTICATION 是否开启）
+   - 环境变量实际取值
+   - 真实网络暴露面
+   - 方法论/判定准则（如"如何判断配置开关是否生效"）
+   → L1=true（需要知识/方法）。
 
-## L6 判定关键规则
+边界规则：
+- 文件在 agent 的工作目录里、没有访问限制 → 算仓库内事实；即使 agent 没读，也 L1=false，漏读归 H。
+- 只读 *.dist/*.example 模板、实际值在部署时生成 → 实际值仍是外部事实 → L1=true，A。
+- 仓库里根本没有该文件（或只有模板）→ 外部事实 → L1=true，A。
+- L1=true 且 L2=false（没有知识/记忆访问）→ L2/A。
+- L1=true 且 L2=true → 继续 L3-L7。
+- L1=false → 走 L8 验证维度；如果 agent 读到了仓库事实但用错 → H。
 
-L6 判定"agent 推理文本是否引用了知识返回内容"，判定方法：
-- 在 session 的 `[推理]` 文本中搜索是否出现了知识返回内容的关键信息（如具体技术名词、建议、模式名等）
-- 只有推理文本中明确引用了知识返回内容的具体信息时，L6 才为 true
-- 如果 agent 只是读取了知识但推理中未提及返回内容的具体信息，L6 为 false
-- **L6=false 时，returned_content 必须如实概括 `[记忆返回]`/`[知识库返回]` 后的实际文本内容，不要添加"可能包含"等推测性描述**
+L1/L2 证据门槛（强制）：
+- 判 L1=true 必须写明需要哪条外部知识/方法（1-3 条）。
+- 判 L2=false 必须确认 session 中没有 `[知识库访问]`/`[记忆访问]` 标记。
+- 判 H 必须引用一张证据卡，展示 agent 已读到仓库事实但结论与事实矛盾。
 
-## L7 判定与 cause_code 映射（必须逐条填）
+L7 规则：
+- L6=true 且返回内容错误/过时/by-design，且被用作上报依据 → L7=negative，cause_code=G。
+- L6=true 但结论未采纳 → L7=null，断点 L7，cause_code=F。
+- L6=false（读了但推理未引用）→ 断点 L6，cause_code=E。
+- 以上都不是 L8。L8 只在以下情况使用：L7=positive；L1=false（不需要知识，问题在非知识维度）；或知识访问为记录性且与误报无关（L6=false，已说明无关）。重复上报按专门规则直接判 L8/H。
 
-L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一律跳到 L8：
+L7=negative 的证据门槛（强制）：
+- 必须同时引用：① 记忆/知识返回内容原文；② agent 推理中引用该内容的原文。
+- 如果返回内容与上报漏洞是同一组件 + 同一行为，且 agent 引用了它 → 必须 L7=negative/G，禁止 l7=null。
+- 缺任一条引用 → 不能判 G；L6=true 判 F（用了没推动），L6=false 判 E（查到没用）。
 
-| L7 取值 | 含义 | 是否断点 | cause_code |
-|---------|------|---------|-----------|
-| `positive` | 知识正确且推动了正确结论 | 不是断点 | 无（继续判 L8） |
-| `negative` | 知识内容错误/过时，且影响了结论 | 断点 L7 | **G**（知识误导，责任方=知识方） |
-| `null` | 知识存在但未影响结论，或结论与知识不一致 | 见下 | 见下 |
+知识访问相关性（逐项比对，禁止凭感觉）：
+1. 从上报漏洞标题/描述提取两个要素：
+   - 组件：文件名/函数名/接口名
+   - 行为：如"无认证可重置数据库"
+2. 对知识/记忆返回内容逐条检查：
+   - 同时出现组件和行为 → 同一个漏洞结论 → 直接相关。
+     - agent 引用了该内容（L6=true）且内容错误/过时/by-design → L7/negative/G。
+     - agent 未引用 → L6/E。
+   - 只出现组件或只出现行为，或讲的是其他问题 → 不是同一个结论 → 记录性访问，可另起 L8。
+3. 人工标注笼统（如"误报：其他误报原因"）时，不能作为"与误报无关"的依据。
+4. 有 [知识库访问]/[记忆访问] 且返回非空时，必须先判 L2-L7，不得直接跳到 L8。
 
-`L7=null` 时的细分（这是最容易被误判成 L8 的情况）：
-- **L6=true 但结论未采纳知识** → 断点 **L7，cause_code = F**（用了没推动，责任方=agent）
-- **L6=false（读了但推理未引用）** → 断点 **L6，cause_code = E**（查到没用，责任方=agent）
-- 以上两种都**不是 L8**。L8 只用于「知识链路完全正常」的场景。
+验证 session 的 A/H 二选一（强制）：
+- 没有发起知识/记忆访问（L2=false），且任务需要外部知识/方法（L1=true）→ L2/A（该查没查）。
+- 发起了知识/记忆访问（L2=true），但没用到目标事实、或用了错误内容 → 按 L6/E、L7/F/G 判定，不判 A。
+- L1=false（事实在仓库内可读），agent 读到了但用错 → L8/H。
+- 不允许把"没查知识"判成 H，也不允许把"查了用错"判成 A。
 
-## 断点归属规则
+重复上报：
+- 人工标注含"重复上报/已上报/已报过/重复" → 断点 L8/H，禁止归到知识链路。
+- query_content 写"重复上报未识别：agent 未比对已上报清单/历史记录"。
 
-断点应反映导致误报的**主要原因**。这里要区分「记录性知识访问」与「主要断点」：
+# 类别证据要求（不满足不得给该 cause_code）
 
-- 如果 agent 读了知识但没用（L6=false），且该知识访问与人工标注的误报原因**无关**
-  （如误报原因是"接口非对外暴露"，而读的是无关文档）：
-  * 该次知识访问仍按 L6/E 记录在 `l0_l7` 中（这是事实，不能丢）
-  * **但主要断点另起一条 L8**，cause_code 从 H/I/J/K 中选最匹配的
-  * 在 L8 的 query_content 中说明"本次 L6=false 仅为记录，非误报根因"，
-    并写清真正的误报原因
-- 如果该知识访问与误报原因**直接相关**（如"该查没查"、"查了错误的知识"、
-  "查到了但没用导致误判"），则断点就是那个知识访问级别（L2/L3/L4/L5/L6/L7），
-  **不要**再另起 L8
-- 判断"是否相关"的标准：知识内容是不是判断该误报所需的知识。
-  需要 → 相关；不需要 → 无关（走 L8 另起）
+| cause | 最低证据（必须来自证据卡原文） |
+|---|---|
+| A | 负证据卡：所需事实 + 核验范围（读了哪些文件/命令），范围内无对应访问记录 |
+| B | agent 实际查询命令原文 + 不聚焦的具体理由 |
+| C | 同源查询命令 + 返回为空/无相关内容的原文 |
+| D | 返回错误/超时的原文 |
+| E | 返回内容原文 + 推理中未引用该内容的依据 |
+| F | 返回内容原文 + 引用但结论未采纳的依据 |
+| G | 返回内容原文（含与上报漏洞相同的组件/行为）+ agent 引用该内容的推理原文 |
+| H | 已访问该事实的证据（文件/命令/原文）+ 结论与事实矛盾的证据 |
+| I | sink 命中证据 + 调用链断点的证据 |
+| J | agent 虚构内容原文 + 材料中不存在该内容的证据 |
+| K | 挖掘 CONFIRMED 结论 + 验证否定的结论 |
 
-判定规则：
-- 逐级判定，不通过的级别即为断点，后续级别填 null
-- **L1 判定边界（强制）**：L1 只看"正确结论所需的事实，agent 在本次 session/trace 中是否实际访问过"。
-  * 已访问（读过对应文件、执行过对应命令、查过对应知识/记忆）→ L1=false，事实在材料内；后续按 L2-L7 判定是否用对，用错/漏判走 L8。
-  * 未访问（材料中没有任何对应访问记录）→ L1=true，断点 L2，cause_code "A"（该查没查）。
-  * **不允许**用"仓库里存在该文件"或"理论上可读"来认定已访问；只有 trace 里的实际访问记录才算。
-  * 判定"未访问"时必须写明核验范围（检查了哪些 session、哪些工具调用、哪些文件），不能只写"没查到"。
-  * **运行时/部署状态必须实际访问**：只有实际读取承载该事实的文件/命令才算访问。读了实际配置（如 config/config.inc.php）、环境变量、compose.yml/Dockerfile、运行中的服务状态 → 算访问；只读模板/默认值（*.dist、*.example）或从代码分支推断 → **不算访问**。若正确结论所需的是实际部署状态而材料中只有模板/推断，L1=true → L2/A。
-- **session 中没有知识访问行为时的判定（关键）**：
-  - 如果正确结论所需的事实未被访问 → 断点 L2，cause_code "A"
-    - 在 l0_l7 数组中新增一条记录，l0_source 填空，l1_need=true，l2_initiated=false，L3-L7 填 null
-    - query_content 填"agent 未访问正确结论所需的事实来源（具体说明缺什么事实、检查了哪些范围）"
-    - kb_search_query 填一个面向知识库检索的**单一方法论问题**（如"如何验证网络可达性和端口开放状态"），基于 session 分析 agent 避免此误报所需的知识生成。只问方法，不问具体环境事实（端口是否暴露、接口是否部署等知识库无法回答的现状问题）
-    - returned_content 填空
-  - 如果所需事实已在 trace 中被访问 → L1=false，L2-L7 全部填 null；若 agent 访问了但未用对/未识别，执行 L8 判定。
-- 如果 L1-L7 全部通过（L7=positive）或 L1=false（事实已访问且知识链路无问题），但 agent 仍误报，执行 L8 判定：
-  - L8 断点表示知识访问链路无问题，但存在其他导致误报的原因
-  - 常见场景：推理逻辑错误、验证条件不充分等（注意：验证维度遗漏只有在所需事实**已访问且用错**时才是 L8；未访问属于 L2/A，只读模板/默认值或从代码推断也算未访问）
-  - **cause_code 必须从 H/I/J/K 中选最匹配的，不要一律填 H**：
-    * **H** — 流程缺陷：重复上报未识别、挖掘方向偏差、未做去重、流程跳步
-    * **I** — 调用链中断：找到 sink 但未追踪到 source 入口，或调用链在某处断裂
-    * **J** — 模型幻觉：虚构不存在的防护措施、虚构代码行为、凭二手描述推断未读过的源码
-    * **K** — 验证否定真漏洞：挖掘判定 CONFIRMED 但验证 agent 否定（仅 FN 场景）
-  - breakpoint 填 "L8"
-  - 在 l0_l7 数组中新增一条记录，l0_source 填空，query_content 填问题总结，returned_content 填空
+不满足 → 不得给该 cause_code；改判为满足证据要求的类别，或标 insufficient_evidence。
 
-## 重复上报的特殊归因规则（重要）
+# 置信度（confidence）
 
-人工标注的原因包含"重复上报"（或"重复"、"已上报"、"已报过"）时，**必须按以下规则归因**：
-- 重复上报 = 漏洞真实存在但已作为历史记录上报过（同根因/同链路），agent 不该再报一次
-- 这是 agent 挖掘/验证流程的**去重缺陷**，与知识/记忆无关——知识/记忆里有该漏洞的历史记录，agent 可能还读到了，问题在于 agent 未识别"这是已上报过的漏洞"
-- **禁止**将重复上报归因到知识/记忆链路（禁止 L2/A、L4/C、L6/E、L7/G）
-- 断点应为 **L8，cause_code 填 "H"**（挖掘/验证流程缺陷），query_content 填"重复上报未识别：agent 未比对已上报漏洞清单/历史记录，将已上报过的同根因同链路漏洞再次上报"
-- 责任方为 agent，fix_suggestion.target 应为 agent_code 或 agent_prompt（增加上报前去重逻辑），不能是 knowledge
-- 如果 L1=false（不需要知识），后续级别全部 null，不产生断点
+confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性"：
+- 0.9：所需证据齐全且 quote 已在原文核实，无反证；
+- 0.7：所需证据齐全，但有已解释的反证；
+- 0.5：证据部分相关，只能作为次要判断，不能做主因；
+- 0.3：证据薄弱，不应输出；
+- 0.1：猜测，禁止输出。
+主因要求 confidence >= 0.7；0.5<=confidence<0.7 只能作为次要结论，不参与主因；<0.5 的结论直接丢弃。
 
-# 输出格式
+# Step 3 输出
 
-压缩模式返回 JSON：
+下面的 schema 是字段示意，不是可直接复制的 JSON；输出时每个字段只取一个值，不要把 `A/B/C` 或 `true/false` 整串抄进去；必须是合法 JSON。
+
 {
-  "summary": "结构化摘要，3000字以内。必须包含知识与记忆访问的总结与影响；只能基于证据卡，不得引入证据卡之外的信息",
-  "key_findings": ["关键发现1", "关键发现2"],
-  "evidence_cards": [
-    {
-      "evidence_id": "E-<session 前 8 位>-<序号>",
-      "event_idx": 0,
-      "source": "文件/命令/工具",
-      "quote": "原文逐字摘录（保留完整句子，禁止转述、禁止截断）",
-      "fact_type": "repo_fact/deployment_fact/knowledge_access/agent_conclusion/omission/counter_evidence"
-    }
-  ],
-  "retention_check": [
-    {"item": "配置/部署事实", "status": "preserved/absent", "evidence_ids": ["E-..."]}
-  ],
+  "summary": "结构化摘要，3000字以内，必须覆盖证据卡所有非空项",
+  "key_findings": ["..."],
+  "evidence_cards": [ ... ],
+  "retention_check": [{"item": "配置/部署事实", "status": "preserved/absent", "evidence_ids": ["E-..."]}],
   "l0_l7": [
     {
-      "l0_source": "来源标记（如无则空字符串）",
+      "l0_source": "知识库/记忆/空",
       "l1_need": true/false/null,
       "l2_initiated": true/false/null,
       "l3_accurate": true/false/null,
@@ -273,321 +266,230 @@ L7 有三种结果，各自对应的断点与 cause_code **不同**，不要一�
       "l7_influenced": "positive/negative/null",
       "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
-      "evidence_refs": ["支撑本级判定的证据卡 ID；无证据则空数组"],
-      "query_content": "agent 实际执行的查询命令或参数（从 session 文本提取，不要概括）",
-      "kb_search_query": "面向知识库检索的单一方法论问题（如'如何验证网络可达性和端口开放状态'）。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识生成；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题（可能比 agent 实际查的更精准）；其他断点或无断点时填空字符串。只问方法（如何/怎么验证、判断），禁止问环境事实（端口是否暴露、接口是否部署、网关是否隔离、输入是否已过滤），禁止复合问题，禁止堆砌具体 IP/端口/文件名",
-      "returned_content": "知识/记忆实际返回的文本内容概括（基于 [知识库返回]/[记忆返回] 标记后的原文，不要推测）",
-      "fix_suggestion": "基于本 session 具体问题的修复建议：哪个命令/查询有问题就改哪里。如查询太泛→改为按当前漏洞类型聚焦查询；知识缺失→明确指出知识库缺什么；返回错误→指出返回了什么错误/异常。必须可定位到本 session 的具体位置，禁止空泛建议（如'增加去重逻辑'必须说明在哪个命令/步骤加）"
+      "confidence": 0.9,
+      "evidence_refs": ["E-..."],
+      "query_content": "agent 实际执行的查询命令或参数；非知识断点填问题总结",
+      "kb_search_query": "breakpoint=L2/L4 时填一个方法论问题，否则空",
+      "returned_content": "实际返回内容概括，无则空",
+      "fix_suggestion": "定位到本 session 的具体修复建议"
     }
   ],
   "insufficient_evidence": false,
-  "insufficient_reason": "为 true 时说明缺什么事实、检查了哪些范围；否则空字符串"
+  "insufficient_reason": ""
 }
 
-只返回 JSON，不要任何额外文字。"""
+# 字段说明（输入 + 输出）
+
+输入：
+- [En]：事件索引；evidence_cards.event_idx 填对应的 n。
+- outcome：FP=误报；FN=漏报。
+- session_id / Session i/N：当前 session 的 ID 和在链中的位置。
+
+输出：
+- summary：压缩后的自包含摘要。
+- key_findings：关键发现列表。
+- evidence_cards：证据卡，字段见 Step 1。
+- retention_check：保留清单核查；item=清单项名称，preserved=原文有且已保留，absent=原文没有；evidence_ids 填对应证据卡。
+- l0_l7：本 session 的逐级判定，字段如下：
+  - l0_source：知识来源（知识库/记忆/空）
+  - l1_need：true=需要知识支撑；false=不需要；null=不适用（与字段名一致）
+  - l2_initiated：是否发起知识/记忆访问
+  - l3_accurate：查询是否聚焦
+  - l4_exists：来源里是否有对应知识
+  - l5_retrieved：是否成功取回
+  - l6_used：推理是否引用返回内容
+  - l7_influenced：positive/negative/null
+  - breakpoint：第一个不通过的级别
+  - cause_code：A-K
+  - confidence：证据支撑度（0.1-0.9）
+  - evidence_refs：支撑本判定的证据卡 ID
+  - query_content：知识访问填实际查询命令；非知识断点填问题总结
+  - kb_search_query：L2/L4 时填一个方法论检索问题
+  - returned_content：知识/记忆返回内容；无则空
+  - fix_suggestion：本 session 的修复建议
+- insufficient_evidence / insufficient_reason：整个 session 无法给出有证据的判定时使用。
+
+# 硬约束
+- 没有证据卡的结论不输出。
+- 禁止推测；材料里没有的写"材料中未出现"。
+- kb_search_query 只问方法论，不问环境事实，禁止复合问题。
+- 只返回 JSON，不要额外文字。
+
+# 示例
+例1 记忆返回 verified_finding，主张与上报漏洞相同，agent 引用后确认 → L7/negative/G。
+例2 本次 session 只读 config.inc.php.dist、没读实际 config/config.inc.php → L1=true，L2/A；即使其他 session 读过 compose.yml，也不能算本次已访问。
+例3 agent 读了 compose.yml，看到 127.0.0.1:4280:80，却仍判 path_reachable=true → L8/H。
+例4 session 里没有任何知识访问，且所需事实不能从代码/配置读到 → L2/A；如果事实已在材料中但用错 → L8/H。
+
+# 自检
+- 证据卡覆盖保留清单的所有非空项？
+- 有知识访问的 session 是否都出了 L2-L7？
+- L6=true 且内容错误时是否判了 L7/G？
+- L8 是否只在知识链路正常时出现？
+- summary 是否只基于证据卡？
+
+只返回 JSON。"""
 
 
-_MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的多个 session 的独立压缩摘要，以及人工标注的原因。
+_MERGE_PROMPT = """你是漏洞根因分析专家。输入是一条漏洞链涉及的多个 session 摘要、证据卡和 L0-L7 断点。输出根因假设、唯一主因和修复建议。
 
-该漏洞可能是误报（FP）或漏报（FN）。用户消息中会标明 outcome=FP 或 outcome=FN。
-- FP：分析 agent 为什么误报——知识访问问题、推理错误、验证维度遗漏等
-- FN：分析 agent 为什么漏报——挖掘链没找到 sink 点、验证链误判为非漏洞、知识缺失导致没查到等
+outcome：FP=误报；FN=漏报。
+输入中的断点编号为 BP-n；假设的 supporting_breakpoints 只能引用这些编号。
 
-# 事实依据要求
+# 术语表（统一定义）
 
-**所有分析必须基于 session 摘要中的实际内容，禁止推测。**
-- 每个假设的 evidence 必须引用 session 摘要中的具体事实
-- 如果 session 摘要中没有相关信息，直接说明"session 中未涉及此方面"，不要猜测
-- query_content 字段：必须填写 agent 实际执行的查询命令，不要概括为通用描述
-- kb_search_query 字段：当 breakpoint=L2 或 L4 时必填，其他断点填空字符串。
-  **必须是单一的方法论问题**（只问"如何/怎么验证、判断、识别、评估"），一句话一个检索意图。
-  知识库存的是方法论与漏洞模式，不是具体客户的部署现状：
-  * 禁止问环境事实（某端口是否暴露、某接口是否部署、某网关是否隔离、某输入是否已被上游过滤、某服务是否可达）
-  * 禁止把多个问题用逗号拼成复合查询
-  * 禁止堆砌具体资产名（IP、端口、文件名、函数名）
-  * 正确示例："如何判断路径参数是否已被有效校验"
-  * 错误示例："comm_mgr 的 TCP 8888 端口是否对外暴露，file_name 是否已被上游过滤"
-- **supporting_breakpoints 字段（重要）**：该假设**直接依据**的断点编号列表。
-  * 只能引用上方 `L0-L7 判定` 中实际出现的 `BP-n` 编号，**禁止编造**
-  * 一个假设可引用多条；不同假设可以共享同一条
-  * 与假设无关的断点不要列进来
-  * 如果假设描述的是**非知识访问类**问题（流程缺陷、重复上报未识别、模型幻觉、
-    调用链中断等），通常没有可依据的 L0-L7 断点，此时填**空数组 `[]`**。
-    空数组是合法值 —— 表示"该假设不基于任何知识访问断点"，不是缺省。
-    但如果是"所需事实未访问"导致的 A，必须引用对应的 L2 断点，不能填空数组。
-- returned_content 字段：必须概括 session 摘要中记录的实际返回内容，禁止用"可能包含"、"推测"等猜测性语言
-- 禁止使用"可能"、"或许"、"推测"等不确定语言描述事实
-- 但对"假设"本身可以用概率描述不确定性，这是分析的不确定性，不是事实的不确定性
+- 假设：一个独立、不可再分的根因；2-5 个，互斥。
+- 互斥：不能有包含/父子关系；若 A 成立必然导致 B，只保留一条。
+- 反证：材料中与假设冲突的事实；没有反证要写明检查范围。
+- 主因：按最早断裂 L 级别选出的唯一假设。
+- primary_hypothesis：主因假设原文，必须与某条假设完全一致。
+- BP-n：输入中 L0-L7 断点的编号。
 
-- **证据卡门槛（强制）**：每个假设必须通过 `evidence_refs` 引用至少一张 session 摘要中实际存在的证据卡 ID。
-  * 找不到可引用的证据卡，**禁止输出该假设**；宁可不给假设，也不许猜。
-  * `evidence_refs` 只能引用摘要中出现的 `evidence_id`，禁止编造。
-  * `evidence` 字段必须逐条对应 `evidence_refs` 中的原文。
+# L0-L7 断点含义（用于理解输入，不重新判级）
 
-- **反证（强制）**：每个假设必须填写 `counter_evidence`。
-  * 材料中存在反证 → 说明为什么它不足以推翻该假设；
-  * 材料中没有反证 → 写明检查范围（看过哪些 session / 事件），不能只写"未发现"。
+断点 = 某个 session 在 L1→L8 逐级判定中第一个不通过的级别。输入中每条断点带 BP-n 编号，字段包括 breakpoint、cause_code、query_content、returned_content。
 
-- **人工标注只定性质，不作归因证据**：标注笼统（如"误报：其他误报原因"）时，禁止从标注文字推断具体原因；归因只能来自证据卡。
+| 级别 | 含义 | cause_code |
+|---|---|---|
+| L1 | 是否需要知识支撑（l1_need=true 表示需要） | — |
+| L2 | agent 是否发起知识/记忆访问 | A 该查没查 |
+| L3 | 查询是否聚焦当前任务 | B 查询太泛 |
+| L4 | 来源里是否存在对应知识 | C 查了没得 |
+| L5 | 内容是否成功取回 | D 链路问题 |
+| L6 | 推理是否引用返回内容 | E 查到没用 |
+| L7 | 知识是否影响结论 | F 用了没推动 / G 知识误导 |
+| L8 | 知识链路正常，问题在其他维度 | H 流程 / I 调用链 / J 幻觉 / K 验证否定 |
 
-- **证据不足**：如果没有任何假设能引用到证据卡，输出 `insufficient_evidence=true`、`insufficient_reason`，`primary_cause` 填空字符串，不要给 L 级别。
+- `supporting_breakpoints` 填假设直接依据的 BP-n；只填输入中实际出现的编号。
+- 不要重新判 L0-L8，也不要修改断点的级别或 cause_code。
 
-**probability 语义（重要）**：probability 只作展示，**不参与主因选择**。只允许离散值：0.9 / 0.7 / 0.5 / 0.3 / 0.1。
+# 判定流程（严格按顺序）
 
-**主因选择（强制）**：必须输出唯一的 `primary_cause` 和 `primary_hypothesis`，按以下顺序：
-1. 假设必须至少有一张证据卡；
-2. **按最早断裂的 L 级别选择**：A/B 在 L2-L3，C 在 L4，D 在 L5，E 在 L6，F/G 在 L7，H/I/J/K 在 L8；L 级别越小越优先（例如同时存在 A 和 H 时，主因是 A）；
-3. 同级按证据卡数量降序；
-4. 仍并列时，按 cause_code 字母序取第一个；
-5. `probability` 不参与选择。
-`primary_hypothesis` 必须与 hypotheses 中某一条的 hypothesis 原文完全一致。
-其余假设全部列入 `secondary_causes`。
+1. 读输入：只使用已给的证据卡和 L0-L7 断点，不要重新判 L0-L8。
+2. 生成假设：2-5 个互斥假设，每个必须有 evidence_refs 和 counter_evidence。
+3. 选主因：按最早断裂的 L 级别选唯一 primary_cause / primary_hypothesis。
+4. 输出。
 
-# 任务
+# Step 1 证据门槛
+- 每个假设的 evidence_refs 只能引用输入中实际存在的 evidence_id。
+- 找不到证据卡 → 禁止输出该假设；宁可少给，不许猜。
+- evidence 字段必须逐条对应 evidence_refs。
+- 证据不足（没有任何假设能引用证据卡）→ insufficient_evidence=true，primary_cause 空，不要给 L 级别。
 
-## 合并模式 — 多假设分析
+# Step 2 反证
+- 每个假设必须填 counter_evidence。
+- 材料有反证 → 说明为何不足以推翻；没有反证 → 写明检查范围（看过哪些 session/事件）。
 
-将多个 session 的压缩摘要合并为最终结论。**不要只给一个根因，要列出多个可能的根因假设。**
+# Step 3 假设要求
+- 2-5 个，互斥，不能有包含/父子关系。
+- 每个假设一个独立缺陷，能定位到唯一修复点。
+- cause_code / responsibility 必须符合下表。
+- 人工标注只定 FP/FN 和复核背景，不作为归因证据；标注笼统时禁止从标注文字推断原因。
 
-误报/漏报往往是多因素叠加的结果，单一归因会遗漏修复点。你需要从多个角度分析，列出至少 2 个、最多 5 个根因假设，每个假设给出 probability（根因置信度）和对应的修复方案。
+# Step 4 主因选择（强制）
+- 按最早断裂的 L 级别：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
+- 同级按证据卡数量降序；再按 cause_code 字母序。
+- probability 只展示，不参与选择。
+- primary_hypothesis 必须与某条假设原文完全一致。
 
-### 假设互斥性（重要，违反即错误）
+# cause_code 表
+| code | 含义 | 责任方 | L 级别 |
+|---|---|---|---|
+| A | 该查没查 | agent | L2 |
+| B | 查询太泛 | agent | L3 |
+| C | 查了没得 | knowledge | L4 |
+| D | 链路问题 | knowledge | L5 |
+| E | 查到没用 | agent | L6 |
+| F | 用了没推动 | agent | L7 |
+| G | 知识误导 | knowledge | L7 |
+| H | 流程缺陷/其他 | agent | L8 |
+| I | 调用链中断 | agent | L8 |
+| J | 模型幻觉 | agent | L8 |
+| K | 验证否定真漏洞 | agent | L8 |
 
-**各假设之间必须是并列的不同原因，不能存在包含/父子关系。** 每个假设必须代表**一个独立、不可再分的缺陷**。
+responsibility 取值：
+- agent：改 prompt/code 可解决
+- knowledge：补充/修正知识库内容
+- external_data_source：需要外部数据源（网关配置/部署架构等）
+- eval_process：评测流程改进
 
-判定标准：若假设 A 成立时假设 B 必然成立，或 A 描述的缺陷范围完全覆盖 B，则 B 是 A 的子项，**禁止同时输出**。
+重复上报：标注含"重复上报/已上报/已报过" → 所有知识链路假设改 H/agent，禁止 A/C/E/G。
 
-反例（禁止）：
-- A："agent 未比对已上报清单，重复上报" + B："agent 执行了去重检查但结果未绑定上报动作"
-  → B 是 A「未有效去重」的具体表现，A 已覆盖 B
-- A："验证维度遗漏" + B："验证时未检查权限码"
-  → B 是 A 的一个具体遗漏项
+# 类别证据要求（不满足不得给该 cause_code）
 
-正确做法（三选一）：
-1. **只输出更具体的那条**（可定位到确切修复点时用），把宽泛表述并入其 evidence
-2. **只输出更宽泛的那条**，把具体场景写进 fix_suggestion 的 action 中
-3. **合并成一条**，用宽泛描述 + 具体修复动作
+| cause | 最低证据（必须来自 evidence_refs 指向的证据卡原文） |
+|---|---|
+| A | 负证据卡：所需事实 + 核验范围，范围内无对应访问记录 |
+| B | agent 实际查询命令原文 + 不聚焦的理由 |
+| C | 同源查询命令 + 返回为空/无相关内容 |
+| D | 返回错误/超时原文 |
+| E | 返回内容原文 + 推理未引用 |
+| F | 返回内容原文 + 引用但结论未采纳 |
+| G | 返回内容原文（含与上报漏洞相同的组件/行为）+ agent 引用该内容的推理原文 |
+| H | 已访问该事实的证据 + 结论与事实矛盾的证据 |
+| I | sink 命中证据 + 调用链断点证据 |
+| J | agent 虚构内容原文 + 材料中不存在的证据 |
+| K | 挖掘 CONFIRMED + 验证否定 |
 
-选择依据：**看哪个能定位到唯一、可执行的修复点**。只保留 1 条也比输出 2 条包含关系好。
+不满足 → 不得给该 cause_code；改判为满足证据要求的类别，或把该假设标为证据不足。
 
-自检：逐对比较所有假设，若存在"若 A 成立则 B 必然成立"，必须合并或删除。修复位置（fix_suggestion.location）相同或重叠的两个假设，通常就是包含关系。
+G 的证据必须同时包含：① 记忆/知识返回内容原文；② agent 推理中引用该内容的原文。缺一不可，否则不能给 G。
 
-### 分析维度
+# 置信度（confidence）
 
-根据 outcome（FP 误报 / FN 漏报）选择对应维度的假设。
+confidence 表示"证据对当前假设的支撑程度"，不是"根因可能性"：
+- 0.9：所需证据齐全且 quote 已验证，无反证；
+- 0.7：所需证据齐全，但有已解释的反证；
+- 0.5：证据部分相关，只能作为次要假设，不能做主因；
+- 0.3：证据薄弱，不应输出；
+- 0.1：猜测，禁止输出。
+主因要求 confidence >= 0.7；0.5<=confidence<0.7 只能作为次要假设，不参与主因；<0.5 的假设直接丢弃。
 
-每个假设必须标注 cause_code（A-K），与问题单量化体系一致，用于看板呈现和派单。
+probability：根因可能性，仅展示，不参与选择。
+confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主因）。两者不要混用。
 
-### cause_code 成因码体系（A-K）
-
-| cause_code | 含义 | 责任方 | 适用场景 |
-|------------|------|--------|---------|
-| A | 该查没查（召回意识不足，含不知道要查什么） | agent | FP/FN |
-| B | 查询太泛（查询不聚焦） | agent | FP/FN |
-| C | 查了没得（知识覆盖度不足） | knowledge | FP/FN |
-| D | 链路问题（工具失败/超时） | knowledge | FP/FN |
-| E | 查到没用（死知识，推理未引用） | agent | FP/FN |
-| F | 用了没推动（未影响结论） | agent | FP/FN |
-| G | 知识误导（知识内容有误/过时/不适用） | knowledge | FP/FN |
-| H | 流程缺陷/其他（挖掘方向偏差、重复上报未识别等 agent 流程问题） | agent | FP/FN |
-| I | 调用链中断（找到 sink 未追踪到 source 入口） | agent | FN |
-| J | 模型幻觉（虚构不存在的防护措施/漏洞逻辑） | agent | FP/FN |
-| K | 验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定） | agent | FN |
-
-### 分析维度（按 cause_code 交叉分析）
-
-**FP（误报）常用维度**——为什么 agent 误报了不存在的漏洞：
-- A 该查没查【agent】：agent 未查知识库就下结论，需改 prompt 增加知识查询意识
-- C 查了没得【knowledge】：知识库缺少业务环境知识/暴露面文档/部署约束/判别方法
-- E 查到没用【agent】：agent 查了知识但推理未引用
-- G 知识误导【knowledge】：知识内容有误（如声称"框架默认过滤"实际没有）
-- J 模型幻觉【agent】：agent 虚构了代码中不存在的防护措施
-
-**FN（漏报）常用维度**——为什么 agent 漏报了真实漏洞：
-- A 该查没查【agent】：agent 不知道这类漏洞模式，需改 prompt 增加知识查询意识
-- C 查了没得【knowledge】：知识库缺少漏洞模式判定方法
-- H 流程缺陷/其他【agent】：挖掘方向偏差（范围/路径未覆盖 sink 点）、重复上报未识别（未比对历史记录）等 agent 流程问题
-- I 调用链中断【agent】：找到 sink 但未追踪到 source 入口（数据流不可达）
-- G 知识误导【knowledge】：知识/记忆返回内容错误/过时，误导了判定
-- J 模型幻觉【agent】：虚构了不存在的防护措施，导致认为不是漏洞
-- K 验证否定真漏洞【agent】：挖掘 CONFIRMED 但验证 agent 否定（验证维度遗漏/判定标准过严）
-
-### 重复上报的特殊归因规则（重要）
-
-人工标注的原因包含"重复上报"（或"重复"、"已上报"、"已报过"）时，**必须按以下规则归因**：
-- 重复上报 = 漏洞真实存在但已作为历史记录上报过（同根因/同链路），agent 不该再报一次
-- 这是 agent 挖掘/验证流程的**去重缺陷**，与知识/记忆无关——知识/记忆里有该漏洞的历史记录，
-  agent 可能还读到了，问题在于 agent 未识别"这是已上报过的漏洞"
-- **禁止**将重复上报归因到知识/记忆链路（禁止 A 该查没查、C 查了没得、E 查到没用、G 知识误导）
-- 断点应为 **L8，cause_code 填 "H"**（挖掘/验证流程缺陷），query_content 填"重复上报未识别：
-  agent 未比对已上报漏洞清单/历史记录，将已上报过的同根因同链路漏洞再次上报"
-- 责任方为 agent，fix_suggestion.target 应为 agent_code 或 agent_prompt（增加上报前去重逻辑），
-  不能是 knowledge/memory
-
-### 责任边界判定
-
-**cause_code 与 responsibility 必须一致（强制约束，防止矛盾）**：
-
-| cause_code | 对应 responsibility |
-|------------|-------------------|
-| A/B/E/F/H/I/J/K | agent |
-| C/D/G | knowledge |
-| external_data_source | 仅外部信息缺失场景 |
-
-- 该查没查（A）→ responsibility 必须是 agent，修复是改 prompt 增加查询意识
-- 查了没得（C）→ responsibility 必须是 knowledge，修复是补知识库
-- 不允许出现 "cause_code=A 但 responsibility=knowledge" 的矛盾组合
-- 当"agent 没查知识（A）"且"知识库可能也没有该知识"时，触发 L4 独立验证
-  由评测引擎主动查知识库判定：知识存在→A（agent 责任）；知识不存在→C（knowledge 责任）
-
-对每个假设，必须标注 responsibility（与 cause_code 对应表一致），用于派单：
-- agent：Agent 改 prompt/code 可解决
-- knowledge：知识方补充/修正知识库内容
-- external_data_source：提供外部数据源（网关配置/部署架构等）
-- 如果 agent_can_resolve=false，必须说明 blocked_by 和 needed_external_data
-
-### 人工标注质量评估
-
-评估人工标注原因的精确度：
-- precise：标注精确，可直接定位根因
-- imprecise：标注笼统，需追问细化（如"网络不可达"未说明具体是防火墙/网关/内网隔离/认证门槛）
-- 如果 imprecise，列出需要追问的具体问题（follow_up_questions）
-- **needs_label_confirmation**：如果最终结论取决于人工的真实意图（材料无法判断人说的是"不构成漏洞"还是"设计功能"等），置为 true，并在 follow_up_questions 说明需要确认什么；不要替人补全原因。
-- 人工标注只用来确定 FP/FN 和复核背景，**不作为归因证据**。
-
-## 修复建议
-
-针对**所有假设**的修复点，合并输出修复建议列表。一个 case 可能需要多个修复点同时执行才能解决。
-
-每条修复建议必须包含（**结构化字段，用于派单定位**）：
-- target：修复责任方，取值：
-  * agent_prompt — 修改 agent 的提示词
-  * agent_code — 修改 agent 的代码逻辑
-  * knowledge — 补充/修改知识库内容
-  * memory — 更新/补充记忆文档
-  * external_data_source — 提供外部数据源
-  * eval_process — 评测流程改进
-- agent_type：**具体修改哪个 agent**（target=agent_prompt/agent_code 时必须填写），取值：
-  * turing — 挖掘 agent（漏洞挖掘）
-  * argo / secmate / dataflow — 其他挖掘 agent
-  * webvuln_verify — 验证 agent（Web 漏洞验证）
-  * cvuln_verify — 验证 agent（代码漏洞验证）
-  * 填空字符串表示不适用
-- knowledge_source：**具体修改哪个知识/记忆源**（target=knowledge/memory 时必须填写），取值：
-  * knowledge_base — 知识库（漏洞模式知识、判别方法、业务环境知识、部署约束知识）
-  * memory_wiki — 记忆/wiki（暴露面清单、不可调用文档、经验总结）
-  * 填空字符串表示不适用
-- location：具体修改位置（文字描述）：
-  * 如果是 agent_prompt/agent_code：哪个 agent 的哪个环节/函数（如"挖掘 agent 的漏洞模式识别阶段 prompt"）
-  * 如果是 knowledge：知识库哪类知识（如"漏洞挖掘模式知识 - SQL 注入 sink 判定"）
-  * 如果是 memory：记忆里哪个文档（如"暴露面清单 - spportal 接口"）
-  * 如果是 external_data_source：需要提供什么数据源
-  * 如果是 eval_process：需要改评测流程的什么环节
-- action：具体修改内容（如"在挖掘 agent 的 prompt 中增加'检查删除端点权限码'的指令"）
-- expected_effect：修改后预期效果（如"挖掘 agent 在审计删除端点时会检查权限码，避免漏报权限提升漏洞"）
-
-## L0-L8 断点判定
-
-- 如果知识访问链路有断点（L2-L7），照常输出
-- **L1 判定边界（强制）**：L1 只看"正确结论所需的事实，agent 在本次 session/trace 中是否实际访问过"。
-  - 已访问（读过对应文件、执行过对应命令、查过对应知识/记忆）→ L1=false，事实在材料内；后续按 L2-L7 判定是否用对，用错/漏判走 L8。
-  - 未访问（材料中没有任何对应访问记录）→ L1=true，断点 L2，cause_code "A"（该查没查）。
-  - **不允许**用"仓库里存在该文件"或"理论上可读"来认定已访问；只有 trace 里的实际访问记录才算。
-  - 判定"未访问"时必须写明核验范围（检查了哪些 session、哪些工具调用、哪些文件），不能只写"没查到"。
-  - **运行时/部署状态必须实际访问**：只有实际读取承载该事实的文件/命令才算访问。读了实际配置（如 config/config.inc.php）、环境变量、compose.yml/Dockerfile、运行中的服务状态 → 算访问；只读模板/默认值（*.dist、*.example）或从代码分支推断 → **不算访问**。若正确结论所需的是实际部署状态而材料中只有模板/推断，L1=true → L2/A。
-- **如果 session 中没有知识访问行为**：
-  - 正确结论所需的事实未被访问 → 断点 L2，cause_code "A"（该查没查）
-    - kb_search_query 填一个面向知识库检索的**单一方法论问题**，基于 session 分析 agent 避免此误报所需的知识生成。只问方法，不问具体环境事实
-  - 所需事实已在 trace 中被访问 → L1=false，不产生知识访问断点；若访问了但未用对/未识别，走 L8
-- 如果知识访问链路全程通过（L7=positive）**或 L1=false（事实已访问且知识链路无问题）**，但 agent 仍误报，
-  必须输出 L8 断点：
-  - L8 断点表示知识访问链路无问题，但存在其他非知识访问的原因导致误报/漏报
-  - **cause_code 必须从 H/I/J/K 中选最匹配的，不要一律填 H**：
-    * **H** — 流程缺陷：重复上报未识别、挖掘方向偏差、未做去重、流程跳步
-    * **I** — 调用链中断：找到 sink 但未追踪到 source 入口，或调用链在某处断裂
-    * **J** — 模型幻觉：虚构不存在的防护措施、虚构代码行为、凭二手描述推断未读过的源码
-    * **K** — 验证否定真漏洞：挖掘判定 CONFIRMED 但验证 agent 否定（仅 FN 场景）
-  - breakpoint 填 "L8"
-  - query_content 填问题总结（如"验证逻辑不充分：验证条件错误"）
-  - l0_source 填空字符串
-- L8 仅覆盖知识访问链路确实无问题的场景（L7=positive 或 L1=false）。
-  如果 L6/L7 有断点（查到没用、用了没推动、知识误导），断点就在 L6/L7，**不是 L8**
-- **注意：验证维度遗漏只有在所需事实已访问且用错时才是 L8；未访问属于 L2/A，不是 L8（只读模板/默认值或从代码推断也算未访问）**
-
-### L7 判定与 cause_code 映射
-
-L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
-
-| L7 取值 | 含义 | 是否断点 | cause_code |
-|---------|------|---------|-----------|
-| `positive` | 知识正确且推动正确结论 | 不是断点 | 无（继续判 L8） |
-| `negative` | 知识错误/过时，且影响结论 | 断点 L7 | **G**（知识误导，责任方=知识方） |
-| `null` + L6=true | 知识未推动结论 | 断点 L7 | **F**（用了没推动，责任方=agent） |
-| `null` + L6=false | 读了但推理未引用 | 断点 L6 | **E**（查到没用，责任方=agent） |
-
-后三种都**不是 L8**。L8 只用于「知识链路完全正常」的场景。
-
-### 断点归属规则
-
-断点应反映导致误报的**主要原因**。区分「记录性知识访问」与「主要断点」：
-
-- agent 读了知识但没用（L6=false），且该知识访问与人工标注的误报原因**无关**：
-  * 该次访问仍按 L6/E 记录（事实不能丢）
-  * **主要断点另起一条 L8**，cause_code 从 H/I/J/K 选，
-    query_content 说明"本次 L6=false 仅为记录，非误报根因"并写清真正误报原因
-- 该知识访问与误报原因**直接相关**（该查没查 / 查错了 / 查到了没用导致误判）：
-  断点就是那个知识访问级别（L2-L7），**不要再另起 L8**
-- 如果 agent 没查知识（L2=false）但推理需要知识（L1=true）：L2 断点，不是 L8
-- 只有「误报原因与知识访问无关（L1=false）」或「知识链路全程通过（L7=positive）」时，才判 L8
+# fix_suggestion 填写规则
+- target=agent_prompt/agent_code 时，agent_type 必填（turing/argo/secmate/dataflow/webvuln_verify/cvuln_verify）。
+- target=knowledge/memory 时，knowledge_source 必填（knowledge_base/memory_wiki）。
+- action 必须能定位到具体位置，禁止空泛建议。
+- 如果 agent_can_resolve=false，必须写 blocked_by 和 needed_external_data。
 
 # 输出格式
 
-合并模式返回 JSON：
+下面的 schema 是字段示意，不是可直接复制的 JSON；输出时每个字段只取一个值，不要把 `A/B/C` 或 `true/false` 整串抄进去；必须是合法 JSON。
 {
-  "summary": "合并后的最终摘要，3000字以内",
-  "primary_cause": "唯一主因的 cause_code（A-K）；证据不足时填空字符串",
-  "primary_hypothesis": "主因假设的原文（必须与 hypotheses 中某一条完全一致）；证据不足时填空字符串",
-  "secondary_causes": ["其他假设的 cause_code"],
+  "summary": "合并摘要，3000字以内",
+  "primary_cause": "A-K 或空",
+  "primary_hypothesis": "与某条假设原文一致，或空",
+  "secondary_causes": ["..."],
   "insufficient_evidence": false,
-  "insufficient_reason": "为 true 时说明缺什么证据、检查了哪些范围；否则空字符串",
-  "audit": [
-    {"rule": "primary_unique", "pass": true, "note": ""},
-    {"rule": "evidence_grounded", "pass": true, "note": ""},
-    {"rule": "counter_evidence_checked", "pass": true, "note": ""}
-  ],
+  "insufficient_reason": "",
+  "audit": [{"rule": "...", "pass": true, "note": ""}],
   "knowledge_memory_summary": {
-    "access_count": "整条链的知识/记忆访问总次数（所有 session 累加）",
-    "accesses": [
-      {
-        "source": "knowledge_base|memory|unknown",
-        "query": "agent 查询内容概括",
-        "returned": "返回内容概括",
-        "used_in_reasoning": true/false,
-        "effect": "positive|negative|neutral|none",
-        "session_id": "来自哪个 session（如能判断）"
-      }
-    ],
-    "overall_effect": "positive|negative|neutral|none",
-    "impact_on_conclusion": "知识/记忆对 agent 最终判定结论的综合影响描述（200字以内）。综合整条链所有 session 的知识访问，说明知识/记忆是否正确推动了结论、误导了结论、还是未影响结论"
+    "access_count": 0,
+    "accesses": [{"source": "knowledge_base/memory/unknown", "query": "...", "returned": "...", "used_in_reasoning": true, "effect": "positive/negative/neutral/none", "session_id": "..."}],
+    "overall_effect": "positive/negative/neutral/none",
+    "impact_on_conclusion": "..."
   },
   "hypotheses": [
     {
-      "hypothesis": "假设描述（如'Agent 将路由定义等同于公网可达'）。必须是独立缺陷，禁止与其他假设存在包含/父子关系",
-      "probability": 0.9,  # 仅展示，不参与主因选择；只允许 0.9/0.7/0.5/0.3/0.1
-      "responsibility": "agent|knowledge|external_data_source|eval_process",
+      "hypothesis": "假设描述",
+      "probability": 0.9,
+      "responsibility": "agent/knowledge/external_data_source/eval_process",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
-      "evidence_refs": ["E-...", "E-..."],  # 必须引用摘要中实际存在的证据卡 ID；无证据不得输出该假设
-      "counter_evidence": "材料中的反证；没有反证则写明检查范围（看过哪些 session/事件）",
-      "evidence": "session 中的具体事实依据（引用摘要内容，不要推测）",
-      "session_id": "该假设主要基于的 session_id（从上方 Session 摘要中引用，可逗号分隔多个；若证据来自多个 session 的合并判断则列全，禁止编造不存在的 session_id）",
-      "supporting_breakpoints": ["BP-1", "BP-3"],
-      "agent_can_resolve": true/false,
-      "blocked_by": "如果 agent_can_resolve=false，说明 Agent 缺少什么（如'网关配置不在代码仓库中'）；如果 true 则填空字符串",
-      "needed_external_data": ["如果 agent_can_resolve=false，列出需要的外部数据（如'网关配置'、'Ingress 路由'）；如果 true 则填空数组"],
+      "confidence": 0.9,
+      "evidence_refs": ["E-..."],
+      "counter_evidence": "反证，或检查范围",
+      "evidence": "逐条对应 evidence_refs 的原文依据",
+      "session_id": "主要依据的 session_id",
+      "supporting_breakpoints": ["BP-1"],
+      "agent_can_resolve": true,
+      "blocked_by": "",
+      "needed_external_data": [],
       "fix_suggestion": {
-        "target": "agent_prompt|agent_code|knowledge|memory|external_data_source|eval_process",
-        "agent_type": "turing|webvuln_verify|cvuln_verify|...(target=agent_* 时填写，否则空)",
-        "knowledge_source": "knowledge_base|memory_wiki(target=knowledge/memory 时填写，否则空)",
+        "target": "agent_prompt/agent_code/knowledge/memory/external_data_source/eval_process",
+        "agent_type": "turing/argo/secmate/dataflow/webvuln_verify/cvuln_verify/空",
+        "knowledge_source": "knowledge_base/memory_wiki/空",
         "location": "具体修改位置",
         "action": "具体修改内容",
         "expected_effect": "修改后预期效果"
@@ -595,40 +497,86 @@ L7 三种结果的断点与 cause_code **不同**，不要一律跳到 L8：
     }
   ],
   "label_quality": {
-    "precision": "precise|imprecise",
+    "precision": "precise/imprecise",
     "needs_label_confirmation": false,
-    "reason": "评估理由（如'网络不可达未说明具体是防火墙/网关/内网隔离/认证门槛'）",
-    "follow_up_questions": ["追问问题1", "追问问题2"]
-  },
-  "l0_l7": [
-    {
-      "l0_source": "来源标记",
-      "l1_need": true/false/null,
-      "l2_initiated": true/false/null,
-      "l3_accurate": true/false/null,
-      "l4_exists": true/false/null,
-      "l5_retrieved": true/false/null,
-      "l6_used": true/false/null,
-      "l7_influenced": "positive/negative/null",
-      "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
-      "cause_code": "A/B/C/D/E/F/G/H/null",
-      "evidence_refs": ["支撑本级判定的证据卡 ID；无证据则空数组"],
-      "query_content": "agent 实际执行的查询命令（从摘要中提取原文，不要概括）",
-      "kb_search_query": "面向知识库检索的单一方法论问题。当 breakpoint=L2（agent 该查没查）时，根据 session 分析 agent 避免此误报所需的知识生成；当 breakpoint=L4（查了没得）时，填 agent 本该查询的问题；其他断点或无断点时填空字符串。只问方法，禁止问环境事实（端口是否暴露、接口是否部署等），禁止复合问题",
-      "returned_content": "知识/记忆实际返回的文本内容概括（基于摘要中的记录，不要推测）"
-    }
-  ]
+    "reason": "...",
+    "follow_up_questions": ["..."]
+  }
 }
 
-## knowledge_memory_summary 字段说明
+# 字段说明（输入 + 输出）
 
-合并模式的 knowledge_memory_summary 是对整条链（所有 session）的知识/记忆访问综合总结：
-- 汇总所有 session 的知识/记忆访问次数
-- accesses 数组列出每次访问的简要记录（含 session_id 标识来源）
-- overall_effect 是综合判断：positive（知识正确推动结论）/ negative（知识误导）/ neutral（访问了但未影响）/ none（无访问）
-- impact_on_conclusion 必须基于 session 摘要中的实际事实，说明知识/记忆如何影响了 agent 的最终判定
+输入：
+- Session i/N (session_id)：第 i 个 session 的摘要块，N 是链中 session 总数。
+- 关键发现：该 session 的关键事实列表。
+- 证据卡：evidence_id（唯一 ID）、event_idx（事件索引）、source（文件/命令/工具）、quote（原文）、fact_type（repo_fact=仓库代码/配置事实；deployment_fact=部署/运行时/暴露面事实；knowledge_access=知识/记忆访问；agent_conclusion=agent 结论；omission=应出现但未出现；counter_evidence=反证）。
+- L0-L7 判定：每条断点带 BP-n 编号，字段如下：
+  - l0_source：知识来源（知识库/记忆/空）
+  - l1_need：true=需要知识支撑；false=不需要；null=不适用
+  - l2_initiated：是否发起知识/记忆访问
+  - l3_accurate：查询是否聚焦
+  - l4_exists：来源里是否有对应知识
+  - l5_retrieved：是否成功取回
+  - l6_used：推理是否引用返回内容
+  - l7_influenced：positive/negative/null
+  - breakpoint：断点级别
+  - cause_code：A-K
+  - query_content：查询命令或问题总结
+  - returned_content：知识/记忆返回内容
+  - kb_search_query：L2/L4 的检索问题
+- 本 session 证据不足：该 session 没有任何可引用证据。
 
-只返回 JSON，不要任何额外文字。"""
+输出：
+- summary：合并摘要。
+- primary_cause：唯一主因的 cause_code。
+- primary_hypothesis：主因假设原文。
+- secondary_causes：其余假设的 cause_code。
+- insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
+- audit：逐条自检；rule=检查项，pass=true/false，note=说明。
+- knowledge_memory_summary：
+  - access_count：整条链知识/记忆访问次数
+  - accesses：每次访问；source=knowledge_base/memory/unknown，query=查询，returned=返回，used_in_reasoning=是否引用，effect=positive/negative/neutral/none，session_id=来源 session
+  - overall_effect：整体影响
+  - impact_on_conclusion：对结论的影响说明
+- hypotheses：每个假设包含：
+  - hypothesis：假设描述
+  - probability：根因可能性，仅展示
+  - responsibility：agent/knowledge/external_data_source/eval_process
+  - cause_code：A-K
+  - confidence：证据支撑度，主因要求 >=0.7
+  - evidence_refs：引用的证据卡 ID
+  - counter_evidence：反证或检查范围
+  - evidence：逐条对应 evidence_refs 的依据
+  - session_id：主要依据的 session
+  - supporting_breakpoints：依据的 BP-n
+  - agent_can_resolve：agent 改 prompt/code 能否解决
+  - blocked_by：不能解决时缺什么
+  - needed_external_data：不能解决时需要的外部数据
+  - fix_suggestion：target/agent_type/knowledge_source/location/action/expected_effect
+- label_quality：
+  - precision：precise/imprecise
+  - needs_label_confirmation：结论是否取决于人工真实意图
+  - reason：评估理由
+  - follow_up_questions：需要确认的问题
+
+# 硬约束
+- 只使用输入中已有的证据卡和断点，不重新判 L0-L8。
+- 没有 evidence_refs 的假设不输出。
+- 主因按最早 L 级别选，不看 probability。
+- 证据不足时不给结论。
+- 只返回 JSON。
+
+# 示例
+例1 输入断点里有一条 L7/G（记忆内容误导），同时有一条 L8/H（未识别设计意图）→ 主因 G（L7 早于 L8）。
+例2 输入断点里有 L2/A（未访问实际配置）和 L8/H → 主因 A（L2 早于 L8）。
+例3 没有任何假设能引用证据卡 → insufficient_evidence=true。
+
+# 自检
+- 每个假设都有 evidence_refs 和 counter_evidence？
+- 主因是否按最早 L 级别选？
+- 是否有 L2/A 假设却把主因给了 L8？
+- 证据不足时是否没有硬给结论？
+"""
 
 
 class RootCauseAnalyzer:
@@ -953,7 +901,6 @@ class RootCauseAnalyzer:
                     try:
                         result = llm_mod.chat_json(
                             messages,
-                            temperature=0,
                             cancel_cb=cancel_cb,
                             max_tokens=llm_mod.get_response_reserve_tokens(),
                             required_keys=["summary"],
@@ -1006,7 +953,9 @@ class RootCauseAnalyzer:
                 "step": i + 1,
                 "summary": result.get("summary", ""),
                 "key_findings": result.get("key_findings") or [],
-                "evidence_cards": result.get("evidence_cards") or [],
+                "evidence_cards": self._verified_evidence_cards(
+                    result.get("evidence_cards") or [], session_text,
+                    case_id, chain_type, sid),
                 "retention_check": result.get("retention_check") or [],
                 "insufficient_evidence": bool(
                     result.get("insufficient_evidence")),
@@ -1084,7 +1033,6 @@ class RootCauseAnalyzer:
         try:
             merge_result = llm_mod.chat_json(
                 merge_messages,
-                temperature=0,
                 cancel_cb=cancel_cb,
                 required_keys=["summary"],
             )
@@ -1140,37 +1088,60 @@ class RootCauseAnalyzer:
                     f"已丢弃 {dropped}（有效编号共 {len(_valid_refs)} 个）")
             h["supporting_breakpoints"] = kept
 
-        # ── 证据门槛：没有证据卡的假设一律丢弃 ──
-        # prompt 已禁止输出无证据假设，这里做程序兜底。
+        # ── 证据门槛：引用必须指向真实存在的证据卡；置信度 <0.5 丢弃 ──
+        valid_card_ids = {
+            c.get("evidence_id")
+            for s in compressed_summaries
+            for c in (s.get("evidence_cards") or [])
+            if isinstance(c, dict) and c.get("evidence_id")
+        }
         grounded = []
         for h in merge_hypotheses:
             refs = h.get("evidence_refs") or []
-            if isinstance(refs, list) and any(
-                    isinstance(r, str) and r for r in refs):
+            kept = [r for r in refs
+                    if isinstance(r, str) and r in valid_card_ids]
+            dropped = [r for r in refs if r not in kept]
+            h["evidence_refs"] = kept
+            try:
+                conf = float(h.get("confidence", 0.7))
+            except (TypeError, ValueError):
+                conf = 0.0
+            h["confidence"] = conf
+            if dropped:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} 假设引用了不存在的证据卡，"
+                    f"已丢弃 {dropped}")
+            if kept and conf >= 0.5:
                 grounded.append(h)
             else:
                 log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} 假设无证据卡，已丢弃: "
-                    f"{str(h.get('hypothesis', ''))[:60]}")
+                    f"case {case_id}: {chain_type} 假设证据不足/置信度过低，"
+                    f"已丢弃: {str(h.get('hypothesis', ''))[:60]} "
+                    f"(refs={len(kept)}, confidence={conf})")
         merge_hypotheses = grounded
+        # 只有置信度 >=0.7 的假设才能参与主因选择
+        primary_pool = [h for h in merge_hypotheses
+                        if h.get("confidence", 0.7) >= 0.7]
 
         # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
         # 主因按最早断裂的 L 级别选取，不看 probability；probability 仅作展示。
-        insufficient = bool(merge_result.get("insufficient_evidence"))
+        # 只有置信度 >=0.7 且有真实证据卡的假设才参与主因选择。
+        insufficient = (bool(merge_result.get("insufficient_evidence"))
+                        or not primary_pool)
         primary_hypothesis = (
             merge_result.get("primary_hypothesis") or "").strip()
         top_hypothesis = None
-        if not insufficient and merge_hypotheses:
+        if not insufficient and primary_pool:
             # 主因按最早断裂的 L 级别选择（L2/A 优先于 L7/G、L8/H），
             # 同级按证据卡数量降序，再按 cause_code 字母序。
             # 不使用 LLM 自由选择的 primary_hypothesis 作为主判据——
             # 它会在 A/H 之间漂移；LLM 的选择只作为同级同证据数的 tie-break。
             llm_primary = next(
-                (h for h in merge_hypotheses
+                (h for h in primary_pool
                  if primary_hypothesis
                  and h.get("hypothesis") == primary_hypothesis), None)
             top_hypothesis = sorted(
-                merge_hypotheses,
+                primary_pool,
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -1282,11 +1253,10 @@ class RootCauseAnalyzer:
         # ── 最终状态重算 ──
         # L4/重复上报可能改了 cause_code；报告头部必须与最终假设一致，
         # 不能再沿用 L4 之前算出的 root_cause.category。
-        if merge_hypotheses:
-            # 重算时仍按最早断裂的 L 级别选主因；L4 可能把 A 改成 C，
-            # 但两者都早于 L8/H，结论方向不变。原主因对象只作同级 tie-break。
+        if primary_pool:
+            # 重算时仍按最早断裂的 L 级别选主因；原主因对象只作同级 tie-break。
             final_top = sorted(
-                merge_hypotheses,
+                primary_pool,
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -1348,16 +1318,60 @@ class RootCauseAnalyzer:
             "A": "reasoning_flaw",       # 该查没查（agent 召回意识不足）
             "B": "query_inaccurate",     # 查询太泛（agent 查询不聚焦）
             "C": "knowledge_gap",        # 查了没得（知识缺失，knowledge 责任）
-            "D": "knowledge_error",      # 链路问题（工具失败，knowledge 责任）
+            "D": "link_error",           # 链路问题（工具失败/超时/解析错误）
             "E": "reasoning_flaw",       # 查到没用（agent 推理未引用）
             "F": "reasoning_flaw",       # 用了没推动（agent 未受影响）
             "G": "knowledge_error",      # 知识误导（knowledge 责任）
-            "H": "verification_dimension_missing",  # 流程缺陷/其他 agent 侧
+            "H": "process_flaw",  # 流程缺陷/其他 agent 侧
             "I": "reasoning_flaw",       # 调用链中断（agent 数据流分析不足）
             "J": "reasoning_flaw",       # 模型幻觉（agent 推理虚构）
             "K": "verification_dimension_missing",  # 验证否定真漏洞（agent 侧）
         }
         return category_map.get(cause, "reasoning_flaw")
+
+    @staticmethod
+    def _normalize_quote_text(s: str) -> str:
+        return re.sub(r"\s+", " ", str(s or "")).strip()
+
+    @classmethod
+    def _quote_is_grounded(cls, quote: str, norm_text: str) -> bool:
+        """证据卡 quote 必须能在本 session 原文中逐字找到。
+
+        先尝试整段（前 120 字）；失败再逐行检查（长度 >=12），
+        容忍 quote 合并了多行原文，但不接受完全编造的内容。
+        """
+        raw = str(quote or "").replace("…", "").strip()
+        if not raw:
+            return False
+        full = cls._normalize_quote_text(raw)
+        if full and full[:120] in norm_text:
+            return True
+        for line in raw.splitlines():
+            part = cls._normalize_quote_text(line)
+            if len(part) >= 12 and part in norm_text:
+                return True
+        return False
+
+    @classmethod
+    def _verified_evidence_cards(
+        cls, cards, session_text: str, case_id: str,
+        chain_type: str, sid: str,
+    ) -> list:
+        """丢弃 quote 在原文中找不到的证据卡。"""
+        norm_text = cls._normalize_quote_text(session_text)
+        kept, dropped = [], []
+        for c in cards or []:
+            if not isinstance(c, dict):
+                continue
+            if cls._quote_is_grounded(c.get("quote"), norm_text):
+                kept.append(c)
+            else:
+                dropped.append(c.get("evidence_id", ""))
+        if dropped:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} session {sid[:8]} "
+                f"证据卡 quote 未在原文中找到，已丢弃: {dropped}")
+        return kept
 
     @staticmethod
     def _enforce_evidence_budget(
@@ -1657,123 +1671,13 @@ class RootCauseAnalyzer:
                 f"l4={result.get('l4_knowledge_exists')}, "
                 f"candidates={result.get('candidate_files', 0)}")
 
-            # ── 闭环反馈：根据 L4 验证结果修正断点 ──
-            l4_exists = result.get("l4_knowledge_exists")
-            if l4_exists is None:
-                # 未判定：知识库查询失败 / 问题属环境事实类 / 无可用知识源。
-                # 此时既不能说「知识库有」（不修正 A），也不能说「知识库没有」
-                # （不修正成 C）。保持原断点，并在 L4 结果里标明原因，
-                # 让报告能区分「知识库确实缺失」和「知识库没查成」。
-                log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} L4 未判定（{result.get('summary', '')}），"
-                    f"断点不做修正")
-            elif l4_exists is False:
-                # 知识库没有相关知识 → 责任在知识库（覆盖度缺口）
-                # L2 断点（该查没查，cause_code A）→ L4 断点（查了没得，cause_code C）
-                # 查询超时也按「没有该知识」处理，但带上 query_timeout 标记，
-                # 让报告读者知道这是查询没拿到结果，不是知识库确认过没有。
-                _timed_out = bool(result.get("query_timeout"))
-                _timeout_secs = result.get("query_timeout_secs")
-                _timeout_note = (
-                    f"（知识库访问 {_timeout_secs}s 超时，未返回结果）"
-                    if _timed_out and _timeout_secs else
-                    ("（知识库访问超时，未返回结果）" if _timed_out else ""))
-                changed = 0
-                for bp in all_breakpoints:
-                    if bp.get("breakpoint") == "L2" \
-                            and bp.get("cause_code") == "A":
-                        bp["breakpoint"] = "L4"
-                        bp["cause_code"] = "C"
-                        bp["l4_exists"] = False
-                        if _timed_out:
-                            bp["query_timeout"] = True
-                            bp["query_timeout_secs"] = _timeout_secs
-                        # 改写 query_content 消除矛盾：C（查了没得）的语义是
-                        # 知识库缺知识，不能保留 L2 的"agent 未发起访问"表述。
-                        # 提取"推理任务需要什么知识"部分，改为知识库缺口的描述。
-                        old_qc = bp.get("query_content", "")
-                        need_part = old_qc
-                        import re as _re
-                        m = _re.search(r"[（(](.*?)[)）]", old_qc)
-                        if m:
-                            need_part = m.group(1).strip()
-                            for pre in ("具体说明需要什么知识：",
-                                        "需要", "需"):
-                                if need_part.startswith(pre):
-                                    need_part = need_part[len(pre):].strip()
-                                    break
-                        bp["query_content"] = (
-                            f"知识库缺少该知识（推理任务需要：{need_part}）"
-                            f" | L4 独立验证（由测评系统代为发起知识库查询）："
-                            f"知识库中未找到能消减此误报的知识{_timeout_note}"
-                            f"（{result.get('summary', '')}）"
-                        )
-                        changed += 1
-                if changed:
-                    log("ROOT_CAUSE",
-                        f"case {case_id}: {chain_type} L4 验证反馈："
-                        f"知识库无相关知识，{changed} 个 L2 断点"
-                        f"修正为 L4/cause_code C（知识库覆盖度缺口）")
-                # knowledge 责任假设：知识确实缺失，假设成立
-                # 同步修正 hypotheses：cause_code A→C（该查没查→查了没得），
-                # responsibility 保持 knowledge，fix_suggestion.target 保持 knowledge
-                for h in (hypotheses or []):
-                    if h.get("cause_code") == "A":
-                        h["cause_code"] = "C"
-                        h["responsibility"] = "knowledge"
-                        if _timed_out:
-                            h["query_timeout"] = True
-                        old_evid = h.get("evidence", "")
-                        h["evidence"] = (
-                            f"{old_evid} | L4 独立验证（由测评系统代为发起"
-                            f"知识库查询）：知识库中未找到"
-                            f"能消减此误报的知识{_timeout_note}"
-                            f"（{result.get('summary', '')}），"
-                            f"按知识缺失处理，责任在知识库（查了没得）"
-                        )
-                        # 修正 fix_suggestion：若 target=agent_prompt（改 prompt 增加
-                        # 查询意识），但知识确实缺失，应改为补知识
-                        fs = h.get("fix_suggestion")
-                        if isinstance(fs, dict) and fs.get("target") in (
-                                "agent_prompt", "agent_code"):
-                            fs["target"] = "knowledge"
-                            fs["action"] = (
-                                f"原建议修改 agent，但 L4 验证发现知识库中"
-                                f"无相关知识。改为：补充知识库内容"
-                                f"（{fs.get('location', '')}）"
-                            )
-            elif l4_exists is True:
-                # 知识库有知识 → 责任在 agent（该查没查），cause_code 保持 A
-                log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} L4 验证反馈："
-                    f"知识库有相关知识，L2 断点保持 cause_code A"
-                    f"（agent 该查没查，责任在 agent）")
-                # knowledge 责任假设：知识存在但 agent 没查到 → 责任在 agent
-                # 只修正 cause_code=A 的假设；G（知识/记忆内容错误）不得被改判。
-                for h in (hypotheses or []):
-                    if h.get("cause_code") == "A" \
-                            and h.get("responsibility") == "knowledge":
-                        h["responsibility"] = "agent"
-                        h["cause_code"] = "A"
-                        old_evid = h.get("evidence", "")
-                        h["evidence"] = (
-                            f"{old_evid} | L4 独立验证（由测评系统代为发起"
-                            f"知识库查询）：知识库中存在"
-                            f"相关知识（{result.get('summary', '')}），"
-                            f"责任在 agent（该查没查）"
-                        )
-                        # 修正 fix_suggestion target
-                        fs = h.get("fix_suggestion")
-                        if isinstance(fs, dict) and fs.get("target") == "knowledge":
-                            fs["target"] = "agent_prompt"
-                            fs["action"] = (
-                                f"原建议补充知识，但 L4 验证发现知识库已有相关知识。"
-                                f"改为：{fs.get('action', '')}"
-                            )
-                log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} L4 验证反馈："
-                    f"knowledge 责任假设修正为 agent"
-                    f"（知识库有知识，agent 该查没查）")
+            # L4 只记录知识库覆盖度，不修改断点、假设或主因。
+            # 外部知识库的检索/判定每次都可能不同；若允许它改判 A↔C，
+            # 同一份 trace 重复分析会得到不同结论。
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} L4 仅记录 "
+                f"(l4={result.get('l4_knowledge_exists')})，"
+                f"不修改断点/假设/主因")
 
             return result
         except Exception as e:
@@ -1889,7 +1793,7 @@ class RootCauseAnalyzer:
             for attempt in range(_TRUNCATION_RETRIES + 1):
                 try:
                     return llm_mod.chat_json(
-                        msgs, temperature=0, cancel_cb=cancel_cb,
+                        msgs, cancel_cb=cancel_cb,
                         max_tokens=llm_mod.get_response_reserve_tokens(),
                         required_keys=["summary"])
                 except llm_mod.LLMOutputTruncatedError as e:
@@ -1979,7 +1883,7 @@ class RootCauseAnalyzer:
         ]
         try:
             merged = llm_mod.chat_json(
-                merge_msgs, temperature=0, cancel_cb=cancel_cb,
+                merge_msgs, cancel_cb=cancel_cb,
                 required_keys=["summary"])
             # 保留各分片的 l0_l7 和 key_findings
             merged.setdefault("key_findings", all_key_findings)

@@ -67,7 +67,7 @@ agent 在 trace 中**确实读到过 sink 点**（漏洞的最终触发位置—
 你会收到：
 - 漏洞标题：基线漏洞标题
 - 漏洞描述：基线的漏洞描述（含 sink 点位置）
-- sink 信息：LLM 从描述提取的 sink 文件、函数、行号，
+- sink 信息：sink 文件、函数、行号，
   以及 **source 入口**（漏洞链的起点：HTTP 接口/RPC 方法/CLI 参数等）。
   source 入口用于判断「agent 是否追到了入口」——这是 chain_break 的核心判据。
 - 精确命中 session 的事件：agent 分析过程中读到 sink 点前后的事件序列
@@ -102,13 +102,15 @@ agent 在 trace 中**确实读到过 sink 点**（漏洞的最终触发位置—
 
 # 输出格式
 
+confidence 填对该细分成因的置信度（0-1）；key_events 填佐证成因的关键事件简述。
+
 只返回 JSON：
 {
   "miss_sub_category": "chain_break|params_uncontrollable|knowledge_mislead|hallucination|logic_jump|evidence_ignored|verify_dimension_missing|verify_standard_too_strict|context_loss|vuln_confusion|other",
   "reason": "详细漏报原因分析，300字以内",
   "evidence": "session 事件中的具体事实依据",
-  "confidence": 0.0-1.0,
-  "key_events": ["关键事件1", "关键事件2"]  # 佐证成因的关键事件简述
+  "confidence": 0.0,
+  "key_events": ["关键事件1", "关键事件2"]
 }
 """
 

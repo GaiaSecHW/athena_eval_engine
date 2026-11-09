@@ -15,6 +15,8 @@ vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
 
 # 可持久化的配置 key 集合 — 所有并发参数
 _CONFIG_KEYS = _conc_keys()
+# LLM 相关配置 key（不走并发配置表，直接应用到 llm 运行时）
+_LLM_CFG_KEYS = ("reasoning_effort", "llm_model", "llm_temperature", "llm_seed")
 
 # 配置时间戳（DB 更新时写 NOW(3)，worker 定期检查，变化则重载）
 _config_version = None
@@ -27,6 +29,9 @@ class SystemConfigUpdate(BaseModel):
     eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)
     reasoning_effort: str | None = Field(default=None, pattern="^(none|low|high|max)$")
+    # LLM 采样参数：temperature 0-2；seed=-1 表示不发送 seed
+    llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
+    llm_seed: int | None = Field(default=None, ge=-1, le=2147483647)
 
 
 def _apply_config(key: str, value: str):
@@ -40,6 +45,11 @@ def _apply_config(key: str, value: str):
         set_max_concurrent_evals(int(value))
     elif key == "reasoning_effort":
         llm.set_runtime_config(reasoning_effort=value)
+    elif key == "llm_temperature":
+        llm.set_runtime_config(temperature=float(value))
+    elif key == "llm_seed":
+        _seed = int(value)
+        llm.set_runtime_config(seed=(None if _seed < 0 else _seed))
     elif key == "llm_model":
         llm.set_model(value)
     elif key in _CONFIG_KEYS:
@@ -56,7 +66,7 @@ def load_system_config():
             cur.execute("SELECT config_key, config_value FROM system_config")
             rows = cur.fetchall()
             for key, value in rows:
-                if key in _CONFIG_KEYS or key in ("reasoning_effort", "llm_model"):
+                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS:
                     _apply_config(key, value)
                     log("SYS_CFG", f"loaded {key}={value}")
             if rows:
@@ -98,7 +108,7 @@ def _start_config_watcher():
                     if db_ts is not None and db_ts != _config_version:
                         with _config_version_lock:
                             _config_version = db_ts
-                        _reload_keys = tuple(_CONFIG_KEYS) + ("reasoning_effort", "llm_model")
+                        _reload_keys = tuple(_CONFIG_KEYS) + _LLM_CFG_KEYS
                         cur.execute(
                             "SELECT config_key, config_value FROM system_config "
                             "WHERE config_key IN (%s)" % ",".join(["%s"] * len(_reload_keys)),
@@ -245,7 +255,7 @@ def _load_config_from_db() -> dict:
             cur = conn.cursor()
             cur.execute("SELECT config_key, config_value FROM system_config")
             for key, value in cur.fetchall():
-                if key in _CONFIG_KEYS or key in ("llm_model", "reasoning_effort"):
+                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS:
                     result[key] = value
         finally:
             conn.close()
@@ -280,6 +290,12 @@ async def get_system_config():
     result["reasoning_effort"] = db_cfg.get("reasoning_effort", llm.get_runtime_config().get("reasoning_effort", "none"))
     # LLM 模型（DB 可配，运行时可切换）
     result["llm_model"] = db_cfg.get("llm_model", llm.get_model())
+    # LLM 采样参数（DB 可配；seed=-1 表示不发送 seed）
+    result["llm_temperature"] = float(db_cfg.get(
+        "llm_temperature",
+        llm.get_runtime_config().get("temperature", 0.0)))
+    _seed = db_cfg.get("llm_seed", llm.get_runtime_config().get("seed"))
+    result["llm_seed"] = -1 if _seed is None else int(_seed)
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
@@ -308,6 +324,10 @@ def update_system_config(params: SystemConfigUpdate):
             set_max_concurrent_evals(value)
         elif field_name == "reasoning_effort":
             llm.set_runtime_config(reasoning_effort=value)
+        elif field_name == "llm_temperature":
+            llm.set_runtime_config(temperature=float(value))
+        elif field_name == "llm_seed":
+            llm.set_runtime_config(seed=(None if value < 0 else value))
         else:
             _conc_set(field_name, value)
         _save_config(field_name, str(value))
