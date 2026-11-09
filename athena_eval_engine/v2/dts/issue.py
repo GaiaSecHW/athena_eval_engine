@@ -12,6 +12,7 @@ import os
 import uuid
 
 from ..causal_chain.analyzer import CAUSE_TO_LEVEL, _FN_SUB_TO_CAUSE
+from ..core.causal_levels import LEVEL_RANK as _LEVEL_RANK
 from ..infra.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──
@@ -88,15 +89,7 @@ def _build_breakpoint_desc(
     return "\n".join(parts)
 
 
-# ── cause_code 严重度排序（G 最严重，A 最轻）──
-_CAUSE_SEVERITY = {
-    "G": 11, "K": 10, "J": 9, "F": 8,
-    "E": 7, "I": 6, "H": 5, "D": 4, "C": 3, "B": 2, "A": 1,
-}
-
-# L 级别从早到晚；跨链选主因必须按这个顺序，不能按链顺序。
-_LEVEL_RANK = {"L2": 2, "L3": 3, "L4": 4, "L5": 5,
-               "L6": 6, "L7": 7, "L8": 8}
+# _LEVEL_RANK 从 core.causal_levels 导入（单一权威源）。
 
 
 def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
@@ -276,14 +269,25 @@ def generate_dts_issues(
                     if _at:
                         _fn_agent = _at
                         break
+                # MissDetailAnalyzer 的 evidence 字段引用 session 事件原文，
+                # 作为合成假设的证据依据。confidence=0.5（次要结论）——
+                # FN 合成假设不走 merge 阶段的证据卡校验体系，证据强度低于
+                # FP 路径的 LLM 假设（confidence >= 0.7 才能做主因）。
+                # 如果同一 case 同时有 FP 路径的 LLM 假设（confidence >= 0.7），
+                # LLM 假设优先做主因；FN 合成假设只作次要结论展示。
+                miss_evidence = (fn.get("miss_detail") or {}).get("evidence", "")
                 all_hypotheses.append({
                     "hypothesis": reason or f"漏报：{fn.get('miss_category')}",
                     "probability": 0.9,
                     "responsibility": CAUSE_TO_RESPONSIBILITY.get(cause, "agent"),
                     "cause_code": cause,
+                    "confidence": 0.5,
+                    "evidence_refs": [],
+                    "counter_evidence": "FN 合成假设：未走 merge 阶段证据卡校验",
                     "evidence": (
                         f"fn_miss 程序判定：miss_category={fn.get('miss_category')}"
                         + (f"，细分成因={sub_label}" if sub_label else "")
+                        + (f"\nLLM 事实依据：{miss_evidence}" if miss_evidence else "")
                     ),
                     # FN 合成断点不是知识访问断点，不引用 L0-L7
                     "supporting_breakpoints": [],
@@ -368,8 +372,14 @@ def generate_dts_issues(
 
     issues: list[dict] = []
     for case_id, bps in grouped.items():
-        # 按严重度排序，最严重的排前面
-        bps.sort(key=lambda b: _CAUSE_SEVERITY.get(b.get("cause_code", ""), 0), reverse=True)
+        # 按最早断裂的 L 级别排序（升序），与主因选择规则一致。
+        # 原来用 _CAUSE_SEVERITY（G 最高，reverse=True）会导致问题单顶部
+        # cause_code=A（最早断裂）但正文断点第一条=G（最严重），自相矛盾。
+        bps.sort(key=lambda b: (
+            _LEVEL_RANK.get(b.get("break_level", ""), 99),
+            -len(b.get("supports_hypotheses") or []),
+            str(b.get("cause_code") or "Z"),
+        ))
         # 可能没有任何断点（只有假设的 case）
         primary = bps[0] if bps else {}
         vuln_title = case_vuln_titles.get(case_id, "")

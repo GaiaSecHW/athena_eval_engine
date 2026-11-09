@@ -30,6 +30,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
+from ..core.causal_levels import CAUSE_LEVEL_RANK as _CAUSE_LEVEL_RANK
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ..infra.log_util import log, log_error
@@ -54,14 +55,10 @@ _EVIDENCE_PRIORITY = {
     "repo_fact": 5,
 }
 
+# _CAUSE_LEVEL_RANK 从 core.causal_levels 导入（单一权威源）。
 # 主因按最早断裂的 L 级别选择：L2(A/B) < L3 < L4(C) < L5(D) < L6(E)
 # < L7(F/G) < L8(H/I/J/K)。级别越小越优先，避免 A 与 H 同时存在时
 # 因证据卡数量波动导致主因翻转。
-_CAUSE_LEVEL_RANK = {
-    "A": 2, "B": 3, "C": 4, "D": 5,
-    "E": 6, "F": 7, "G": 7,
-    "H": 8, "I": 8, "J": 8, "K": 8,
-}
 
 # ── 系统 prompt（固定）──
 
@@ -342,7 +339,6 @@ outcome：FP=误报；FN=漏报。
 - 互斥：不能有包含/父子关系；若 A 成立必然导致 B，只保留一条。
 - 反证：材料中与假设冲突的事实；没有反证要写明检查范围。
 - 主因：按最早断裂 L 级别选出的唯一假设。
-- primary_hypothesis：主因假设原文，必须与某条假设完全一致。
 - BP-n：输入中 L0-L7 断点的编号。
 
 # L0-L7 断点含义（用于理解输入，不重新判级）
@@ -367,8 +363,7 @@ outcome：FP=误报；FN=漏报。
 
 1. 读输入：只使用已给的证据卡和 L0-L7 断点，不要重新判 L0-L8。
 2. 生成假设：2-5 个互斥假设，每个必须有 evidence_refs 和 counter_evidence。
-3. 选主因：按最早断裂的 L 级别选唯一 primary_cause / primary_hypothesis。
-4. 输出。
+3. 输出。主因由程序按最早断裂 L 级别确定性选择，LLM 不需要选主因。
 
 # Step 1 证据门槛
 - 每个假设的 evidence_refs 只能引用输入中实际存在的 evidence_id。
@@ -386,11 +381,11 @@ outcome：FP=误报；FN=漏报。
 - cause_code / responsibility 必须符合下表。
 - 人工标注只定 FP/FN 和复核背景，不作为归因证据；标注笼统时禁止从标注文字推断原因。
 
-# Step 4 主因选择（强制）
-- 按最早断裂的 L 级别：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
+# Step 4 主因选择（程序执行，LLM 不需要选）
+- 主因由程序按最早断裂的 L 级别确定性选择：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
 - 同级按证据卡数量降序；再按 cause_code 字母序。
 - probability 只展示，不参与选择。
-- primary_hypothesis 必须与某条假设原文完全一致。
+- LLM 不需要输出 primary_cause / primary_hypothesis / secondary_causes，这些字段由程序填写。
 
 # cause_code 表
 | code | 含义 | 责任方 | L 级别 |
@@ -459,9 +454,9 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 下面的 schema 是字段示意，不是可直接复制的 JSON；输出时每个字段只取一个值，不要把 `A/B/C` 或 `true/false` 整串抄进去；必须是合法 JSON。
 {
   "summary": "合并摘要，3000字以内",
-  "primary_cause": "A-K 或空",
-  "primary_hypothesis": "与某条假设原文一致，或空",
-  "secondary_causes": ["..."],
+  "primary_cause": "程序填写，LLM 无需输出",
+  "primary_hypothesis": "程序填写，LLM 无需输出",
+  "secondary_causes": "程序填写，LLM 无需输出",
   "insufficient_evidence": false,
   "insufficient_reason": "",
   "audit": [{"rule": "...", "pass": true, "note": ""}],
@@ -528,9 +523,8 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 
 输出：
 - summary：合并摘要。
-- primary_cause：唯一主因的 cause_code。
-- primary_hypothesis：主因假设原文。
-- secondary_causes：其余假设的 cause_code。
+- primary_cause / primary_hypothesis / secondary_causes：程序按最早断裂 L 级别确定性填写，LLM 无需输出。
+- insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
 - insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
 - audit：逐条自检；rule=检查项，pass=true/false，note=说明。
 - knowledge_memory_summary：
@@ -1128,25 +1122,18 @@ class RootCauseAnalyzer:
         # 只有置信度 >=0.7 且有真实证据卡的假设才参与主因选择。
         insufficient = (bool(merge_result.get("insufficient_evidence"))
                         or not primary_pool)
-        primary_hypothesis = (
-            merge_result.get("primary_hypothesis") or "").strip()
         top_hypothesis = None
         if not insufficient and primary_pool:
             # 主因按最早断裂的 L 级别选择（L2/A 优先于 L7/G、L8/H），
             # 同级按证据卡数量降序，再按 cause_code 字母序。
-            # 不使用 LLM 自由选择的 primary_hypothesis 作为主判据——
-            # 它会在 A/H 之间漂移；LLM 的选择只作为同级同证据数的 tie-break。
-            llm_primary = next(
-                (h for h in primary_pool
-                 if primary_hypothesis
-                 and h.get("hypothesis") == primary_hypothesis), None)
+            # 不使用 LLM 自由选择的 primary_hypothesis——它会在 A/H 之间漂移。
+            # 最终重算（下方）会在 L4/重复上报修正后再次排序，此处仅作初步选择。
             top_hypothesis = sorted(
                 primary_pool,
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
                     -len(h.get("evidence_refs") or []),
-                    0 if h is llm_primary else 1,
                     str(h.get("cause_code") or "Z"),
                 ),
             )[0]
@@ -1254,14 +1241,16 @@ class RootCauseAnalyzer:
         # L4/重复上报可能改了 cause_code；报告头部必须与最终假设一致，
         # 不能再沿用 L4 之前算出的 root_cause.category。
         if primary_pool:
-            # 重算时仍按最早断裂的 L 级别选主因；原主因对象只作同级 tie-break。
+            # 重算时完全按最终 cause_code 排序，不沿用修正前的 top_hypothesis
+            # 做 tie-break——重复上报修正可能把 C(L4) 降级为 H(L8)，原 top
+            # 的 rank 变了，再用它做 tie-break 会给被降级的假设不当优势。
+            # 同级同证据数时按 cause_code 字母序，完全确定性。
             final_top = sorted(
                 primary_pool,
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
                     -len(h.get("evidence_refs") or []),
-                    0 if h is top_hypothesis else 1,
                     str(h.get("cause_code") or "Z"),
                 ),
             )[0]

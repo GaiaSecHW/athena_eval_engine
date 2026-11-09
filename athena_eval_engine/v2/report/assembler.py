@@ -23,11 +23,9 @@ from ..infra.json_utils import json_default as _json_default
 
 _LARGE_FIELD_THRESHOLD = 64 * 1024  # 64KB
 
-# 所有 cause_code（A-G）
-_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G"]
-
-# 所有 L 级别（列头）
-_ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
+# 所有 cause_code 和 L 级别从 core.causal_levels 导入（单一权威源）
+from ..core.causal_levels import ALL_CAUSES as _ALL_CAUSES
+from ..core.causal_levels import ALL_LEVELS as _ALL_LEVELS
 
 # 所有 Agent 类型（行头，集中配置见 v2/core/agents.py）
 from ..core.agents import ALL_AGENT_TYPES as _ALL_AGENT_TYPES

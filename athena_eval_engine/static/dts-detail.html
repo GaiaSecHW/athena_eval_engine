@@ -251,10 +251,15 @@ async function renderDtsDetailPage(dtsId){
         },[]);
 
         html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
-          +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>';
+          +'<h3>多假设根因分析（'+allHypotheses.length+' 个假设）</h3>'
+          +'<div style="font-size:12px;color:var(--sub);margin-bottom:12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
+          +'主因由程序按最早断裂 L 级别确定性选择（非 LLM 自由选择）。假设按「挖掘链/验证链」分组展示；'
+          +'同一 case 内 cause_code + 断点级别 + evidence 完全相同的断点已跨链去重。'
+          +'断点按最早断裂 L 级别升序排列，与主因选择规则一致。'
+          +'</div>';
         // 序号基准必须与后端的 supports_hypotheses 一致：按概率降序，全局编号
         // probability 排序已废弃；与后端一致：最早 L 级别 → 证据数 → cause_code
-        var DTS_LEVEL_RANK={A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};
+        // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
         allHypotheses.sort(function(a,b){
           var la=DTS_LEVEL_RANK[a.data.cause_code]||99, lb=DTS_LEVEL_RANK[b.data.cause_code]||99;
           if(la!==lb) return la-lb;

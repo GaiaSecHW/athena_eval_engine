@@ -29,6 +29,8 @@ const DTS_CAUSE_LABELS = {
   "A":"L2断(该查没查)","B":"L3断(查询太泛)","C":"L4断(查了没得)","D":"L5断(链路问题)","E":"L6断(查到没用)",
   "F":"L7断(用了没推动)","G":"L7负向(知识误导)","H":"L8断(流程缺陷)","I":"L8断(调用链中断)","J":"L8断(模型幻觉)","K":"L8断(验证否定真漏洞)"
 };
+// cause_code → 排序权重（最早断裂优先），与后端 core/causal_levels.py 一致
+const DTS_LEVEL_RANK = {A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};
 
 // 指标定义（M5/M6/M11/M12/M13）— 与 DB metric_result 的 metric_id 一致
 const MI = {

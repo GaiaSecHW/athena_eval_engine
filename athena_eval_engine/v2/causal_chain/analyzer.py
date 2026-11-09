@@ -16,30 +16,13 @@ from __future__ import annotations
 from collections import Counter, defaultdict
 
 from ..core.agents import ALL_AGENT_TYPES
+from ..core.causal_levels import (
+    CAUSE_TO_LEVEL,
+    LEVEL_RANK as _LEVEL_RANK,
+    ALL_LEVELS as _ALL_LEVELS,
+    ALL_CAUSES as _ALL_CAUSES,
+)
 from ..infra.log_util import log
-
-# ── 断点→级别映射（§4.1 断点→成因映射）──
-
-CAUSE_TO_LEVEL = {
-    "A": "L2",   # 该查没查——L2 断（需要知识但未发起访问）
-    "B": "L3",   # 查询太泛——L3 断（查询不聚焦）
-    "C": "L4",   # 查了没得——L4 断（知识不存在）
-    "D": "L5",   # 链路问题——L5 断（工具失败/超时）
-    "E": "L6",   # 查到没用——L6 断（召回了但推理没引用）
-    "F": "L7",   # 用了没推动——L7 断（未影响结论）
-    "G": "L7",   # 知识误导——L7 负向（知识推动了判定但方向错了）
-    "H": "L8",   # 流程缺陷/其他——L8 断（挖掘方向偏差、重复上报未识别等 agent 流程问题）
-    "I": "L8",   # 调用链中断——L8 断（找到 sink 未追踪到 source）
-    "J": "L8",   # 模型幻觉——L8 断（虚构不存在的防护/漏洞逻辑）
-    "K": "L8",   # 验证否定真漏洞——L8 断（挖掘 CONFIRMED 但验证否定）
-}
-
-# L 级别从早到晚；跨链选主因必须按这个顺序，不能按链顺序。
-_LEVEL_RANK = {"L2": 2, "L3": 3, "L4": 4, "L5": 5,
-               "L6": 6, "L7": 7, "L8": 8}
-
-# 所有 L 级别（列头）
-_ALL_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
 # ── FN 细分漏报成因 → cause_code 映射（A-K 体系）──
 # MissDetailAnalyzer 的 miss_sub_category → cause_code
@@ -901,6 +884,9 @@ class CausalChainAnalyzer:
             "F": "用了没推动（未影响结论）",
             "G": "导致误判（知识推动但方向错）",
             "H": "流程缺陷/其他（挖掘方向偏差、重复上报未识别等 agent 流程问题）",
+            "I": "调用链中断（找到 sink 未追踪到 source 入口）",
+            "J": "模型幻觉（虚构不存在的防护措施/漏洞逻辑）",
+            "K": "验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定）",
         }
         return descriptions.get(cause_code, "")
 

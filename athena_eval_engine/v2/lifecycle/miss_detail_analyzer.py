@@ -95,8 +95,10 @@ agent 在 trace 中**确实读到过 sink 点**（漏洞的最终触发位置—
 
 # 事实依据要求
 
-- evidence 必须引用 session 事件中的实际内容（推理文本、工具调用、知识返回），
-  禁止推测
+- evidence 必须逐字引用 session 事件中的原文（推理文本、工具调用、工具返回、
+  知识/记忆返回内容），禁止转述、禁止推测。
+- 引用格式："[事件类型] 原文片段"，如 "[推理] agent 认为该接口仅内网可访问..."。
+- 如果引用了知识/记忆返回内容，必须同时引用 agent 推理中引用该内容的原文。
 - 如果无法从事件中确认成因，miss_sub_category 填 "other"，reason 说明
   "无法从 session 中确认"
 
@@ -108,7 +110,7 @@ confidence 填对该细分成因的置信度（0-1）；key_events 填佐证成�
 {
   "miss_sub_category": "chain_break|params_uncontrollable|knowledge_mislead|hallucination|logic_jump|evidence_ignored|verify_dimension_missing|verify_standard_too_strict|context_loss|vuln_confusion|other",
   "reason": "详细漏报原因分析，300字以内",
-  "evidence": "session 事件中的具体事实依据",
+  "evidence": "逐字引用 session 事件原文作为事实依据",
   "confidence": 0.0,
   "key_events": ["关键事件1", "关键事件2"]
 }
