@@ -11,8 +11,8 @@ import json
 import os
 import uuid
 
-from ..causal_chain.analyzer import CAUSE_TO_LEVEL, _FN_SUB_TO_CAUSE
-from ..core.causal_levels import LEVEL_RANK as _LEVEL_RANK
+from ..causal_chain.analyzer import _FN_SUB_TO_CAUSE
+from ..core.causal_levels import CAUSE_TO_LEVEL, LEVEL_RANK as _LEVEL_RANK
 from ..infra.log_util import log
 
 # ── 成因码→描述映射（§4.1 断点→成因映射）──

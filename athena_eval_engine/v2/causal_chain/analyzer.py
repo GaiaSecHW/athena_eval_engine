@@ -43,9 +43,6 @@ _FN_SUB_TO_CAUSE = {
 # 所有 Agent 类型（行头，集中配置见 v2/core/agents.py）
 _ALL_AGENT_TYPES = ALL_AGENT_TYPES
 
-# 所有 cause_code
-_ALL_CAUSES = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
-
 # 所有 responsibility（假设维度）
 _ALL_RESPONSIBILITIES = ["agent", "knowledge", "external_data_source", "eval_process"]
 

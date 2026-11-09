@@ -257,8 +257,7 @@ async function renderDtsDetailPage(dtsId){
           +'同一 case 内 cause_code + 断点级别 + evidence 完全相同的断点已跨链去重。'
           +'断点按最早断裂 L 级别升序排列，与主因选择规则一致。'
           +'</div>';
-        // 序号基准必须与后端的 supports_hypotheses 一致：按概率降序，全局编号
-        // probability 排序已废弃；与后端一致：最早 L 级别 → 证据数 → cause_code
+        // 序号基准与后端 supports_hypotheses 一致：最早 L 级别 → 证据数 → cause_code
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
         allHypotheses.sort(function(a,b){
           var la=DTS_LEVEL_RANK[a.data.cause_code]||99, lb=DTS_LEVEL_RANK[b.data.cause_code]||99;

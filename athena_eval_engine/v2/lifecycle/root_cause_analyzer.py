@@ -369,7 +369,7 @@ outcome：FP=误报；FN=漏报。
 - 每个假设的 evidence_refs 只能引用输入中实际存在的 evidence_id。
 - 找不到证据卡 → 禁止输出该假设；宁可少给，不许猜。
 - evidence 字段必须逐条对应 evidence_refs。
-- 证据不足（没有任何假设能引用证据卡）→ insufficient_evidence=true，primary_cause 空，不要给 L 级别。
+- 证据不足（没有任何假设能引用证据卡）→ insufficient_evidence=true，不要输出主因字段，不要给 L 级别。
 
 # Step 2 反证
 - 每个假设必须填 counter_evidence。
@@ -454,9 +454,6 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 下面的 schema 是字段示意，不是可直接复制的 JSON；输出时每个字段只取一个值，不要把 `A/B/C` 或 `true/false` 整串抄进去；必须是合法 JSON。
 {
   "summary": "合并摘要，3000字以内",
-  "primary_cause": "程序填写，LLM 无需输出",
-  "primary_hypothesis": "程序填写，LLM 无需输出",
-  "secondary_causes": "程序填写，LLM 无需输出",
   "insufficient_evidence": false,
   "insufficient_reason": "",
   "audit": [{"rule": "...", "pass": true, "note": ""}],
@@ -523,8 +520,6 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 
 输出：
 - summary：合并摘要。
-- primary_cause / primary_hypothesis / secondary_causes：程序按最早断裂 L 级别确定性填写，LLM 无需输出。
-- insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
 - insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
 - audit：逐条自检；rule=检查项，pass=true/false，note=说明。
 - knowledge_memory_summary：
