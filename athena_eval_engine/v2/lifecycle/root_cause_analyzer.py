@@ -53,6 +53,15 @@ _EVIDENCE_PRIORITY = {
     "repo_fact": 5,
 }
 
+# 主因按最早断裂的 L 级别选择：L2(A/B) < L3 < L4(C) < L5(D) < L6(E)
+# < L7(F/G) < L8(H/I/J/K)。级别越小越优先，避免 A 与 H 同时存在时
+# 因证据卡数量波动导致主因翻转。
+_CAUSE_LEVEL_RANK = {
+    "A": 2, "B": 3, "C": 4, "D": 5,
+    "E": 6, "F": 7, "G": 7,
+    "H": 8, "I": 8, "J": 8, "K": 8,
+}
+
 # ── 系统 prompt（固定）──
 
 _SYSTEM_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的某个 session（漏洞挖掘或验证过程中的一个环节），以及人工标注的原因。
@@ -327,9 +336,10 @@ _MERGE_PROMPT = """你是漏洞根因分析专家。你将收到一条漏洞的�
 
 **主因选择（强制）**：必须输出唯一的 `primary_cause` 和 `primary_hypothesis`，按以下顺序：
 1. 假设必须至少有一张证据卡；
-2. 优先选择证据卡数量更多的假设；
-3. 仍并列时，按 cause_code 字母序取第一个；
-4. `probability` 不参与选择。
+2. **按最早断裂的 L 级别选择**：A/B 在 L2-L3，C 在 L4，D 在 L5，E 在 L6，F/G 在 L7，H/I/J/K 在 L8；L 级别越小越优先（例如同时存在 A 和 H 时，主因是 A）；
+3. 同级按证据卡数量降序；
+4. 仍并列时，按 cause_code 字母序取第一个；
+5. `probability` 不参与选择。
 `primary_hypothesis` 必须与 hypotheses 中某一条的 hypothesis 原文完全一致。
 其余假设全部列入 `secondary_causes`。
 
@@ -1145,30 +1155,30 @@ class RootCauseAnalyzer:
         merge_hypotheses = grounded
 
         # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
-        # 主因按 primary_cause 选取，不看 probability；probability 仅作展示。
+        # 主因按最早断裂的 L 级别选取，不看 probability；probability 仅作展示。
         insufficient = bool(merge_result.get("insufficient_evidence"))
-        primary_cause = (merge_result.get("primary_cause") or "").strip()
         primary_hypothesis = (
             merge_result.get("primary_hypothesis") or "").strip()
         top_hypothesis = None
         if not insufficient and merge_hypotheses:
-            # 优先按主因假设原文精确匹配（cause_code 可能重复，原文唯一）
-            if primary_hypothesis:
-                top_hypothesis = next(
-                    (h for h in merge_hypotheses
-                     if h.get("hypothesis") == primary_hypothesis), None)
-            if top_hypothesis is None and primary_cause:
-                top_hypothesis = next(
-                    (h for h in merge_hypotheses
-                     if h.get("cause_code") == primary_cause), None)
-            if top_hypothesis is None:
-                # primary_cause 缺失或与假设不一致：选证据最多者，
-                # 并列按 cause_code 字母序（确定性 tie-break）。
-                top_hypothesis = sorted(
-                    merge_hypotheses,
-                    key=lambda h: (-len(h.get("evidence_refs") or []),
-                                   str(h.get("cause_code") or "Z")),
-                )[0]
+            # 主因按最早断裂的 L 级别选择（L2/A 优先于 L7/G、L8/H），
+            # 同级按证据卡数量降序，再按 cause_code 字母序。
+            # 不使用 LLM 自由选择的 primary_hypothesis 作为主判据——
+            # 它会在 A/H 之间漂移；LLM 的选择只作为同级同证据数的 tie-break。
+            llm_primary = next(
+                (h for h in merge_hypotheses
+                 if primary_hypothesis
+                 and h.get("hypothesis") == primary_hypothesis), None)
+            top_hypothesis = sorted(
+                merge_hypotheses,
+                key=lambda h: (
+                    _CAUSE_LEVEL_RANK.get(
+                        str(h.get("cause_code") or ""), 99),
+                    -len(h.get("evidence_refs") or []),
+                    0 if h is llm_primary else 1,
+                    str(h.get("cause_code") or "Z"),
+                ),
+            )[0]
 
         if insufficient:
             merge_root_cause = {
@@ -1273,25 +1283,18 @@ class RootCauseAnalyzer:
         # L4/重复上报可能改了 cause_code；报告头部必须与最终假设一致，
         # 不能再沿用 L4 之前算出的 root_cause.category。
         if merge_hypotheses:
-            final_top = None
-            # L4/重复上报可能改了 cause_code，但对象还是同一个；
-            # 优先沿用 L4 之前选定的主因对象。
-            if top_hypothesis is not None and top_hypothesis in merge_hypotheses:
-                final_top = top_hypothesis
-            elif primary_hypothesis:
-                final_top = next(
-                    (h for h in merge_hypotheses
-                     if h.get("hypothesis") == primary_hypothesis), None)
-            if final_top is None and primary_cause:
-                final_top = next(
-                    (h for h in merge_hypotheses
-                     if h.get("cause_code") == primary_cause), None)
-            if final_top is None:
-                final_top = sorted(
-                    merge_hypotheses,
-                    key=lambda h: (-len(h.get("evidence_refs") or []),
-                                   str(h.get("cause_code") or "Z")),
-                )[0]
+            # 重算时仍按最早断裂的 L 级别选主因；L4 可能把 A 改成 C，
+            # 但两者都早于 L8/H，结论方向不变。原主因对象只作同级 tie-break。
+            final_top = sorted(
+                merge_hypotheses,
+                key=lambda h: (
+                    _CAUSE_LEVEL_RANK.get(
+                        str(h.get("cause_code") or ""), 99),
+                    -len(h.get("evidence_refs") or []),
+                    0 if h is top_hypothesis else 1,
+                    str(h.get("cause_code") or "Z"),
+                ),
+            )[0]
             top_hypothesis = final_top
             merge_root_cause = {
                 "category": self._hypothesis_to_category(final_top),
