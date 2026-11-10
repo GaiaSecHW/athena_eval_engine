@@ -1,5 +1,8 @@
 # LLM Prompts 设计文档
 
+> **术语以代码为准**：A-K / L1-L8 的唯一权威定义在 `athena_eval_engine/v2/core/causal_levels.py`。
+> 本文档为历史设计说明，若与代码或实际 prompt 不一致，以代码为准。
+
 本文档定义评测引擎 L0-L7 误报根因全链路分析中各阶段使用的 LLM Prompt。每套 Prompt 包含用途说明、调用参数、System Prompt、User 输入模板、输出 JSON schema 和示例。
 
 ## 目录

@@ -1,5 +1,8 @@
 # DDL 定稿——知识效果评测引擎
 
+> **术语以代码为准**：A-K / L1-L8 的唯一权威定义在 `athena_eval_engine/v2/core/causal_levels.py`。
+> 本文档为历史设计说明，若与代码不一致，以代码为准。
+
 > 本文为两张新增表的完整 DDL 定稿，基于 `docs/knowledge-effect-eval-requirements.md` §3.1/§3.4 草案，经设计问题解决后定稿。
 > 所有 DDL 遵循现有 `schema.sql` 约定：`ENGINE=InnoDB CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci`，显式 FK 约束。
 

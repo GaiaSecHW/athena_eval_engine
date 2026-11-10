@@ -12,45 +12,15 @@ import os
 import uuid
 
 from ..causal_chain.analyzer import _FN_SUB_TO_CAUSE
-from ..core.causal_levels import CAUSE_TO_LEVEL, LEVEL_RANK as _LEVEL_RANK
+from ..core.causal_levels import (
+    CAUSE_TO_LEVEL,
+    CAUSE_DESCRIPTIONS,
+    CAUSE_TO_RESPONSIBILITY,
+    LEVEL_RANK as _LEVEL_RANK,
+)
 from ..infra.log_util import log
 
-# ── 成因码→描述映射（§4.1 断点→成因映射）──
-
-CAUSE_DESCRIPTIONS = {
-    # A-G: 知识访问链路成因（L0-L7 断点）
-    "A": "该查没查（召回意识不足，含不知道要查什么）",
-    "B": "查询太泛（查询不聚焦）",
-    "C": "查了没得（知识覆盖度不足）",
-    "D": "链路问题（工具失败/超时）",
-    "E": "查到没用（死知识，推理未引用）",
-    "F": "用了没推动（未影响结论）",
-    "G": "知识误导（知识内容有误/过时/不适用）",
-    # H-L: 非知识访问链路成因（挖掘/验证/推理/流程问题）
-    "H": "流程缺陷/其他（挖掘方向偏差、重复上报未识别、逻辑跳跃等 agent 流程问题）",
-    "I": "调用链中断（找到 sink 未追踪到 source 入口）",
-    "J": "模型幻觉（虚构不存在的防护措施/漏洞逻辑）",
-    "K": "验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定）",
-}
-
-# ── 成因码→责任方映射 ──
-# A/B/E/F → agent 责任（召回意识、查询聚焦、推理引用、结论推动）
-# C/D/G   → knowledge 责任（知识覆盖度、工具链路、知识内容准确性）
-# H/I/J/K/L → agent 责任（挖掘方向、调用链追踪、推理幻觉、验证判定、数据传递）
-
-CAUSE_TO_RESPONSIBILITY = {
-    "A": "agent",
-    "B": "agent",
-    "C": "knowledge",
-    "D": "knowledge",
-    "E": "agent",
-    "F": "agent",
-    "G": "knowledge",
-    "H": "agent",
-    "I": "agent",
-    "J": "agent",
-    "K": "agent",
-}
+# 成因码→描述、责任方映射统一从 core.causal_levels 导入（单一权威源）。
 
 # ── fix_suggestion.target → 中文标签 ──
 

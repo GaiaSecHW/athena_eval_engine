@@ -18,6 +18,7 @@ from collections import Counter, defaultdict
 from ..core.agents import ALL_AGENT_TYPES
 from ..core.causal_levels import (
     CAUSE_TO_LEVEL,
+    CAUSE_DESCRIPTIONS,
     LEVEL_RANK as _LEVEL_RANK,
     ALL_LEVELS as _ALL_LEVELS,
     ALL_CAUSES as _ALL_CAUSES,
@@ -871,21 +872,8 @@ class CausalChainAnalyzer:
         return "\n".join(parts) if parts else ""
 
     def _cause_description(self, cause_code: str) -> str:
-        """cause_code → 中文描述。"""
-        descriptions = {
-            "A": "该查没查（召回意识不足）",
-            "B": "查询太泛（查询不聚焦）",
-            "C": "查了没得（知识覆盖度不足）",
-            "D": "链路问题（工具失败/超时）",
-            "E": "查到没用（死知识，推理未引用）",
-            "F": "用了没推动（未影响结论）",
-            "G": "导致误判（知识推动但方向错）",
-            "H": "流程缺陷/其他（挖掘方向偏差、重复上报未识别等 agent 流程问题）",
-            "I": "调用链中断（找到 sink 未追踪到 source 入口）",
-            "J": "模型幻觉（虚构不存在的防护措施/漏洞逻辑）",
-            "K": "验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定）",
-        }
-        return descriptions.get(cause_code, "")
+        """cause_code → 中文描述（单一权威源）。"""
+        return CAUSE_DESCRIPTIONS.get(cause_code, "")
 
     def _empty_result(self, evaluation_id: str) -> dict:
         """空结果（无 root_cause_results 时返回）。"""

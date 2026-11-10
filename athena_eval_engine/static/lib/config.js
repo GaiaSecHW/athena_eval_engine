@@ -25,9 +25,10 @@ const DTS_STATUS_LABELS = {"open":"未关闭","passed":"回归通过","failed":"
 const DTS_STATUS_COLORS = {"open":"var(--gray)","passed":"var(--green)","failed":"var(--red)"};
 const DTS_RESP_LABELS = {"agent":"Agent","knowledge":"知识库","knowledge_base":"知识库","memory":"记忆","external_data_source":"外部数据源","eval_process":"评测流程"};
 const DTS_CASE_TYPE_LABELS = {"FP":"误报","FN":"漏报"};
+// cause_code → 展示标签；文案必须与后端 core/causal_levels.py 的 CAUSE_LABELS 一致
 const DTS_CAUSE_LABELS = {
   "A":"L2断(该查没查)","B":"L3断(查询太泛)","C":"L4断(查了没得)","D":"L5断(链路问题)","E":"L6断(查到没用)",
-  "F":"L7断(用了没推动)","G":"L7负向(知识误导)","H":"L8断(流程缺陷)","I":"L8断(调用链中断)","J":"L8断(模型幻觉)","K":"L8断(验证否定真漏洞)"
+  "F":"L7断(用了没推动)","G":"L7负向(知识误导)","H":"L8断(流程缺陷/其他)","I":"L8断(调用链中断)","J":"L8断(模型幻觉)","K":"L8断(验证否定真漏洞)"
 };
 // cause_code → 排序权重（最早断裂优先），与后端 core/causal_levels.py 一致
 const DTS_LEVEL_RANK = {A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};

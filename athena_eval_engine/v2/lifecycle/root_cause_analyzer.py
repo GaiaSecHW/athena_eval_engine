@@ -30,7 +30,10 @@ from concurrent.futures import ThreadPoolExecutor
 
 from ..core.data_pack import DataPack
 from ..core.raw_event import RawEvent
-from ..core.causal_levels import CAUSE_LEVEL_RANK as _CAUSE_LEVEL_RANK
+from ..core.causal_levels import (
+    CAUSE_LEVEL_RANK as _CAUSE_LEVEL_RANK,
+    CAUSE_TO_CATEGORY,
+)
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
 from ..infra.log_util import log, log_error
@@ -68,12 +71,12 @@ _SYSTEM_PROMPT = """你是漏洞根因分析专家。你的任务是**压缩**�
 outcome：FP=agent 报了但实际不是漏洞（误报）；FN=agent 漏报了真实漏洞。
 输出不是逐段复述，而是三样东西：
 1. 一份 3000 字以内的自包含摘要；
-2. 证据卡（原文逐字摘录，供下游合并阶段引用）；
+2. 证据卡（原文逐字摘录，供下游将多个session摘要在合并阶段引用）；
 3. 本 session 的 L0-L8 判定。
 
-压缩原则：
+压缩原则---保留漏洞根因关键信息：
 - 保留：agent 读了什么、执行了什么、返回了什么、推理依据、结论、知识/记忆访问、部署/配置事实、遗漏与矛盾等关键的漏洞相关信息。
-- 丢弃：重复输出、无关日志、大段源码（只保留与判定相关的行）、格式化噪声。
+- 丢弃：重复输出、无关日志、大段源码（只保留与漏洞根因相关的行）、格式化噪声。
 - 摘要必须自包含：没看过原文的人也能理解发生了什么、为什么误报。
 - 不得引入原文没有的信息；每条事实都要能由证据卡回指。
 - 如果输入是多个分片的摘要（分片压缩后的合并），任务是把它们合并成一份完整摘要，按同样的保留/丢弃原则，不要丢事实。
@@ -82,12 +85,12 @@ outcome：FP=agent 报了但实际不是漏洞（误报）；FN=agent 漏报了�
 
 1. 抽证据卡：原文里出现的事实，逐条落成证据卡。
 2. 判 L1→L8：只查下面的决策表，按顺序判，不跳级。
-3. 判知识访问相关性：返回内容主张的是否就是被上报的同一个漏洞。
+3. 判知识访问相关性：返回内容主张的是否支撑上报漏洞的挖掘发现。
 4. 压缩输出：摘要 + 证据卡 + l0_l7。
 
 # Step 1 证据卡
 
-保留清单（原文有就必须保留，原文没有就写"材料中未出现"）：
+保留清单（原文有就必须总结压缩保留，原文没有就写"材料中未出现"）：
 - agent 读取/执行过的文件与命令，及与判定相关的输出
 - 配置文件、默认值、部署/暴露面原文
 - 知识/记忆访问：来源、查询、返回、是否被引用
@@ -122,7 +125,7 @@ fact_type 含义：
 评测引擎已在 session 文本中标记知识/记忆访问行为：
 - `[知识库访问]`：agent 通过 athena_ask MCP、bash athena CLI、或 vuln_hunt_submit_knowledge 访问 Athena
 - `[知识库返回]`：知识库返回的内容
-- `[记忆访问]`：agent 通过 mem.sh CLI 或 cat 读取 wiki .md 文件访问记忆
+- `[记忆访问]`：agent 通过 mem.sh CLI 或 cat 读取 wiki .md 文件访问记忆，文件路径包含：memengine/、/app/memory/、compiled_knowledge/
 - `[记忆返回]`：记忆返回的内容
 
 规则：
@@ -156,7 +159,7 @@ fact_type 含义：
 | L5 | 内容是否成功取回？ | 失败/超时 → D（链路） |
 | L6 | 推理是否引用了返回内容？ | 未引用 → E（查到没用） |
 | L7 | 知识是否影响了结论？ | negative → G（知识误导）；null+L6=true → F（用了没推动）；null+L6=false → E |
-| L8 | 知识链路无问题，但 agent 仍误报 | H 流程缺陷 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 |
+| L8 | 知识链路无问题，但 agent 仍误报 | H 流程缺陷/其他 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 |
 
 L1 边界（仓库内事实 vs 外部事实）：
 1. 仓库内事实：源码、配置文件中明确写出来的值（例如 compose.yml 里的 ports: 127.0.0.1:4280:80）。
@@ -218,14 +221,14 @@ L7=negative 的证据门槛（强制）：
 
 | cause | 最低证据（必须来自证据卡原文） |
 |---|---|
-| A | 负证据卡：所需事实 + 核验范围（读了哪些文件/命令），范围内无对应访问记录 |
+| A | ① 写明需要哪条外部知识/方法（1-3 条）；② 确认本次 session 中没有 [知识库访问]/[记忆访问] 标记。缺任一条不得给 A。 |
 | B | agent 实际查询命令原文 + 不聚焦的具体理由 |
 | C | 同源查询命令 + 返回为空/无相关内容的原文 |
 | D | 返回错误/超时的原文 |
 | E | 返回内容原文 + 推理中未引用该内容的依据 |
 | F | 返回内容原文 + 引用但结论未采纳的依据 |
 | G | 返回内容原文（含与上报漏洞相同的组件/行为）+ agent 引用该内容的推理原文 |
-| H | 已访问该事实的证据（文件/命令/原文）+ 结论与事实矛盾的证据 |
+| H | 流程/验证维度问题证据（已读事实但结论矛盾、漏做检查、重复上报未识别、挖掘方向偏差等）。 |
 | I | sink 命中证据 + 调用链断点的证据 |
 | J | agent 虚构内容原文 + 材料中不存在该内容的证据 |
 | K | 挖掘 CONFIRMED 结论 + 验证否定的结论 |
@@ -354,7 +357,7 @@ outcome：FP=误报；FN=漏报。
 | L5 | 内容是否成功取回 | D 链路问题 |
 | L6 | 推理是否引用返回内容 | E 查到没用 |
 | L7 | 知识是否影响结论 | F 用了没推动 / G 知识误导 |
-| L8 | 知识链路正常，问题在其他维度 | H 流程 / I 调用链 / J 幻觉 / K 验证否定 |
+| L8 | 知识链路正常，问题在其他维度 | H 流程缺陷/其他 / I 调用链 / J 幻觉 / K 验证否定 |
 
 - `supporting_breakpoints` 填假设直接依据的 BP-n；只填输入中实际出现的编号。
 - 不要重新判 L0-L8，也不要修改断点的级别或 cause_code。
@@ -414,14 +417,14 @@ responsibility 取值：
 
 | cause | 最低证据（必须来自 evidence_refs 指向的证据卡原文） |
 |---|---|
-| A | 负证据卡：所需事实 + 核验范围，范围内无对应访问记录 |
+| A | ① 写明需要哪条外部知识/方法（1-3 条）；② 确认本次 session 中没有 [知识库访问]/[记忆访问] 标记。缺任一条不得给 A。 |
 | B | agent 实际查询命令原文 + 不聚焦的理由 |
 | C | 同源查询命令 + 返回为空/无相关内容 |
 | D | 返回错误/超时原文 |
 | E | 返回内容原文 + 推理未引用 |
 | F | 返回内容原文 + 引用但结论未采纳 |
 | G | 返回内容原文（含与上报漏洞相同的组件/行为）+ agent 引用该内容的推理原文 |
-| H | 已访问该事实的证据 + 结论与事实矛盾的证据 |
+| H | 流程/验证维度问题证据（已读事实但结论矛盾、漏做检查、重复上报未识别、挖掘方向偏差等）。 |
 | I | sink 命中证据 + 调用链断点证据 |
 | J | agent 虚构内容原文 + 材料中不存在的证据 |
 | K | 挖掘 CONFIRMED + 验证否定 |
@@ -1292,26 +1295,9 @@ class RootCauseAnalyzer:
 
     @staticmethod
     def _hypothesis_to_category(hypothesis: dict) -> str:
-        """从假设的 responsibility 映射到 root_cause.category（兼容旧字段）。"""
-        resp = hypothesis.get("responsibility", "")
+        """从 cause_code 映射到 root_cause.category（单一权威源）。"""
         cause = hypothesis.get("cause_code", "")
-        # cause_code 与 responsibility 对应（A-K 体系）：
-        #   A/B/E/F/H/I/J/K → agent 侧
-        #   C/D/G → knowledge 侧
-        category_map = {
-            "A": "reasoning_flaw",       # 该查没查（agent 召回意识不足）
-            "B": "query_inaccurate",     # 查询太泛（agent 查询不聚焦）
-            "C": "knowledge_gap",        # 查了没得（知识缺失，knowledge 责任）
-            "D": "link_error",           # 链路问题（工具失败/超时/解析错误）
-            "E": "reasoning_flaw",       # 查到没用（agent 推理未引用）
-            "F": "reasoning_flaw",       # 用了没推动（agent 未受影响）
-            "G": "knowledge_error",      # 知识误导（knowledge 责任）
-            "H": "process_flaw",  # 流程缺陷/其他 agent 侧
-            "I": "reasoning_flaw",       # 调用链中断（agent 数据流分析不足）
-            "J": "reasoning_flaw",       # 模型幻觉（agent 推理虚构）
-            "K": "verification_dimension_missing",  # 验证否定真漏洞（agent 侧）
-        }
-        return category_map.get(cause, "reasoning_flaw")
+        return CAUSE_TO_CATEGORY.get(cause, "reasoning_flaw")
 
     @staticmethod
     def _normalize_quote_text(s: str) -> str:

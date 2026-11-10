@@ -1,5 +1,8 @@
 # 奇美拉误报归因与改进测评——需求设计说明书
 
+> **术语以代码为准**：A-K / L1-L8 的唯一权威定义在 `athena_eval_engine/v2/core/causal_levels.py`。
+> 本文档为历史设计说明（部分内容仍写 A-G/A-H），若与代码或实际 prompt 不一致，以代码为准。
+
 > 本文档基于 `docs/knowledge-effect-eval-overview.md` 方案，对照现有代码结构，逐条说明每个改造项的现状、改什么、怎么改。
 
 ---

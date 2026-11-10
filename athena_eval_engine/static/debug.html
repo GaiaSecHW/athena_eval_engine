@@ -1158,11 +1158,7 @@ RENDERERS.root_cause = function(el, data) {
   if (Object.keys(causeCounts).length > 0) {
     html += `<div style="margin:8px 0;color:#888;font-size:14px;">成因分布：</div>`;
     html += `<div class="stats">`;
-    const causeLabels = {
-      "A": "A 该查没查", "B": "B 查询太泛", "C": "C 查了没得",
-      "D": "D 链路问题", "E": "E 查到没用", "F": "F 用了没推动", "G": "G 导致误判",
-      "H": "H 流程缺陷/其他", "I": "I 调用链中断", "J": "J 模型幻觉", "K": "K 验证否定真漏洞",
-    };
+    const causeLabels = DTS_CAUSE_LABELS;
     for (const [code, cnt] of Object.entries(causeCounts).sort()) {
       html += `<div class="stat"><div class="num" style="color:#f39c12">${cnt}</div><div class="label">${causeLabels[code] || code}</div></div>`;
     }
@@ -1545,7 +1541,7 @@ RENDERERS.resolving = function(el, data) {
   html += `</div>`;
 
   // 成因分布
-  const causeLabels = {"A":"A 该查没查","B":"B 查询太泛","C":"C 查了没得","D":"D 链路问题","E":"E 查到没用","F":"F 用了没推动","G":"G 导致误判","H":"H 流程缺陷/其他","I":"I 调用链中断","J":"J 模型幻觉","K":"K 验证否定真漏洞"};
+  const causeLabels = DTS_CAUSE_LABELS;
   if (Object.keys(causeSummary).length > 0) {
     html += `<div style="margin:8px 0;color:#888;font-size:14px;">成因分布：</div>`;
     html += `<div class="stats">`;

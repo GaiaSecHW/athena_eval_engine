@@ -581,8 +581,8 @@ async function renderDtsDetailPage(dtsId){
         try{
           var rd=JSON.parse(d.replay_data);
           html+='<div style="margin-top:12px;font-size:14px">';
-          if(rd.vuln_title){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+esc(rd.vuln_title)+'</div>';}
-          if(rd.vuln_description){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span><div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+esc(rd.vuln_description)+'</div></div>';}
+          html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞标题：</span>'+(rd.vuln_title?esc(rd.vuln_title):'<span style="color:var(--amber)">未提供</span>')+'</div>';
+          html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">回归漏洞描述：</span>'+(rd.vuln_description?'<div style="margin-top:4px;padding:8px 10px;background:var(--p2);border-radius:6px;font-size:13px;white-space:pre-wrap">'+esc(rd.vuln_description)+'</div>':'<span style="color:var(--amber)">未提供</span>')+'</div>';
           if(rd.is_vulnerable!==undefined){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">是否仍有漏洞：</span><b>'+(rd.is_vulnerable?'是':'否')+'</b></div>';}
           if(rd.message){html+='<div style="margin-bottom:6px"><span style="color:var(--gray)">结论：</span>'+esc(rd.message)+'</div>';}
           html+='</div>';
@@ -597,6 +597,8 @@ async function renderDtsDetailPage(dtsId){
         +'<table style="width:100%;border-collapse:collapse;font-size:13px">'
         +'<thead><tr style="text-align:left;color:var(--gray)">'
         +'<th style="padding:6px 8px">时间</th>'
+        +'<th style="padding:6px 8px">回归漏洞标题</th>'
+        +'<th style="padding:6px 8px">回归漏洞描述</th>'
         +'<th style="padding:6px 8px">匹配方式</th>'
         +'<th style="padding:6px 8px">结果</th>'
         +'<th style="padding:6px 8px">问题单状态</th>'
@@ -610,8 +612,14 @@ async function renderDtsDetailPage(dtsId){
         var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':(pend?'判定中':(err?'判定失败':'-')));
         var mm=h.match_method==='llm'?'LLM 匹配':(h.match_method||'-');
         var ts=String(h.submitted_at||'').replace('T',' ').slice(0,19);
+        var rd={};
+        try{ rd=h.replay_data?JSON.parse(h.replay_data):{}; }catch(e){}
+        var hTitle=rd.vuln_title||h.vuln_title||'';
+        var hDesc=rd.vuln_description||'';
         html+='<tr style="border-top:1px solid var(--p2)">'
           +'<td style="padding:6px 8px;white-space:nowrap">'+ts+'</td>'
+          +'<td style="padding:6px 8px">'+(hTitle?esc(hTitle):'<span style="color:var(--amber)">未提供</span>')+'</td>'
+          +'<td style="padding:6px 8px;max-width:320px;white-space:pre-wrap">'+(hDesc?esc(hDesc):'<span style="color:var(--amber)">未提供</span>')+'</td>'
           +'<td style="padding:6px 8px">'+mm+'</td>'
           +'<td style="padding:6px 8px"><span style="color:'+color+';font-weight:600">'+label+'</span></td>'
           +'<td style="padding:6px 8px">'+String(h.status||'')+'</td>'
