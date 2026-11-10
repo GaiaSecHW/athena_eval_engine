@@ -1445,6 +1445,13 @@ class RootCauseAnalyzer:
             "sessions": [{k: s[k] for k in ("session_id", "chars", "sha256")}
                          for s in sessions],
         }
+        # 快照全文落盘由 system_config.trace_snapshot 控制；
+        # 指纹始终记录，关闭时仍可对比两次评测的输入是否一致。
+        from ..core import runtime_flags
+        if not runtime_flags.get_flag("trace_snapshot"):
+            fingerprint["snapshot_written"] = False
+            return fingerprint
+        written = False
         try:
             from ...config_loader import get_reports_dir
             path = os.path.join(
@@ -1461,9 +1468,11 @@ class RootCauseAnalyzer:
                         "sessions": sessions,
                     }, f, ensure_ascii=False)
                 log("ROOT_CAUSE", f"trace 快照: {path}")
+            written = True
         except Exception as e:
             log("ROOT_CAUSE", f"trace 快照写入失败 case={case_id}: {e}",
                 eval_id=evaluation_id)
+        fingerprint["snapshot_written"] = written
         return fingerprint
 
     @staticmethod

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from ...infrastructure.database import connect
 from ...infrastructure.log_util import log
 from ...infrastructure.concurrency import get_keys as _conc_keys, get as _conc_get, set_val as _conc_set
+from ...v2.core import runtime_flags as _flags
 from ...v2.pipeline.state_machine import RUNNING_STATES
 
 sys_r = APIRouter(prefix="/api/v1/system", tags=["system"])
@@ -15,6 +16,8 @@ vb = APIRouter(prefix="/api/v1/vbench", tags=["vbench"])
 
 # 可持久化的配置 key 集合 — 所有并发参数
 _CONFIG_KEYS = _conc_keys()
+# 布尔开关（trace 快照等），与并发参数分开存储/校验
+_FLAG_KEYS = _flags.flag_keys()
 # LLM 相关配置 key（不走并发配置表，直接应用到 llm 运行时）
 _LLM_CFG_KEYS = ("reasoning_effort", "llm_model", "llm_temperature", "llm_seed")
 
@@ -32,6 +35,8 @@ class SystemConfigUpdate(BaseModel):
     # LLM 采样参数：temperature 0-2；seed=-1 表示不发送 seed
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
     llm_seed: int | None = Field(default=None, ge=-1, le=2147483647)
+    # 是否把喂给 LLM 的 session 文本写成 trace 快照（指纹始终记录）
+    trace_snapshot: bool | None = None
 
 
 def _apply_config(key: str, value: str):
@@ -52,6 +57,8 @@ def _apply_config(key: str, value: str):
         llm.set_runtime_config(seed=(None if _seed < 0 else _seed))
     elif key == "llm_model":
         llm.set_model(value)
+    elif key in _FLAG_KEYS:
+        _flags.set_flag(key, value)
     elif key in _CONFIG_KEYS:
         _conc_set(key, int(value))
 
@@ -66,7 +73,7 @@ def load_system_config():
             cur.execute("SELECT config_key, config_value FROM system_config")
             rows = cur.fetchall()
             for key, value in rows:
-                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS:
+                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS or key in _FLAG_KEYS:
                     _apply_config(key, value)
                     log("SYS_CFG", f"loaded {key}={value}")
             if rows:
@@ -255,7 +262,7 @@ def _load_config_from_db() -> dict:
             cur = conn.cursor()
             cur.execute("SELECT config_key, config_value FROM system_config")
             for key, value in cur.fetchall():
-                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS:
+                if key in _CONFIG_KEYS or key in _LLM_CFG_KEYS or key in _FLAG_KEYS:
                     result[key] = value
         finally:
             conn.close()
@@ -296,6 +303,11 @@ async def get_system_config():
         llm.get_runtime_config().get("temperature", 0.0)))
     _seed = db_cfg.get("llm_seed", llm.get_runtime_config().get("seed"))
     result["llm_seed"] = -1 if _seed is None else int(_seed)
+    # 布尔开关：DB 有值用 DB 值，否则用内存默认值
+    for key in _FLAG_KEYS:
+        raw = db_cfg.get(key)
+        result[key] = (_flags.get_flag(key) if raw is None
+                       else str(raw).strip().lower() in ("1", "true", "yes", "on"))
     result["running_tasks"] = running
     result["queued_tasks"] = pending + paused
     result["paused_tasks"] = paused
@@ -328,6 +340,8 @@ def update_system_config(params: SystemConfigUpdate):
             llm.set_runtime_config(temperature=float(value))
         elif field_name == "llm_seed":
             llm.set_runtime_config(seed=(None if value < 0 else value))
+        elif field_name in _FLAG_KEYS:
+            _flags.set_flag(field_name, value)
         else:
             _conc_set(field_name, value)
         _save_config(field_name, str(value))
