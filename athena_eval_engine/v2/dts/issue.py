@@ -17,6 +17,7 @@ from ..core.causal_levels import (
     CAUSE_DESCRIPTIONS,
     CAUSE_TO_RESPONSIBILITY,
     LEVEL_RANK as _LEVEL_RANK,
+    prefer_grounded_cause,
 )
 from ..infra.log_util import log
 
@@ -75,7 +76,9 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
         return None
     eligible = [h for h in valid
                 if float(h.get("confidence", 0.7) or 0) >= 0.7]
-    pool = eligible or valid
+    # 已证实的知识误导(G)优先于未发起的访问(A)，避免 L1 判定波动导致
+    # 同一 case 在 A/L2 与 G/L7 之间翻转；FN 合成假设不参与该规则。
+    pool = prefer_grounded_cause(eligible) if eligible else valid
     return sorted(
         pool,
         key=lambda h: (

@@ -22,7 +22,9 @@ session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不
 """
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import re
 import time
 from collections import defaultdict
@@ -33,6 +35,7 @@ from ..core.raw_event import RawEvent
 from ..core.causal_levels import (
     CAUSE_LEVEL_RANK as _CAUSE_LEVEL_RANK,
     CAUSE_TO_CATEGORY,
+    prefer_grounded_cause,
 )
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
@@ -180,10 +183,15 @@ L1 边界（仓库内事实 vs 外部事实）：
 - L1=true 且 L2=true → 继续 L3-L7。
 - L1=false → 走 L8 验证维度；如果 agent 读到了仓库事实但用错 → H。
 
-A/H 判定顺序（强制，先判 H，再判 A）：
+A/H 判定顺序（强制，先判 H，再判 A）——仅适用于 L2=false 的 session：
 1. 本 session 材料中已有足以得出正确结论的事实（agent 已读到的文件、工具返回或推理原文里出现），而 agent 的结论与它矛盾 → L1=false，L8/H。已读到却用错属于流程/验证缺陷，不是知识缺失。
 2. 只有材料中不存在足以得出正确结论的事实时，才判 L1=true，再按 L2 判定 A。
 3. 判 L1=true 时，"还有某个外部事实（如部署期环境变量）没有被核实"不能作为理由；只要已有事实足以否定该结论，就归 H。
+
+L2=true 时的不变量（强制，优先于上面的 A/H 顺序）：
+- 发生了知识/记忆访问（L2=true）→ 默认 L1=true，必须按 L2-L7 逐级判，不得用"已有仓库事实"改判 L1=false。
+- L2=true 且 L6=true → 断点必为 L7（G 或 F），禁止判 L8/H。
+- L2=true 时唯一允许 L1=false 的情形：该访问是记录性访问，与本次误报无关，L6=false，且已在证据中说明无关。
 
 L1/L2 证据门槛（强制）：
 - 判 L1=true 必须写明需要哪条外部知识/方法（1-3 条），并说明为什么仓库内文件无法确定它。
@@ -195,7 +203,7 @@ L7 规则：
 - L6=true 且返回内容错误/过时/by-design，且被用作上报依据 → L7=negative，cause_code=G。
 - L6=true 但结论未采纳 → L7=null，断点 L7，cause_code=F。
 - L6=false（读了但推理未引用）→ 断点 L6，cause_code=E。
-- 以上都不是 L8。L8 只在以下情况使用：L7=positive；L1=false（不需要知识，问题在非知识维度）；或知识访问为记录性且与误报无关（L6=false，已说明无关）。重复上报按专门规则直接判 L8/H。
+- 以上都不是 L8。L8 只在以下情况使用：L7=positive；L1=false 且 L2=false（不需要知识且未发起访问，问题在非知识维度）；或知识访问为记录性且与误报无关（L6=false，已说明无关）。重复上报按专门规则直接判 L8/H。
 
 L7=negative 的证据门槛（强制）：
 - 必须同时引用：① 记忆/知识返回内容原文；② agent 推理中引用该内容的原文。
@@ -290,6 +298,7 @@ confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性
 输入：
 - [En]：事件索引；evidence_cards.event_idx 填对应的 n。
 - outcome：FP=误报；FN=漏报。
+- 程序核对：知识/记忆记录在返回后的引用次数、与上报漏洞的关键词重合，是 L6/L7 的事实依据。引用次数 >0 时 L6 必须为 true，不得判"未引用"。
 - session_id / Session i/N：当前 session 的 ID 和在链中的位置。
 
 输出：
@@ -869,13 +878,20 @@ class RootCauseAnalyzer:
 
             events = session_events.get(sid, [])
             session_text = self._format_session_events(sid, events)
+            trace_texts[sid] = session_text
+
+            # 程序核对知识/记忆记录的引用情况，作为 L6 判定的事实依据——
+            # 模型会漏看返回后的引用（同一 trace 两次跑出 L6=true / false）。
+            citation_hint, cited_ids = self._knowledge_citation_facts(
+                session_text, vuln_title, desc)
 
             user_content = (
                 f"漏洞标题：{vuln_title}\n"
                 f"漏洞描述：{desc}\n"
                 f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
-                f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
-                f"Session {i+1}/{len(chain)} (session_id={sid}):\n"
+                f"人工标注的原因：{fp_reason or '（未给出）'}\n"
+                + (f"\n{citation_hint}\n" if citation_hint else "")
+                + f"\nSession {i+1}/{len(chain)} (session_id={sid}):\n"
                 f"{session_text}"
             )
 
@@ -949,6 +965,20 @@ class RootCauseAnalyzer:
                             raise
                         break
 
+            l0_l7 = result.get("l0_l7") or []
+            # L6 兜底：程序已核实记录 ID 在返回后被引用，L6 必为 true。
+            # 只在 session 内恰好一条知识访问时生效，避免多条访问错配。
+            if cited_ids:
+                accessed = [kp for kp in l0_l7 if isinstance(kp, dict)
+                            and str(kp.get("l2_initiated")).lower() == "true"]
+                if len(accessed) == 1 and str(
+                        accessed[0].get("l6_used")).lower() != "true":
+                    accessed[0]["l6_used"] = True
+                    log("ROOT_CAUSE",
+                        f"case {case_id}: {chain_type} session {sid[:8]} "
+                        f"L6 兜底修正 false→true（引用记录 {cited_ids[:3]}）",
+                        eval_id=evaluation_id)
+
             return {
                 "session_id": sid,
                 "step": i + 1,
@@ -961,11 +991,14 @@ class RootCauseAnalyzer:
                 "insufficient_evidence": bool(
                     result.get("insufficient_evidence")),
                 "insufficient_reason": result.get("insufficient_reason") or "",
-                "l0_l7": result.get("l0_l7") or [],
+                "l0_l7": l0_l7,
             }
 
         # 构建任务列表：(step_index, session_id)
         tasks = [(i, sid) for i, sid in enumerate(chain)]
+
+        # 本链实际喂给 LLM 的 session 文本（内容寻址快照用）
+        trace_texts: dict[str, str] = {}
 
         futures = llm_mod.submit_llm_batch(
             _compress_session, tasks, cancel_cb=cancel_cb)
@@ -989,6 +1022,18 @@ class RootCauseAnalyzer:
 
         # 按 step 排序，保证拓扑序
         compressed_summaries.sort(key=lambda x: x["step"])
+
+        # 落盘本次分析实际使用的 session 文本（内容寻址），
+        # 用于两次评测对比「输入是否变了」以及离线复现。
+        input_fingerprint = self._write_trace_snapshot(
+            evaluation_id, case_id, chain_type, chain, trace_texts)
+
+        # 断点不变量程序兜底：L2/L6 已确定时，级别和 cause_code 不由模型自由选择。
+        # 必须在 _build_bp_registry 之前执行，保证合并提示词看到的是同一份结果。
+        for s in compressed_summaries:
+            for kp in (s.get("l0_l7") or []):
+                if isinstance(kp, dict):
+                    self._normalize_breakpoint(kp, case_id, chain_type)
 
         # 按 case 总预算截断证据卡（超出按 fact_type 优先级保留）
         card_total, card_truncated = self._enforce_evidence_budget(
@@ -1133,10 +1178,12 @@ class RootCauseAnalyzer:
         if not insufficient and primary_pool:
             # 主因按最早断裂的 L 级别选择（L2/A 优先于 L7/G、L8/H），
             # 同级按证据卡数量降序，再按 cause_code 字母序。
+            # 例外：G 与 A 并存时优先 G（见 prefer_grounded_cause），
+            # 避免链级结论与 DTS 主因不一致。
             # 不使用 LLM 自由选择的 primary_hypothesis——它会在 A/H 之间漂移。
             # 最终重算（下方）会在 L4/重复上报修正后再次排序，此处仅作初步选择。
             top_hypothesis = sorted(
-                primary_pool,
+                prefer_grounded_cause(primary_pool),
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -1253,7 +1300,7 @@ class RootCauseAnalyzer:
             # 的 rank 变了，再用它做 tie-break 会给被降级的假设不当优势。
             # 同级同证据数时按 cause_code 字母序，完全确定性。
             final_top = sorted(
-                primary_pool,
+                prefer_grounded_cause(primary_pool),
                 key=lambda h: (
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -1300,13 +1347,181 @@ class RootCauseAnalyzer:
             "knowledge_memory_summary": merge_km_summary,
             "l0_l7_breakpoints": all_breakpoints,
             "l4_independent_verification": l4_verification,
+            "input_fingerprint": input_fingerprint,
         }
+
+    @staticmethod
+    def _knowledge_citation_facts(
+        session_text: str, vuln_title: str, desc: str,
+    ) -> tuple[str, list[str]]:
+        """核对知识/记忆返回记录在返回之后是否被引用。
+
+        模型会漏看引用，导致同一 trace 两次跑出 L6=true/false
+        （E/L6 与 G/L7 之间翻转）。这里把可核实的事实写进输入。
+
+        Returns:
+            (提示文本, 被引用的记录 ID 列表)
+        """
+        starts = [m.start() for m in re.finditer(r"(?m)^\[E\d+\] ", session_text)]
+        if not starts:
+            return "", []
+        starts.append(len(session_text))
+
+        title_tokens = set(re.findall(
+            r"[A-Za-z_][A-Za-z0-9_.\-]{3,}",
+            f"{vuln_title or ''} {desc or ''}"))
+
+        lines: list[str] = []
+        cited: list[str] = []
+        for a, b in zip(starts, starts[1:]):
+            block = session_text[a:b]
+            marker = ("[记忆返回]" if "[记忆返回]" in block
+                      else "[知识库返回]" if "[知识库返回]" in block else "")
+            if not marker:
+                continue
+            ids = list(dict.fromkeys(
+                re.findall(r"\bid:\s*([A-Za-z0-9_\-]{3,})", block)))
+            if not ids:
+                continue
+            tail = session_text[b:]
+            # 按记录切分，关键词重合按单条记录计算，避免整块误标
+            for chunk in re.split(r"\n\s*-\s*id:\s*", block)[1:]:
+                m = re.match(r"([A-Za-z0-9_\-]{3,})", chunk)
+                if not m:
+                    continue
+                rid = m.group(1)
+                tm = re.search(r"\n\s*type:\s*([A-Za-z_]+)", chunk)
+                shared = sorted(t for t in title_tokens if t in chunk)
+                cnt = len(re.findall(rf"\b{re.escape(rid)}\b", tail))
+                if cnt:
+                    cited.append(rid)
+                parts = [f"{marker.strip('[]')}记录 {rid}"]
+                if tm:
+                    parts.append(f"type={tm.group(1)}")
+                parts.append(f"返回后被引用 {cnt} 次")
+                if shared:
+                    parts.append(f"与上报的漏洞标题/描述共享关键词 {shared[:5]}")
+                lines.append("- " + "；".join(parts))
+
+        if not lines:
+            return "", []
+        hint = ("程序核对（事实，L6/L7 判定必须以此为准，不得凭印象判断是否引用）：\n"
+                + "\n".join(lines))
+        return hint, list(dict.fromkeys(cited))
+
+    @staticmethod
+    def _write_trace_snapshot(
+        evaluation_id: str,
+        case_id: str,
+        chain_type: str,
+        chain: list[str],
+        trace_texts: dict[str, str],
+    ) -> dict:
+        """把本链实际喂给 LLM 的 session 文本写成内容寻址快照。
+
+        文件名带 chain 级 sha256 前 12 位：同一份输入重跑命中同一文件，
+        不覆盖、不增长；输入变了就生成新文件，能直接看出"这次输入不同"。
+        快照只存文本 + 指纹，不参与判定，不是结果缓存。
+
+        Returns:
+            {"case_hash", "prompt_hash", "sessions": [{session_id, chars, sha256}]}
+        """
+        h = hashlib.sha256()
+        sessions: list[dict] = []
+        for sid in chain:
+            text = trace_texts.get(sid, "")
+            sh = hashlib.sha256(text.encode("utf-8")).hexdigest()
+            h.update(sid.encode("utf-8"))
+            h.update(sh.encode("utf-8"))
+            sessions.append({"session_id": sid, "chars": len(text),
+                             "sha256": sh, "text": text})
+        case_hash = h.hexdigest()
+        prompt_hash = hashlib.sha256(
+            (_SYSTEM_PROMPT + _MERGE_PROMPT).encode("utf-8")).hexdigest()
+
+        fingerprint = {
+            "case_hash": case_hash,
+            "prompt_hash": prompt_hash,
+            "sessions": [{k: s[k] for k in ("session_id", "chars", "sha256")}
+                         for s in sessions],
+        }
+        try:
+            from ...config_loader import get_reports_dir
+            path = os.path.join(
+                get_reports_dir(),
+                f"{evaluation_id}_trace_{case_id}_{chain_type}_"
+                f"{case_hash[:12]}.json")
+            if not os.path.exists(path):
+                with open(path, "w", encoding="utf-8") as f:
+                    json.dump({
+                        "evaluation_id": evaluation_id,
+                        "case_id": case_id,
+                        "chain_type": chain_type,
+                        **fingerprint,
+                        "sessions": sessions,
+                    }, f, ensure_ascii=False)
+                log("ROOT_CAUSE", f"trace 快照: {path}")
+        except Exception as e:
+            log("ROOT_CAUSE", f"trace 快照写入失败 case={case_id}: {e}",
+                eval_id=evaluation_id)
+        return fingerprint
 
     @staticmethod
     def _hypothesis_to_category(hypothesis: dict) -> str:
         """从 cause_code 映射到 root_cause.category（单一权威源）。"""
         cause = hypothesis.get("cause_code", "")
         return CAUSE_TO_CATEGORY.get(cause, "reasoning_flaw")
+
+    @staticmethod
+    def _normalize_breakpoint(kp: dict, case_id: str = "", chain_type: str = "") -> None:
+        """按 L1/L2/L6 的不变量修正断点，消除模型自相矛盾的判级。
+
+        不变量（与提示词一致，程序兜底）：
+        - L2=false + L1=true → L2/A。
+        - L2=true → L1=true（唯一例外是记录性访问，其 L6=false 不在此修正）。
+        - L2=true + L6=true + L7=negative → L7/G。
+        - L2=true + L6=true + L7=null   → L7/F。
+
+        只修正自相矛盾的组合，不改写证据完整、判级自洽的结果。
+        """
+        def _flag(v) -> bool | None:
+            if isinstance(v, bool):
+                return v
+            s = str(v).strip().lower()
+            if s == "true":
+                return True
+            if s == "false":
+                return False
+            return None
+
+        l1 = _flag(kp.get("l1_need"))
+        l2 = _flag(kp.get("l2_initiated"))
+        l6 = _flag(kp.get("l6_used"))
+        l7 = str(kp.get("l7_influenced") or "").strip().lower() or "null"
+
+        new_brk, new_cause = kp.get("breakpoint"), kp.get("cause_code", "")
+        new_l1 = kp.get("l1_need")
+
+        if l2 is False and l1 is True:
+            new_brk, new_cause = "L2", "A"
+        elif l2 is True and l6 is True:
+            new_l1 = True
+            if l7 == "negative":
+                new_brk, new_cause = "L7", "G"
+            elif l7 == "null":
+                new_brk, new_cause = "L7", "F"
+
+        if (new_brk, new_cause, new_l1) != (
+                kp.get("breakpoint"), kp.get("cause_code", ""), kp.get("l1_need")):
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 断点不变量修正 "
+                f"L1={kp.get('l1_need')} L2={kp.get('l2_initiated')} "
+                f"L6={kp.get('l6_used')} L7={kp.get('l7_influenced')}: "
+                f"{kp.get('breakpoint')}/{kp.get('cause_code')} → "
+                f"{new_brk}/{new_cause}")
+        kp["l1_need"] = new_l1
+        kp["breakpoint"] = new_brk
+        kp["cause_code"] = new_cause
 
     @staticmethod
     def _normalize_quote_text(s: str) -> str:

@@ -22,6 +22,7 @@ from ..core.causal_levels import (
     LEVEL_RANK as _LEVEL_RANK,
     ALL_LEVELS as _ALL_LEVELS,
     ALL_CAUSES as _ALL_CAUSES,
+    prefer_grounded_cause,
 )
 from ..infra.log_util import log
 
@@ -685,8 +686,11 @@ class CausalChainAnalyzer:
                 # 跨链主因：按最早断裂的 L 级别选，不能按链顺序取第一个。
                 eligible = [h for h in all_hypotheses
                             if float(h.get("confidence", 0.7) or 0) >= 0.7]
+                # 已证实的知识误导(G)优先于未发起的访问(A)，与 DTS 主因同规则。
+                pool = (prefer_grounded_cause(eligible) if eligible
+                        else all_hypotheses)
                 top = sorted(
-                    eligible or all_hypotheses,
+                    pool,
                     key=lambda h: (
                         _LEVEL_RANK.get(
                             CAUSE_TO_LEVEL.get(

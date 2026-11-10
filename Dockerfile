@@ -24,6 +24,8 @@ RUN pip install --no-cache-dir -i https://pypi.tuna.tsinghua.edu.cn/simple --tru
 # 拷贝代码 + schema（config.yaml 由 k8s ConfigMap 覆盖，dev 用本地文件）
 COPY athena_eval_engine/ ./athena_eval_engine/
 COPY schema.sql ./schema.sql
+# 运维/分析脚本（check_causal_levels.py、diff_trace_fingerprint.py）
+COPY scripts/ ./scripts/
 
 # TZ + 运行时设置（其余配置由 k8s ConfigMap/Secret 注入，dev 用本地 config.yaml）
 ENV TZ=Asia/Shanghai \
