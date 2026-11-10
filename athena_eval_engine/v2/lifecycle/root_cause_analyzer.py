@@ -165,17 +165,17 @@ fact_type 含义：
 | L8 | 知识链路无问题，但 agent 仍误报 | H 流程缺陷/其他 / I 调用链中断 / J 模型幻觉 / K 验证否定真漏洞 |
 
 L1 边界（仓库内事实 vs 外部事实）：
-1. 仓库内事实：源码、配置文件中明确写出来的值（例如 compose.yml 里的 ports: 127.0.0.1:4280:80）。
+1. 仓库内事实：源码、配置文件中明确写出来的值（例如编排文件里声明的端口绑定）。
    → L1=false（不需要外部知识，读仓库就知道）。
 2. 外部事实：仓库里读不到，必须靠知识库/记忆/部署环境才能知道。
-   - 实际运行时配置（DISABLE_AUTHENTICATION 是否开启）
+   - 实际运行时配置（如某个环境变量/开关是否开启）
    - 环境变量实际取值
    - 真实网络暴露面
    - 方法论/判定准则（如"如何判断配置开关是否生效"）
    → L1=true（需要知识/方法）。
 
 边界规则（按顺序判定，先满足者生效）：
-1. 本 session 内读到了仓库内的部署/配置文件（compose.yml、values.yaml、.env、实际 config、启动脚本等），且能据此确定该事实的实际取值 → 仓库内事实 → L1=false；即使同时读了 *.dist/*.example 模板，也以能确定实际值的仓库文件为准。
+1. 本 session 内读到了仓库内的部署/配置文件（编排文件、环境变量文件、实际配置文件、启动脚本等），且能据此确定该事实的实际取值 → 仓库内事实 → L1=false；即使同时读了 *.dist/*.example 模板，也以能确定实际值的仓库文件为准。
 2. 只读 *.dist/*.example 模板，且仓库内没有任何部署/配置文件能确定实际值（实际值在部署时生成）→ 外部事实 → L1=true，A。
 3. 仓库里根本没有该文件（或只有模板）→ 外部事实 → L1=true，A。
 4. 文件在 agent 的工作目录里、没有访问限制 → 算仓库内事实；即使 agent 没读，也 L1=false，漏读归 H。
@@ -279,7 +279,7 @@ confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性
       "l5_retrieved": true/false/null,
       "l6_used": true/false/null,
       "l7_influenced": "positive/negative/null",
-      "breakpoint": "L2/L3/L4/L5/L6/L7/L8/null",
+      "breakpoint": "L2/L3/L4/L5/L6/L7/L8/none",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K/null",
       "confidence": 0.9,
       "evidence_refs": ["E-..."],
@@ -315,7 +315,7 @@ confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性
   - l5_retrieved：是否成功取回
   - l6_used：推理是否引用返回内容
   - l7_influenced：positive/negative/null
-  - breakpoint：第一个不通过的级别
+  - breakpoint：第一个不通过的级别；本 session 无缺陷时填 none，不得留空或填 null
   - cause_code：A-K
   - confidence：证据支撑度（0.1-0.9）
   - evidence_refs：支撑本判定的证据卡 ID
@@ -328,15 +328,15 @@ confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性
 # 硬约束
 - 没有证据卡的结论不输出。
 - 禁止推测；材料里没有的写"材料中未出现"。
+- 每个 session 必须输出 l0_l7，且每条的 breakpoint 必须显式给出：有缺陷填 L2-L8，无缺陷填 none，禁止省略或填 null。
 - kb_search_query 只问方法论，不问环境事实，禁止复合问题。
 - 只返回 JSON，不要额外文字。
 
 # 示例
 例1 记忆返回 verified_finding，主张与上报漏洞相同，agent 引用后确认 → L7/negative/G。
-例2 本次 session 只读 config.inc.php.dist、没读实际 config/config.inc.php，且仓库内没有任何部署/配置文件能确定实际值 → L1=true，L2/A；即使其他 session 读过 compose.yml，也不能算本次已访问。
-例3 agent 读了 compose.yml，看到 127.0.0.1:4280:80，却仍判 path_reachable=true → L8/H。
+例2 本次 session 只读模板文件（*.dist/*.example），没读实际配置文件，且仓库内没有任何部署/配置文件能确定实际值 → L1=true，L2/A；即使其他 session 读过部署描述文件，也不能算本次已访问。
+例3 agent 读了部署描述文件，看到服务只绑定回环地址，却仍判外部可达 → L8/H。
 例4 session 里没有任何知识访问，且所需事实不能从代码/配置读到 → L2/A；如果事实已在材料中但用错 → L8/H。
-例5 session 读了 config.inc.php.dist，同时读了 compose.yml 且其中未设置 DISABLE_AUTHENTICATION，据此可确定该开关为默认 false → 实际值已由仓库内文件确定 → L1=false；agent 仍按开关开启的行为确认漏洞 → L8/H。
 
 # 自检
 - 证据卡覆盖保留清单的所有非空项？
@@ -1055,7 +1055,7 @@ class RootCauseAnalyzer:
                 if not isinstance(kp, dict):
                     continue
                 brk = kp.get("breakpoint")
-                if not brk or brk == "null":
+                if not brk or brk in ("null", "none"):
                     continue
                 all_breakpoints.append({
                     "session_id": sid,
@@ -1642,7 +1642,7 @@ class RootCauseAnalyzer:
                 if not isinstance(kp, dict):
                     continue
                 brk = kp.get("breakpoint")
-                if not brk or brk == "null":
+                if not brk or brk in ("null", "none"):
                     continue
                 seq += 1
                 registry[f"BP-{seq}"] = {

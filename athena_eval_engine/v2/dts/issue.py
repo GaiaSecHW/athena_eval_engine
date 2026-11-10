@@ -330,13 +330,16 @@ def generate_dts_issues(
                 continue
             grouped[case_id].append(bp)
 
-    # 跨 agent 去重：同一 case 内 cause_code + break_level + evidence 完全相同的断点只保留一条
-    # （mining 和 verification 可能各自产生相同的 L8 断点，内容一样无需重复展示）
+    # 跨 agent 去重：同一 case 内 cause_code + 级别 + session 完全相同的断点只保留一条
+    # （mining 和 verification 可能各自产生相同的 L8 断点）。
+    # 必须带 session_id——不同 session 是不同证据；按 evidence 文本去重会因
+    # 模型措辞不同而时合时分，导致断点数在两次评测间漂移。
     for case_id, bps in grouped.items():
         seen = set()
         deduped = []
         for bp in bps:
-            key = (bp.get("cause_code", ""), bp.get("break_level", ""), bp.get("evidence", ""))
+            key = (bp.get("cause_code", ""), bp.get("break_level", ""),
+                   bp.get("session_id", ""))
             if key in seen:
                 continue
             seen.add(key)

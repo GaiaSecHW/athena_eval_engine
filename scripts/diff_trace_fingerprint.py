@@ -74,6 +74,15 @@ def _mark(same: bool) -> str:
     return "相同" if same else "不同"
 
 
+def _chain_bps(case_data: dict, chain: str) -> list[tuple[str, str, str]]:
+    """链内断点集合：(级别, cause_code, session_id)。"""
+    bps = (case_data.get(chain) or {}).get("l0_l7_breakpoints") or []
+    return [(str(b.get("breakpoint") or ""),
+             str(b.get("cause_code") or ""),
+             str(b.get("session_id") or "")[:8])
+            for b in bps if isinstance(b, dict)]
+
+
 def compare_chain(case_id: str, chain: str, a: dict, b: dict) -> tuple[bool, bool]:
     """比较一条链，返回 (输入/提示词是否一致, 链结论是否一致)。"""
     label = _CHAIN_LABELS.get(chain, chain)
@@ -111,7 +120,20 @@ def compare_chain(case_id: str, chain: str, a: dict, b: dict) -> tuple[bool, boo
     ok &= sessions_same
     if ha != hb and sessions_same:
         print("    注意：session 内容一致但链指纹不同——链内 session 顺序变了")
-    return ok, cause_same
+
+    # 断点集合是判定结果，不是输入：输入一致时它仍可能随模型波动。
+    bpa, bpb = _chain_bps(a, chain), _chain_bps(b, chain)
+    bps_same = bpa == bpb
+    print(f"    断点数量  {len(bpa)} / {len(bpb)}  {_mark(len(bpa) == len(bpb))}")
+    if not bps_same:
+        sa_set, sb_set = set(bpa), set(bpb)
+        for item in sorted(sa_set - sb_set):
+            print(f"      A 独有: {item[0]}/{item[1]} {item[2]}")
+        for item in sorted(sb_set - sa_set):
+            print(f"      B 独有: {item[0]}/{item[1]} {item[2]}")
+        if sa_set == sb_set:
+            print("      集合相同但顺序不同")
+    return ok, cause_same and bps_same
 
 
 def main() -> int:

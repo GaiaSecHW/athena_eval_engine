@@ -230,13 +230,13 @@ class CausalChainAnalyzer:
         每个 root_cause_result 含 mining 和 verification 两段，
         每段含 l0_l7_breakpoints 列表。
 
-        **过滤规则**（假设是问题，断点是它引用的证据）：
-        - 该 case 有假设 → 只保留被假设引用的断点
-          * 普通断点：_bp_ref 在假设的 supporting_breakpoints 中
-          * 假设「字段缺失」→ 回退按 session_id 精确匹配
-          * FN 合成断点：cause_code 在假设引用的断点 cause_code 集合中
-            （字段缺失时按假设自身的 cause_code 匹配）
-        - 该 case 无假设 → 保留全部断点（LLM 未产出假设时的兜底）
+        **断点集合由 session 级判定唯一决定**：
+        - 只要某种判定给出了 cause_code，它就是一条断点，不因假设是否引用而丢弃。
+        - 假设的引用只写入 supports_hypotheses 作标注，不参与筛选。
+        - 按 (case_id, chain_type, session_id, cause_code, breakpoint) 去重，
+          同一 session 同一级别同一成因只保留一条。
+        - 不做跨 session 合并：不同 session 是不同证据，合并会让断点数随
+          假设分组方式变化（同一输入两次跑出 3 条 / 4 条）。
 
         Returns:
             扁平断点记录列表，每条含：
@@ -246,11 +246,9 @@ class CausalChainAnalyzer:
             - cause_code, breakpoint, l0_source
             - query_content, returned_content
             - l7_influenced (effect_label)
-            - supports_hypotheses: list[int]  引用它的假设序号（1-based）
+            - supports_hypotheses: list[int]  引用它的假设序号（1-based），可为空
         """
         flat: list[dict] = []
-        # 去重键：(case_id, chain_type, cause_code, breakpoint, query_content)
-        # 同一断点可能在 session 级和 merge 级各出现一次，只保留一条
         seen_keys: set[tuple] = set()
 
         for case in root_cause_results:
@@ -349,28 +347,22 @@ class CausalChainAnalyzer:
                     if not cause_code or cause_code == "null":
                         continue
 
-                    # 按假设引用过滤（假设是问题，断点是它引用的证据）
-                    if refs["ordered"]:
-                        if refs["has_field"]:
-                            # 新协议：按 _bp_ref 精确匹配
-                            bp_ref = bp.get("_bp_ref", "")
-                            supports = refs["hyp_by_ref"].get(bp_ref, []) \
-                                if bp_ref else []
-                            if not supports:
-                                continue
-                        else:
-                            # 旧报告：字段缺失 → 回退按 session_id 精确匹配
-                            sid = bp.get("session_id", "")
-                            supports = refs["hyp_by_sid"].get(sid, [])
-                            if not supports:
-                                continue
+                    # 假设引用只作标注，不作为保留条件：
+                    # 断点集合必须由 session 级判定唯一决定，否则同一输入
+                    # 会因假设引用的差异跑出不同断点数。
+                    bp_ref = bp.get("_bp_ref", "")
+                    if refs["ordered"] and refs["has_field"] and bp_ref:
+                        supports = refs["hyp_by_ref"].get(bp_ref, [])
+                    elif refs["ordered"]:
+                        # 旧报告：字段缺失 → 回退按 session_id 匹配
+                        supports = refs["hyp_by_sid"].get(
+                            bp.get("session_id", ""), [])
                     else:
-                        supports = []  # 无假设 → 保留全部（兜底）
+                        supports = []
 
                     dedup_key = (
-                        case_id, chain_type,
+                        case_id, chain_type, bp.get("session_id", ""),
                         cause_code, bp.get("breakpoint", ""),
-                        bp.get("query_content", ""),
                     )
                     if dedup_key in seen_keys:
                         continue
@@ -402,60 +394,7 @@ class CausalChainAnalyzer:
                         "fix_suggestion": bp.get("fix_suggestion") or [],
                     })
 
-        return self._merge_same_root_cause(flat)
-
-    # ── 同根因断点合并 ──
-
-    @staticmethod
-    def _merge_same_root_cause(flat: list[dict]) -> list[dict]:
-        """合并「同一假设 + 同 cause + 同断点级别」的多条断点。
-
-        一个 case 的多条 session 常各自产出断点，但若它们支撑的是**同一个
-        假设**（假设即问题，断点即证据），说明是同一根因在多个 session 上的
-        重复取证，展示时应合并为一条，避免同一根因被计成 4 条断点。
-
-        只按 (cause_code, breakpoint) 分组是不够的——不同根因可能恰好同为
-        L8/H（如"未证明前置条件"与"用单元测试替代真实接口"），会被误合。
-        必须带上支撑假设集合才能区分。
-
-        合并后保留第一条为主记录，其余断点的 session 明细收进
-        ``merged_sessions``（不丢证据）。
-        无假设引用（孤儿）或引用假设集合不同的断点不合并。
-
-        Args:
-            flat: 已过滤的扁平断点记录
-
-        Returns:
-            合并后的扁平断点记录（保持原顺序）
-        """
-        groups: dict[tuple, list[int]] = defaultdict(list)
-        for idx, rec in enumerate(flat):
-            hyps = tuple(sorted(rec.get("supports_hypotheses") or []))
-            if not hyps:
-                continue  # 无假设引用 → 孤儿，不参与合并
-            key = (
-                rec.get("case_id", ""),
-                rec.get("chain_type", ""),
-                rec.get("cause_code", ""),
-                rec.get("breakpoint", ""),
-                hyps,
-            )
-            groups[key].append(idx)
-
-        drop: set[int] = set()
-        for key, idxs in groups.items():
-            if len(idxs) < 2:
-                continue
-            head = flat[idxs[0]]
-            merged = [{
-                "session_id": flat[i].get("session_id", ""),
-                "query_content": flat[i].get("query_content", ""),
-            } for i in idxs[1:]]
-            head["merged_sessions"] = merged
-            head["merged_count"] = len(idxs)
-            drop.update(idxs[1:])
-
-        return [rec for i, rec in enumerate(flat) if i not in drop]
+        return flat
 
     # ── 交叉归因矩阵 ──
 
