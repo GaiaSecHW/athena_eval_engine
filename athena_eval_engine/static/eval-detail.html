@@ -147,7 +147,7 @@ function renderLifecycle(lc){
     var rowTotal=levels.reduce(function(s,l){return s+(row[l]||0);},0);
     return {label:agentLabels[a]||a,html:'<tr><td style="font-size:14px">'+(agentLabels[a]||a)+'</td>'+cells+'</tr>',total:rowTotal};
   }).filter(function(r){return r.total>0;}).map(function(r){return r.html;}).join('');
-  // 未生成问题单的 case 及原因（问题单由假设驱动，无假设/无断点则无单）
+  // 未生成问题单的 case 及原因（问题单由假定线索驱动，无线索且无断点则无单）
   var skipped=lc.skipped_cases||[];
   var skippedHtml='';
   if(skipped.length){
@@ -165,7 +165,7 @@ function renderLifecycle(lc){
       +'未生成问题单的 Case <span style="font-size:12px;color:var(--acc)">（'+skipped.length+' 个，点击展开）</span></summary>'
       +'<div style="margin-top:16px;overflow-x:auto"><table><thead><tr><th>Case ID</th><th>漏洞名称</th><th>类型</th><th>原因</th><th>说明</th></tr></thead><tbody>'
       +rows+'</tbody></table></div>'
-      +'<div style="font-size:13px;color:var(--sub);margin-top:10px">问题单以假设为问题载体：无假设或无被引用的断点时不会生成问题单，此处列出原因供核对。</div>'
+      +'<div style="font-size:13px;color:var(--sub);margin-top:10px">问题单以假定线索为问题载体：既无线索也无断点时不会生成问题单，此处列出原因供核对。</div>'
       +'</details>';
   }
 
@@ -173,7 +173,7 @@ function renderLifecycle(lc){
     +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（Agent × 级别）</h4>'
     +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
     +matrixRows+'</tbody></table></div>'
-    +'<div style="font-size:13px;color:var(--sub);margin-top:10px">统计口径：仅含被假设引用的断点。逐 case 明细（假设 + 支撑断点）见下方问题单列表。</div>'
+    +'<div style="font-size:13px;color:var(--sub);margin-top:10px">统计口径：按 session 级断点统计，不按假定线索的引用过滤。逐 case 明细（假定线索 + 支撑断点）见下方问题单列表。</div>'
     +'</div>'
     +skippedHtml;
 }

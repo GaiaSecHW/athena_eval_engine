@@ -17,7 +17,6 @@ from ..core.causal_levels import (
     CAUSE_DESCRIPTIONS,
     CAUSE_TO_RESPONSIBILITY,
     LEVEL_RANK as _LEVEL_RANK,
-    prefer_grounded_cause,
 )
 from ..infra.log_util import log
 
@@ -64,10 +63,11 @@ def _build_breakpoint_desc(
 
 
 def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
-    """跨链选主因：按最早断裂的 L 级别；confidence<0.7 不参与。
+    """取置信度最高的一条假定线索，仅用于问题单顶层的展示摘要。
 
-    不能按「挖掘链在前、验证链在后」的顺序取第一个，否则验证链的
-    L2/A 会被挖掘链的 L7/G 覆盖，导致同一 case 两次跑出不同主因。
+    线索不是结论：每个 case 可以有多条并存的假定线索，各自带置信度，
+    详情页按置信度降序逐条展示。这里取第一条只是为了填充单值字段
+    （cause_code / breakpoint_level），不代表其他线索被否定。
     """
     if not hypotheses:
         return None
@@ -76,12 +76,12 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
         return None
     eligible = [h for h in valid
                 if float(h.get("confidence", 0.7) or 0) >= 0.7]
-    # 已证实的知识误导(G)优先于未发起的访问(A)，避免 L1 判定波动导致
-    # 同一 case 在 A/L2 与 G/L7 之间翻转；FN 合成假设不参与该规则。
-    pool = prefer_grounded_cause(eligible) if eligible else valid
+    pool = eligible or valid
+    # 置信度降序；同级时按最早断裂 L、证据数、cause_code 做确定性 tie-break。
     return sorted(
         pool,
         key=lambda h: (
+            -float(h.get("confidence", 0) or 0),
             _LEVEL_RANK.get(
                 CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),
             -len(h.get("evidence_refs") or []),
@@ -154,7 +154,7 @@ def generate_dts_issues(
             insufficient_cases.add(cid)
             continue
 
-        # ── 从多假设提取根因和修复建议 ──
+        # ── 从多线索提取根因和修复建议 ──
         all_hypotheses = []
         root_causes = {}
         fix_parts = []
@@ -164,7 +164,7 @@ def generate_dts_issues(
             chain_hypotheses = chain_data.get("hypotheses") or []
             if chain_hypotheses:
                 all_hypotheses.extend(chain_hypotheses)
-                # 从假设提取 fix_suggestion
+                # 从线索提取 fix_suggestion
                 for h in chain_hypotheses:
                     fs = h.get("fix_suggestion")
                     if isinstance(fs, dict):
@@ -183,12 +183,12 @@ def generate_dts_issues(
                             parts.append(f"修改: {action}")
                         if expected:
                             parts.append(f"预期: {expected}")
-                        # 附加假设信息
+                        # 附加线索信息
                         hyp_desc = h.get("hypothesis", "")
                         prob = h.get("probability", 0)
                         resp = h.get("responsibility", "")
                         if hyp_desc:
-                            parts.append(f"假设(P={prob}, {resp}): {hyp_desc}")
+                            parts.append(f"线索(P={prob}, {resp}): {hyp_desc}")
                         fix_parts.append(" | ".join(parts))
             else:
                 # 兼容旧格式：从 root_cause + fix_suggestion 构建
@@ -224,10 +224,10 @@ def generate_dts_issues(
             if lq.get("precision") == "imprecise":
                 label_quality = lq
 
-        # ── FN 快捷路径合成假设 ──
+        # ── FN 快捷路径合成线索 ──
         # sink_not_found / sink_found_no_report 由程序判定，不走 merge 阶段的
-        # LLM 假设生成，导致 FN 问题单 hypotheses 为空。按「假设是问题载体」
-        # 的原则，把 fn_miss 的漏报原因合成为一条假设供开发人员执行。
+        # LLM 线索生成，导致 FN 问题单 hypotheses 为空。按「线索是问题载体」
+        # 的原则，把 fn_miss 的漏报原因合成为一条线索供开发人员执行。
         if not all_hypotheses:
             fn = case.get("fn_miss") or {}
             if fn.get("miss_category"):
@@ -243,11 +243,11 @@ def generate_dts_issues(
                         _fn_agent = _at
                         break
                 # MissDetailAnalyzer 的 evidence 字段引用 session 事件原文，
-                # 作为合成假设的证据依据。confidence=0.5（次要结论）——
-                # FN 合成假设不走 merge 阶段的证据卡校验体系，证据强度低于
-                # FP 路径的 LLM 假设（confidence >= 0.7 才能做主因）。
-                # 如果同一 case 同时有 FP 路径的 LLM 假设（confidence >= 0.7），
-                # LLM 假设优先做主因；FN 合成假设只作次要结论展示。
+                # 作为合成线索的证据依据。confidence=0.5（次要结论）——
+                # FN 合成线索不走 merge 阶段的证据卡校验体系，证据强度低于
+                # FP 路径的 LLM 线索（confidence >= 0.7 才进入顶层摘要）。
+                # 如果同一 case 同时有 FP 路径的 LLM 线索（confidence >= 0.7），
+                # LLM 线索优先进入顶层摘要；FN 合成线索只作次要线索展示。
                 miss_evidence = (fn.get("miss_detail") or {}).get("evidence", "")
                 all_hypotheses.append({
                     "hypothesis": reason or f"漏报：{fn.get('miss_category')}",
@@ -256,7 +256,7 @@ def generate_dts_issues(
                     "cause_code": cause,
                     "confidence": 0.5,
                     "evidence_refs": [],
-                    "counter_evidence": "FN 合成假设：未走 merge 阶段证据卡校验",
+                    "counter_evidence": "FN 合成线索：未走 merge 阶段证据卡校验",
                     "evidence": (
                         f"fn_miss 程序判定：miss_category={fn.get('miss_category')}"
                         + (f"，细分成因={sub_label}" if sub_label else "")
@@ -283,11 +283,11 @@ def generate_dts_issues(
 
         case_hypotheses[cid] = all_hypotheses
         case_label_quality[cid] = label_quality
-        # 兼容旧格式：如果没有假设但有 root_causes
+        # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
-            # 主因按各链的 primary_cause 选取，不看 probability；
+            # 顶层摘要按置信度最高的一条线索选取，不看 probability；
             # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
-            # 跨链主因：按最早断裂的 L 级别选，不能按链顺序取第一个。
+            # 跨链取置信度最高的线索，不能按链顺序取第一个。
             top = _pick_primary_hypothesis(all_hypotheses)
             if top:
                 root_causes = {
@@ -322,7 +322,7 @@ def generate_dts_issues(
             case_outcomes[case_id] = "FP"
         breakpoints = case_entry.get("breakpoints", [])
 
-        # 即使没有断点也要建 key——只有假设的 case 同样要生成问题单
+        # 即使没有断点也要建 key——只有线索的 case 同样要生成问题单
         grouped.setdefault(case_id, [])
         for bp in breakpoints:
             cause_code = bp.get("cause_code", "")
@@ -348,7 +348,7 @@ def generate_dts_issues(
 
     issues: list[dict] = []
     for case_id, bps in grouped.items():
-        # 按最早断裂的 L 级别排序（升序），与主因选择规则一致。
+        # 断点按最早断裂的 L 级别排序（升序）。
         # 原来用 _CAUSE_SEVERITY（G 最高，reverse=True）会导致问题单顶部
         # cause_code=A（最早断裂）但正文断点第一条=G（最严重），自相矛盾。
         bps.sort(key=lambda b: (
@@ -356,19 +356,19 @@ def generate_dts_issues(
             -len(b.get("supports_hypotheses") or []),
             str(b.get("cause_code") or "Z"),
         ))
-        # 可能没有任何断点（只有假设的 case）
+        # 可能没有任何断点（只有线索的 case）
         primary = bps[0] if bps else {}
         vuln_title = case_vuln_titles.get(case_id, "")
         primary_cause_code = primary.get("cause_code", "")
         primary_break_level = primary.get("break_level", "")
 
-        # 顶层 cause_code 与 break_level 同源：都取主因假设。
-        # 两者分开取（cause_code 用假设、break_level 用最严重断点）会导致
-        # 问题单顶部与正文自相矛盾（如假设 C/L4 但断点 H/L8）。
+        # 顶层 cause_code 与 break_level 同源：都取置信度最高的线索。
+        # 两者分开取（cause_code 用线索、break_level 用最严重断点）会导致
+        # 问题单顶部与正文自相矛盾（如线索 C/L4 但断点 H/L8）。
         hypotheses = case_hypotheses.get(case_id, [])
         label_quality = case_label_quality.get(case_id, {})
         if hypotheses:
-            # 跨链主因：同上，按最早断裂的 L 级别选。
+            # 跨链摘要：同上，取置信度最高的线索。
             top_hyp = _pick_primary_hypothesis(hypotheses)
             cause_code = (top_hyp or {}).get("cause_code", "") or primary_cause_code
             break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
@@ -397,7 +397,7 @@ def generate_dts_issues(
             if at and at not in agent_types:
                 agent_types.append(at)
         if not agent_types:
-            # 无断点（只有假设）：从 case 原始数据的 mining/verification 取
+            # 无断点（只有线索）：从 case 原始数据的 mining/verification 取
             full = case_full_data.get(case_id) or {}
             for chain_type in ("mining", "verification"):
                 at = (full.get(chain_type) or {}).get("agent_type", "")
@@ -405,12 +405,12 @@ def generate_dts_issues(
                     agent_types.append(at)
         agent_type = ",".join(agent_types)
 
-        # 责任方：优先从假设的 responsibility 推导（多值逗号分隔）
+        # 责任方：优先从线索的 responsibility 推导（多值逗号分隔）
         # 一个 case 可能同时有 agent 责任（如 L8）和知识库责任（如 L4）
-        # 无假设时回退到从断点 cause_code 推导
+        # 无线索时回退到从断点 cause_code 推导
         if hypotheses:
             resp_set = {h.get("responsibility", "") for h in hypotheses if h.get("responsibility")}
-            # 假设的 responsibility 可能是 agent/knowledge/external_data_source/eval_process
+            # 线索的 responsibility 可能是 agent/knowledge/external_data_source/eval_process
             # 归一化：external_data_source 和 eval_process 保留原值
             resp_set = {r for r in resp_set if r}
         else:

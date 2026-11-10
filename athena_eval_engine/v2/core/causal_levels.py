@@ -7,9 +7,8 @@
 业务含义：找到第一个出错的环节，修复它才有意义——如果 L2 就断了
 （该查没查），后面的 L7/L8 分析就没有意义。
 
-例外：G（知识误导）与 A（该查没查）并存时优先 G——见
-prefer_grounded_cause()。G 有已证实的因果链，A 只是"没查"这一行为，
-其判定依赖 L1 主观边界，最容易随 LLM 波动而翻转主结论。
+假定线索（hypotheses）的展示顺序按置信度降序，与断点排序分开：
+断点是事实，按时间/级别排；线索是猜测，按置信度排。
 """
 from __future__ import annotations
 
@@ -52,22 +51,6 @@ ALL_LEVELS: list[str] = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 # ── 所有 cause_code ──
 
 ALL_CAUSES: list[str] = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J", "K"]
-
-
-def prefer_grounded_cause(pool: list[dict]) -> list[dict]:
-    """主因候选池：已证实的知识误导(G)优先于未发起的知识访问(A)。
-
-    A 只说明「没查」，因果未经证实；G 说明「查了并引用了错误内容」，
-    与本次误判有直接因果。两者并存时若仍按最早 L 级别选，A 会无条件
-    压过 G——而 A 的判定依赖 L1「是否需要外部知识」这一主观边界，
-    任一 session 的 L1 波动都会让同一 case 在 A/L2 与 G/L7 之间翻转。
-
-    只在已通过置信度门槛的候选（confidence >= 0.7）里生效；FN 合成假设
-    （confidence=0.5）不参与，保持原有排序。
-    """
-    grounded = [h for h in pool
-                if str(h.get("cause_code") or "") == "G"]
-    return grounded or pool
 
 
 # ── cause_code → 标准短标签（prompt / code / UI 统一使用）──

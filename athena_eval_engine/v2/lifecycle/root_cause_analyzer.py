@@ -35,7 +35,6 @@ from ..core.raw_event import RawEvent
 from ..core.causal_levels import (
     CAUSE_LEVEL_RANK as _CAUSE_LEVEL_RANK,
     CAUSE_TO_CATEGORY,
-    prefer_grounded_cause,
 )
 from ..infra import llm as llm_mod
 from ..infra.parallel import iter_completed
@@ -62,9 +61,10 @@ _EVIDENCE_PRIORITY = {
 }
 
 # _CAUSE_LEVEL_RANK 从 core.causal_levels 导入（单一权威源）。
-# 主因按最早断裂的 L 级别选择：L2(A/B) < L3 < L4(C) < L5(D) < L6(E)
-# < L7(F/G) < L8(H/I/J/K)。级别越小越优先，避免 A 与 H 同时存在时
-# 因证据卡数量波动导致主因翻转。
+# 假定线索按置信度降序展示；置信度相同时按最早断裂的 L 级别
+# L2(A/B) < L3 < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)、
+# 证据卡数量、cause_code 做确定性 tie-break。
+# 线索之间互不否定，不再选"主因"。
 
 # ── 系统 prompt（固定）──
 
@@ -121,7 +121,7 @@ fact_type 含义：
 规则：
 - 原文每行以 [En] 开头，event_idx 填对应的 n。
 - summary 只能基于证据卡，不得引入卡外信息。
-- 找不到原文依据的内容，不得写进 summary 或假设。
+- 找不到原文依据的内容，不得写进 summary 或线索。
 
 # 知识/记忆访问的识别
 
@@ -140,7 +140,7 @@ fact_type 含义：
 # 术语表（统一定义）
 
 - 断点：L1→L8 逐级判定中，第一个不通过的级别；断点级别就是该级别。
-- 记录性访问：知识/记忆访问与本次误报无关，只作为事实记录（L6/E），不作为主因。
+- 记录性访问：知识/记忆访问与本次误报无关，只作为事实记录（L6/E），不作为根因。
 - 核验范围：为证明"未访问"而检查过的范围，写明读了哪些文件、执行了哪些命令、看了哪些 session。
 - 负证据卡：记录"应该存在但没有"的证据卡，必须带核验范围。
 - by-design：产品有意设计的行为（如训练靶场的预期漏洞、显式配置开关的效果），不是漏洞。
@@ -252,13 +252,13 @@ L7=negative 的证据门槛（强制）：
 
 # 置信度（confidence）
 
-confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性"：
+confidence 表示"证据对当前线索的支撑程度"，不是"根因可能性"：
 - 0.9：所需证据齐全且 quote 已在原文核实，无反证；
 - 0.7：所需证据齐全，但有已解释的反证；
-- 0.5：证据部分相关，只能作为次要判断，不能做主因；
+- 0.5：证据部分相关，只能作为次要线索；
 - 0.3：证据薄弱，不应输出；
 - 0.1：猜测，禁止输出。
-主因要求 confidence >= 0.7；0.5<=confidence<0.7 只能作为次要结论，不参与主因；<0.5 的结论直接丢弃。
+confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=0.6，只展示置信度最高的一条）；<0.5 的线索直接丢弃。
 
 # Step 3 输出
 
@@ -348,17 +348,17 @@ confidence 表示"证据对当前结论的支撑程度"，不是"根因可能性
 只返回 JSON。"""
 
 
-_MERGE_PROMPT = """你是漏洞根因分析专家。输入是一条漏洞链涉及的多个 session 摘要、证据卡和 L0-L7 断点。输出根因假设、唯一主因和修复建议。
+_MERGE_PROMPT = """你是漏洞根因分析专家。输入是一条漏洞链涉及的多个 session 摘要、证据卡和 L0-L7 断点。输出根因假定线索和修复建议。
 
 outcome：FP=误报；FN=漏报。
-输入中的断点编号为 BP-n；假设的 supporting_breakpoints 只能引用这些编号。
+输入中的断点编号为 BP-n；线索的 supporting_breakpoints 只能引用这些编号。
 
 # 术语表（统一定义）
 
-- 假设：一个独立、不可再分的根因；2-5 个，互斥。
+- 假定线索：一个独立、不可再分的根因猜测；2-5 条，互斥。线索不是结论，可以多条并存。
 - 互斥：不能有包含/父子关系；若 A 成立必然导致 B，只保留一条。
-- 反证：材料中与假设冲突的事实；没有反证要写明检查范围。
-- 主因：按最早断裂 L 级别选出的唯一假设。
+- 反证：材料中与线索冲突的事实；没有反证要写明检查范围。
+- 置信度：证据对该线索的支撑程度（0.1-0.9）。线索按置信度降序展示。
 - BP-n：输入中 L0-L7 断点的编号。
 
 # L0-L7 断点含义（用于理解输入，不重新判级）
@@ -376,36 +376,37 @@ outcome：FP=误报；FN=漏报。
 | L7 | 知识是否影响结论 | F 用了没推动 / G 知识误导 |
 | L8 | 知识链路正常，问题在其他维度 | H 流程缺陷/其他 / I 调用链 / J 幻觉 / K 验证否定 |
 
-- `supporting_breakpoints` 填假设直接依据的 BP-n；只填输入中实际出现的编号。
+- `supporting_breakpoints` 填线索直接依据的 BP-n；只填输入中实际出现的编号。
 - 不要重新判 L0-L8，也不要修改断点的级别或 cause_code。
 
 # 判定流程（严格按顺序）
 
 1. 读输入：只使用已给的证据卡和 L0-L7 断点，不要重新判 L0-L8。
-2. 生成假设：2-5 个互斥假设，每个必须有 evidence_refs 和 counter_evidence。
-   - 若输入断点为 L2/A，但该断点的证据或反证显示 agent 在同一 session 已读到足以否定其结论的事实，则不得产出 A 假设，按 L8/H 表述（已读到却用错属流程/验证缺陷）。
-3. 输出。主因由程序按最早断裂 L 级别确定性选择，LLM 不需要选主因。
+2. 生成线索：2-5 个互斥线索，每个必须有 evidence_refs 和 counter_evidence。
+   - 若输入断点为 L2/A，但该断点的证据或反证显示 agent 在同一 session 已读到足以否定其结论的事实，则不得产出 A 线索，按 L8/H 表述（已读到却用错属流程/验证缺陷）。
+3. 输出。线索按置信度降序展示，LLM 不需要选主因——不存在"主因"这个概念。
 
 # Step 1 证据门槛
-- 每个假设的 evidence_refs 只能引用输入中实际存在的 evidence_id。
-- 找不到证据卡 → 禁止输出该假设；宁可少给，不许猜。
+- 每个线索的 evidence_refs 只能引用输入中实际存在的 evidence_id。
+- 找不到证据卡 → 禁止输出该线索；宁可少给，不许猜。
 - evidence 字段必须逐条对应 evidence_refs。
-- 证据不足（没有任何假设能引用证据卡）→ insufficient_evidence=true，不要输出主因字段，不要给 L 级别。
+- 证据不足（没有任何线索能引用证据卡）→ insufficient_evidence=true，不要输出线索，不要给 L 级别。
 
 # Step 2 反证
-- 每个假设必须填 counter_evidence。
+- 每个线索必须填 counter_evidence。
 - 材料有反证 → 说明为何不足以推翻；没有反证 → 写明检查范围（看过哪些 session/事件）。
 
-# Step 3 假设要求
+# Step 3 线索要求
 - 2-5 个，互斥，不能有包含/父子关系。
-- 每个假设一个独立缺陷，能定位到唯一修复点。
+- 每个线索一个独立缺陷，能定位到唯一修复点。
 - cause_code / responsibility 必须符合下表。
 - 人工标注只定 FP/FN 和复核背景，不作为归因证据；标注笼统时禁止从标注文字推断原因。
 
-# Step 4 主因选择（程序执行，LLM 不需要选）
-- 主因由程序按最早断裂的 L 级别确定性选择：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
-- 同级按证据卡数量降序；再按 cause_code 字母序。
-- probability 只展示，不参与选择。
+# Step 4 展示顺序（程序执行，LLM 不需要选）
+- 线索按置信度降序展示：confidence 高的在前。
+- 置信度相同时按最早断裂的 L 级别：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
+- 再按证据卡数量降序；最后按 cause_code 字母序。
+- probability 只展示，不参与排序。
 - LLM 不需要输出 primary_cause / primary_hypothesis / secondary_causes，这些字段由程序填写。
 
 # cause_code 表
@@ -429,7 +430,7 @@ responsibility 取值：
 - external_data_source：需要外部数据源（网关配置/部署架构等）
 - eval_process：评测流程改进
 
-重复上报：标注含"重复上报/已上报/已报过" → 所有知识链路假设改 H/agent，禁止 A/C/E/G。
+重复上报：标注含"重复上报/已上报/已报过" → 所有知识链路线索改 H/agent，禁止 A/C/E/G。
 
 # 类别证据要求（不满足不得给该 cause_code）
 
@@ -447,22 +448,22 @@ responsibility 取值：
 | J | agent 虚构内容原文 + 材料中不存在的证据 |
 | K | 挖掘 CONFIRMED + 验证否定 |
 
-不满足 → 不得给该 cause_code；改判为满足证据要求的类别，或把该假设标为证据不足。
+不满足 → 不得给该 cause_code；改判为满足证据要求的类别，或把该线索标为证据不足。
 
 G 的证据必须同时包含：① 记忆/知识返回内容原文；② agent 推理中引用该内容的原文。缺一不可，否则不能给 G。
 
 # 置信度（confidence）
 
-confidence 表示"证据对当前假设的支撑程度"，不是"根因可能性"：
+confidence 表示"证据对当前线索的支撑程度"，不是"根因可能性"：
 - 0.9：所需证据齐全且 quote 已验证，无反证；
 - 0.7：所需证据齐全，但有已解释的反证；
-- 0.5：证据部分相关，只能作为次要假设，不能做主因；
+- 0.5：证据部分相关，只能作为次要线索；
 - 0.3：证据薄弱，不应输出；
 - 0.1：猜测，禁止输出。
-主因要求 confidence >= 0.7；0.5<=confidence<0.7 只能作为次要假设，不参与主因；<0.5 的假设直接丢弃。
+confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=0.6，只展示置信度最高的一条）；<0.5 的线索直接丢弃。
 
-probability：根因可能性，仅展示，不参与选择。
-confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主因）。两者不要混用。
+probability：根因可能性，仅展示，不参与排序。
+confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.6 展示）。两者不要混用。
 
 # fix_suggestion 填写规则
 - target=agent_prompt/agent_code 时，agent_type 必填（turing/argo/secmate/dataflow/webvuln_verify/cvuln_verify）。
@@ -486,7 +487,7 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
   },
   "hypotheses": [
     {
-      "hypothesis": "假设描述",
+      "hypothesis": "线索描述",
       "probability": 0.9,
       "responsibility": "agent/knowledge/external_data_source/eval_process",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
@@ -541,19 +542,19 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 
 输出：
 - summary：合并摘要。
-- insufficient_evidence / insufficient_reason：无假设能引用证据卡时使用。
+- insufficient_evidence / insufficient_reason：无线索能引用证据卡时使用。
 - audit：逐条自检；rule=检查项，pass=true/false，note=说明。
 - knowledge_memory_summary：
   - access_count：整条链知识/记忆访问次数
   - accesses：每次访问；source=knowledge_base/memory/unknown，query=查询，returned=返回，used_in_reasoning=是否引用，effect=positive/negative/neutral/none，session_id=来源 session
   - overall_effect：整体影响
   - impact_on_conclusion：对结论的影响说明
-- hypotheses：每个假设包含：
-  - hypothesis：假设描述
+- hypotheses：每个线索包含：
+  - hypothesis：线索描述
   - probability：根因可能性，仅展示
   - responsibility：agent/knowledge/external_data_source/eval_process
   - cause_code：A-K
-  - confidence：证据支撑度，主因要求 >=0.7
+  - confidence：证据支撑度（>=0.6 展示）
   - evidence_refs：引用的证据卡 ID
   - counter_evidence：反证或检查范围
   - evidence：逐条对应 evidence_refs 的依据
@@ -571,20 +572,20 @@ confidence：证据对假设的支撑程度，用于门控（>=0.7 才能做主�
 
 # 硬约束
 - 只使用输入中已有的证据卡和断点，不重新判 L0-L8。
-- 没有 evidence_refs 的假设不输出。
-- 主因按最早 L 级别选，不看 probability。
+- 没有 evidence_refs 的线索不输出。
+- 线索按 confidence 降序展示；probability 不参与排序。
 - 证据不足时不给结论。
 - 只返回 JSON。
 
 # 示例
-例1 输入断点里有一条 L7/G（记忆内容误导），同时有一条 L8/H（未识别设计意图）→ 主因 G（L7 早于 L8）。
-例2 输入断点里有 L2/A（未访问实际配置）和 L8/H → 主因 A（L2 早于 L8）。
-例3 没有任何假设能引用证据卡 → insufficient_evidence=true。
+例1 输入断点里有一条 L7/G（记忆内容误导），同时有一条 L8/H（未识别设计意图）→ 输出两条线索，按各自 confidence 排序。
+例2 输入断点里有 L2/A（未访问实际配置）和 L8/H → 输出两条线索，按各自 confidence 排序。
+例3 没有任何线索能引用证据卡 → insufficient_evidence=true。
 
 # 自检
-- 每个假设都有 evidence_refs 和 counter_evidence？
-- 主因是否按最早 L 级别选？
-- 是否有 L2/A 假设却把主因给了 L8？
+- 每个线索都有 evidence_refs 和 counter_evidence？
+- 每条线索的 confidence 是否与证据强度一致？
+- 是否有 L2/A 线索却只输出了 H？
 - 证据不足时是否没有硬给结论？
 """
 
@@ -1107,9 +1108,9 @@ class RootCauseAnalyzer:
         # 内容重复，且修复点无法定位到真实 session。断点只保留 session 级——
         # 它们带真实查询命令与返回内容，可回溯到具体 session。
 
-        # ── 校验假设的 supporting_breakpoints 引用 ──
+        # ── 校验线索的 supporting_breakpoints 引用 ──
         # 丢弃不存在的 BP 编号（LLM 可能编造），保留「字段缺失」与「空数组」的区别：
-        #   空数组 = LLM 明确表示此假设不基于任何断点
+        #   空数组 = LLM 明确表示此线索不基于任何断点
         #   字段缺失 = 协议不完备，后续由因果链回退到 session_id 匹配
         # LLM 看到的是链内编号（BP-1），落库前统一加链前缀转成跨链唯一引用
         _valid_refs = {self._scoped_ref(r, chain_type) for r in bp_registry}
@@ -1130,7 +1131,7 @@ class RootCauseAnalyzer:
                     dropped.append(r)
             if dropped:
                 log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} 假设引用了不存在的断点编号，"
+                    f"case {case_id}: {chain_type} 线索引用了不存在的断点编号，"
                     f"已丢弃 {dropped}（有效编号共 {len(_valid_refs)} 个）")
             h["supporting_breakpoints"] = kept
 
@@ -1155,36 +1156,35 @@ class RootCauseAnalyzer:
             h["confidence"] = conf
             if dropped:
                 log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} 假设引用了不存在的证据卡，"
+                    f"case {case_id}: {chain_type} 线索引用了不存在的证据卡，"
                     f"已丢弃 {dropped}")
             if kept and conf >= 0.5:
                 grounded.append(h)
             else:
                 log("ROOT_CAUSE",
-                    f"case {case_id}: {chain_type} 假设证据不足/置信度过低，"
+                    f"case {case_id}: {chain_type} 线索证据不足/置信度过低，"
                     f"已丢弃: {str(h.get('hypothesis', ''))[:60]} "
                     f"(refs={len(kept)}, confidence={conf})")
         merge_hypotheses = grounded
-        # 只有置信度 >=0.7 的假设才能参与主因选择
+        # 只有置信度 >=0.7 的线索参与顶层展示摘要的选取
         primary_pool = [h for h in merge_hypotheses
                         if h.get("confidence", 0.7) >= 0.7]
 
-        # ── 从多假设提取兼容字段（root_cause + fix_suggestion）──
-        # 主因按最早断裂的 L 级别选取，不看 probability；probability 仅作展示。
-        # 只有置信度 >=0.7 且有真实证据卡的假设才参与主因选择。
+        # ── 从多线索提取兼容字段（root_cause + fix_suggestion）──
+        # 顶层摘要取置信度最高的线索；probability 仅作展示，不参与排序。
+        # 只有置信度 >=0.7 且有真实证据卡的线索才参与。
         insufficient = (bool(merge_result.get("insufficient_evidence"))
                         or not primary_pool)
         top_hypothesis = None
         if not insufficient and primary_pool:
-            # 主因按最早断裂的 L 级别选择（L2/A 优先于 L7/G、L8/H），
-            # 同级按证据卡数量降序，再按 cause_code 字母序。
-            # 例外：G 与 A 并存时优先 G（见 prefer_grounded_cause），
-            # 避免链级结论与 DTS 主因不一致。
+            # 链级展示取置信度最高的一条假定线索；线索并列时按最早断裂 L、
+            # 证据卡数量、cause_code 做确定性 tie-break。
             # 不使用 LLM 自由选择的 primary_hypothesis——它会在 A/H 之间漂移。
             # 最终重算（下方）会在 L4/重复上报修正后再次排序，此处仅作初步选择。
             top_hypothesis = sorted(
-                prefer_grounded_cause(primary_pool),
+                primary_pool,
                 key=lambda h: (
+                    -float(h.get("confidence", 0) or 0),
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
                     -len(h.get("evidence_refs") or []),
@@ -1210,15 +1210,15 @@ class RootCauseAnalyzer:
         else:
             merge_root_cause = {
                 "category": "insufficient_evidence",
-                "description": "没有任何假设能关联到证据卡，无法判定根因",
+                "description": "没有任何线索能关联到证据卡，无法判定根因",
                 "human_confirmation_reason": fp_reason,
                 "insufficient_evidence": True,
             }
 
-        # 以 root_cause 的最终状态为准：无假设/无证据也视为证据不足。
+        # 以 root_cause 的最终状态为准：无线索/无证据也视为证据不足。
         insufficient = bool(merge_root_cause.get("insufficient_evidence"))
 
-        # fix_suggestion 合并所有假设的修复点
+        # fix_suggestion 合并所有线索的修复点
         merge_fix = []
         for h in merge_hypotheses:
             fs = h.get("fix_suggestion")
@@ -1226,20 +1226,20 @@ class RootCauseAnalyzer:
                 merge_fix.append(fs)
 
         # 注意：不再将 hypotheses 的 cause_code 合成为断点（session_id="hypothesis"）。
-        # 合成断点是 LLM 假设推理的产物，修复点找不到对应 session 文件，
+        # 合成断点是 LLM 线索推理的产物，修复点找不到对应 session 文件，
         # 无法定位到具体修改位置。断点只保留 session 级/merge 级——它们带真实
         # 查询命令与返回内容，修复建议可回溯到具体 session。
-        # 假设体系（hypotheses）单独在多假设卡片展示，不进断点统计。
+        # 线索体系（hypotheses）单独在多线索卡片展示，不进断点统计。
 
         log("ROOT_CAUSE",
             f"case {case_id}: {chain_type} 合并压缩完成 "
             f"(summary {len(merge_summary)} 字, "
-            f"{len(merge_hypotheses)} 个假设, "
+            f"{len(merge_hypotheses)} 个线索, "
             f"top={merge_root_cause.get('category', '?')})",
             eval_id=evaluation_id)
 
         # ── 重复上报强制归因修正（代码级兜底，防 LLM 不遵守 prompt 规则）──
-        # 人工标注为重复上报时，将所有指向知识/记忆链路的假设（C/E/G/知识责任）
+        # 人工标注为重复上报时，将所有指向知识/记忆链路的线索（C/E/G/知识责任）
         # 强制修正为 H（挖掘/验证流程去重缺陷，agent 责任）。
         # 重复上报 = 漏洞真实存在但已报过，与知识/记忆无关；知识/记忆有记录
         # 甚至 agent 读到了，问题是 agent 未识别重复性。
@@ -1269,7 +1269,7 @@ class RootCauseAnalyzer:
             if corrected:
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} 重复上报归因修正："
-                    f"{corrected} 个知识链路假设修正为 H/agent"
+                    f"{corrected} 个知识链路线索修正为 H/agent"
                     f"（重复上报是流程去重缺陷，非知识问题）")
             # 注意：不改 session 压缩阶段产出的 L2-L7 断点（保留原断点级别）。
             # 重复上报归因 H/L8 只针对 hypothesis 阶段产出的合成 L8 断点
@@ -1277,7 +1277,7 @@ class RootCauseAnalyzer:
             # ——改了会导致 H/L8 断点数膨胀（如 case-20260920-031946 的 mining
             # 5 个 L2-L7 C 断点全部被改成 L8/H，H 总数从合理值膨胀到 357）。
 
-        # ── L4 独立验证（扩展：知识缺失假设也触发）──
+        # ── L4 独立验证（扩展：知识缺失线索也触发）──
         l4_verification = self._verify_l4_independently(
             case_id, chain_type, vuln_title, fp_reason, outcome,
             all_breakpoints, project_id, cancel_cb,
@@ -1285,23 +1285,24 @@ class RootCauseAnalyzer:
             evaluation_id=evaluation_id,
         )
 
-        # ── 假设筛选：只保留有证据卡的假设 ──
-        # probability 不再参与筛选；无证据的假设已在上面丢弃。
-        # 证据不足的 case 不保留任何假设，避免下游误生成问题单。
+        # ── 线索筛选：只保留有证据卡的线索 ──
+        # probability 不再参与筛选；无证据的线索已在上面丢弃。
+        # 证据不足的 case 不保留任何线索，避免下游误生成问题单。
         if insufficient:
             merge_hypotheses = []
 
         # ── 最终状态重算 ──
-        # L4/重复上报可能改了 cause_code；报告头部必须与最终假设一致，
+        # L4/重复上报可能改了 cause_code；报告头部必须与最终线索一致，
         # 不能再沿用 L4 之前算出的 root_cause.category。
         if primary_pool:
-            # 重算时完全按最终 cause_code 排序，不沿用修正前的 top_hypothesis
+            # 重算按最终 cause_code 与置信度排序，不沿用修正前的 top_hypothesis
             # 做 tie-break——重复上报修正可能把 C(L4) 降级为 H(L8)，原 top
-            # 的 rank 变了，再用它做 tie-break 会给被降级的假设不当优势。
-            # 同级同证据数时按 cause_code 字母序，完全确定性。
+            # 的 rank 变了，再用它做 tie-break 会给被降级的线索不当优势。
+            # 置信度相同时按最早 L、证据数、cause_code，完全确定性。
             final_top = sorted(
-                prefer_grounded_cause(primary_pool),
+                primary_pool,
                 key=lambda h: (
+                    -float(h.get("confidence", 0) or 0),
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
                     -len(h.get("evidence_refs") or []),
@@ -1325,7 +1326,7 @@ class RootCauseAnalyzer:
                 "insufficient_evidence": True,
             }
 
-        # 重算 fix_suggestion（只保留筛选后假设的修复建议）
+        # 重算 fix_suggestion（只保留筛选后线索的修复建议）
         merge_fix = []
         for h in merge_hypotheses:
             fs = h.get("fix_suggestion")
@@ -1675,7 +1676,7 @@ class RootCauseAnalyzer:
         """构建合并压缩的用户消息。
 
         bp_registry: 断点编号表，用于给 L0-L7 判定加 BP-n 前缀，
-        让 LLM 在假设里引用「supporting_breakpoints」时能精确定位。
+        让 LLM 在线索里引用「supporting_breakpoints」时能精确定位。
         """
         parts = [
             f"漏洞标题：{vuln_title}",
@@ -1702,7 +1703,7 @@ class RootCauseAnalyzer:
             cards = s.get("evidence_cards") or []
             if cards:
                 parts.append(
-                    "证据卡（假设的 evidence_refs 只能引用下列 evidence_id）:")
+                    "证据卡（线索的 evidence_refs 只能引用下列 evidence_id）:")
                 for c in cards:
                     if not isinstance(c, dict):
                         continue
@@ -1719,7 +1720,7 @@ class RootCauseAnalyzer:
             l0_l7 = s.get("l0_l7") or []
             if l0_l7:
                 if bp_registry:
-                    # 逐条打印并附链内 BP 编号，供假设的 supporting_breakpoints
+                    # 逐条打印并附链内 BP 编号，供线索的 supporting_breakpoints
                     # 引用（落库时会自动加链前缀转成跨链唯一）
                     parts.append("L0-L7 判定（用下方 BP-n 编号引用）:")
                     for idx, kp in enumerate(l0_l7):
@@ -1780,7 +1781,7 @@ class RootCauseAnalyzer:
 
         触发条件（任一满足即触发）：
         - L2 断点（cause_code A，agent 该查没查）
-        - 假设 cause_code=A（该查没查）
+        - 线索 cause_code=A（该查没查）
 
         只回答一个问题：agent 没查的那个来源里，到底有没有对应知识。
         G（知识/记忆内容错误）不触发 L4，也不允许被 L4 改判为 A。
@@ -1831,14 +1832,14 @@ class RootCauseAnalyzer:
                              if not (q in seen_q or seen_q.add(q))]
 
         # ── 无检索问题：不查知识库 ──
-        # LLM 判定有 L2 断点或 A 假设，但没产出 kb_search_query，
+        # LLM 判定有 L2 断点或 A 线索，但没产出 kb_search_query，
         # 说明 LLM 无法确定该查什么——不查 Athena（查了也是白查）。
         if not kb_search_queries:
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 检测到"
                 f"{'L2 断点' if has_l2_break else ''}"
                 f"{'+' if has_l2_break and has_a_hypothesis else ''}"
-                f"{'A/该查没查假设' if has_a_hypothesis else ''}，"
+                f"{'A/该查没查线索' if has_a_hypothesis else ''}，"
                 f"但无知识检索问题，跳过 L4 知识库验证")
             return {
                 # None=未判定。知识库没被查过，不能返回 False（会被上层
@@ -1854,7 +1855,7 @@ class RootCauseAnalyzer:
             f"case {case_id}: {chain_type} 检测到"
             f"{'L2 断点' if has_l2_break else ''}"
             f"{'+' if has_l2_break and has_a_hypothesis else ''}"
-            f"{'A/该查没查假设' if has_a_hypothesis else ''}，"
+            f"{'A/该查没查线索' if has_a_hypothesis else ''}，"
             f"启动知识库主动验证 L4 (project_id={project_id}, "
             f"queries={kb_search_queries})")
 
@@ -1874,13 +1875,13 @@ class RootCauseAnalyzer:
                 f"l4={result.get('l4_knowledge_exists')}, "
                 f"candidates={result.get('candidate_files', 0)}")
 
-            # L4 只记录知识库覆盖度，不修改断点、假设或主因。
+            # L4 只记录知识库覆盖度，不修改断点或线索。
             # 外部知识库的检索/判定每次都可能不同；若允许它改判 A↔C，
             # 同一份 trace 重复分析会得到不同结论。
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} L4 仅记录 "
                 f"(l4={result.get('l4_knowledge_exists')})，"
-                f"不修改断点/假设/主因")
+                f"不修改断点/线索")
 
             return result
         except Exception as e:

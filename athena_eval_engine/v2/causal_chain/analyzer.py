@@ -7,9 +7,9 @@ L0 不参与此模块逻辑——L0 仅标记知识原始来源 provenance，不
 输出：
   - 交叉归因矩阵：Agent 类型（行）× L2-L7 级别（列）
   - 成因汇总（cause_code A-H 计数，断点维度）
-  - 假设维度统计（hypothesis_summary，按 responsibility 分组）
+  - 线索维度统计（hypothesis_summary，按 responsibility 分组）
   - 人工标注质量分布（label_quality_summary，precise/imprecise）
-  - 每 case 的断点清单（含多假设）
+  - 每 case 的断点清单（含多线索）
 """
 from __future__ import annotations
 
@@ -22,7 +22,6 @@ from ..core.causal_levels import (
     LEVEL_RANK as _LEVEL_RANK,
     ALL_LEVELS as _ALL_LEVELS,
     ALL_CAUSES as _ALL_CAUSES,
-    prefer_grounded_cause,
 )
 from ..infra.log_util import log
 
@@ -45,12 +44,12 @@ _FN_SUB_TO_CAUSE = {
 # 所有 Agent 类型（行头，集中配置见 v2/core/agents.py）
 _ALL_AGENT_TYPES = ALL_AGENT_TYPES
 
-# 所有 responsibility（假设维度）
+# 所有 responsibility（线索维度）
 _ALL_RESPONSIBILITIES = ["agent", "knowledge", "external_data_source", "eval_process"]
 
 # ── 链类型→默认 agent_type 映射（回退用，优先从 chain_data.agent_type 取）──
 # mining 无默认值——挖掘 agent 有多种（turing/argo/secmate/dataflow），
-# 不应假设默认是 turing，缺数据时留空让下游处理
+# 不应线索默认是 turing，缺数据时留空让下游处理
 _CHAIN_DEFAULT_AGENT_TYPE = {
     "mining": "",
     "verification": "",
@@ -138,17 +137,17 @@ class CausalChainAnalyzer:
 
     @staticmethod
     def _hypothesis_refs(case: dict) -> dict:
-        """汇总该 case 两条链所有假设对断点的引用。
+        """汇总该 case 两条链所有线索对断点的引用。
 
         Returns:
             {
               "refs": set[str],           被引用的 _bp_ref 集合
               "sids": set[str],           回退用：被引用的 session_id
               "causes": set[str],         FN 合成断点用：被引用断点的 cause_code
-              "has_field": bool,          是否至少有一条假设带 supporting_breakpoints 字段
-              "hyp_by_ref": dict[str, list[int]],   bp_ref → 引用它的假设序号(1-based)
-              "hyp_by_sid": dict[str, list[int]],   session_id → 假设序号
-              "ordered": list[dict],      按最早 L 级别/证据数/cause_code 排序的假设列表（序号基准）
+              "has_field": bool,          是否至少有一条线索带 supporting_breakpoints 字段
+              "hyp_by_ref": dict[str, list[int]],   bp_ref → 引用它的线索序号(1-based)
+              "hyp_by_sid": dict[str, list[int]],   session_id → 线索序号
+              "ordered": list[dict],      按最早 L 级别/证据数/cause_code 排序的线索列表（序号基准）
             }
         """
         ordered: list[dict] = []
@@ -159,14 +158,14 @@ class CausalChainAnalyzer:
             hs = ch.get("hypotheses") or []
             if isinstance(hs, list):
                 ordered.extend([h for h in hs if isinstance(h, dict)])
-        # probability 排序已废弃；统一按最早 L 级别、证据数、cause_code 排序，
-        # 与 dts/issue.py 的主因选择保持一致（supports_hypotheses 编号也按此顺序）。
+        # 与前端展示顺序一致：置信度降序 → 最早 L → 证据数 → cause_code。
+        # supports_hypotheses 的 1-based 编号依赖这个顺序，前后端必须同序。
         ordered.sort(key=lambda h: (
+            -(h.get("confidence") or 0),
             _LEVEL_RANK.get(
                 CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),
             -len(h.get("evidence_refs") or []),
             str(h.get("cause_code") or "Z"),
-            -(h.get("confidence") or 0),
         ))
 
         bp_sessions: dict[str, str] = {}
@@ -231,12 +230,12 @@ class CausalChainAnalyzer:
         每段含 l0_l7_breakpoints 列表。
 
         **断点集合由 session 级判定唯一决定**：
-        - 只要某种判定给出了 cause_code，它就是一条断点，不因假设是否引用而丢弃。
-        - 假设的引用只写入 supports_hypotheses 作标注，不参与筛选。
+        - 只要某种判定给出了 cause_code，它就是一条断点，不因线索是否引用而丢弃。
+        - 线索的引用只写入 supports_hypotheses 作标注，不参与筛选。
         - 按 (case_id, chain_type, session_id, cause_code, breakpoint) 去重，
           同一 session 同一级别同一成因只保留一条。
         - 不做跨 session 合并：不同 session 是不同证据，合并会让断点数随
-          假设分组方式变化（同一输入两次跑出 3 条 / 4 条）。
+          线索分组方式变化（同一输入两次跑出 3 条 / 4 条）。
 
         Returns:
             扁平断点记录列表，每条含：
@@ -246,7 +245,7 @@ class CausalChainAnalyzer:
             - cause_code, breakpoint, l0_source
             - query_content, returned_content
             - l7_influenced (effect_label)
-            - supports_hypotheses: list[int]  引用它的假设序号（1-based），可为空
+            - supports_hypotheses: list[int]  引用它的线索序号（1-based），可为空
         """
         flat: list[dict] = []
         seen_keys: set[tuple] = set()
@@ -313,8 +312,8 @@ class CausalChainAnalyzer:
                     dedup_key = (
                         case_id, "mining", fn_cause_code, "L8", fn_query)
                     # FN 合成断点没有 _bp_ref，按 cause_code 过滤：
-                    #   - 无假设 → 保留（兜底）
-                    #   - 有假设 → 只保留 cause_code 被引用的
+                    #   - 无线索 → 保留（兜底）
+                    #   - 有线索 → 只保留 cause_code 被引用的
                     if refs["ordered"]:
                         causes = (refs["causes"] if refs["has_field"]
                                   else {h.get("cause_code", "")
@@ -347,9 +346,9 @@ class CausalChainAnalyzer:
                     if not cause_code or cause_code == "null":
                         continue
 
-                    # 假设引用只作标注，不作为保留条件：
+                    # 线索引用只作标注，不作为保留条件：
                     # 断点集合必须由 session 级判定唯一决定，否则同一输入
-                    # 会因假设引用的差异跑出不同断点数。
+                    # 会因线索引用的差异跑出不同断点数。
                     bp_ref = bp.get("_bp_ref", "")
                     if refs["ordered"] and refs["has_field"] and bp_ref:
                         supports = refs["hyp_by_ref"].get(bp_ref, [])
@@ -387,9 +386,9 @@ class CausalChainAnalyzer:
                         "query_timeout": bool(bp.get("query_timeout")),
                         "query_timeout_secs": bp.get("query_timeout_secs") or 0,
                         "root_cause": chain_data.get("root_cause", {}),
-                        # 只取断点自身携带的修复建议（合成断点带假设的
+                        # 只取断点自身携带的修复建议（合成断点带线索的
                         # fix_suggestion）。不回退 chain 级 fix_suggestion——
-                        # 链级修复点是整链假设的修复建议（case 级 solution 用），
+                        # 链级修复点是整链线索的修复建议（case 级 solution 用），
                         # 回退会让 session 级断点显示与合成断点相同的修复点，重复混淆。
                         "fix_suggestion": bp.get("fix_suggestion") or [],
                     })
@@ -444,18 +443,18 @@ class CausalChainAnalyzer:
 
         return {code: counter.get(code, 0) for code in _ALL_CAUSES}
 
-    # ── 假设维度统计 ──
+    # ── 线索维度统计 ──
 
     def _build_hypothesis_summary(
         self, root_cause_results: list[dict],
     ) -> dict:
-        """统计多假设维度的分布。
+        """统计多线索维度的分布。
 
         从 root_cause_results 的 mining/verification.hypotheses 中聚合：
         - by_responsibility: 按 responsibility 分组计数
-        - by_cause_code: 按 cause_code 分组计数（假设维度）
+        - by_cause_code: 按 cause_code 分组计数（线索维度）
         - by_agent_can_resolve: true/false 计数（agent 能否自行解决）
-        - total: 假设总数
+        - total: 线索总数
 
         Returns:
             {
@@ -555,7 +554,7 @@ class CausalChainAnalyzer:
             case_id = rec.get("case_id", "")
             case_map[case_id].append(rec)
 
-        # 从 root_cause_results 获取每条 case 的根因、修复建议、假设和标注质量
+        # 从 root_cause_results 获取每条 case 的根因、修复建议、线索和标注质量
         case_root_cause: dict[str, dict] = {}
         case_fix: dict[str, str] = {}
         case_hypotheses: dict[str, list] = {}
@@ -590,7 +589,7 @@ class CausalChainAnalyzer:
                             prob = h.get("probability", 0)
                             resp = h.get("responsibility", "")
                             if hyp_desc:
-                                parts.append(f"假设(P={prob}, {resp}): {hyp_desc}")
+                                parts.append(f"线索(P={prob}, {resp}): {hyp_desc}")
                             if len(parts) > 1:
                                 fix_parts.append(" | ".join(parts))
                 else:
@@ -620,17 +619,15 @@ class CausalChainAnalyzer:
             case_hypotheses[cid] = all_hypotheses
             case_label_quality[cid] = label_quality
             if all_hypotheses:
-                # 主因按各链的 primary_cause 选取，不看 probability；
-                # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
-                # 跨链主因：按最早断裂的 L 级别选，不能按链顺序取第一个。
+                # 顶层展示取置信度最高的一条假定线索；线索并列时按最早 L、
+                # 证据数、cause_code 做确定性 tie-break。
                 eligible = [h for h in all_hypotheses
                             if float(h.get("confidence", 0.7) or 0) >= 0.7]
-                # 已证实的知识误导(G)优先于未发起的访问(A)，与 DTS 主因同规则。
-                pool = (prefer_grounded_cause(eligible) if eligible
-                        else all_hypotheses)
+                pool = eligible or all_hypotheses
                 top = sorted(
                     pool,
                     key=lambda h: (
+                        -float(h.get("confidence", 0) or 0),
                         _LEVEL_RANK.get(
                             CAUSE_TO_LEVEL.get(
                                 str(h.get("cause_code") or ""), ""), 99),
@@ -672,8 +669,8 @@ class CausalChainAnalyzer:
                 insufficient_ids.add(cid)
 
         result: list[dict] = []
-        # 遍历全部 case（含没有断点、只有假设的），
-        # 只有「断点空 + 假设也空」才跳过
+        # 遍历全部 case（含没有断点、只有线索的），
+        # 只有「断点空 + 线索也空」才跳过
         all_case_ids: list[str] = []
         for case in root_cause_results:
             cid = case.get("case_id", "")
