@@ -31,4 +31,7 @@ ENV TZ=Asia/Shanghai \
 
 EXPOSE 8090
 
-CMD ["sh", "-c", "ulimit -n 65536 && exec python -m uvicorn athena_eval_engine.api.routes.evaluations:app --host 0.0.0.0 --port 8090 --workers 1"]
+# fd 上限：先抬到 hard limit（容器内通常是 524288），失败再退回 65536。
+# 单靠这里不够——kubectl exec 起的新进程继承的是镜像默认 soft limit(1024)，
+# 所以应用启动时也会再设一次（evaluations._raise_nofile_limit）。
+CMD ["sh", "-c", "ulimit -n unlimited 2>/dev/null || ulimit -n 65536; ulimit -n; exec python -m uvicorn athena_eval_engine.api.routes.evaluations:app --host 0.0.0.0 --port 8090 --workers 1"]

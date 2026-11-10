@@ -323,8 +323,40 @@ from ...v2.pipeline.orchestrator import Orchestrator as _V2Orchestrator
 from ...v2.pipeline.status_manager import TaskCancelledError as _V2TaskCancelledError
 
 
+# 目标 fd 上限：220 LLM 并发 + Athena 轮询 + MySQL 池 + trace 文件，
+# 峰值数百。取 65536 留足余量（镜像默认 soft limit 只有 1024）。
+_TARGET_NOFILE = 65536
+
+
+def _raise_nofile_limit() -> None:
+    """启动时主动抬高 fd 上限，不依赖部署配置。
+
+    容器默认 soft limit 常为 1024（hard 通常 524288+），220 并发 LLM
+    + 知识库轮询 + DB 池的峰值会顶到上限。Dockerfile 里的
+    `ulimit -n` 只影响那一个 shell 会话，换个部署方式就失效，
+    所以在进程内再设一次（只抬 soft，不超过 hard）。
+    """
+    try:
+        import resource
+        soft, hard = resource.getrlimit(resource.RLIMIT_NOFILE)
+        target = _TARGET_NOFILE if hard == resource.RLIM_INFINITY \
+            else min(_TARGET_NOFILE, hard)
+        if soft >= target:
+            log("STARTUP", f"fd 上限已是 {soft}，无需调整")
+            return
+        resource.setrlimit(resource.RLIMIT_NOFILE, (target, hard))
+        log("STARTUP", f"fd 上限已提升: {soft} → {target}（hard={hard}）")
+    except Exception as e:
+        # 提不上去不阻断启动，但必须留痕——出现 Too many open files 时
+        # 需要知道是没提到还是真的泄漏
+        log("STARTUP", f"fd 上限提升失败（当前仍为原值）: "
+                       f"{type(e).__name__}: {e}")
+
+
 @app.on_event("startup")
 def _on_startup():
+    # 最先抬 fd 上限，后续所有线程/连接都受益
+    _raise_nofile_limit()
     # 先启动独立健康检查端口（8091），让 probe 尽快通过
     from ...infrastructure.health_server import start as _start_health
     _start_health(8091)

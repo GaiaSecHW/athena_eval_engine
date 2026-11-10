@@ -491,8 +491,12 @@ class KnowledgeVerifier:
                         headers={"Content-Type": "application/json"},
                         method="POST",
                     )
-                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                    data = json.loads(resp.read())
+                    # 必须用 with 关闭响应：异常路径会把异常对象（含
+                    # traceback → resp 引用）挂在 last_err 上，GC 回收延迟，
+                    # 轮询场景下每个关键词每 2 秒建一个连接，fd 会累积。
+                    with urllib.request.urlopen(
+                            req, timeout=_API_TIMEOUT) as resp:
+                        data = json.loads(resp.read())
                     task_id = data.get("retrieval_task_id")
                     if task_id:
                         return task_id, None
@@ -513,8 +517,10 @@ class KnowledgeVerifier:
                     cancel_cb()
                 try:
                     req = urllib.request.Request(poll_url)
-                    resp = urllib.request.urlopen(req, timeout=_API_TIMEOUT)
-                    poll_data = json.loads(resp.read())
+                    # 轮询是最频繁的连接创建点（每 2 秒一次），必须显式关闭
+                    with urllib.request.urlopen(
+                            req, timeout=_API_TIMEOUT) as resp:
+                        poll_data = json.loads(resp.read())
                     status = poll_data.get("status", "")
                     if status in ("completed", "failed"):
                         return poll_data, None
