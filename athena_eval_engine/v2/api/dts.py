@@ -12,10 +12,12 @@
 """
 from __future__ import annotations
 
+import re
+import socket
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..infra.log_util import log
@@ -61,6 +63,39 @@ class RegressionVerifyRequest(BaseModel):
     vuln_title: str = ""
     vuln_description: str = ""
     is_vulnerable: bool
+
+
+# k8s 内网域名后缀：.<namespace>.svc.<cluster-domain>
+_SVC_SUFFIX = re.compile(r"\.([^.]+)\.svc(\.[^.]+)*$")
+
+
+def _caller_service(request: Request | None) -> str:
+    """把请求来源 IP 反查成 k8s service 名，作为回归方标识。
+
+    必须在请求发生时同步解析：Pod 删除后 PTR 记录随之消失，IP 也会
+    被复用；事后反查会张冠李戴。解析失败或不在集群内时返回 unknown，
+    不返回 IP——IP 复用会让归因看起来精确、实际上是错的。
+
+    反查结果形如 ``10-42-0-62.eval-engine.secflow-ns.svc.cluster.local``，
+    去掉公共后缀后取最后一段，同一 service 的多个副本归并为一个名字。
+    """
+    ip = ""
+    try:
+        if request is not None and request.client is not None:
+            ip = request.client.host or ""
+    except Exception:
+        ip = ""
+    if not ip:
+        return "unknown"
+    try:
+        host, _, _ = socket.gethostbyaddr(ip)
+    except Exception:
+        return "unknown"
+    m = _SVC_SUFFIX.search(host)
+    if not m:
+        return "unknown"
+    service = host[:m.start()].rsplit(".", 1)[-1]
+    return service or "unknown"
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +383,8 @@ def _locate_issue(req: "RegressionVerifyRequest") -> tuple[dict | None, str]:
 
 def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
                         match_method: str, same: bool = True,
-                        result_id: int | None = None) -> dict:
+                        result_id: int | None = None,
+                        caller_service: str = "") -> dict:
     """根据 is_vulnerable（及一致性判定）更新问题单并写回归历史。
 
     回归验证是针对漏洞（case_id）的，不是针对单条问题单的。按 case_id
@@ -387,6 +423,7 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
         "is_vulnerable": req.is_vulnerable,
         "result": replay_result,
         "message": message,
+        "caller_service": caller_service or "unknown",
     }
     if not same:
         replay_payload["same_vulnerability"] = False
@@ -446,7 +483,8 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
 
 
 def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
-                          match_method: str, result_id: int | None) -> dict | None:
+                          match_method: str, result_id: int | None,
+                          caller_service: str = "") -> dict | None:
     """执行需要 LLM 的回归验证（匹配 + 一致性判断），完成后更新问题单。
 
     返回最终响应 dict；定位失败等无法完成时返回 None。
@@ -480,7 +518,8 @@ def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
                 req.vuln_title, req.vuln_description,
                 issue.get("vuln_title", ""))
         return _apply_verification(
-            issue, req, match_method, same, result_id=result_id)
+            issue, req, match_method, same, result_id=result_id,
+            caller_service=caller_service)
     except HTTPException as he:
         log("DTS_API",
             f"regression_verify(async) 终止 dts_id={req.dts_id}: {he.detail}")
@@ -503,7 +542,7 @@ REGRESSION_BLOCK_SECONDS = 280
 
 
 @router.post("/regression-verify")
-def regression_verify(req: RegressionVerifyRequest):
+def regression_verify(req: RegressionVerifyRequest, request: Request):
     """回归验证：判断误报是否消除。
 
     输入原始数据的任务 ID、问题单 ID（或 case_id），以及对应漏洞的标题、
@@ -522,8 +561,17 @@ def regression_verify(req: RegressionVerifyRequest):
     ``GET /api/v2/dts/{dts_id}`` 的 ``regression_history`` 查看结果。
 
     纯 DB 路径（dts_id/case_id 直接命中且未提交漏洞信息）始终同步返回。
+
+    回归方标识：请求体不带 agent 身份，服务端在收到请求时把来源 IP
+    反查为 k8s service 名（去掉 .<ns>.svc.<cluster-domain> 后取最后一段），
+    写入 replay_data.caller_service。必须在请求时同步解析——Pod 删除后
+    PTR 记录消失、IP 也会复用，事后反查会失真。
     """
 
+
+    # 回归方：请求发生时立即解析来源 IP 对应的 k8s service 名，
+    # 事后 Pod 删除/IP 复用都会让反查失真。
+    caller_service = _caller_service(request)
 
     # ── 1. 纯 DB 定位（毫秒级） ──
     issue, match_method = _locate_issue(req)
@@ -555,7 +603,8 @@ def regression_verify(req: RegressionVerifyRequest):
     # ── 3. 纯 DB 路径：同步给出结论 ──
     needs_llm = (issue is None) or bool(req.vuln_title or req.vuln_description)
     if not needs_llm:
-        return _apply_verification(issue, req, match_method)
+        return _apply_verification(issue, req, match_method,
+                                   caller_service=caller_service)
 
     # ── 4. 需要 LLM：先落一条「判定中」记录，最多阻塞 280s 等结果 ──
     result_id = None
@@ -568,7 +617,8 @@ def regression_verify(req: RegressionVerifyRequest):
         )
 
     future = _regression_pool.submit(
-        _run_regression_async, req, issue, match_method, result_id)
+        _run_regression_async, req, issue, match_method, result_id,
+        caller_service)
 
     try:
         final = future.result(timeout=REGRESSION_BLOCK_SECONDS)
