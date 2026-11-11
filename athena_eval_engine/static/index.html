@@ -32,11 +32,11 @@
 .home-refresh-icon{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%}
 .home-refresh-btn.refreshing .home-refresh-icon{animation:spin 1s linear infinite}
 .fp-fn-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
-/* 首页首行：评测状态 5 项 + 误报/漏报/根因确认 4 项 = 9 项一行 */
-.kpi-row-9{grid-template-columns:repeat(9,1fr)!important;margin-bottom:20px}
-@media(max-width:1200px){.kpi-row-9{grid-template-columns:repeat(5,1fr)!important}}
-@media(max-width:900px){.kpi-row-9{grid-template-columns:repeat(3,1fr)!important}}
-@media(max-width:640px){.kpi-row-9{grid-template-columns:repeat(2,1fr)!important}}
+/* 首页首行：评测状态 5 项 + 误报/漏报 2 项 = 7 项一行 */
+.kpi-row-7{grid-template-columns:repeat(7,1fr)!important;margin-bottom:20px}
+@media(max-width:1200px){.kpi-row-7{grid-template-columns:repeat(4,1fr)!important}}
+@media(max-width:900px){.kpi-row-7{grid-template-columns:repeat(3,1fr)!important}}
+@media(max-width:640px){.kpi-row-7{grid-template-columns:repeat(2,1fr)!important}}
 .fp-fn-box{padding:16px;border-radius:12px;background:var(--p2);border:2px solid transparent;transition:all .3s;text-align:center}
 .fp-box{border-color:rgba(220,38,38,.2)}.fn-box{border-color:rgba(217,119,6,.2)}
 .fp-fn-value{font-size:26px;font-weight:700;font-family:'SF Mono',Consolas,monospace;margin-bottom:2px}
@@ -115,8 +115,8 @@ async function renderHome(){
     +'<button class="home-refresh-btn" onclick="refreshDashboard()"><span class="home-refresh-icon"></span>刷新</button></div>'
     +'</div>'
 
-    // 第一行：评测状态 + 误报/漏报/根因确认，合并为一行 9 项
-    +'<div class="kpi-grid kpi-row-9">'
+    // 第一行：评测状态 + 误报/漏报，合并为一行 7 项
+    +'<div class="kpi-grid kpi-row-7">'
     +renderKPICard('评测总数',total,'📊','linear-gradient(135deg,#2563eb,#3b82f6)')
     +renderKPICard('已完成',completed,'✓','linear-gradient(135deg,#16a34a,#22c55e)')
     +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)')
@@ -124,8 +124,6 @@ async function renderHome(){
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)')
     +renderKPICard('误报',((dtsStats.by_case_type||{}).FP||0),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('漏报',((dtsStats.by_case_type||{}).FN||0),'○','linear-gradient(135deg,#d97706,#f59e0b)')
-    +renderKPICard('确认为根因',((dtsStats.root_confirmation||{}).confirmed_root||0),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
-    +renderKPICard('确认为非根因',((dtsStats.root_confirmation||{}).confirmed_not_root||0),'✗','linear-gradient(135deg,#dc2626,#ef4444)')
     +'</div>'
     +'<div class="kpi-grid kpi-6">'
     +renderKPICard('运行态·总体误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
