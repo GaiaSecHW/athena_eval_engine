@@ -167,8 +167,33 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 "created_at": created_str,
             }
 
+    # 任务是否已从平台删除（与评测列表/漏洞中心同一口径：schedule batch-alive）
+    by_proj: dict[str, set[str]] = {}
+    for r in rows:
+        _pid, _tid = r.get("project_id"), r.get("task_id")
+        if _pid and _tid:
+            by_proj.setdefault(_pid, set()).add(_tid)
+    alive_by_proj: dict[str, set[str]] = {}
+    if by_proj:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _check_alive(item):
+            _pid, _tids = item
+            try:
+                return _pid, ps.filter_alive_tasks(_pid, sorted(_tids))
+            except Exception as e:
+                log("REPORT", f"任务存活校验失败 project={_pid}: {e}")
+                return _pid, set(_tids)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+            for _pid, _alive in pool.map(_check_alive, list(by_proj.items())):
+                alive_by_proj[_pid] = _alive
+
     # 给每行补评测关联 + 误报率（运行态只有误报率，无漏报）
     for r in rows:
+        _pid, _tid = r.get("project_id"), r.get("task_id")
+        r["task_deleted"] = bool(
+            _pid and _tid and _tid not in alive_by_proj.get(_pid, set()))
         ev = eval_map.get(r.get("task_id", "")) or {}
         r["evaluation_id"] = ev.get("evaluation_id", "")
         r["evaluation_status"] = ev.get("evaluation_status", "")

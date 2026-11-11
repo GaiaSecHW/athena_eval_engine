@@ -86,8 +86,10 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                     (page_size, offset))
         rows = cur.fetchall()
         evals = []
+        task_pairs: list[tuple[str, str]] = []
         for r in rows:
             kg_proj = kg_task = ""
+            kg_proj_id = kg_task_id = ""
             kg_proj_name = kg_task_name = ""
             bm_source = ""
             eval_mode = "dev"
@@ -109,8 +111,11 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                             kg_task = e.get("task_id_actual") or ""
                             kg_proj_name = e.get("project_name") or kg_proj
                             kg_task_name = e.get("task_name") or kg_task
+                    kg_proj_id = manifest.get("kg_project_id") or kg_proj
+                    kg_task_id = manifest.get("kg_task_id") or kg_task
                 except (json.JSONDecodeError, TypeError):
                     pass
+            task_pairs.append((kg_proj_id, kg_task_id))
             evals.append({"evaluation_id": r[0], "name": r[1], "status": r[2],
                           "benchmark_set_id": r[3],
                           "created_at": r[4].isoformat() if r[4] else "",
@@ -121,6 +126,34 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                           "vc_source_project_name": vc_source_project_name,
                           "vc_source_task_name": vc_source_task_name,
                           "progress": get_progress(r[0]) if r[2] not in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED") else ""})
+
+        # 标记任务已从平台删除（与漏洞中心隐藏 case 同一口径：schedule batch-alive）。
+        # 校验失败时不误标，保持 task_deleted=False。
+        from ...application.platform_service import filter_alive_tasks
+        from ...infrastructure.log_util import log as _log
+        by_proj: dict[str, set[str]] = {}
+        for pid, tid in task_pairs:
+            if pid and tid:
+                by_proj.setdefault(pid, set()).add(tid)
+        alive_by_proj: dict[str, set[str]] = {}
+        if by_proj:
+            from concurrent.futures import ThreadPoolExecutor
+
+            def _check_alive(item):
+                pid, tids = item
+                try:
+                    return pid, filter_alive_tasks(pid, sorted(tids))
+                except Exception as e:
+                    _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
+                    return pid, set(tids)
+
+            with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+                for pid, alive in pool.map(_check_alive, list(by_proj.items())):
+                    alive_by_proj[pid] = alive
+        for ev, (pid, tid) in zip(evals, task_pairs):
+            ev["task_deleted"] = bool(
+                pid and tid and tid not in alive_by_proj.get(pid, set()))
+
         return {
             "evaluations": evals,
             "total": total,

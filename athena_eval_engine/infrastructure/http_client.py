@@ -51,6 +51,50 @@ def http_get(
     raise last_err
 
 
+def http_post(
+    url: str,
+    *,
+    json_body: dict | None = None,
+    retries: int = 3,
+    retry_delay: float = 2.0,
+    timeout: float = 30,
+    log_tag: str = "HTTP",
+) -> dict | list:
+    """带 bearer token 的 JSON POST，返回 JSON。"""
+    body = json.dumps(json_body or {}).encode("utf-8")
+    last_err = None
+    for attempt in range(retries):
+        try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                headers={
+                    "Authorization": f"Bearer {PLATFORM_TOKEN}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                return json.loads(r.read().decode("utf-8"))
+        except HTTPError as e:
+            last_err = e
+            log(log_tag, f"HTTP {e.code} 重试 {attempt+1}/{retries}: {url}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+        except (URLError, TimeoutError, OSError) as e:
+            last_err = e
+            log(log_tag, f"网络错误重试 {attempt+1}/{retries}: {url} → {e}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+        except json.JSONDecodeError as e:
+            last_err = e
+            log(log_tag, f"JSON 解析失败重试 {attempt+1}/{retries}: {url} → {e}")
+            if attempt + 1 < retries:
+                time.sleep(retry_delay)
+    log(log_tag, f"❌ {retries} 次重试全部失败: {url} → {last_err}")
+    raise last_err
+
+
 def http_get_raw(
     url: str,
     *,

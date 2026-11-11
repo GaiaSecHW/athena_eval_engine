@@ -195,13 +195,14 @@ function render(d){
   const STATUS_COLOR={COMPLETED:'var(--green)',COMPLETED_WITH_WARNINGS:'var(--amber)',FAILED:'var(--red)',CREATED:'var(--gray)',QUEUED:'var(--amber)',RUNNING:'var(--acc)',VALIDATING:'var(--acc)',INGESTING:'var(--acc)',PARSING:'var(--acc)',CASE_MATCHING:'var(--acc)',ROOT_CAUSE_ANALYSIS:'var(--acc)',RESOLVING:'var(--acc)',REPORTING:'var(--acc)',FINALIZING:'var(--acc)'};
   const STATUS_LABEL={COMPLETED:'完成',COMPLETED_WITH_WARNINGS:'完成有告警',FAILED:'失败',CREATED:'已创建',QUEUED:'排队中',RUNNING:'运行中',VALIDATING:'验证中',INGESTING:'采集中',PARSING:'解析中',CASE_MATCHING:'匹配中',ROOT_CAUSE_ANALYSIS:'根因分析',RESOLVING:'写入中',REPORTING:'报告中',FINALIZING:'收尾中'};
   tbody.innerHTML=items.map(i=>{
-    const ev=i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>';
+    const deleted=!!i.task_deleted;
+    const ev=deleted?'<span style="color:var(--gray)">任务在平台已删除</span>':(i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>');
     const fpr=i.fpr!=null?(i.fpr*100).toFixed(1)+'%':'NA';
-    const canStart=!i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
-    const op=canStart?'<button class="btn" style="padding:5px 12px;font-size:12px" onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">启动测评</button>':(i.evaluation_status?'':'-');
+    const canStart=!deleted && !i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
+    const op=deleted?'-':(canStart?'<button class="btn" style="padding:5px 12px;font-size:12px" onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">启动测评</button>':(i.evaluation_status?'':'-'));
     // 未确认 = 总数 - 确认漏洞 - 误报 - 非误报（用户定义口径）
     const unconf=Math.max(0,(i.vuln_total||0)-(i.confirmed_vulnerable||0)-(i.confirmed_fp||0)-(i.confirmed_not_vulnerable||0));
-    return `<tr>
+    return `<tr${deleted?' style="opacity:.55;filter:grayscale(1)"':''}>
     <td class="proj">${i.project_name||i.project_id}</td>
     <td class="task" title="${(i.task_name||i.task_id).replace(/"/g,'&quot;')}">${i.task_name||i.task_id}</td>
     <td><span class="pt-badge">${i.agent_type||"unknown"}</span></td>

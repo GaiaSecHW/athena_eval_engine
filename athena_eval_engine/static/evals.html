@@ -18,6 +18,8 @@
 .ef-btn{padding:6px 12px;font-size:13px;border:1px solid var(--bd);background:var(--p2);color:var(--txt);border-radius:8px;cursor:pointer;font-family:inherit;transition:.15s}
 .ef-btn.active{background:var(--acc);color:#fff;border-color:var(--acc)}
 .ev-actions{display:inline-flex;gap:4px;margin-left:6px}
+.ev-card.deleted{opacity:.55;filter:grayscale(1)}
+.ev-card.deleted:hover{transform:none;box-shadow:none;border-color:var(--bd)}
 </style>
 </head>
 <body>
@@ -97,15 +99,17 @@ function renderEvList(){
     var phaseLabel=_phaseLabel(e.status);
     if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
+    var deleted=!!e.task_deleted;
+    var statusHtml=deleted?'<span class="bdg" style="background:rgba(120,120,120,.18);color:var(--gray)">任务在平台已删除</span>':_statusBadge(e.status);
     var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
-      '<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>'+
+      (deleted?'':'<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>')+
       '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--acc)" onclick="window.open(U(\'/api/v2/evaluations/'+e.evaluation_id+'/debug\'))">调试</button>'+
       (!isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--amber)" onclick="cancelEval(\''+e.evaluation_id+'\')">取消</button>':'')+
       (isTerminal?'<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--red)" onclick="deleteEval(\''+e.evaluation_id+'\',\''+safeName+'\')">删除</button>':'')+
       '</span>':'';
-    return '<div class="ev-card" onclick="go(\'/evals/'+e.evaluation_id+'\')">'+
+    return '<div class="ev-card'+(deleted?' deleted':'')+'" onclick="go(\'/evals/'+e.evaluation_id+'\')">'+
       '<div class="ev-name" title="'+(e.name||e.evaluation_id).replace(/"/g,'&quot;')+'">'+(e.name||e.evaluation_id)+'</div>'+
-      '<div class="ev-meta">'+_statusBadge(e.status)+'<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
+      '<div class="ev-meta">'+statusHtml+'<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
         '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
@@ -135,7 +139,7 @@ async function retryEval(eid){
     risks:['重跑会重新执行全部阶段（解析→匹配→根因分析→报告）','已生成的报告将被覆盖'],
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
-      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(){
+      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json().then(function(d){if(!r.ok)throw (d&&d.detail)||('HTTP '+r.status);return d;});}).then(function(){
         refreshEvalsData();
       }).catch(function(e){
         showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});

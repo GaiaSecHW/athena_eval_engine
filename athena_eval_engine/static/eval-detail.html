@@ -52,6 +52,10 @@ async function selEv(id){
   activeId=id;
   $("view").innerHTML='<div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>加载评测…</h3></div>';
   try{const s=await jget(`/api/v2/evaluations/${id}`);
+    if(s.task_deleted && s.status==="FAILED"){
+      $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic" style="filter:grayscale(1)">🗑️</div><h3 style="color:var(--gray)">任务在平台已删除</h3><p style="font-size:14px;color:var(--gray);max-width:560px;text-align:left;word-break:break-all">该评测关联的任务已从平台删除，告警中心已隐藏其 case，无法重跑。'+(s.error_message?('原错误：'+s.error_message):'')+'</p></div>';
+      return;
+    }
     if(s.status==="FAILED"){
       var errMsg=s.error_message||"无详细错误信息";
       $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic">⚠️</div><h3>评测失败</h3><p style="font-size:14px;color:var(--red);max-width:500px;text-align:left;word-break:break-all">'+errMsg+'</p>'+(DEBUG?'<button class="btn" style="margin-top:16px" id="retry-btn">重试</button>':'')+'</div>';
@@ -117,7 +121,7 @@ async function selEv(id){
 
 // ===== v2 报告加载 + 渲染 =====
 async function loadV2Report(id,st,rs){
-  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info,task_created_at:st.task_created_at};
+  var d={evaluation_id:id,status:st.status,evaluation_name:st.name||st.evaluation_id,_rs:rs,_partial:{running:st.status!=="COMPLETED"&&st.status!=="COMPLETED_WITH_WARNINGS"&&st.status!=="FAILED",status:st.status,progress:st.progress},eval_mode:st.eval_mode,benchmark_source:st.benchmark_source,vc_source_project_name:st.vc_source_project_name,vc_source_task_name:st.vc_source_task_name,entries_info:st.entries_info,task_created_at:st.task_created_at,task_deleted:!!st.task_deleted};
   if(rs.base){
     try{d.base=await jget(`/api/v2/evaluations/${id}/report`);}catch(e){d.base={};}
   }
@@ -349,7 +353,8 @@ function renderV2Report(d){
 
   `;
 
-  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto">'+html+'</div>';
+  var _delBanner=d.task_deleted?'<div style="margin:10px 0;padding:10px 14px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--gray);font-size:13px">🗑️ 任务在平台已删除，以下为历史报告快照</div>':'';
+  $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div>'+_delBanner+'<div id="rep-content" style="flex:1;overflow-y:auto'+(d.task_deleted?';opacity:.55;filter:grayscale(1)':'')+'">'+html+'</div>';
   // 未生成 DTS 单的 case 清单（来自 lifecycle 报告），在问题单区块展示
   var _skippedCases=(d.lifecycle&&d.lifecycle.skipped_cases)||[];
   if(evalMode==='runtime'){
@@ -455,7 +460,7 @@ function retryEval(eid){
           var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
             jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
           setTimeout(retryPoll,500);
-        }else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
+        }else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String((d&&d.detail)||JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
       }).catch(function(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});});
     }
   });

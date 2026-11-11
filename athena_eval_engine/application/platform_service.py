@@ -52,6 +52,9 @@ _vuln_case_cache: dict[str, tuple[float, dict]] = {}
 _vuln_case_cache_lock = threading.Lock()
 _VULN_CASE_CACHE_SECONDS = 60
 _VULN_CASE_MAX_PAGES = 100
+_alive_task_cache: dict[str, tuple[float, frozenset[str], frozenset[str]]] = {}
+_alive_task_cache_lock = threading.Lock()
+_ALIVE_TASK_CACHE_SECONDS = 60.0
 _CVULN_CASE_ID_RE = re.compile(r"漏洞\s*ID\s*[:：]\s*([^\s]+)")
 _TASK_PATH_RE = re.compile(r"/tasks/([0-9a-f]{24})(?:/|$)")
 _logger = logging.getLogger(__name__)
@@ -136,6 +139,43 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
             break
         page += 1
     return out
+
+
+def filter_alive_tasks(project_id: str, task_ids) -> set[str]:
+    """返回 task_ids 中在 schedule 服务里存在且未删除的子集（60s 缓存）。
+
+    与漏洞中心 case 列表的软删任务过滤同一口径（batch-alive 接口）：
+    任务被删除后，告警中心会隐藏其全部 case，重跑必然在 INGESTING 因基线为空失败。
+
+    接口调用失败时抛异常——"无法校验"不能当成"任务已删除"。
+    """
+    if not project_id or not task_ids:
+        return set()
+    requested = frozenset(str(t) for t in task_ids)
+    now = time.monotonic()
+    with _alive_task_cache_lock:
+        cached = _alive_task_cache.get(project_id)
+    if cached and now - cached[0] < _ALIVE_TASK_CACHE_SECONDS and requested <= cached[1]:
+        return set(requested & cached[2])
+
+    from ..infrastructure.http_client import http_post
+    url = (f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/"
+           f"{project_id}/user-tasks/batch-alive")
+    data = http_post(url, json_body={"task_ids": sorted(requested)},
+                     retries=2, retry_delay=1.0, timeout=5, log_tag="PLATFORM")
+    if not isinstance(data, dict) or data.get("alive_task_ids") is None:
+        raise RuntimeError(f"batch-alive 响应异常: {data!r}")
+    alive = frozenset(str(t) for t in data.get("alive_task_ids") or [])
+    with _alive_task_cache_lock:
+        _alive_task_cache[project_id] = (now, requested, alive)
+    return set(requested & alive)
+
+
+def is_task_alive(project_id: str, task_id: str) -> bool:
+    """任务是否在 schedule 服务中存在且未删除。"""
+    if not project_id or not task_id:
+        return False
+    return str(task_id) in filter_alive_tasks(project_id, [task_id])
 
 
 def _get_vuln_case_index(project_id: str) -> dict | None:

@@ -558,6 +558,39 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
         finally:
             conn.close()
 
+        # Step 0a: 校验 manifest 里的任务仍然有效（未被平台删除）。
+        # 任务删除后告警中心会隐藏其 case，重跑必然在 INGESTING 因基线为空失败；
+        # 必须在任何清理/取消动作之前拦住，避免白删已有结果。
+        import json as _json
+        conn = connect(autocommit=True)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT config_json FROM evaluation_snapshot WHERE evaluation_id=%s",
+                        (evaluation_id,))
+            snap_row = cur.fetchone()
+        finally:
+            conn.close()
+        if snap_row:
+            snap_cfg = _json.loads(snap_row[0]) if isinstance(snap_row[0], str) else snap_row[0]
+            manifest = (snap_cfg or {}).get("manifest", {}) or {}
+            _pid = manifest.get("kg_project_id") or ""
+            _tid = manifest.get("kg_task_id") or ""
+            if _pid and _tid:
+                from ...application.platform_service import is_task_alive
+                try:
+                    task_alive = is_task_alive(_pid, _tid)
+                except Exception as e:
+                    raise ValueError(
+                        f"无法校验任务状态（project={_pid}, task={_tid}），"
+                        f"为避免误删已有结果，本次重跑未启动: {e}"
+                    ) from e
+                if not task_alive:
+                    raise ValueError(
+                        f"任务 {_tid}（project={_pid}）在平台上不存在或已被删除，"
+                        f"告警中心已隐藏该任务的 case，重跑必然在 INGESTING 失败；"
+                        f"本次重跑未启动，已有结果未清理。"
+                    )
+
         # Step 0b: 任务运行中 + force → 先中断旧线程，等待其真正退出后再重跑
         # 否则旧线程可能仍在写 DTS/报告，新线程同时写导致重复问题单。
         if is_running and force:

@@ -105,6 +105,7 @@ def get_evaluation(evaluation_id: str):
             "version": row[8],
             "progress": _get_progress(evaluation_id),
             "task_created_at": row[10] or "",
+            "task_deleted": False,
         }
         # 从 config_json 提取 manifest 信息
         if row[9]:
@@ -114,6 +115,15 @@ def get_evaluation(evaluation_id: str):
             result["eval_mode"] = manifest.get("eval_mode", "dev")
             result["vc_source_project_name"] = manifest.get("vc_source_project_name", "")
             result["vc_source_task_name"] = manifest.get("vc_source_task_name", "")
+            # 任务是否已从平台删除（与列表/漏洞中心同一口径）
+            _pid = manifest.get("kg_project_id") or ""
+            _tid = manifest.get("kg_task_id") or ""
+            if _pid and _tid:
+                try:
+                    from ...application.platform_service import is_task_alive
+                    result["task_deleted"] = not is_task_alive(_pid, _tid)
+                except Exception:
+                    pass
             entries = manifest.get("entries", [])
             result["entries_info"] = [
                 {
