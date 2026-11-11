@@ -80,7 +80,7 @@ function renderReport(){
       </div>
       <div class="pt-actions">
         <span class="pt-updated" id="updated"><span class="dot"></span>加载中…</span>
-        <button class="btn g" id="refresh-btn" onclick="load()">刷新</button>
+        <button class="btn g" id="refresh-btn" onclick="load(curPage)">刷新</button>
         <button class="btn" onclick="syncNow()">立即采集</button>
       </div>
     </div>
@@ -134,7 +134,13 @@ function renderReport(){
   $("view").innerHTML=body;
 }
 
-function showErr(m){const e=$("err");if(e){e.style.display="block";e.textContent=m;}}
+function errMsg(e){return (e&&e.message)?e.message:String(e);}
+// 失败必须弹框；顶部内联文字保留作为关闭弹框后的记录
+function showErr(m,title){
+  m=String(m||"未知错误");
+  const e=$("err");if(e){e.style.display="block";e.textContent=m;}
+  showAlert({title:title||"操作失败",desc:m});
+}
 function clearErr(){const e=$("err");if(e)e.style.display="none";}
 
 async function load(page){
@@ -157,8 +163,11 @@ async function load(page){
   try{
     const d=await jget("/api/v2/report/summary?"+params.toString());
     _data=d;
+    // 数据变少时收敛到有效页，避免停留在空页
+    const totalPages=Math.max(1,Math.ceil((d.total||0)/PAGE_SIZE));
+    if(curPage>totalPages){curPage=totalPages;return load(curPage);}
     render(d);
-  }catch(e){showErr("加载失败: "+e);}
+  }catch(e){showErr("加载失败："+errMsg(e),"加载失败");}
   finally{if(btn)btn.disabled=false;}
 }
 
@@ -183,8 +192,8 @@ function render(d){
     return;
   }
   $("empty").style.display="none";
-  const STATUS_COLOR={COMPLETED:'var(--green)',COMPLETED_WITH_WARNINGS:'var(--amber)',FAILED:'var(--red)',RUNNING:'var(--acc)',VALIDATING:'var(--acc)',INGESTING:'var(--acc)',PARSING:'var(--acc)',CASE_MATCHING:'var(--acc)',ROOT_CAUSE_ANALYSIS:'var(--acc)',RESOLVING:'var(--acc)',REPORTING:'var(--acc)',FINALIZING:'var(--acc)'};
-  const STATUS_LABEL={COMPLETED:'完成',COMPLETED_WITH_WARNINGS:'完成有告警',FAILED:'失败',RUNNING:'运行中',VALIDATING:'验证中',INGESTING:'采集中',PARSING:'解析中',CASE_MATCHING:'匹配中',ROOT_CAUSE_ANALYSIS:'根因分析',RESOLVING:'写入中',REPORTING:'报告中',FINALIZING:'收尾中'};
+  const STATUS_COLOR={COMPLETED:'var(--green)',COMPLETED_WITH_WARNINGS:'var(--amber)',FAILED:'var(--red)',CREATED:'var(--gray)',QUEUED:'var(--amber)',RUNNING:'var(--acc)',VALIDATING:'var(--acc)',INGESTING:'var(--acc)',PARSING:'var(--acc)',CASE_MATCHING:'var(--acc)',ROOT_CAUSE_ANALYSIS:'var(--acc)',RESOLVING:'var(--acc)',REPORTING:'var(--acc)',FINALIZING:'var(--acc)'};
+  const STATUS_LABEL={COMPLETED:'完成',COMPLETED_WITH_WARNINGS:'完成有告警',FAILED:'失败',CREATED:'已创建',QUEUED:'排队中',RUNNING:'运行中',VALIDATING:'验证中',INGESTING:'采集中',PARSING:'解析中',CASE_MATCHING:'匹配中',ROOT_CAUSE_ANALYSIS:'根因分析',RESOLVING:'写入中',REPORTING:'报告中',FINALIZING:'收尾中'};
   tbody.innerHTML=items.map(i=>{
     const ev=i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>';
     const fpr=i.fpr!=null?(i.fpr*100).toFixed(1)+'%':'NA';
@@ -239,7 +248,7 @@ async function syncNow(){
           clearInterval(timer);
           btn.textContent="采集完成";
           $("updated").innerHTML='<span class="dot"></span>最近采集：'+fmtUpdated(s.updated_at);
-          await load(1);
+          await load(curPage);
         }else if(tries>40){
           clearInterval(timer);
           btn.textContent="采集进行中";
@@ -247,7 +256,7 @@ async function syncNow(){
         }
       }catch(e){}
     },3000);
-  }catch(e){showErr("启动采集失败: "+e);btn.textContent=old;btn.disabled=false;}
+  }catch(e){showErr("启动采集失败："+errMsg(e),"启动采集失败");btn.textContent=old;btn.disabled=false;}
 }
 
 async function startEval(projectId, taskId, taskName){
@@ -267,9 +276,16 @@ async function startEval(projectId, taskId, taskName){
         vc_source_task_id:taskId,
         eval_mode:"runtime"
       }).then(function(r){
-        window.open(_INGRESS+"/evals/"+r.evaluation_id,"_blank");
-        setTimeout(load,2000);
-      }).catch(function(e){showErr("启动测评失败: "+e);});
+        // 成功只弹窗提醒：不开新页、不刷新本页
+        showAlert({
+          title:'测评创建成功',
+          desc:'运行态测评已创建：'+r.evaluation_id+'\n\n本页数据将原地更新，页码与筛选条件保持不变。',
+          icon:'✓',iconBg:'rgba(22,163,74,.12)',iconColor:'var(--green)',
+          okText:'知道了'
+        });
+        // 原地重载当前页：curPage 和筛选条件都不变（load 从输入框读取条件）
+        load(curPage);
+      }).catch(function(e){showErr("启动测评失败："+errMsg(e),"启动测评失败");});
     }
   });
 }

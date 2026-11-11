@@ -307,7 +307,9 @@ class CaseSessionMatcher:
                     cid, ac_case_id, verify_packs)
 
             # 判定 outcome：
-            # - 误报 case（NON_VULNERABLE）：finding 命中 = FP，未命中 = TN
+            # - 误报 case（NON_VULNERABLE）：finding 命中 = FP；
+            #   未命中但人工确认误报（false_positive_group 非空且非 non_fp）
+            #   同样是 FP——否则会被算成 TN，评测显示"无误报"且不生成问题单。
             # - 漏报 case（VULNERABLE）：
             #   * 挖掘 CONFIRMED + 验证 CONFIRMED → TP（正确上报）
             #   * 挖掘 CONFIRMED + 验证否定 → FN（验证 agent 否定真漏洞，
@@ -317,8 +319,12 @@ class CaseSessionMatcher:
             # FN case 用基线 sink 点 source_file 扫描 trace 找 session
             all_sessions = mining_sessions + verify_sessions
             verify_verdict = ""
+            human_fp = False
             if expected_label == "NON_VULNERABLE":
-                outcome = "FP" if all_sessions else "TN"
+                fp_group = str(cd.get("false_positive_group") or "").strip()
+                # non_fp = 人工确认不是漏洞、但不算误报，不能当 FP
+                human_fp = bool(fp_group) and fp_group != "non_fp"
+                outcome = "FP" if (all_sessions or human_fp) else "TN"
             else:  # VULNERABLE
                 if verify_sessions:
                     # 有验证 session：检查验证 agent 最终判定
@@ -376,6 +382,9 @@ class CaseSessionMatcher:
                     detail_parts.append(mining_match_detail)
             else:
                 detail_parts.append("未匹配")
+                if human_fp:
+                    detail_parts.append(
+                        "人工确认误报，但未匹配到 trace session")
                 if verify_match_detail:
                     detail_parts.append(verify_match_detail)
                 if mining_match_detail:

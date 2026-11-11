@@ -90,14 +90,14 @@ _RETRIEVE_RETRY_POLL_TIMEOUT = 120  # 每轮重试的轮询超时（秒）
 _VERIFY_PROMPT = """你是知识库内容判定专家。
 
 # 任务
-判断知识库中是否有能消减某个误报的知识。
+判断知识库中是否有能支撑正确判定的知识（误报：消减误报；漏报：帮助识别漏洞）。
 
 你将收到：
 1. 漏洞类型
-2. 人工标注的误报原因（说明为什么这是误报）
+2. 人工标注的误报原因（仅 FP 提供；FN 漏报没有人工标注）
 3. 从知识库检索到的候选内容列表（来源 + 路径 + 标题 + 摘要 + 内容预览）
 
-请判断这些候选内容中，是否有能帮助 agent 避免这个误报的知识。
+请判断这些候选内容中，是否有能帮助 agent 避免误报/漏报的知识。
 
 # 判定标准
 
@@ -1035,13 +1035,17 @@ class KnowledgeVerifier:
                     f"  匹配方式: {hit_str}\n"
                     f"  内容预览:\n{c.get('content_preview', '')}\n"
                 )
+            annotation_line = (
+                f"人工标注的误报原因: {fp_reason}\n\n" if fp_reason
+                else "人工标注: 无（未提供；以漏洞标题/描述为分析依据）\n\n")
             user_content = (
                 f"漏洞标题: {vuln_title}\n\n"
-                f"人工标注的误报原因: {fp_reason}\n\n"
-                f"知识库候选文章 ({len(batch)} 个):\n\n"
+                + annotation_line
+                + f"知识库候选文章 ({len(batch)} 个):\n\n"
                 f"{''.join(files_desc)}\n\n"
-                f"请判断这些文章中是否有能消减这个误报的知识。"
-                f"重点关注：文章内容是否直接涉及误报原因中提到的验证维度。"
+                f"请判断这些文章中是否有能支撑正确判定的知识"
+                f"（误报：消减误报；漏报：帮助识别该漏洞）。"
+                f"重点关注：文章内容是否直接涉及该漏洞的判定/验证维度。"
             )
             return [
                 {"role": "system", "content": _VERIFY_PROMPT},

@@ -215,13 +215,22 @@ def _cvuln_trace_metadata(path: str) -> dict | None:
 
 
 def _cvuln_trace_item(path: str, mtime: float | None, metadata: dict,
-                      case_index: dict | None, task_id: str) -> dict | None:
-    """按当前平台任务过滤一份 CVuln case 文件。"""
+                      case_index: dict | None, task_id: str,
+                      trust_dir: bool = False) -> dict | None:
+    """按当前平台任务过滤一份 CVuln case 文件。
+
+    trust_dir=True 表示文件来自任务级目录
+    ``tasks/{task_id}/c_vuln_verify``，目录本身已按任务隔离，
+    不再依赖 case API / prompt 反推任务 ID。
+    """
     case_id = metadata.get("case_id")
     case = case_index.get(case_id, {}) if case_index is not None and case_id else {}
-    source_task_id = case.get("task_id") or metadata.get("fallback_task_id")
-    if source_task_id != task_id:
-        return None
+    if trust_dir:
+        source_task_id = task_id
+    else:
+        source_task_id = case.get("task_id") or metadata.get("fallback_task_id")
+        if source_task_id != task_id:
+            return None
     return {
         "path": path, "tool_task_id": "", "kind": "cvuln_verify_session",
         "trace_kind": "cvuln_verify", "file": case_id or os.path.basename(path),
@@ -246,22 +255,40 @@ def _cvuln_trace_group(root: str, task_id: str, files: list[dict]) -> dict | Non
     }
 
 
+def _cvuln_task_dir(project_id: str, task_id: str) -> tuple[str, bool]:
+    """返回 CVuln trace 根目录及是否为任务级目录。
+
+    新布局：``tasks/{task_id}/c_vuln_verify``（任务隔离，优先使用）。
+    旧布局：``tasks/c_vuln_verify``（项目共享，需按 case/task 过滤）。
+    任务级目录不存在（或无 jsonl）时回退旧布局。
+    """
+    tasks_dir = os.path.join(DATA_ROOT, project_id, "tasks")
+    if task_id:
+        per_task = os.path.join(tasks_dir, task_id, "c_vuln_verify")
+        if os.path.isdir(per_task) and glob.glob(os.path.join(per_task, "*.jsonl")):
+            return per_task, True
+    return os.path.join(tasks_dir, "c_vuln_verify"), False
+
+
 def _scan_cvuln_dir(project_id: str, task_id: str, out: list) -> None:
-    """挂载模式：按任务聚合项目共享目录中的 CVuln case 文件。"""
-    root = os.path.join(DATA_ROOT, project_id, "tasks", "c_vuln_verify")
+    """挂载模式：聚合 CVuln case 文件。
+
+    优先读任务级目录 tasks/{task_id}/c_vuln_verify；
+    目录不存在时回退共享目录 tasks/c_vuln_verify，并按任务过滤。
+    """
+    root, trust_dir = _cvuln_task_dir(project_id, task_id)
     if not os.path.isdir(root):
         return
     case_index = _get_vuln_case_index(project_id)
     matched = []
     for path in glob.glob(os.path.join(root, "*.jsonl")):
-        metadata = _cvuln_trace_metadata(path)
-        if not metadata:
-            continue
+        metadata = _cvuln_trace_metadata(path) or {}
         try:
             mtime = os.path.getmtime(path)
         except OSError:
             mtime = None
-        item = _cvuln_trace_item(path, mtime, metadata, case_index, task_id)
+        item = _cvuln_trace_item(path, mtime, metadata, case_index, task_id,
+                                 trust_dir=trust_dir)
         if item:
             matched.append(item)
     group = _cvuln_trace_group(root, task_id, matched)
@@ -316,7 +343,8 @@ def _make_session_dir_trace(dir_path: str, mtime: float | None) -> dict:
         trace_kind = "argo"
         seg = norm_path.split("/tools/")[1]
         tool_task_id = seg.split("/")[0] if seg else ""
-    elif norm_path.endswith("/tasks/c_vuln_verify"):
+    elif os.path.basename(norm_path.rstrip("/")) == "c_vuln_verify":
+        # tasks/c_vuln_verify（共享）与 tasks/{task_id}/c_vuln_verify（任务级）
         kind = "cvuln_verify_session"
         trace_kind = "cvuln_verify"
     elif norm_path.endswith("/session/dataflow_vuln_scan") or "/dataflow_vuln_scan/" in norm_path:
@@ -644,9 +672,40 @@ def _kubectl_find(base: str) -> list[dict]:
     return out
 
 
+def _kubectl_has_jsonl(pod: str, remote_dir: str, env: dict) -> bool:
+    """dev 模式：判断远端目录下是否有 .jsonl 文件。"""
+    cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
+           "find", remote_dir, "-maxdepth", "1", "-name", "*.jsonl", "-print", "-quit"]
+    try:
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           timeout=30, env=env)
+        return bool((r.stdout or "").strip())
+    except Exception:
+        return False
+
+
 def _kubectl_scan_cvuln_dir(project_id: str, task_id: str) -> list[dict]:
-    """开发模式：按任务聚合项目共享目录中的 CVuln case 文件。"""
-    root = f"{DATA_ROOT}/{project_id}/tasks/c_vuln_verify"
+    """开发模式：聚合 CVuln case 文件。
+
+    优先任务级目录 tasks/{task_id}/c_vuln_verify，不存在时回退共享目录。
+    """
+    env = dict(os.environ, MSYS_NO_PATHCONV="1")
+    try:
+        pod = _get_sched_pod()
+    except Exception:
+        return []
+    base = f"{DATA_ROOT}/{project_id}/tasks"
+    root = ""
+    trust_dir = False
+    if task_id:
+        candidate = f"{base}/{task_id}/c_vuln_verify"
+        if _kubectl_has_jsonl(pod, candidate, env):
+            root, trust_dir = candidate, True
+    if not root:
+        shared = f"{base}/c_vuln_verify"
+        if not _kubectl_has_jsonl(pod, shared, env):
+            return []
+        root = shared
     script = r'''
 import glob, json, os, re, sys
 case_re = re.compile(r"漏洞\s*ID\s*[:：]\s*([^\s]+)")
@@ -667,9 +726,8 @@ for path in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
                 break
     except (OSError, UnicodeDecodeError): pass
 '''
-    env = dict(os.environ, MSYS_NO_PATHCONV="1")
     try:
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", _get_sched_pod(), "--",
+        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
                "python3", "-c", script, root]
         result = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
                                 timeout=90, env=env)
@@ -683,7 +741,7 @@ for path in glob.glob(os.path.join(sys.argv[1], "*.jsonl")):
         except json.JSONDecodeError:
             continue
         item = _cvuln_trace_item(record.get("path", ""), record.get("mtime"), record,
-                                 case_index, task_id)
+                                 case_index, task_id, trust_dir=trust_dir)
         if item:
             matched.append(item)
     group = _cvuln_trace_group(root, task_id, matched)
@@ -774,7 +832,8 @@ def discover_verify_traces(project_id: str, task_id: str = "") -> list[dict]:
     """自动发现验证 agent 的 trace。
 
     按各适配器定义的绝对路径扫描：
-    - cvuln_verify:  /data/files/{project_id}/tasks/c_vuln_verify/*.jsonl
+    - cvuln_verify:  /data/files/{project_id}/tasks/{task_id}/c_vuln_verify/*.jsonl
+                     （不存在时回退 /data/files/{project_id}/tasks/c_vuln_verify/*.jsonl）
     - webvulnverify: /data/files/{project_id}/tasks/{task_id}/session/WebVerify/*.jsonl
 
     task_id 指定挖掘 agent 的 task 目录，验证 agent session 在同一 task 目录下。
@@ -786,8 +845,8 @@ def discover_verify_traces(project_id: str, task_id: str = "") -> list[dict]:
     project_base = os.path.join(DATA_ROOT, project_id)
 
     if _K8S_MODE:
-        # CVulnVerify: tasks/c_vuln_verify/*.jsonl
-        vv_dir = os.path.join(project_base, "tasks", "c_vuln_verify")
+        # CVulnVerify: 优先任务级目录，回退项目共享目录
+        vv_dir, _ = _cvuln_task_dir(project_id, task_id)
         if os.path.isdir(vv_dir) and glob.glob(os.path.join(vv_dir, "*.jsonl")):
             out.append({
                 "trace_kind": "cvuln_verify",
@@ -814,13 +873,17 @@ def discover_verify_traces(project_id: str, task_id: str = "") -> list[dict]:
         env = dict(os.environ, MSYS_NO_PATHCONV="1")
         pod = _get_sched_pod()
         remote_base = f"{DATA_ROOT}/{project_id}"
-        # CVulnVerify
-        vv_remote = f"{remote_base}/tasks/c_vuln_verify"
-        cmd = [_find_kubectl(), "-n", "secflow-ns", "exec", pod, "--",
-               "find", vv_remote, "-maxdepth", "1", "-name", "*.jsonl",
-               "-print", "-quit"]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=30, env=env)
-        if r.stdout and r.stdout.strip():
+        # CVulnVerify：优先任务级目录，回退项目共享目录
+        vv_remote = ""
+        if task_id:
+            candidate = f"{remote_base}/tasks/{task_id}/c_vuln_verify"
+            if _kubectl_has_jsonl(pod, candidate, env):
+                vv_remote = candidate
+        if not vv_remote:
+            shared = f"{remote_base}/tasks/c_vuln_verify"
+            if _kubectl_has_jsonl(pod, shared, env):
+                vv_remote = shared
+        if vv_remote:
             out.append({
                 "trace_kind": "cvuln_verify",
                 "source_uri": vv_remote,
@@ -874,8 +937,10 @@ def find_traces(project_id: str, task_id: str) -> list[dict]:
     k8s 部署：DATA_ROOT 直接挂载，os.path/glob 直读。
     dev 模式：kubectl exec 到 schedule pod 查找。
 
-    除任务自身的 session/.db 外，还会从项目共享的
-    tasks/c_vuln_verify/*.jsonl 中按漏洞 case 的 source_task.task_id 筛选。
+    除任务自身的 session/.db 外，还会读取 CVuln 验证 trace：
+    优先任务级 tasks/{task_id}/c_vuln_verify/*.jsonl；
+    该目录不存在时回退项目共享 tasks/c_vuln_verify/*.jsonl 并按
+    漏洞 case 的 source_task.task_id 筛选。
     """
     task_base = os.path.join(DATA_ROOT, project_id, "tasks", task_id)
     out: list[dict] = []

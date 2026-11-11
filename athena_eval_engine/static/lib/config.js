@@ -32,6 +32,8 @@ const DTS_CAUSE_LABELS = {
 };
 // cause_code → 排序权重（最早断裂优先），与后端 core/causal_levels.py 一致
 const DTS_LEVEL_RANK = {A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};
+// 假定线索展示/统计门槛，与后端 core/causal_levels.py 的 CLUE_MIN_CONFIDENCE 一致
+const DTS_CLUE_MIN_CONFIDENCE = 0.6;
 
 // 指标定义（M5/M6/M11/M12/M13）— 与 DB metric_result 的 metric_id 一致
 const MI = {

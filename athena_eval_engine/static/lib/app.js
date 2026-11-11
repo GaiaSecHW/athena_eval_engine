@@ -19,10 +19,18 @@ function esc(v){
 }
 
 // HTTP
-async function jget(u){const r=await F(u);if(!r.ok)throw new Error(r.status);return r.json();}
-async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
-async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
-async function jdel(u){const r=await F(u,{method:"DELETE"});const d=await r.json();if(!r.ok)throw new Error(d.detail||r.status);return d;}
+// 失败时把后端 detail 转成可读文本（FastAPI 校验错误 detail 是数组）
+async function _httpError(r){
+  var d=null;
+  try{d=await r.text();if(d){try{var j=JSON.parse(d);if(j&&j.detail!==undefined)d=j.detail;}catch(_){}}}
+  catch(_){}
+  if(d&&typeof d==='object'){try{d=JSON.stringify(d);}catch(_){d=String(d);}}
+  return d||("HTTP "+r.status);
+}
+async function jget(u){const r=await F(u);if(!r.ok)throw new Error(await _httpError(r));return r.json();}
+async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});if(!r.ok)throw new Error(await _httpError(r));return r.json();}
+async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});if(!r.ok)throw new Error(await _httpError(r));return r.json();}
+async function jdel(u){const r=await F(u,{method:"DELETE"});if(!r.ok)throw new Error(await _httpError(r));return r.json();}
 
 // 格式化
 function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
@@ -177,6 +185,22 @@ function showConfirm(opts){
   document.body.appendChild(ov);
   ov.addEventListener("click",function(e){if(e.target===ov)ov.remove();});
   document.getElementById("modal-confirm").onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm();};
+  return ov;
+}
+
+// 错误提示弹框（失败必须弹出来，不能只写页面顶部的内联文字）
+// opts: {title, desc, icon, iconBg, iconColor, okText}
+function showAlert(opts){
+  if(typeof opts==='string')opts={desc:opts};
+  var ov=document.createElement("div");ov.className="modal-overlay";
+  ov.innerHTML='<div class="modal">'
+    +'<div class="modal-head"><div class="modal-icon" style="background:'+esc(opts.iconBg||'rgba(220,38,38,.12)')+';color:'+esc(opts.iconColor||'var(--red)')+'">'+esc(opts.icon||'✕')+'</div><h3>'+esc(opts.title||'操作失败')+'</h3></div>'
+    +'<div class="modal-body"><p style="white-space:pre-wrap;word-break:break-all;line-height:1.7">'+esc(opts.desc||'')+'</p></div>'
+    +'<div class="modal-foot"><button class="btn" id="modal-alert-ok" style="font-size:15px;padding:8px 20px;background:var(--acc)">'+esc(opts.okText||'知道了')+'</button></div></div>';
+  document.body.appendChild(ov);
+  function close(){ov.remove();}
+  ov.addEventListener("click",function(e){if(e.target===ov)close();});
+  var ok=ov.querySelector("#modal-alert-ok");if(ok){ok.onclick=close;ok.focus();}
   return ov;
 }
 

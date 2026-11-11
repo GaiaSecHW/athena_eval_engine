@@ -32,6 +32,7 @@ from ..persistence.dts_repo import (
     list_dts_by_case,
     list_dts_by_task,
     get_post_regression_fpr,
+    get_effective_regression,
 )
 
 router = APIRouter(prefix="/api/v2/dts", tags=["dts"])
@@ -285,6 +286,7 @@ def _match_issue_by_llm(task_id: str, vuln_title: str,
                 {"role": "user", "content": user_prompt},
             ],
             required_keys=["dts_id"],
+            temperature=0,
         )
         dts_id = str(result.get("dts_id", "") or "").strip()
         if not dts_id:
@@ -315,11 +317,23 @@ def _safe_update_dts_issue(dts_id: str, fields: dict) -> bool:
         ) from e
 
 
+def _claims_eliminated(issue: dict | None, is_vulnerable: bool) -> bool:
+    """按问题单类型解读 is_vulnerable：是否声称已消除。
+
+    FP：不再上报（is_vulnerable=False）才算消除；
+    FN：已经上报（is_vulnerable=True）才算消除。
+    """
+    is_fn = str((issue or {}).get("case_type") or "FP").upper() == "FN"
+    return bool(is_vulnerable) if is_fn else (not is_vulnerable)
+
+
 def _is_same_vulnerability(vuln_title: str, vuln_description: str,
                            issue_vuln_title: str) -> bool:
     """用 LLM 判断提交的漏洞与问题单的漏洞是否为同一个。
 
-    当调用方提供了 vuln_title/vuln_description 时，用 LLM 语义比对：
+    只在 Agent 声称"已消除"时调用（FP=不再上报 is_vulnerable=False；
+    FN=已上报 is_vulnerable=True）：通过的前提是同一漏洞，防止拿另一个
+    漏洞冒充修复。声称"未消除"时不调用。
     - 是同一个漏洞 → 允许回归确认
     - 不是同一个漏洞 → 回归不通过（判定失败）
 
@@ -351,6 +365,7 @@ def _is_same_vulnerability(vuln_title: str, vuln_description: str,
                 {"role": "user", "content": user_prompt},
             ],
             required_keys=["same"],
+            temperature=0,
         )
         same = result.get("same")
         return bool(same)
@@ -399,20 +414,32 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
     dts_id = req.dts_id or issue.get("dts_id", "")
     case_id = req.case_id or issue.get("case_id", "")
 
-    if not same:
+    # 误报与漏报的「已消除」方向相反：
+    #   FP：agent 不再上报（is_vulnerable=False）→ 误报已消除
+    #   FN：agent 现在上报（is_vulnerable=True）→ 漏报已消除
+    is_fn = str(issue.get("case_type") or "FP").upper() == "FN"
+    claimed_eliminated = bool(req.is_vulnerable) if is_fn else (not req.is_vulnerable)
+
+    if not claimed_eliminated:
         new_status = "failed"
-        replay_result = "still_vulnerable"
+        if is_fn:
+            replay_result = "still_missed"
+            message = "漏洞仍未被上报，漏报未消除"
+        else:
+            replay_result = "still_vulnerable"
+            message = "漏洞仍然存在，误报未消除"
+    elif not same:
+        new_status = "failed"
+        replay_result = "still_missed" if is_fn else "still_vulnerable"
         message = "提交的漏洞与问题单漏洞不一致，回归不通过"
-    elif req.is_vulnerable:
-        # 漏洞仍然存在 → 误报未消除
-        new_status = "failed"
-        replay_result = "still_vulnerable"
-        message = "漏洞仍然存在，误报未消除"
     else:
-        # 漏洞已被消除 → 误报已修复
         new_status = "passed"
-        replay_result = "false_positive_resolved"
-        message = "漏洞已消除，误报已修复"
+        if is_fn:
+            replay_result = "false_negative_resolved"
+            message = "漏报已消除，漏洞已正确上报"
+        else:
+            replay_result = "false_positive_resolved"
+            message = "漏洞已消除，误报已修复"
 
     import json as _json
     replay_payload = {
@@ -460,6 +487,29 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
                 replay_result, new_status, message, req.vuln_title, replay_data,
             )
 
+    # 最终结论按「最近一小时、以提交时间计」重算：
+    # 窗口内只要有一次 passed，问题单就是 passed；否则取窗口内最新一次。
+    # 这样并发/重试时，后完成的旧请求不会覆盖新提交的通过结果。
+    effective = None
+    for did in updated_ids:
+        eff = get_effective_regression(did)
+        if not eff:
+            continue
+        _safe_update_dts_issue(did, {
+            "status": eff["status"],
+            "replay_result": eff["replay_result"],
+            "replay_eval_id": eff["replay_eval_id"] or None,
+            "replay_data": eff["replay_data"] or None,
+        })
+        if did == dts_id:
+            effective = eff
+
+    # 响应必须与问题单最终落库状态一致：窗口内已有 passed 时，
+    # 本次 failed 提交不会覆盖它，返回给调用方的也应是 passed。
+    final_status = (effective or {}).get("status") or new_status
+    final_result = (effective or {}).get("replay_result") or replay_result
+    final_message = (effective or {}).get("message") or message
+
     updated = get_dts_issue(dts_id)
     log("DTS_API",
         f"regression_verify: case_id={case_id}, dts_id={dts_id}, "
@@ -474,9 +524,9 @@ def _apply_verification(issue: dict, req: "RegressionVerifyRequest",
         "vuln_title": req.vuln_title,
         "vuln_description": req.vuln_description,
         "is_vulnerable": req.is_vulnerable,
-        "result": replay_result,
-        "status": new_status,
-        "message": message,
+        "result": final_result,
+        "status": final_status,
+        "message": final_message,
         "match_method": match_method,
         "issue": updated,
     }
@@ -513,7 +563,10 @@ def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
                 return None
 
         same = True
-        if req.vuln_title or req.vuln_description:
+        # 只有声称「已消除」时才做一致性判断：
+        # FP=不再上报、FN=已经上报；反向（声称未消除）直接判不通过。
+        if _claims_eliminated(issue, req.is_vulnerable) and (
+                req.vuln_title or req.vuln_description):
             same = _is_same_vulnerability(
                 req.vuln_title, req.vuln_description,
                 issue.get("vuln_title", ""))
@@ -548,8 +601,10 @@ def regression_verify(req: RegressionVerifyRequest, request: Request):
     输入原始数据的任务 ID、问题单 ID（或 case_id），以及对应漏洞的标题、
     描述和是否漏洞判定：
 
-    - is_vulnerable=false：漏洞已被消除（误报已修复）→ 问题单状态设为 passed
-    - is_vulnerable=true：漏洞仍然存在（误报未修复）→ 问题单状态设为 failed
+    - 误报（FP）：is_vulnerable=false 表示漏洞已消除（误报已修复）→ passed；
+      is_vulnerable=true 表示漏洞仍然存在 → failed
+    - 漏报（FN）：is_vulnerable=true 表示漏洞已上报（漏报已消除）→ passed；
+      is_vulnerable=false 表示漏洞仍未被上报 → failed
 
     定位问题单：dts_id 与 case_id 二选一，同时填写时优先 dts_id；
     两者都未填或都匹配不上时，用 LLM 在 task_id 下全部问题单中比对匹配。
@@ -601,7 +656,11 @@ def regression_verify(req: RegressionVerifyRequest, request: Request):
             )
 
     # ── 3. 纯 DB 路径：同步给出结论 ──
-    needs_llm = (issue is None) or bool(req.vuln_title or req.vuln_description)
+    # 只有「问题单未定位」或「声称已消除且带漏洞信息」才需要 LLM：
+    # 声称未消除时直接判不通过，不调 LLM。
+    needs_llm = (issue is None) or (
+        _claims_eliminated(issue, req.is_vulnerable)
+        and bool(req.vuln_title or req.vuln_description))
     if not needs_llm:
         return _apply_verification(issue, req, match_method,
                                    caller_service=caller_service)
@@ -676,7 +735,7 @@ def update_issue(dts_id: str, update: DTSUpdate):
 
 
 class HypothesisConfirmRequest(BaseModel):
-    """假设根因确认请求体。"""
+    """假定线索根因确认请求体。"""
     hypothesis_key: str
     is_root: bool
     cause_code: str = ""
@@ -688,7 +747,7 @@ class HypothesisConfirmRequest(BaseModel):
 
 @router.post("/{dts_id}/confirm-hypothesis")
 def confirm_hypothesis(dts_id: str, req: HypothesisConfirmRequest):
-    """确认某个假设是根因 / 非根因，结果存 DB 供看板统计。
+    """确认某条假定线索是根因 / 非根因，结果存 DB 供看板统计。
 
     hypothesis_confirmations 结构：
     {
@@ -726,6 +785,6 @@ def confirm_hypothesis(dts_id: str, req: HypothesisConfirmRequest):
         "hypothesis_confirmations": json.dumps(hc, ensure_ascii=False),
     })
     if not success:
-        raise HTTPException(status_code=500, detail=f"确认假设 '{dts_id}' 失败")
+        raise HTTPException(status_code=500, detail=f"确认假定线索 '{dts_id}' 失败")
 
     return get_dts_issue(dts_id)

@@ -21,6 +21,7 @@ _FIELD_ORDER = (
     "case_type", "cause_code", "breakpoint_level",
     "breakpoint_desc", "evidence_uri",
     "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
+    "session_chains",
     "replay_eval_id", "replay_result", "replay_data",
     "status", "responsibility", "hypothesis_confirmations",
 )
@@ -31,10 +32,12 @@ _INSERT_SQL = (
     "  case_type, cause_code, breakpoint_level,"
     "  breakpoint_desc, evidence_uri,"
     "  root_cause, solution, hypotheses, label_quality, analysis_data_path,"
+    "  session_chains,"
     "  replay_eval_id, replay_result, replay_data,"
     "  status, responsibility, hypothesis_confirmations"
     ") VALUES ("
-    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s"
+    "  %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,"
+    "  %s, %s, %s, %s, %s, %s, %s"
     ") ON DUPLICATE KEY UPDATE"
     "  vuln_title=VALUES(vuln_title),"
     "  cause_code=VALUES(cause_code), breakpoint_level=VALUES(breakpoint_level),"
@@ -42,6 +45,7 @@ _INSERT_SQL = (
     "  root_cause=VALUES(root_cause), solution=VALUES(solution),"
     "  hypotheses=VALUES(hypotheses), label_quality=VALUES(label_quality),"
     "  analysis_data_path=VALUES(analysis_data_path),"
+    "  session_chains=VALUES(session_chains),"
     "  agent_type=VALUES(agent_type), case_type=VALUES(case_type),"
     "  responsibility=VALUES(responsibility)"
 )
@@ -52,6 +56,7 @@ _SELECT_COLUMNS = (
     " d.case_type, d.cause_code, d.breakpoint_level,"
     " d.breakpoint_desc, d.evidence_uri,"
     " d.root_cause, d.solution, d.hypotheses, d.label_quality, d.analysis_data_path,"
+    " d.session_chains,"
     " d.replay_eval_id, d.replay_result, d.replay_data,"
     " d.status, d.responsibility, d.hypothesis_confirmations,"
     " d.created_at, d.updated_at, d.closed_at,"
@@ -78,6 +83,7 @@ def _row_to_dict(row) -> dict:
         "case_type", "cause_code", "breakpoint_level",
         "breakpoint_desc", "evidence_uri",
         "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
+        "session_chains",
         "replay_eval_id", "replay_result", "replay_data",
         "status", "responsibility", "hypothesis_confirmations",
         "created_at", "updated_at", "closed_at",
@@ -134,8 +140,8 @@ def get_dts_issue(dts_id: str) -> dict | None:
     - analysis_data：完整根因分析数据（从 analysis_data_path 指向的文件读取，
       含 session_chain、compressed_summaries、l0_l7_breakpoints、root_cause、
       fix_suggestion 等）
-    - session_chains：session 调用链信息（从 session_graph 表查出，
-      含每个 session 的 agent、parent_id、task_type 等，供前端展示调用树）
+    - session_chains：session 调用链信息。优先取问题单生成时固化的快照
+      （session_chains 列）；旧数据没有快照时回退实时查 session_graph。
 
     Args:
         dts_id: 问题单 ID。
@@ -167,7 +173,7 @@ def get_dts_issue(dts_id: str) -> dict | None:
             log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {e}")
             result["analysis_data"] = None
 
-    # 解析 hypothesis_confirmations JSON（假设根因确认状态）
+    # 解析 hypothesis_confirmations JSON（假定线索根因确认状态）
     hc_raw = result.get("hypothesis_confirmations")
     if hc_raw:
         try:
@@ -179,15 +185,80 @@ def get_dts_issue(dts_id: str) -> dict | None:
     else:
         result["hypothesis_confirmations"] = {}
 
-    # 从 session_graph 表查 session 调用链信息
-    # analysis_data 中的 mining.session_chain 和 verification.session_chain
-    # 是 session_id 列表，需要从 DB 补充每个 session 的调用关系（parent_id、agent 等）
-    result["session_chains"] = _query_session_chains(result)
+    # session 调用链：优先用问题单生成时固化的快照；
+    # 旧数据没有快照时才实时查 session_graph（重跑/清理期间可能为空）。
+    sc_raw = result.get("session_chains")
+    snapshot = None
+    if sc_raw:
+        try:
+            snapshot = (json.loads(sc_raw) if isinstance(sc_raw, str) else sc_raw)
+        except Exception:
+            snapshot = None
+    if isinstance(snapshot, dict) and (
+            snapshot.get("mining") or snapshot.get("verification")):
+        result["session_chains"] = snapshot
+    else:
+        result["session_chains"] = _query_session_chains(result)
 
     # 回归验证历史（dts_regression_result，只追加不覆盖）
     result["regression_history"] = list_regression_results(dts_id)
 
     return result
+
+
+def build_session_chains_snapshot(evaluation_id: str, analysis_data: dict) -> str:
+    """问题单生成时固化 session 调用链（JSON 字符串）。
+
+    页面展示不再依赖 session_graph 的实时状态：重跑、清理或评测仍在
+    RESOLVE 之前时，链不会消失。
+    """
+    chains = _query_session_chains({
+        "evaluation_id": evaluation_id,
+        "analysis_data": analysis_data or {},
+    })
+    return json.dumps(chains, ensure_ascii=False)
+
+
+def get_effective_regression(dts_id: str) -> dict | None:
+    """计算问题单的最终回归结论（按提交时间，最近一小时窗口）。
+
+    规则：
+    - 窗口内只要有一次 passed（漏洞已消除）→ 结论取 passed；
+    - 否则取窗口内提交时间最新的一次；
+    - 窗口内没有记录 → 返回 None（调用方保留当前状态）。
+
+    Returns:
+        {"status", "replay_result", "replay_data", "replay_eval_id", "message"}
+    """
+    def _do(cur):
+        cur.execute(
+            "SELECT status, replay_result, replay_data, task_id, message "
+            "FROM dts_regression_result "
+            # 只看最终判定：evaluating/error 是中间态，不能写回问题单状态
+            "WHERE dts_id = %s AND status IN ('passed','failed') "
+            "AND submitted_at >= NOW(3) - INTERVAL 1 HOUR "
+            "ORDER BY submitted_at DESC, id DESC",
+            (dts_id,),
+        )
+        return cur.fetchall()
+
+    rows = _db_query(_do)
+    if not rows:
+        return None
+
+    def _pack(r):
+        return {
+            "status": r[0] or "",
+            "replay_result": r[1] or "",
+            "replay_data": r[2] or "",
+            "replay_eval_id": r[3] or "",
+            "message": r[4] or "",
+        }
+
+    for row in rows:
+        if row[0] == "passed":
+            return _pack(row)
+    return _pack(rows[0])
 
 
 def _query_session_chains(issue: dict) -> dict:

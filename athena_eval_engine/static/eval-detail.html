@@ -147,35 +147,14 @@ function renderLifecycle(lc){
     var rowTotal=levels.reduce(function(s,l){return s+(row[l]||0);},0);
     return {label:agentLabels[a]||a,html:'<tr><td style="font-size:14px">'+(agentLabels[a]||a)+'</td>'+cells+'</tr>',total:rowTotal};
   }).filter(function(r){return r.total>0;}).map(function(r){return r.html;}).join('');
-  // 未生成问题单的 case 及原因（问题单由假定线索驱动，无线索且无断点则无单）
-  var skipped=lc.skipped_cases||[];
-  var skippedHtml='';
-  if(skipped.length){
-    var rows=skipped.map(function(s){
-      return '<tr>'
-        +'<td style="font-size:12px;font-family:monospace">'+esc(s.case_id||'')+'</td>'
-        +'<td style="font-size:13px;max-width:320px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+String(s.vuln_title||'').replace(/"/g,'&quot;')+'">'+esc(s.vuln_title||'-')+'</td>'
-        +'<td><span class="bdg" style="background:rgba('+(s.outcome==='FN'?'251,191,36':'248,113,113')+',.18);color:'+(s.outcome==='FN'?'var(--amber)':'var(--red)')+'">'+esc(s.outcome||'-')+'</span></td>'
-        +'<td style="font-size:13px">'+esc(s.reason||'-')+'</td>'
-        +'<td style="font-size:12px;color:var(--sub)">'+esc(s.detail||'')+'</td>'
-        +'</tr>';
-    }).join('');
-    skippedHtml='<details class="card" style="margin-bottom:16px">'
-      +'<summary style="font-size:15px;color:var(--sub);text-transform:uppercase;letter-spacing:.6px;font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">'
-      +'未生成问题单的 Case <span style="font-size:12px;color:var(--acc)">（'+skipped.length+' 个，点击展开）</span></summary>'
-      +'<div style="margin-top:16px;overflow-x:auto"><table><thead><tr><th>Case ID</th><th>漏洞名称</th><th>类型</th><th>原因</th><th>说明</th></tr></thead><tbody>'
-      +rows+'</tbody></table></div>'
-      +'<div style="font-size:13px;color:var(--sub);margin-top:10px">问题单以假定线索为问题载体：既无线索也无断点时不会生成问题单，此处列出原因供核对。</div>'
-      +'</details>';
-  }
+  // 未生成 DTS 单的 case 在「问题单」区块统一展示（见 renderDtsSection）
 
   return '<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3>'
     +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（Agent × 级别）</h4>'
     +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
     +matrixRows+'</tbody></table></div>'
     +'<div style="font-size:13px;color:var(--sub);margin-top:10px">统计口径：按 session 级断点统计，不按假定线索的引用过滤。逐 case 明细（假定线索 + 支撑断点）见下方问题单列表。</div>'
-    +'</div>'
-    +skippedHtml;
+    +'</div>';
 }
 
 // 知识/记忆使用情况卡片渲染
@@ -245,7 +224,7 @@ function renderV2Report(d){
   var rpData=base.recall_precision||(d.lifecycle&&d.lifecycle.recall_precision)||{};
   var fpCnt=rpData.fp_count||0;
   var tpCnt=rpData.tp_count||0;
-  var fnCnt=rpData.fn_count||0;
+  var fnCnt=(evalMode==='runtime')?0:(rpData.fn_count||0);
   var tnCnt=rpData.tn_count||0;
   var postFprData=d.postRegressionFpr||{};
   var postFpr=postFprData.post_regression_fpr;
@@ -277,6 +256,21 @@ function renderV2Report(d){
     baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后误报率</div><div class="mc-val" style="color:var(--amber)">'+(postFpr!=null?(postFpr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFp.verified_total>0?('未消除 '+postFp.failed+'/'+postFp.verified_total):'暂无回归验证数据')+'</div></div>';
     baseMetrics+='<div class="mcard" style="border-color:var(--amber)33"><div class="mc-label">回归后漏报率</div><div class="mc-val" style="color:var(--amber)">'+(postFnr!=null?(postFnr*100).toFixed(1)+'%':'<span class="na">NA</span>')+'</div><div style="font-size:12px;color:var(--sub);margin-top:4px">'+(postFn.verified_total>0?('未消除 '+postFn.failed+'/'+postFn.verified_total):'暂无回归验证数据')+'</div></div>';
   }
+  // 无 FP/FN 时报告必然为空：显式说明原因，避免与"任务异常"混淆
+  var _cos=(d.lifecycle&&d.lifecycle.case_outcome_summary)||{};
+  if((fpCnt+fnCnt)===0 && (tpCnt+tnCnt)>0){
+    var _matchInfo=(_cos.total?('匹配到会话 '+(_cos.matched||0)+'/'+_cos.total):'');
+    var _noFpFnText=evalMode==='runtime'
+      ?'本次无误报，根因分析与问题单生成已跳过'
+      :'本次无误报、无漏报，根因分析与问题单生成已跳过';
+    var _distText='用例分布：真阳性 '+tpCnt+' · 真阴性 '+tnCnt+' · 误报 '+fpCnt
+      +(evalMode==='runtime'?'':' · 漏报 '+fnCnt)
+      +(_matchInfo?('；'+_matchInfo):'');
+    baseMetrics+='<div class="mcard" style="grid-column:1/-1;border-color:var(--amber)55;text-align:left">'
+      +'<div class="mc-label">分析对象</div>'
+      +'<div style="font-size:13px;color:var(--amber);font-weight:600;margin-top:4px">'+_noFpFnText+'</div>'
+      +'<div style="font-size:12px;color:var(--sub);margin-top:4px">'+_distText+'</div></div>';
+  }
 
   var causeSum=ccSum.cause_summary||{};
   var causeTotal=Object.values(causeSum).reduce(function(a,b){return a+(b||0);},0);
@@ -296,8 +290,8 @@ function renderV2Report(d){
   var _dqWarnings=(d.lifecycle&&d.lifecycle.data_quality_warnings)||[];
   var _warnHtml='';
   if(_dqWarnings.length){
-    var _srcLabels={'vuln_center':'漏洞中心','kb_verify':'知识库验证','llm':'LLM 调用','gaiasec':'GAISEC API'};
-    var _typeLabels={'raw_report_fetch_failed':'原始报告获取失败','kb_query_failed':'知识库查询失败','athena_api_failed':'知识库查询失败（提交失败）','athena_api_timeout':'知识库查询失败（未返回结果）','llm_judgment_failed':'LLM 判定失败（降级）','compression_failed':'LLM 压缩失败（降级）','merge_compression_failed':'LLM 合并压缩失败（降级）'};
+    var _srcLabels={'vuln_center':'漏洞中心','kb_verify':'知识库验证','llm':'LLM 调用','gaiasec':'GAISEC API','webvuln_verify':'WebVulnVerify','cvuln_verify':'CVulnVerify','argo':'Argo','turing':'Turing','secmate':'SecMate','dataflow':'Dataflow','trace':'Trace','parse':'解析流程','analysis':'分析流程'};
+    var _typeLabels={'raw_report_fetch_failed':'原始报告获取失败','kb_query_failed':'知识库查询失败','athena_api_failed':'知识库查询失败（提交失败）','athena_api_timeout':'知识库查询失败（未返回结果）','llm_judgment_failed':'LLM 判定失败','compression_failed':'LLM 压缩失败','merge_compression_failed':'LLM 合并压缩失败','session_file_missing':'验证 trace 缺 session 文件','trace_parse_skipped':'trace 解析失败（已跳过）','trace_empty':'trace 未解析出事件','all_traces_failed':'所有 trace 解析失败','no_target_cases':'无可分析对象','no_matched_sessions':'未匹配到 session','high_unmatched_ratio':'未匹配比例过高','no_cases':'没有 case'};
     _warnHtml='<details class="card" style="margin-bottom:16px;border-color:var(--amber)" open><summary style="font-size:15px;color:var(--amber);font-weight:600;cursor:pointer;list-style:none;display:flex;align-items:center;gap:8px">⚠ 数据质量告警（'+_dqWarnings.length+' 条）<span style="font-size:12px;color:var(--sub)">— 以下告警可能影响评测结果可信度</span></summary><div style="margin-top:12px">';
     _dqWarnings.forEach(function(w){
       var src=_srcLabels[w.source]||w.source||'-';
@@ -356,6 +350,13 @@ function renderV2Report(d){
   `;
 
   $("view").innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div id="rep-content" style="flex:1;overflow-y:auto">'+html+'</div>';
+  // 未生成 DTS 单的 case 清单（来自 lifecycle 报告），在问题单区块展示
+  var _skippedCases=(d.lifecycle&&d.lifecycle.skipped_cases)||[];
+  if(evalMode==='runtime'){
+    // 运行态没有漏报基线：历史报告里的 FN 也不展示
+    _skippedCases=_skippedCases.filter(function(s){return s.outcome!=='FN';});
+  }
+  window._evalSkippedCases=_skippedCases;
   loadDtsSection(d.evaluation_id||activeId||'');
 }
 
@@ -370,7 +371,7 @@ async function loadDtsSection(evalId){
     var stats=dts.stats||{};
     renderDtsSection(evalId,issues,stats);
   }catch(e){
-    container.innerHTML='<div class="card" style="margin-bottom:16px"><h3>问题单</h3><div style="color:var(--sub);padding:12px">暂无问题单</div></div>';
+    renderDtsSection(evalId,[],{});
   }
 }
 
@@ -419,14 +420,32 @@ function renderDtsSection(evalId,issues,stats){
     });
     listHtml+='</tbody></table></div>';
   }
-  container.innerHTML=summaryHtml+listHtml;
+
+  // 未生成 DTS 单的 case：caseid、标题、原因
+  var skipped=window._evalSkippedCases||[];
+  var skippedHtml='';
+  if(skipped.length){
+    var skipRows=skipped.map(function(s){
+      return '<tr>'
+        +'<td style="font-size:12px;font-family:monospace">'+esc(s.case_id||'')+'</td>'
+        +'<td style="font-size:13px;max-width:420px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+String(s.vuln_title||'').replace(/"/g,'&quot;')+'">'+esc(s.vuln_title||'-')+'</td>'
+        +'<td style="font-size:13px">'+esc(DTS_CASE_TYPE_LABELS[s.outcome]||s.outcome||'-')+'</td>'
+        +'<td style="font-size:13px">'+esc(s.reason||'-')+'</td>'
+        +'</tr>';
+    }).join('');
+    skippedHtml='<div class="card" style="margin-bottom:16px"><h3>未生成 DTS 单的 Case（'+skipped.length+' 个）</h3>'
+      +'<div style="overflow-x:auto"><table><thead><tr><th>Case ID</th><th>漏洞标题</th><th>类型</th><th>原因</th></tr></thead><tbody>'
+      +skipRows+'</tbody></table></div></div>';
+  }
+
+  container.innerHTML=summaryHtml+listHtml+skippedHtml;
 }
 
 // ===== 通用操作 =====
 function retryEval(eid){
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
     desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
-    risks:['耗时可能较长（10-30 分钟）','如果 LLM 不可用会降级为规则生成','旧报告会被覆盖'],
+    risks:['耗时可能较长（10-30 分钟）','重跑期间旧报告会被覆盖','LLM 不可用时评测会失败，不会降级出结果'],
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
       activeId=eid;

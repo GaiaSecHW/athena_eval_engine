@@ -137,7 +137,12 @@ def get_parser(trace_kind: str | None, source_uri: str) -> BaseParser:
         return cls()
 
     # 2b. CVulnVerify 目录特征
-    if os.path.isdir(p) and p.endswith(cvuln_suffix):
+    # 支持两种布局：tasks/c_vuln_verify（项目共享）与
+    # tasks/{task_id}/c_vuln_verify（任务级）；本地缓存目录名带哈希前缀。
+    cvuln_base = os.path.basename(p.rstrip("/\\"))
+    if os.path.isdir(p) and (p.endswith(cvuln_suffix)
+                             or cvuln_base == "c_vuln_verify"
+                             or cvuln_base.endswith("_c_vuln_verify")):
         cls = _load_parser_class("cvuln_verify")
         return cls()
 

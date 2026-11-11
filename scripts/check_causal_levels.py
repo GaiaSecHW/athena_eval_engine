@@ -22,6 +22,7 @@ from athena_eval_engine.v2.core.causal_levels import (  # noqa: E402
     CAUSE_TO_CATEGORY,
     CAUSE_TO_LEVEL,
     CAUSE_TO_RESPONSIBILITY,
+    CLUE_MIN_CONFIDENCE,
     LEVEL_QUESTIONS,
     LEVEL_RANK,
 )
@@ -67,6 +68,14 @@ else:
         ui_labels[code] = inner.group(1) if inner else text
     if ui_labels != CAUSE_LABELS:
         errors.append(f"UI 标签与 Python 不一致: {ui_labels}")
+
+# 线索置信度门槛：Python 与 UI 必须一致
+m_thr = re.search(r"const DTS_CLUE_MIN_CONFIDENCE\s*=\s*([0-9.]+);", cfg)
+if not m_thr:
+    errors.append("config.js 中未找到 DTS_CLUE_MIN_CONFIDENCE")
+elif float(m_thr.group(1)) != CLUE_MIN_CONFIDENCE:
+    errors.append(
+        f"UI 线索门槛 {m_thr.group(1)} ≠ Python {CLUE_MIN_CONFIDENCE}")
 
 # prompt 必须包含标准标签
 prompt_src = (ROOT / "athena_eval_engine/v2/lifecycle/root_cause_analyzer.py").read_text(

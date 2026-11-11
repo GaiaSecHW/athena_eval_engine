@@ -6,7 +6,9 @@
 - 工具函数从本目录 ``.utils`` 导入
 - 新增 ``label_session_phases()`` 方法实现 session 业务阶段标注
 
-Trace 路径：/data/files/{project_id}/tasks/c_vuln_verify/*.jsonl
+Trace 路径（发现顺序）：
+  - 任务级：/data/files/{project_id}/tasks/{task_id}/c_vuln_verify/*.jsonl
+  - 共享：/data/files/{project_id}/tasks/c_vuln_verify/*.jsonl（任务级目录不存在时回退）
 
 与 Argo（Claude Code JSONL）格式不同：
   - type: session / model_change / thinking_level_change / message
@@ -28,6 +30,7 @@ from typing import Iterator
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
+from ...infra.pipeline_warnings import add_trace_file_skip
 from ..json_utils import parse_json_lenient
 
 import logging
@@ -149,44 +152,52 @@ class CVulnVerifyParser(BaseParser):
         self._tool_kg = {}
         self._tool_mem = {}
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if d.get("type") == "message":
-                        msg = d.get("message", {})
-                        if not isinstance(msg, dict):
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
                             continue
-                        for c in (msg.get("content", []) if isinstance(msg.get("content"), list) else []):
-                            if isinstance(c, dict) and c.get("type") == "toolCall":
-                                tid = c.get("id", "")
-                                tool_name = c.get("name", "")
-                                args = c.get("arguments", {})
-                                is_kg = self._is_kg_call(tool_name, args)
-                                is_mem, is_mem_w = detect_memory_flags(tool_name, args)
-                                if tid:
-                                    self._tool_kg[tid] = is_kg
-                                    self._tool_mem[tid] = (is_mem, is_mem_w)
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if d.get("type") == "message":
+                            msg = d.get("message", {})
+                            if not isinstance(msg, dict):
+                                continue
+                            for c in (msg.get("content", []) if isinstance(msg.get("content"), list) else []):
+                                if isinstance(c, dict) and c.get("type") == "toolCall":
+                                    tid = c.get("id", "")
+                                    tool_name = c.get("name", "")
+                                    args = c.get("arguments", {})
+                                    is_kg = self._is_kg_call(tool_name, args)
+                                    is_mem, is_mem_w = detect_memory_flags(tool_name, args)
+                                    if tid:
+                                        self._tool_kg[tid] = is_kg
+                                        self._tool_mem[tid] = (is_mem, is_mem_w)
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         events: list[RawEvent] = []
         for fpath in files:
             sid = os.path.splitext(os.path.basename(fpath))[0]
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    for ev in self._obj_to_events(d, trace_id, sid, line_no):
-                        events.append(ev)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line_no, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        for ev in self._obj_to_events(d, trace_id, sid, line_no):
+                            events.append(ev)
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         return events
 
@@ -347,29 +358,33 @@ class CVulnVerifyParser(BaseParser):
         ts_min = ts_max = None
 
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = self._parse_ts(d.get("timestamp", ""))
-                    if ts:
-                        ts_min = ts if ts_min is None else min(ts_min, ts)
-                        ts_max = ts if ts_max is None else max(ts_max, ts)
-                    t = d.get("type", "")
-                    if t == "message":
-                        msg = d.get("message", {})
-                        if isinstance(msg, dict):
-                            usage = msg.get("usage", {})
-                            if isinstance(usage, dict):
-                                ai, ao, ar, ac = usage_numbers(usage)
-                                ti += ai; to += ao; tr += ar; tcr += ac
-                            if msg.get("role") == "assistant":
-                                n_step_finish += 1
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        ts = self._parse_ts(d.get("timestamp", ""))
+                        if ts:
+                            ts_min = ts if ts_min is None else min(ts_min, ts)
+                            ts_max = ts if ts_max is None else max(ts_max, ts)
+                        t = d.get("type", "")
+                        if t == "message":
+                            msg = d.get("message", {})
+                            if isinstance(msg, dict):
+                                usage = msg.get("usage", {})
+                                if isinstance(usage, dict):
+                                    ai, ao, ar, ac = usage_numbers(usage)
+                                    ti += ai; to += ao; tr += ar; tcr += ac
+                                if msg.get("role") == "assistant":
+                                    n_step_finish += 1
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         sess = {
             "tokens_input": ti, "tokens_output": to,

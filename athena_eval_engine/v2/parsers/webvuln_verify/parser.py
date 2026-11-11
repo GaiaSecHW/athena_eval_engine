@@ -47,6 +47,7 @@ from datetime import datetime
 
 from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
+from ...infra.pipeline_warnings import add_trace_file_skip
 
 import logging
 _log = logging.getLogger(__name__)
@@ -96,7 +97,8 @@ class WebVulnVerifyParser(BaseParser):
         self.parser_version = parser_version
         # 当前解析的 trace source_uri（parse() 时存，build_session_graph() 用）
         # WebVulnVerify 的调用链权威源 = gaiasec-server API，按 API 给的
-        # session_id 在 trace 目录里精确取对应 .jsonl 文件，缺失即报错。
+        # session_id 在 trace 目录里精确取对应 .jsonl 文件；个别缺失时
+        # 跳过该 session 并告警，不阻断整次评测。
         self._source_uri: str = ""
 
     # ------------------------------------------------------------------
@@ -131,42 +133,7 @@ class WebVulnVerifyParser(BaseParser):
         # 第一遍：收集 tool_call 的 id → {tool_name, is_kg} 映射，用于 TOOL_RESULT 继承
         tool_call_info: dict[str, dict] = {}  # call_id → {tool_name, is_kg}
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if d.get("type") not in ("message_completed", "message_upsert"):
-                        continue
-                    msg = d.get("message", {})
-                    if not isinstance(msg, dict):
-                        continue
-                    if msg.get("role") != "Assistant":
-                        continue
-                    for p in msg.get("parts", []):
-                        pt = p.get("part_type", {})
-                        if not isinstance(pt, dict) or pt.get("type") != "tool_call":
-                            continue
-                        call_id = pt.get("id", "")
-                        tool_name = _TOOL_MAP.get(pt.get("name", ""), pt.get("name", "").lower())
-                        is_kg = self._is_kg_interaction(tool_name, pt.get("input"))
-                        is_mem, is_mem_w = detect_memory_flags(tool_name, pt.get("input"))
-                        if call_id:
-                            tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg,
-                                                        "is_mem": is_mem, "is_mem_w": is_mem_w}
-
-        # 第二遍：逐行解析为 RawEvent
-        events: list[RawEvent] = []
-        for fpath in files:
-            # 优先从 session_meta 行提取真实 session ID
-            # 回退到外部传入的 session_id 或文件名
-            sid = session_id
-            if not sid:
-                # 第一遍扫描：找 session_meta.session.id
+            try:
                 with open(fpath, "r", encoding="utf-8") as f:
                     for line in f:
                         line = line.strip()
@@ -176,32 +143,75 @@ class WebVulnVerifyParser(BaseParser):
                             d = json.loads(line)
                         except json.JSONDecodeError:
                             continue
-                        if d.get("type") == "session_meta":
-                            sess = d.get("session", {})
-                            if isinstance(sess, dict) and sess.get("id"):
-                                sid = sess["id"]
-                                break
-                if not sid:
-                    sid = os.path.splitext(os.path.basename(fpath))[0]
-
-            # 每个 session_meta 只发一次 SESSION_START（后续是更新快照）
-            seen_session_meta = False
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    # 跳过重复的 session_meta 快照（只保留第一个）
-                    if d.get("type") == "session_meta":
-                        if seen_session_meta:
+                        if d.get("type") not in ("message_completed", "message_upsert"):
                             continue
-                        seen_session_meta = True
-                    for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_call_info):
-                        events.append(ev)
+                        msg = d.get("message", {})
+                        if not isinstance(msg, dict):
+                            continue
+                        if msg.get("role") != "Assistant":
+                            continue
+                        for p in msg.get("parts", []):
+                            pt = p.get("part_type", {})
+                            if not isinstance(pt, dict) or pt.get("type") != "tool_call":
+                                continue
+                            call_id = pt.get("id", "")
+                            tool_name = _TOOL_MAP.get(pt.get("name", ""), pt.get("name", "").lower())
+                            is_kg = self._is_kg_interaction(tool_name, pt.get("input"))
+                            is_mem, is_mem_w = detect_memory_flags(tool_name, pt.get("input"))
+                            if call_id:
+                                tool_call_info[call_id] = {"tool_name": tool_name, "is_kg": is_kg,
+                                                            "is_mem": is_mem, "is_mem_w": is_mem_w}
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
+
+        # 第二遍：逐行解析为 RawEvent
+        events: list[RawEvent] = []
+        for fpath in files:
+            try:
+                # 优先从 session_meta 行提取真实 session ID
+                # 回退到外部传入的 session_id 或文件名
+                sid = session_id
+                if not sid:
+                    # 第一遍扫描：找 session_meta.session.id
+                    with open(fpath, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if not line:
+                                continue
+                            try:
+                                d = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if d.get("type") == "session_meta":
+                                sess = d.get("session", {})
+                                if isinstance(sess, dict) and sess.get("id"):
+                                    sid = sess["id"]
+                                    break
+                    if not sid:
+                        sid = os.path.splitext(os.path.basename(fpath))[0]
+
+                # 每个 session_meta 只发一次 SESSION_START（后续是更新快照）
+                seen_session_meta = False
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line_no, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        # 跳过重复的 session_meta 快照（只保留第一个）
+                        if d.get("type") == "session_meta":
+                            if seen_session_meta:
+                                continue
+                            seen_session_meta = True
+                        for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_call_info):
+                            events.append(ev)
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         return events
 
@@ -426,48 +436,52 @@ class WebVulnVerifyParser(BaseParser):
         agent = "webvulnverify"
 
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-
-                    ts = self._parse_ts(d)
-                    if ts:
-                        ts_min = ts if ts_min is None else min(ts_min, ts)
-                        ts_max = ts if ts_max is None else max(ts_max, ts)
-
-                    t = d.get("type", "")
-
-                    if t == "session_meta":
-                        sess = d.get("session", {})
-                        session_id = sess.get("id", "")
-                        n_step_start += 1  # session 开始 = 一次 step-start
-                        # metadata 中的 agent_id / mount_source
-                        meta = sess.get("metadata", {})
-                        if isinstance(meta, dict):
-                            if meta.get("agent_id"):
-                                agent = meta.get("agent_id")
-
-                    elif t in ("message_completed", "message_upsert"):
-                        msg = d.get("message", {})
-                        if not isinstance(msg, dict):
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
                             continue
-                        role = msg.get("role", "")
-                        if role == "Assistant":
-                            n_step_finish += 1
-                            usage = msg.get("usage", {})
-                            if isinstance(usage, dict):
-                                ai, ao, ar, ac = usage_numbers(usage)
-                                ti += ai; to += ao; tr += ar; tcr += ac
-                            # model 信息
-                            m = msg.get("metadata", {})
-                            if isinstance(m, dict) and m.get("model_id"):
-                                model = m["model_id"]
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+
+                        ts = self._parse_ts(d)
+                        if ts:
+                            ts_min = ts if ts_min is None else min(ts_min, ts)
+                            ts_max = ts if ts_max is None else max(ts_max, ts)
+
+                        t = d.get("type", "")
+
+                        if t == "session_meta":
+                            sess = d.get("session", {})
+                            session_id = sess.get("id", "")
+                            n_step_start += 1  # session 开始 = 一次 step-start
+                            # metadata 中的 agent_id / mount_source
+                            meta = sess.get("metadata", {})
+                            if isinstance(meta, dict):
+                                if meta.get("agent_id"):
+                                    agent = meta.get("agent_id")
+
+                        elif t in ("message_completed", "message_upsert"):
+                            msg = d.get("message", {})
+                            if not isinstance(msg, dict):
+                                continue
+                            role = msg.get("role", "")
+                            if role == "Assistant":
+                                n_step_finish += 1
+                                usage = msg.get("usage", {})
+                                if isinstance(usage, dict):
+                                    ai, ao, ar, ac = usage_numbers(usage)
+                                    ti += ai; to += ao; tr += ar; tcr += ac
+                                # model 信息
+                                m = msg.get("metadata", {})
+                                if isinstance(m, dict) and m.get("model_id"):
+                                    model = m["model_id"]
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         sess = {
             "tokens_input": ti, "tokens_output": to,
@@ -497,8 +511,10 @@ class WebVulnVerifyParser(BaseParser):
         trace 的 session_meta.parent_id 不再用（数据不可靠：同 case 第 1 轮
         带 parent_id、第 2 轮漏写）。
 
-        API 给的每个 session_id 必须在 trace 目录里能找到对应 .jsonl 文件——
-        找不到即数据缺失，抛异常（不降级、不跳过——铁律）。
+        API 给的每个 session_id 必须在 trace 目录里能找到对应 .jsonl 文件。
+        找不到时只跳过该 session（以及确实无 session 可用的 case），不阻断整次
+        评测；受影响的 case_id 写入 session_graph 并生成数据质量告警，报告中
+        可看到该 case 未参与分析的原因。
 
         Args:
             events: trace 解析的全部 RawEvent（按 session_id 分组）
@@ -511,15 +527,21 @@ class WebVulnVerifyParser(BaseParser):
             - vuln_id_to_sessions: {case_id: {analysis_session, verification_session}}
               （debug 诊断 + case_session_matcher 兜底用）
             - file_to_sessions: {basename: {session_id, ...}}
+            - missing_session_files: [{session_id, case_id, phase}]
+              （API 给了但 trace 目录缺 .jsonl 的 session）
+            - unanalyzable_case_ids: [case_id]
+              （所有 API session 都缺文件、完全无法分析的 case）
 
         Raises:
-            RuntimeError: API 调用失败（重试耗尽）或 trace 文件缺失。
+            RuntimeError: API 调用失败（重试耗尽）或 trace 路径不可用。
         """
         graph = {
             'sessions': {}, 'file_to_sessions': {},
             'vuln_id_to_sessions': {},
             'edges': {},
             'parent_map': {},
+            'missing_session_files': [],
+            'unanalyzable_case_ids': [],
         }
         from collections import defaultdict as _dd
         graph['file_to_sessions'] = _dd(set)
@@ -564,8 +586,8 @@ class WebVulnVerifyParser(BaseParser):
         session_map = fetch_case_session_map_batch(case_ids)
 
         # ── Step 3: 校验 API 给的每个 session_id 对应 .jsonl 文件存在 ──
-        # API 是权威——API 给的 session 必须在 trace 目录里有对应 .jsonl 文件
-        # 找不到文件即数据缺失，抛异常（铁律：不降级、不跳过）
+        # API 是权威——API 给的 session 必须在 trace 目录里有对应 .jsonl 文件。
+        # 个别缺失只跳过该 session（受影响 case 写入报告告警），不阻断整次评测。
         uri = self._source_uri
         if not uri:
             raise RuntimeError(
@@ -587,18 +609,28 @@ class WebVulnVerifyParser(BaseParser):
                         "phase": phase,
                     }
 
-        # 校验每个 API session_id 对应 .jsonl 文件存在
+        # 校验每个 API session_id 对应 .jsonl 文件存在。
+        # 缺失 session 只影响它所属的 case，不阻断整次评测：
+        # 跳过该 session，其余 case 继续分析，并在报告中注明受影响的 case_id。
         missing_files: list[str] = []
         for sid in api_sessions:
             fpath = os.path.join(trace_dir, f"{sid}.jsonl")
             if not os.path.isfile(fpath):
                 missing_files.append(sid)
+        missing_set = set(missing_files)
         if missing_files:
-            raise RuntimeError(
-                f"WebVulnVerify API 权威 session 在 trace 目录缺失 .jsonl 文件: "
-                f"{missing_files[:5]}{'...' if len(missing_files) > 5 else ''} "
-                f"(trace_dir={trace_dir}, 共 {len(missing_files)}/"
-                f"{len(api_sessions)} 个 API session 缺文件)")
+            graph['missing_session_files'] = [
+                {"session_id": sid,
+                 "case_id": api_sessions[sid]["case_id"],
+                 "phase": api_sessions[sid]["phase"]}
+                for sid in missing_files
+            ]
+            _log.warning(
+                "WebVulnVerify API 权威 session 在 trace 目录缺失 .jsonl 文件: "
+                "%s (trace_dir=%s, 共 %d/%d 个 API session 缺文件)，"
+                "跳过缺失 session 继续分析",
+                missing_files[:5], trace_dir, len(missing_files), len(api_sessions))
+            self._warn_missing_session_files(api_sessions, missing_set, graph)
 
         # ── Step 4: 构建调用链（API 权威）──
         # sessions 字典：API 给的 session 都进 sessions，附 case_id + phase
@@ -636,6 +668,9 @@ class WebVulnVerifyParser(BaseParser):
                                (verification_sid, "verification")):
                 if not sid:
                     continue
+                # 缺失 .jsonl 的 session 不进入关系图（无法解析其事件）
+                if sid in missing_set:
+                    continue
                 if sid not in graph['sessions']:
                     graph['sessions'][sid] = {
                         'files': set(),
@@ -655,7 +690,10 @@ class WebVulnVerifyParser(BaseParser):
                         graph['vuln_id_to_sessions'][num_vid].add(sid)
 
             # 建 parent_map + edges（API 权威：verification 的父 = analysis）
-            if analysis_sid and verification_sid and analysis_sid != verification_sid:
+            if (analysis_sid and verification_sid
+                    and analysis_sid != verification_sid
+                    and analysis_sid not in missing_set
+                    and verification_sid not in missing_set):
                 graph['parent_map'][verification_sid] = analysis_sid
                 graph['edges'][verification_sid].add(analysis_sid)
                 graph['edges'][analysis_sid].add(verification_sid)
@@ -691,6 +729,43 @@ class WebVulnVerifyParser(BaseParser):
                    len(graph['sessions']), len(graph['parent_map']),
                    len(graph['vuln_id_to_sessions']))
         return graph
+
+    @staticmethod
+    def _warn_missing_session_files(api_sessions: dict, missing_set: set,
+                                    graph: dict) -> None:
+        """按 case 记录 session 文件缺失的数据质量告警。
+
+        报告（data_quality_warnings）中会按 case_id 展示：
+        - 该 case 的所有 session 都缺文件 → 未参与分析；
+        - 只缺部分 session → 用剩余 session 继续分析。
+        """
+        from ...infra.log_util import get_eval_ctx
+        from ...infra import pipeline_warnings as _pw
+
+        by_case: dict[str, list[str]] = {}
+        for sid in sorted(missing_set):
+            info = api_sessions.get(sid) or {}
+            cid = str(info.get("case_id") or "")
+            if cid:
+                by_case.setdefault(cid, []).append(sid)
+
+        unanalyzable: list[str] = []
+        for cid, miss_sids in sorted(by_case.items()):
+            all_sids = [sid for sid, info in api_sessions.items()
+                        if str(info.get("case_id") or "") == cid]
+            usable = [sid for sid in all_sids if sid not in missing_set]
+            if usable:
+                msg = (f"case {cid} 缺失部分验证 session 文件（{', '.join(miss_sids)}），"
+                       f"已用剩余 {len(usable)} 个 session 继续分析")
+            else:
+                unanalyzable.append(cid)
+                msg = (f"case {cid} 的验证 session 文件全部缺失"
+                       f"（{', '.join(miss_sids)}），该 case 未参与分析")
+            eid = get_eval_ctx()
+            if eid:
+                _pw.add(eid, "webvuln_verify", "session_file_missing",
+                        "warning", msg, case_id=cid)
+        graph["unanalyzable_case_ids"] = unanalyzable
 
     # ------------------------------------------------------------------
     # label_session_phases() — 新实现

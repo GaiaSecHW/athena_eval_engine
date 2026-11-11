@@ -507,6 +507,13 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD UNIQUE INDEX uk_dts_eval_case (evaluation_id, case_id)",
         ],
     },
+    {
+        "id": "034_dts_issue_session_chains_snapshot",
+        "desc": "dts_issue 新增 session_chains 快照——问题单生成时固化 session 调用链，避免重跑/清理导致页面链丢失",
+        "sql": [
+            "ALTER TABLE dts_issue ADD COLUMN session_chains MEDIUMTEXT AFTER analysis_data_path",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

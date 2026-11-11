@@ -38,7 +38,10 @@ async def trace_check(project_id: str, task_id: str):
            ready: bool}
     """
     mining = await asyncio.to_thread(ps.discover_mining_trace, project_id, task_id)
-    verify = await asyncio.to_thread(ps.discover_verify_traces, project_id)
+    # 必须带 task_id：验证 trace 优先查任务级目录
+    # tasks/{task_id}/c_vuln_verify 与 tasks/{task_id}/session/WebVerify，
+    # 缺失时才回退项目共享目录。
+    verify = await asyncio.to_thread(ps.discover_verify_traces, project_id, task_id)
     return {
         "mining": {"trace_kind": mining[0], "source_uri": mining[1]} if mining else None,
         "verify": verify,

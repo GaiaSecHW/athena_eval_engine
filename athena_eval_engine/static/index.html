@@ -32,6 +32,11 @@
 .home-refresh-icon{display:inline-block;width:11px;height:11px;border:2px solid currentColor;border-top-color:transparent;border-radius:50%}
 .home-refresh-btn.refreshing .home-refresh-icon{animation:spin 1s linear infinite}
 .fp-fn-row{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-bottom:18px}
+/* 首页首行：评测状态 5 项 + 误报/漏报/根因确认 4 项 = 9 项一行 */
+.kpi-row-9{grid-template-columns:repeat(9,1fr)!important;margin-bottom:20px}
+@media(max-width:1200px){.kpi-row-9{grid-template-columns:repeat(5,1fr)!important}}
+@media(max-width:900px){.kpi-row-9{grid-template-columns:repeat(3,1fr)!important}}
+@media(max-width:640px){.kpi-row-9{grid-template-columns:repeat(2,1fr)!important}}
 .fp-fn-box{padding:16px;border-radius:12px;background:var(--p2);border:2px solid transparent;transition:all .3s;text-align:center}
 .fp-box{border-color:rgba(220,38,38,.2)}.fn-box{border-color:rgba(217,119,6,.2)}
 .fp-fn-value{font-size:26px;font-weight:700;font-family:'SF Mono',Consolas,monospace;margin-bottom:2px}
@@ -97,6 +102,7 @@ async function renderHome(){
   var devOverall=overall.dev||{};
   var rtAgent=(dash.agent_detail||{}).runtime||[];
   var devAgent=(dash.agent_detail||{}).dev||[];
+  var bpMatrix=dash.breakpoint_matrix||{};
 
   var now=new Date();
   var updateStr=now.getHours().toString().padStart(2,'0')+':'+now.getMinutes().toString().padStart(2,'0')+':'+now.getSeconds().toString().padStart(2,'0');
@@ -109,12 +115,17 @@ async function renderHome(){
     +'<button class="home-refresh-btn" onclick="refreshDashboard()"><span class="home-refresh-icon"></span>刷新</button></div>'
     +'</div>'
 
-    +'<div class="kpi-grid">'
+    // 第一行：评测状态 + 误报/漏报/根因确认，合并为一行 9 项
+    +'<div class="kpi-grid kpi-row-9">'
     +renderKPICard('评测总数',total,'📊','linear-gradient(135deg,#2563eb,#3b82f6)')
     +renderKPICard('已完成',completed,'✓','linear-gradient(135deg,#16a34a,#22c55e)')
     +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)')
+    +renderKPICard('误报',((dtsStats.by_case_type||{}).FP||0),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
+    +renderKPICard('漏报',((dtsStats.by_case_type||{}).FN||0),'○','linear-gradient(135deg,#d97706,#f59e0b)')
+    +renderKPICard('确认为根因',((dtsStats.root_confirmation||{}).confirmed_root||0),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
+    +renderKPICard('确认为非根因',((dtsStats.root_confirmation||{}).confirmed_not_root||0),'✗','linear-gradient(135deg,#dc2626,#ef4444)')
     +'</div>'
     +'<div class="kpi-grid kpi-6">'
     +renderKPICard('运行态·总体误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
@@ -125,18 +136,10 @@ async function renderHome(){
     +renderKPICard('开发态·回归后漏报率',fmtPct(devOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)')
     +'</div>'
 
-    +(dtsTotal>0?'<div class="fp-fn-row">'
-      +'<div class="fp-fn-box fp-box"><div class="fp-fn-value" style="color:var(--red)">'+((dtsStats.by_case_type||{}).FP||0)+'</div><div class="fp-fn-label">误报 FP</div></div>'
-      +'<div class="fp-fn-box fn-box"><div class="fp-fn-value" style="color:var(--amber)">'+((dtsStats.by_case_type||{}).FN||0)+'</div><div class="fp-fn-label">漏报 FN</div></div>'
-      +'</div>':'')
-
     +renderAgentDetail(rtAgent, 'runtime')
     +renderAgentDetail(devAgent, 'dev')
-
-    +(dtsTotal>0&&dtsStats.root_confirmation?'<div class="root-confirm-row">'
-      +'<div class="root-confirm-box rc-confirmed"><div class="rc-value" style="color:var(--green)">'+(dtsStats.root_confirmation.confirmed_root||0)+'</div><div class="rc-label">确认为根因</div></div>'
-      +'<div class="root-confirm-box rc-not-confirmed"><div class="rc-value" style="color:var(--red)">'+(dtsStats.root_confirmation.confirmed_not_root||0)+'</div><div class="rc-label">确认为非根因</div></div>'
-      +'</div>':'')
+    +renderBreakpointMatrix(bpMatrix.runtime, '运行态 · 断点分布（Agent × L 级别）')
+    +renderBreakpointMatrix(bpMatrix.dev, '开发态 · 断点分布（Agent × L 级别）')
 
     +'</div>';
   $("view").innerHTML=html;
@@ -149,35 +152,86 @@ function renderKPICard(label,value,icon,gradient){
     +'</div>';
 }
 
+function renderBreakpointMatrix(matrix, title){
+  matrix=matrix||{};
+  var levels=['L2','L3','L4','L5','L6','L7','L8'];
+  var levelLabels={L2:'发起访问',L3:'查询聚焦',L4:'知识存在',L5:'成功取回',L6:'引用内容',L7:'影响结论',L8:'其他维度'};
+  var agents=AGENT_TYPES.slice();
+  var grand=0,max=0;
+  var rows=agents.map(function(a){
+    var lv=matrix[a]||{};
+    var cells=levels.map(function(l){
+      var v=Number(lv[l]||0); if(v>max)max=v; return v;
+    });
+    var total=cells.reduce(function(s,v){return s+v;},0);
+    grand+=total;
+    return {agent:a,cells:cells,total:total};
+  });
+  var head='<th>Agent</th>'+levels.map(function(l){
+    return '<th>'+l+' '+levelLabels[l]+'</th>';
+  }).join('')+'<th>合计</th>';
+  var body=rows.map(function(r){
+    var tds=r.cells.map(function(v){
+      var alpha=v>0?(0.06+0.35*(v/Math.max(1,max))):0;
+      var bg=v>0?'background:rgba(220,38,38,'+alpha.toFixed(3)+')':'';
+      return '<td style="'+bg+';font-weight:'+(v>0?'700':'400')+';color:'+(v>0?'var(--red)':'var(--gray)')+'">'+v+'</td>';
+    }).join('');
+    return '<tr><td style="text-align:left;font-weight:700">'+(AGENT_LABELS[r.agent]||r.agent)+'</td>'
+      +tds+'<td style="font-weight:700">'+r.total+'</td></tr>';
+  }).join('');
+  var colSums=levels.map(function(l,i){
+    return rows.reduce(function(s,r){return s+r.cells[i];},0);
+  });
+  var totalRow='<tr class="total-row"><td style="text-align:left">合计</td>'
+    +colSums.map(function(v){return '<td>'+v+'</td>';}).join('')
+    +'<td>'+grand+'</td></tr>';
+  return '<div class="matrix-card">'
+    +'<h3 style="margin-bottom:12px">'+title+'</h3>'
+    +(grand===0?'<div style="font-size:13px;color:var(--sub);margin-bottom:8px">暂无断点数据</div>':'')
+    +'<table class="matrix-table"><thead><tr>'+head+'</tr></thead><tbody>'+body+totalRow+'</tbody></table>'
+    +'<div style="font-size:12px;color:var(--sub);margin-top:8px">计数单位：断点（session 级），不是问题单数；L1 是前置判定，不计入断点。</div>'
+    +'</div>';
+}
+
 function renderAgentDetail(detail, mode){
   if(!detail||!detail.length)return '';
   var agentLabels=AGENT_LABELS;
+  var isRuntime=(mode==='runtime');
   function pctClass(v){if(v===null||v===undefined)return 'pct-na';return v>0.5?'pct-bad':(v>0.2?'pct-warn':'pct-good');}
   var rows=detail.map(function(a){
     var fprTxt=a.fpr===null||a.fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fpr)+'">'+(a.fpr*100).toFixed(1)+'%</span>';
     var fnrTxt=a.fnr===null||a.fnr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.fnr)+'">'+(a.fnr*100).toFixed(1)+'%</span>';
     var postTxt=a.post_fpr===null||a.post_fpr===undefined?'<span class="pct-na">NA</span>':'<span class="'+pctClass(a.post_fpr)+'">'+(a.post_fpr*100).toFixed(1)+'%</span>';
+    var caseCnt=(a.tp||0)+(a.fp||0)+(isRuntime?0:(a.fn||0));
     return '<tr><td>'+(agentLabels[a.agent]||a.agent)+'</td>'
-      +'<td class="num">'+((a.tp||0)+(a.fp||0)+(a.fn||0))+'</td>'
+      +'<td class="num">'+caseCnt+'</td>'
       +'<td class="num" style="color:var(--green)">'+(a.tp||0)+'</td>'
       +'<td class="num" style="color:var(--red)">'+(a.fp||0)+'</td>'
-      +'<td class="num" style="color:var(--amber)">'+(a.fn||0)+'</td>'
-      +'<td class="num">'+fprTxt+'</td><td class="num">'+fnrTxt+'</td>'
+      +(isRuntime?'':'<td class="num" style="color:var(--amber)">'+(a.fn||0)+'</td>')
+      +'<td class="num">'+fprTxt+'</td>'
+      +(isRuntime?'':'<td class="num">'+fnrTxt+'</td>')
       +'<td class="num">'+(a.reg_passed||0)+'</td><td class="num">'+(a.reg_failed||0)+'</td>'
       +'<td class="num">'+postTxt+'</td></tr>';
   }).join('');
   var sumTp=detail.reduce(function(s,a){return s+(a.tp||0);},0);
   var sumFp=detail.reduce(function(s,a){return s+(a.fp||0);},0);
-  var sumFn=detail.reduce(function(s,a){return s+(a.fn||0);},0);
+  var sumFn=isRuntime?0:detail.reduce(function(s,a){return s+(a.fn||0);},0);
   var sumRp=detail.reduce(function(s,a){return s+(a.reg_passed||0);},0);
   var sumRf=detail.reduce(function(s,a){return s+(a.reg_failed||0);},0);
   var totFpr=(sumTp+sumFp)>0?((sumFp/(sumTp+sumFp))*100).toFixed(1)+'%':'NA';
   var totFnr=(sumTp+sumFn)>0?((sumFn/(sumTp+sumFn))*100).toFixed(1)+'%':'NA';
   var totPost=(sumRp+sumRf)>0?((sumRf/(sumRp+sumRf))*100).toFixed(1)+'%':'NA';
   var modeLabel=(mode==='dev')?'开发态':'运行态';
-  return '<div class="matrix-card"><div class="section-title">Agent 误报/漏报率明细（'+modeLabel+'）<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
-    +'<table class="matrix-table agent-table"><thead><tr><th>Agent</th><th>case数</th><th>正确 TP</th><th>误报 FP</th><th>漏报 FN</th><th>误报率</th><th>漏报率</th><th>回归通过</th><th>回归不通过</th><th>回归后误报率</th></tr></thead><tbody>'+rows
-    +'<tr class="total-row"><td>合计</td><td class="num">'+(sumTp+sumFp+sumFn)+'</td><td class="num">'+sumTp+'</td><td class="num">'+sumFp+'</td><td class="num">'+sumFn+'</td><td class="num">'+totFpr+'</td><td class="num">'+totFnr+'</td><td class="num">'+sumRp+'</td><td class="num">'+sumRf+'</td><td class="num">'+totPost+'</td></tr>'
+  var titleText=isRuntime?'Agent 误报率明细（运行态）':'Agent 误报/漏报率明细（开发态）';
+  var head='<th>Agent</th><th>case数</th><th>正确</th><th>误报</th>'
+    +(isRuntime?'':'<th>漏报</th>')+'<th>误报率</th>'
+    +(isRuntime?'':'<th>漏报率</th>')
+    +'<th>回归通过</th><th>回归不通过</th><th>回归后误报率</th>';
+  var totalFnCell=isRuntime?'':'<td class="num">'+sumFn+'</td>';
+  var totalFnrCell=isRuntime?'':'<td class="num">'+totFnr+'</td>';
+  return '<div class="matrix-card"><div class="section-title">'+titleText+'<span class="section-badge">'+(sumTp+sumFp+sumFn)+' case</span></div>'
+    +'<table class="matrix-table agent-table"><thead><tr>'+head+'</tr></thead><tbody>'+rows
+    +'<tr class="total-row"><td>合计</td><td class="num">'+(sumTp+sumFp+sumFn)+'</td><td class="num">'+sumTp+'</td><td class="num">'+sumFp+'</td>'+totalFnCell+'<td class="num">'+totFpr+'</td>'+totalFnrCell+'<td class="num">'+sumRp+'</td><td class="num">'+sumRf+'</td><td class="num">'+totPost+'</td></tr>'
     +'</tbody></table></div>';
 }
 

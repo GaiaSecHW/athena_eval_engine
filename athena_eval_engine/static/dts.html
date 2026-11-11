@@ -102,6 +102,9 @@ async function loadDtsPage(){
     var d=await jget(url);
     _dtsData=d.issues||[];
     _dtsTotal=d.total||0;
+    // 数据变少时收敛到有效页，避免停留在空页
+    var totalPages=Math.max(1,Math.ceil(_dtsTotal/_dtsPageSize));
+    if(_dtsPage>totalPages){_dtsPage=totalPages;return loadDtsPage();}
     var stats=d.stats||{};
     renderDtsStats(stats);
     renderDtsTable();

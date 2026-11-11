@@ -56,6 +56,58 @@ def _eval_mode_of(eid: str) -> str:
         return ""
 
 
+# 断点矩阵的 L 级别（L1 是前置判定，不是断点）
+_BP_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
+
+
+def _read_breakpoint_distribution() -> dict:
+    """汇总所有已完成评测的断点分布（agent × L2-L8），按 eval_mode 分组。
+
+    数据来源：每个评测的 {eid}_lifecycle.json 里的 breakpoint_distribution。
+    计数单位是断点（session 级），不是问题单数。
+    """
+    def _empty() -> dict:
+        return {a: {lv: 0 for lv in _BP_LEVELS} for a in _ALL_AGENT_TYPES}
+
+    grouped: dict[str, dict] = {
+        "runtime": _empty(), "dev": _empty(), "unknown": _empty(),
+    }
+
+    def _query(cur):
+        cur.execute(
+            "SELECT evaluation_id FROM evaluation "
+            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
+        )
+        return [row[0] for row in cur.fetchall()]
+
+    try:
+        eids = _db_query(_query)
+    except Exception as e:
+        log("DASHBOARD", f"查询断点分布失败: {e}")
+        return grouped
+
+    for eid in eids:
+        path = os.path.join(REPORTS_DIR, f"{eid}_lifecycle.json")
+        if not os.path.isfile(path):
+            continue
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                dist = (json.loads(f.read()) or {}).get(
+                    "breakpoint_distribution") or {}
+        except Exception:
+            continue
+        mode = _eval_mode_of(eid) or "unknown"
+        bucket = grouped.setdefault(mode, _empty())
+        for agent, levels in dist.items():
+            if not isinstance(levels, dict):
+                continue
+            if agent not in bucket:
+                bucket[agent] = {lv: 0 for lv in _BP_LEVELS}
+            for lv in _BP_LEVELS:
+                bucket[agent][lv] += int(levels.get(lv) or 0)
+    return grouped
+
+
 def _read_eval_reports() -> dict:
     """读取所有已完成评测的 {eid}.json 报告 recall_precision 数据，按 eval_mode 分组。
 
@@ -100,7 +152,9 @@ def _read_eval_reports() -> dict:
             bucket = grouped.setdefault(mode, {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "count": 0})
             bucket["tp"] += rp.get("tp_count") or 0
             bucket["fp"] += rp.get("fp_count") or 0
-            bucket["fn"] += rp.get("fn_count") or 0
+            # 运行态没有漏报基线：历史报告里即使有 FN 也不计入运行态统计
+            bucket["fn"] += (0 if mode == "runtime"
+                             else (rp.get("fn_count") or 0))
             bucket["tn"] += rp.get("tn_count") or 0
             bucket["count"] += 1
         except Exception as e:
@@ -170,7 +224,8 @@ def _read_agent_fpr() -> dict:
             for agent, st in ao.items():
                 tp = st.get("tp", 0) or 0
                 fp = st.get("fp", 0) or 0
-                fn = st.get("fn", 0) or 0
+                # 运行态没有漏报基线：不统计 FN
+                fn = 0 if mode == "runtime" else (st.get("fn", 0) or 0)
                 bucket = grouped.setdefault(mode, {})
                 a = bucket.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
                 a["tp"] += tp
@@ -374,7 +429,8 @@ def get_dashboard_overview():
     post_fnr = (fn_post.get("failed", 0) / fn_denom) if fn_denom > 0 else None
     for mode in ("runtime", "dev", "unknown"):
         overall_by_mode[mode]["post_fpr"] = post_fpr
-        overall_by_mode[mode]["post_fnr"] = post_fnr
+        # 运行态没有漏报基线，不提供回归后漏报率
+        overall_by_mode[mode]["post_fnr"] = None if mode == "runtime" else post_fnr
 
     # 3. agent 明细：按 eval_mode 分组（runtime/dev/unknown）
     agent_fpr_stats = _read_agent_fpr()  # {mode: {agent: {tp, fp, fn}}}
@@ -427,6 +483,7 @@ def get_dashboard_overview():
         },
         "agent_detail": agent_detail_by_mode,
         "cause_agent_matrix": agg.get("cause_agent_matrix", {}),
+        "breakpoint_matrix": _read_breakpoint_distribution(),
         "dts": agg.get("dts", {}),
         "updated_at": now_cst.strftime("%Y-%m-%d %H:%M:%S"),
     }

@@ -149,8 +149,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 "SELECT task_id, evaluation_id, evaluation_status, created_at "
                 "FROM evaluation "
                 "WHERE task_id != '' "
-                "AND evaluation_status NOT IN "
-                "('CREATED','QUEUED','CANCELLED')"
+                "AND evaluation_status != 'CANCELLED'"
             )
             return cur.fetchall()
         eval_rows = _db_query(_do_eval)
@@ -159,11 +158,13 @@ def summary(project_id: str | None = None, task_id: str | None = None,
 
     for tid, eid, status, created_at in eval_rows:
         cur = eval_map.get(tid)
-        if cur is None or (created_at or "") > (cur.get("created_at") or ""):
+        # created_at 是 datetime，map 里存的是 str，统一转成字符串再比较
+        created_str = str(created_at) if created_at else ""
+        if cur is None or created_str > (cur.get("created_at") or ""):
             eval_map[tid] = {
                 "evaluation_id": eid,
                 "evaluation_status": status,
-                "created_at": str(created_at) if created_at else "",
+                "created_at": created_str,
             }
 
     # 给每行补评测关联 + 误报率（运行态只有误报率，无漏报）

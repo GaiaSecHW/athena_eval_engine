@@ -201,6 +201,12 @@ class Orchestrator:
             assert_transition(stages.RESOLVING, stages.REPORTING)
             _set_status_safe(evaluation_id, stages.REPORTING)
 
+            # 分析对象告警：无 FP/FN、全部 case 匹配不到 session 等。
+            # 「跑完了但没有任何可分析对象」必须显式提示，不能与正常空报告混同。
+            case_outcome_summary = self._build_case_outcome_summary(
+                case_session_matches, eval_mode)
+            self._add_analysis_warnings(evaluation_id, case_outcome_summary)
+
             # 收集 pipeline 执行中的数据质量告警（drain 清空，后续 has_warnings 用本地变量）
             data_quality_warnings = _pw.drain(evaluation_id)
 
@@ -214,6 +220,7 @@ class Orchestrator:
                 recall_precision = self._calc_recall_precision(
                     evaluation_id, case_details, alert_center_data,
                     benchmark_source, case_session_matches,
+                    eval_mode=eval_mode,
                 )
                 _set_progress(evaluation_id, "报告组装...")
                 self._assemble_report(
@@ -221,6 +228,9 @@ class Orchestrator:
                     root_cause_results, causal_chain,
                     recall_precision, reports_dir,
                     data_quality_warnings=data_quality_warnings,
+                    case_outcome_summary=case_outcome_summary,
+                    case_session_matches=case_session_matches,
+                    eval_mode=eval_mode,
                 )
                 log("ORCH", f"REPORTING done: recall={recall_precision.get('recall_rate')}, "
                       f"precision={recall_precision.get('precision_rate')}")
@@ -520,7 +530,12 @@ class Orchestrator:
         assert_transition(stages.CASE_MATCHING, stages.ROOT_CAUSE_ANALYSIS)
         _set_status_safe(evaluation_id, stages.ROOT_CAUSE_ANALYSIS)
         fp_cases = [r for r in case_session_matches if r["outcome"] == "FP"]
-        fn_cases = [r for r in case_session_matches if r["outcome"] == "FN"]
+        # 运行态只分析误报：运行态基线是已确认漏洞（不存在"未被上报的基线漏洞"），
+        # 因此不产生漏报分析；FN 仅来自开发态基线集。
+        eval_mode = ((cfg.get("manifest") or {}).get("eval_mode", "dev")
+                     if isinstance(cfg, dict) else "dev")
+        fn_cases = ([r for r in case_session_matches if r["outcome"] == "FN"]
+                    if eval_mode == "dev" else [])
 
         # 补充人工标注误报原因
         for fc in fp_cases + fn_cases:
@@ -1015,19 +1030,43 @@ class Orchestrator:
                 for i, task in enumerate(tasks)
             }
             results: list = [None] * len(futures)
+            parse_failures: list[str] = []
             for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
                 i = futures[fut]
+                task = tasks[i]
                 try:
                     results[i] = fut.result()
                 except TaskCancelledError:
                     raise
                 except Exception as e:
-                    log("PARSE", f"trace 解析失败 "
-                          f"task={tasks[i]['task_run'].task_run_id}: {e}")
-                    raise  # 禁止降级跳过
+                    # 单个 agent 的 trace 缺失/不可读不阻断整次评测：
+                    # 跳过该 trace 并写入数据质量告警，其余 trace 继续解析。
+                    src = (task.get("original_source_uri")
+                           or task.get("source_uri") or "")
+                    kind = task.get("trace_kind") or "trace"
+                    msg = f"{kind} trace 解析失败，已跳过：{src}（{e}）"
+                    log("PARSE", msg)
+                    parse_failures.append(msg)
+                    _pw.add(task["task_run"].evaluation_id, kind,
+                            "trace_parse_skipped", "warning", msg)
+                    results[i] = None
+            # 全部 trace 都失败时也继续：报告会标记「未匹配到 trace session」，
+            # 数据质量问题在 data_quality_warnings 中可见，不阻断评测。
+            if results and all(r is None for r in results):
+                all_fail_msg = ("所有 trace 解析失败，本次评测无任何可用 session："
+                                + "；".join(parse_failures[:3]))
+                log("PARSE", all_fail_msg, eval_id=evaluation_id)
+                _pw.add(evaluation_id, "parse", "all_traces_failed",
+                        "warning", all_fail_msg)
             for r in results:
                 if r is not None:
                     data_packs.append(r)
+                    if not getattr(r, "events", None):
+                        _pw.add(evaluation_id,
+                                getattr(r, "agent_type", "") or "trace",
+                                "trace_empty", "warning",
+                                f"{getattr(r, 'agent_type', '') or 'trace'} "
+                                f"trace 未解析出任何事件")
         finally:
             pool.shutdown(wait=False)
 
@@ -1181,37 +1220,36 @@ class Orchestrator:
             upsert_dts_issues(dts_issues, evaluation_id, reports_dir)
             log("DTS", f"Generated {len(dts_issues)} issues")
 
+        # 实际生成问题单的 case 集合：报告据此保证「每个 FP/FN 要么有单、
+        # 要么说明原因」，不依赖对断点/线索的推断。
+        result["dts_case_ids"] = [
+            str(i.get("case_id")) for i in dts_issues if i.get("case_id")]
+
         return result
 
     def _calc_recall_precision(
         self, evaluation_id: str, case_details: dict,
         alert_center_data: dict, benchmark_source: str,
         case_session_matches: list[dict] = None,
+        eval_mode: str = "dev",
     ) -> dict:
         """计算召回率和准确率。
 
-        从基线 case_details 和告警中心数据计算：
-        - 召回率 = TP / (TP + FN)
-        - 准确率 = TP / (TP + FP)
-        - 误报率 = FP / (TP + FP)（Agent 上报总数中误报占比）
-
-        TP = 基线 VULNERABLE + 告警中心有匹配（agent 上报了）
-        FN = 基线 VULNERABLE + 告警中心无匹配（agent 漏报）
-        FP = 基线 NON_VULNERABLE + trace 有 finding 且 CONFIRMED（agent 误报）
-        TN = 基线 NON_VULNERABLE + 无匹配 finding 或 finding 非 CONFIRMED
-
-        TP/FN 从告警中心数据与基线对比获取。
-        FP/TN 从 case_session_matches 获取（case_session_matcher 已计算）。
+        运行态（runtime）没有漏报基线：只统计误报相关指标，
+        召回率 / 漏报率 / FN 一律为 None / 0。
         """
+        runtime = str(eval_mode or "dev").lower() == "runtime"
         # TP/FN/FP/TN: 从 case_session_matches 获取（case_session_matcher 已判定）
         tp_count = sum(1 for r in case_session_matches if r.get("outcome") == "TP")
-        fn_count = sum(1 for r in case_session_matches if r.get("outcome") == "FN")
+        fn_count = 0 if runtime else sum(
+            1 for r in case_session_matches if r.get("outcome") == "FN")
         fp_count = sum(1 for r in case_session_matches if r.get("outcome") == "FP")
         tn_count = sum(1 for r in case_session_matches if r.get("outcome") == "TN")
 
-        # 召回率 = TP / (TP + FN)
+        # 召回率 = TP / (TP + FN)；运行态不计算
         recall_denom = tp_count + fn_count
         recall_rate = (tp_count / recall_denom) if recall_denom > 0 else None
+        fnr_rate = (fn_count / recall_denom) if recall_denom > 0 else None
 
         # 准确率 = TP / (TP + FP)
         precision_denom = tp_count + fp_count
@@ -1224,7 +1262,10 @@ class Orchestrator:
         fpr_rate = (fp_count / fpr_denom) if fpr_denom > 0 else None
 
         result = {
-            "recall_rate": round(recall_rate, 4) if recall_rate is not None else None,
+            "recall_rate": (round(recall_rate, 4)
+                            if recall_rate is not None and not runtime else None),
+            "fnr_rate": (round(fnr_rate, 4)
+                         if fnr_rate is not None and not runtime else None),
             "precision_rate": round(precision_rate, 4) if precision_rate is not None else None,
             "fpr_rate": round(fpr_rate, 4) if fpr_rate is not None else None,
             "tp_count": tp_count,
@@ -1238,6 +1279,66 @@ class Orchestrator:
               f"TP={tp_count}, FN={fn_count}, FP={fp_count}, TN={tn_count}")
         return result
 
+    @staticmethod
+    def _build_case_outcome_summary(matches: list[dict],
+                                    eval_mode: str = "dev") -> dict:
+        """汇总 case 匹配结果，供报告展示与告警判断。
+
+        运行态没有漏报基线：FN 不参与统计，避免报告出现运行态漏报。
+        """
+        runtime = str(eval_mode or "dev").lower() == "runtime"
+        effective = [m for m in (matches or [])
+                     if not (runtime and str(m.get("outcome") or "") == "FN")]
+        counts = {"TP": 0, "FP": 0, "TN": 0, "FN": 0}
+        unmatched = 0
+        unmatched_non_tn = 0
+        for m in effective:
+            outcome = str(m.get("outcome") or "")
+            if outcome in counts:
+                counts[outcome] += 1
+            if m.get("match_method") == "unmatched":
+                unmatched += 1
+                if outcome != "TN":
+                    unmatched_non_tn += 1
+        total = len(effective)
+        return {
+            "total": total,
+            "tp": counts["TP"], "fp": counts["FP"],
+            "tn": counts["TN"], "fn": counts["FN"],
+            "matched": total - unmatched,
+            "unmatched": unmatched,
+            "unmatched_non_tn": unmatched_non_tn,
+        }
+
+    @staticmethod
+    def _add_analysis_warnings(evaluation_id: str, summary: dict) -> None:
+        """记录「该分析却分析不了」的数据质量告警。
+
+        FP/FN=0 时根因分析本来就没有对象，属于正常结果（不是失败、也不是
+        数据问题），不告警；只有数据缺失导致本该分析却定位不到断点时才告警。
+        """
+        total = summary.get("total", 0)
+        if total == 0:
+            _pw.add(evaluation_id, "analysis", "no_cases", "warning",
+                    "本次评测没有任何 case，报告仅含空指标")
+            return
+
+        fp, fn = summary.get("fp", 0), summary.get("fn", 0)
+        has_targets = (fp + fn) > 0
+
+        if has_targets and summary.get("matched", 0) == 0:
+            _pw.add(evaluation_id, "analysis", "no_matched_sessions", "warning",
+                    f"{total} 个 case 均未匹配到 trace session，无法定位断点")
+        else:
+            # TN 未上报本就没有 trace，未匹配属正常；只统计本应有 session 的 case
+            non_tn = total - summary.get("tn", 0)
+            bad = summary.get("unmatched_non_tn", 0)
+            if non_tn > 0 and bad / non_tn > 0.8:
+                _pw.add(
+                    evaluation_id, "analysis", "high_unmatched_ratio", "warning",
+                    f"{bad}/{non_tn} 个非 TN case 未匹配到 session（阈值 80%），"
+                    f"请确认 trace 是否完整")
+
     # ── REPORTING ────────────────────────────────────
 
     def _assemble_report(
@@ -1245,6 +1346,9 @@ class Orchestrator:
         root_cause_results: list, causal_chain: dict,
         recall_precision: dict, reports_dir: str,
         data_quality_warnings: list[dict] | None = None,
+        case_outcome_summary: dict | None = None,
+        case_session_matches: list[dict] | None = None,
+        eval_mode: str = "dev",
     ):
         """报告组装。
 
@@ -1263,6 +1367,9 @@ class Orchestrator:
             recall_precision,
             reports_dir,
             data_quality_warnings=data_quality_warnings or [],
+            case_outcome_summary=case_outcome_summary or {},
+            case_session_matches=case_session_matches or [],
+            eval_mode=eval_mode,
         )
 
         # 写入基础报告段

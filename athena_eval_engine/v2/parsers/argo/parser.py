@@ -33,6 +33,7 @@ from ..base import BaseParser
 from ...core.raw_event import RawEvent, detect_memory_flags, usage_numbers
 from ...infra.agent_db import AgentDBManager
 from ...infra import llm as _llm_mod
+from ...infra.pipeline_warnings import add_trace_file_skip
 from ..json_utils import (
     _extract_json_objects_from_text,
     parse_json_lenient,
@@ -122,60 +123,68 @@ class ArgoParser(BaseParser):
         tool_use_mem = {}  # tool_use_id -> (is_mem, is_mem_w)
         tool_use_names = {}  # tool_use_id -> tool_name
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if d.get("type") == "assistant":
-                        for c in (d.get("message", {}).get("content", []) if isinstance(d.get("message"), dict) else []):
-                            if isinstance(c, dict) and c.get("type") == "tool_use":
-                                tid = c.get("id", "")
-                                tool = c.get("name", "")
-                                tool_lower = _TOOL_MAP.get(tool, tool.lower())
-                                is_kg = False
-                                if tool_lower == "bash" and isinstance(c.get("input"), dict):
-                                    cmd = str(c.get("input", {}).get("command", ""))
-                                    cmd_l = cmd.lower()
-                                    has_script = "scripts/athena" in cmd_l or "athena.py" in cmd_l
-                                    is_view = cmd_l.strip().startswith(("head", "cat ", "grep ", "ls "))
-                                    if has_script and not is_view:
-                                        is_kg = True
-                                elif tool_lower == "skill" and isinstance(c.get("input"), dict):
-                                    if str(c.get("input", {}).get("name", "")).lower() == "athena-skill":
-                                        is_kg = True
-                                is_mem, is_mem_w = detect_memory_flags(tool_lower, c.get("input"))
-                                if tid:
-                                    tool_use_kg[tid] = is_kg
-                                    tool_use_mem[tid] = (is_mem, is_mem_w)
-                                    tool_use_names[tid] = tool_lower
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        if d.get("type") == "assistant":
+                            for c in (d.get("message", {}).get("content", []) if isinstance(d.get("message"), dict) else []):
+                                if isinstance(c, dict) and c.get("type") == "tool_use":
+                                    tid = c.get("id", "")
+                                    tool = c.get("name", "")
+                                    tool_lower = _TOOL_MAP.get(tool, tool.lower())
+                                    is_kg = False
+                                    if tool_lower == "bash" and isinstance(c.get("input"), dict):
+                                        cmd = str(c.get("input", {}).get("command", ""))
+                                        cmd_l = cmd.lower()
+                                        has_script = "scripts/athena" in cmd_l or "athena.py" in cmd_l
+                                        is_view = cmd_l.strip().startswith(("head", "cat ", "grep ", "ls "))
+                                        if has_script and not is_view:
+                                            is_kg = True
+                                    elif tool_lower == "skill" and isinstance(c.get("input"), dict):
+                                        if str(c.get("input", {}).get("name", "")).lower() == "athena-skill":
+                                            is_kg = True
+                                    is_mem, is_mem_w = detect_memory_flags(tool_lower, c.get("input"))
+                                    if tid:
+                                        tool_use_kg[tid] = is_kg
+                                        tool_use_mem[tid] = (is_mem, is_mem_w)
+                                        tool_use_names[tid] = tool_lower
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         events: list[RawEvent] = []
         for fpath in files:
             sid = os.path.splitext(os.path.basename(fpath))[0]
             _parent_sid = None
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line_no, line in enumerate(f, 1):
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    # 从 JSONL 元数据推断 session 父子关系
-                    # 子 session 的 sessionId 字段 = 父 session ID（与文件名 sid 不同）
-                    # 根 session 的 sessionId = 自己的 ID（与文件名相同）
-                    if _parent_sid is None:
-                        _jsonl_sid = d.get("sessionId", "")
-                        if _jsonl_sid and _jsonl_sid != sid:
-                            _parent_sid = _jsonl_sid
-                    for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_use_kg, tool_use_mem, tool_use_names):
-                        events.append(ev)
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line_no, line in enumerate(f, 1):
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        # 从 JSONL 元数据推断 session 父子关系
+                        # 子 session 的 sessionId 字段 = 父 session ID（与文件名 sid 不同）
+                        # 根 session 的 sessionId = 自己的 ID（与文件名相同）
+                        if _parent_sid is None:
+                            _jsonl_sid = d.get("sessionId", "")
+                            if _jsonl_sid and _jsonl_sid != sid:
+                                _parent_sid = _jsonl_sid
+                        for ev in self._obj_to_events(d, trace_id, sid, line_no, tool_use_kg, tool_use_mem, tool_use_names):
+                            events.append(ev)
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
             if _parent_sid:
                 self._session_parents[sid] = _parent_sid
 
@@ -329,30 +338,34 @@ class ArgoParser(BaseParser):
         ts_min = ts_max = None
 
         for fpath in files:
-            with open(fpath, "r", encoding="utf-8") as f:
-                for line in f:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        d = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    ts = self._parse_ts(d.get("timestamp", ""))
-                    if ts:
-                        ts_min = ts if ts_min is None else min(ts_min, ts)
-                        ts_max = ts if ts_max is None else max(ts_max, ts)
-                    t = d.get("type", "")
-                    if t == "assistant":
-                        msg = d.get("message", {})
-                        if isinstance(msg, dict):
-                            usage = msg.get("usage", {})
-                            if isinstance(usage, dict):
-                                ai, ao, ar, ac = usage_numbers(usage)
-                                ti += ai; to += ao; tr += ar; tcr += ac
-                        n_step_finish += 1  # each assistant msg = one step
-                    elif t == "queue-operation":
-                        n_step_start += 1
+            try:
+                with open(fpath, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if not line:
+                            continue
+                        try:
+                            d = json.loads(line)
+                        except json.JSONDecodeError:
+                            continue
+                        ts = self._parse_ts(d.get("timestamp", ""))
+                        if ts:
+                            ts_min = ts if ts_min is None else min(ts_min, ts)
+                            ts_max = ts if ts_max is None else max(ts_max, ts)
+                        t = d.get("type", "")
+                        if t == "assistant":
+                            msg = d.get("message", {})
+                            if isinstance(msg, dict):
+                                usage = msg.get("usage", {})
+                                if isinstance(usage, dict):
+                                    ai, ao, ar, ac = usage_numbers(usage)
+                                    ti += ai; to += ao; tr += ar; tcr += ac
+                            n_step_finish += 1  # each assistant msg = one step
+                        elif t == "queue-operation":
+                            n_step_start += 1
+            except OSError as e:
+                add_trace_file_skip(self.agent_type, fpath, e)
+                continue
 
         sess = {
             "tokens_input": ti, "tokens_output": to,

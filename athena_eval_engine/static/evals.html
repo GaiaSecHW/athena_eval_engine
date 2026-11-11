@@ -54,8 +54,8 @@ async function renderEvals(){
       <button class="ef-btn${_evFilter==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
       <button class="ef-btn${_evFilter==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
       <button class="ef-btn${_evFilter==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
-      <span style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evData.length} 条</span>
-      <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="renderEvals()">🔄 刷新</button>
+      <span id="ev-total-count" style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evData.length} 条</span>
+      <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="refreshEvalsData()">🔄 刷新</button>
     </div>
     <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>
   </div>`;
@@ -64,7 +64,19 @@ async function renderEvals(){
 function setEvFilter(f,btn){_evFilter=f;_evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
 function filterEvals(){_evQ=$("ev-search").value.toLowerCase();_evPage=1;renderEvList();}
 function evPage(p){_evPage=p;renderEvList();}
-const EV_PAGE_SIZE=12;
+// 只刷新数据，不重建页面、不重置页码/筛选/搜索（重跑、取消、删除后使用）
+async function refreshEvalsData(){
+  try{
+    const d=await jget("/api/v1/evaluations?page_size=9999");
+    _evData=d.evaluations||[];
+    const cnt=$("ev-total-count");
+    if(cnt)cnt.textContent="共 "+_evData.length+" 条";
+    renderEvList();
+  }catch(e){
+    showAlert({title:'刷新失败',desc:(e&&e.message)?e.message:String(e)});
+  }
+}
+const EV_PAGE_SIZE=16;
 
 function renderEvList(){
   let filtered=_evData;
@@ -74,6 +86,7 @@ function renderEvList(){
   const total=filtered.length;
   const pages=Math.ceil(total/EV_PAGE_SIZE)||1;
   const page=Math.min(_evPage,pages);
+  _evPage=page;  // 数据变少时把页码收敛到有效范围，避免停留在空页
   const start=(page-1)*EV_PAGE_SIZE;
   const pageItems=filtered.slice(start,start+EV_PAGE_SIZE);
   const el=$("ev-list-body");
@@ -123,7 +136,7 @@ async function retryEval(eid){
     confirmText:'重跑',confirmColor:'var(--acc)',
     onConfirm:function(){
       F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(){
-        renderEvals();
+        refreshEvalsData();
       }).catch(function(e){
         showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
       });
@@ -138,7 +151,7 @@ async function cancelEval(eid){
     confirmText:'取消评测',confirmColor:'var(--amber)',
     onConfirm:function(){
       jpost('/api/v1/evaluations/'+eid+'/cancel',{}).then(function(){
-        renderEvals();
+        refreshEvalsData();
       }).catch(function(e){
         showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'取消失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
       });
@@ -153,7 +166,7 @@ async function deleteEval(eid,name){
     confirmText:'永久删除',confirmColor:'var(--red)',
     onConfirm:function(){
       jdel('/api/v1/evaluations/'+eid).then(function(){
-        renderEvals();
+        refreshEvalsData();
       }).catch(function(e){
         showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'删除失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
       });

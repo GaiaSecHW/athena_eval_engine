@@ -70,7 +70,7 @@ _EVIDENCE_PRIORITY = {
 
 _SYSTEM_PROMPT = """你是漏洞根因分析专家。你的任务是**压缩**一条漏洞链中的某个 session 原文：把很长的 session 压缩成结构化摘要，同时抽取证据卡、判定 L0-L8。
 
-输入是一条 session 的完整事件流，每行以 [En] 开头；另有人工标注的误报/漏报原因。
+输入是一条 session 的完整事件流，每行以 [En] 开头。FP（误报）另有人工标注的误报原因；FN（漏报）没有人工标注，以基线漏洞描述作为分析依据。
 outcome：FP=agent 报了但实际不是漏洞（误报）；FN=agent 漏报了真实漏洞。
 输出不是逐段复述，而是三样东西：
 1. 一份 3000 字以内的自包含摘要；
@@ -83,6 +83,17 @@ outcome：FP=agent 报了但实际不是漏洞（误报）；FN=agent 漏报了�
 - 摘要必须自包含：没看过原文的人也能理解发生了什么、为什么误报。
 - 不得引入原文没有的信息；每条事实都要能由证据卡回指。
 - 如果输入是多个分片的摘要（分片压缩后的合并），任务是把它们合并成一份完整摘要，按同样的保留/丢弃原则，不要丢事实。
+
+摘要必须包含以下固定部分，每部分有内容就逐条列出，没有就写"材料中未出现"：
+1. 代码/配置事实：写成「文件:行号 → 事实」，不要只写"读了某文件"。
+2. 部署/运行事实：端口绑定、环境变量、默认部署取值、暴露面。
+3. agent 的判定与自述：最终结论，以及 agent 自己写下的判断依据。
+4. **事实与结论的矛盾点**：每条写成「已读到的事实 → agent 的结论」。禁止只写"agent 未识别 XX"而不给出它读到的事实。
+5. **影响边界**：影响范围与成立前提。写清楚三件事——影响对象（谁受影响、是否跨用户/跨服务端）、生效前提（依赖哪些配置、环境变量、部署条件）、影响程度（改变或泄露了什么、没有改变或没有泄露什么）。材料中有就必须写。
+6. 知识/记忆访问：来源、查询、返回内容、是否被引用。
+7. 明确跳过的检查，以及为确认"没做过"而检查过的范围。
+
+以上 7 项是摘要的固定结构，不因篇幅取舍；某项在材料中没有，写"材料中未出现"，不能省略不写。
 
 # 判定流程（严格按顺序，不要跳步）
 
@@ -268,7 +279,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
   "summary": "结构化摘要，3000字以内，必须覆盖证据卡所有非空项",
   "key_findings": ["..."],
   "evidence_cards": [ ... ],
-  "retention_check": [{"item": "配置/部署事实", "status": "preserved/absent", "evidence_ids": ["E-..."]}],
+  "retention_check": [{"item": "影响边界", "status": "preserved/absent", "evidence_ids": ["E-..."]}],
   "l0_l7": [
     {
       "l0_source": "知识库/记忆/空",
@@ -305,7 +316,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
 - summary：压缩后的自包含摘要。
 - key_findings：关键发现列表。
 - evidence_cards：证据卡，字段见 Step 1。
-- retention_check：保留清单核查；item=清单项名称，preserved=原文有且已保留，absent=原文没有；evidence_ids 填对应证据卡。
+- retention_check：7 个固定部分的核查结果；item 取固定部分名称（代码/配置事实、部署/运行事实、agent 判定与自述、事实与结论的矛盾点、影响边界、知识/记忆访问、跳过的检查），preserved=材料中有且已保留，absent=材料中没有；evidence_ids 填对应证据卡。7 项必须全部出现。
 - l0_l7：本 session 的逐级判定，字段如下：
   - l0_source：知识来源（知识库/记忆/空）
   - l1_need：true=需要知识支撑；false=不需要；null=不适用（与字段名一致）
@@ -339,6 +350,9 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
 例4 session 里没有任何知识访问，且所需事实不能从代码/配置读到 → L2/A；如果事实已在材料中但用错 → L8/H。
 
 # 自检
+- 摘要的 7 个固定部分是否齐全（缺项写"材料中未出现"）？
+- 每条矛盾点是否写成「事实 → 结论」？
+- 影响边界（范围 + 成立前提）是否列出？
 - 证据卡覆盖保留清单的所有非空项？
 - 有知识访问的 session 是否都出了 L2-L7？
 - L6=true 且内容错误时是否判了 L7/G？
@@ -346,6 +360,17 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
 - summary 是否只基于证据卡？
 
 只返回 JSON。"""
+
+
+def _annotation_line(fp_reason: str, outcome: str) -> str:
+    """人工标注提示行。
+
+    FP（误报）才有人工标注；FN（漏报）来自开发态基线，
+    不存在"漏报原因"的人工标注，分析以基线漏洞描述为依据。
+    """
+    if str(outcome or "FP").upper() == "FN":
+        return "人工标注：无（漏报没有人工标注；以基线漏洞描述为分析依据）"
+    return f"人工标注的误报原因：{fp_reason or '（未给出）'}"
 
 
 _MERGE_PROMPT = """你是漏洞根因分析专家。输入是一条漏洞链涉及的多个 session 摘要、证据卡和 L0-L7 断点。输出根因假定线索和修复建议。
@@ -400,7 +425,7 @@ outcome：FP=误报；FN=漏报。
 - 2-5 个，互斥，不能有包含/父子关系。
 - 每个线索一个独立缺陷，能定位到唯一修复点。
 - cause_code / responsibility 必须符合下表。
-- 人工标注只定 FP/FN 和复核背景，不作为归因证据；标注笼统时禁止从标注文字推断原因。
+- 人工标注只适用于误报（FP），用于复核背景，不作为归因证据；漏报（FN）没有人工标注，以基线漏洞描述为分析依据。
 
 # Step 4 展示顺序（程序执行，LLM 不需要选）
 - 线索按置信度降序展示：confidence 高的在前。
@@ -669,7 +694,10 @@ class RootCauseAnalyzer:
             verify_chain = self._expand_chain(
                 set(case.get("verify_sessions", [])),
                 all_parent_map, all_children_map)
-            fp_reason = case.get("human_confirmation_summary", "")
+            # 人工标注只属于误报（FP）：漏报是开发态基线里未被上报的真实漏洞，
+            # 没有"漏报原因"这种人工标注，以基线漏洞描述为分析依据。
+            fp_reason = (case.get("human_confirmation_summary", "")
+                         if str(outcome).upper() == "FP" else "")
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (outcome={outcome}, "
@@ -840,7 +868,7 @@ class RootCauseAnalyzer:
 
         chain: 已排好序的 session_id 列表（根→叶子）。
         chain_type: "mining" 或 "verification"，仅用于日志。
-        fp_reason: 人工标注的原因，传给 LLM 做根因分析。
+        fp_reason: 人工标注的误报原因（仅 FP 提供；FN 为空，以基线漏洞描述为分析依据）。
         outcome: "FP" 或 "FN"，传给 LLM 区分误报/漏报分析方向。
         project_id: 项目 ID，用于知识库主动验证 L4。
         """
@@ -890,7 +918,7 @@ class RootCauseAnalyzer:
                 f"漏洞标题：{vuln_title}\n"
                 f"漏洞描述：{desc}\n"
                 f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
-                f"人工标注的原因：{fp_reason or '（未给出）'}\n"
+                + _annotation_line(fp_reason, outcome) + "\n"
                 + (f"\n{citation_hint}\n" if citation_hint else "")
                 + f"\nSession {i+1}/{len(chain)} (session_id={sid}):\n"
                 f"{session_text}"
@@ -1091,11 +1119,12 @@ class RootCauseAnalyzer:
 
         merge_summary = merge_result.get("summary", "")
         merge_hypotheses = merge_result.get("hypotheses") or []
-        merge_label_quality = merge_result.get("label_quality", {
+        # 漏报没有人工标注，quality 评估无依据，不输出也不进统计。
+        merge_label_quality = (merge_result.get("label_quality", {
             "precision": "precise",
             "reason": "",
             "follow_up_questions": [],
-        })
+        }) if str(outcome).upper() != "FN" else {})
         merge_km_summary = merge_result.get("knowledge_memory_summary") or {
             "access_count": 0,
             "accesses": [],
@@ -1682,7 +1711,7 @@ class RootCauseAnalyzer:
             f"漏洞标题：{vuln_title}",
             f"漏洞描述：{desc}",
             f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）",
-            f"人工标注的原因：{fp_reason or '（未给出）'}",
+            _annotation_line(fp_reason, outcome),
             f"\n以下是 {chain_type} 链中 {len(compressed_summaries)} 个 session "
             f"的独立压缩摘要：\n",
         ]
@@ -1984,7 +2013,7 @@ class RootCauseAnalyzer:
                 f"漏洞标题：{vuln_title}\n"
                 f"漏洞描述：{desc}\n"
                 f"outcome：{outcome or 'FP'}（FP=误报，FN=漏报）\n"
-                f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
+                + _annotation_line(fp_reason, outcome) + "\n\n"
                 f"Session {step_idx+1}/{len(chain)} {label} "
                 f"(session_id={session_id}):\n"
                 f"{chunk_text}"
@@ -2076,7 +2105,7 @@ class RootCauseAnalyzer:
             f"漏洞标题：{vuln_title}\n"
             f"漏洞描述：{desc}\n"
             f"outcome：{outcome or 'FP'}\n"
-            f"人工标注的原因：{fp_reason or '（未给出）'}\n\n"
+            + _annotation_line(fp_reason, outcome) + "\n\n"
             f"以下是 session {session_id} 的 {len(chunks)} 个分片的独立压缩摘要，"
             f"请合并为一份完整的结构化摘要：\n\n"
             + "\n---\n".join(all_summaries)

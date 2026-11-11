@@ -245,7 +245,7 @@ async function runEval(){
     $("run-st").textContent="✅ 评测已创建，排队中…";
     go('/evals/'+encodeURIComponent(r.evaluation_id));
   }
-  catch(e){const msg=String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").innerHTML='⚠ 失败：'+msg;$("run-btn").disabled=false;}
+  catch(e){const msg=(e&&e.message)?e.message:String(e);if(msg.includes("1062")||msg.includes("Duplicate")){$("run-st").textContent="⚠ ID 重复，换新 ID 重试…";$("eid").value=genId();$("run-btn").disabled=false;return;}$("run-st").textContent='⚠ 失败：'+msg;showAlert({title:'创建评测失败',desc:msg});$("run-btn").disabled=false;}
 }
 
 renderCreate();

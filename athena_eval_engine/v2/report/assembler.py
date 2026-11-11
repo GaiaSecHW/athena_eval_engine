@@ -4,7 +4,7 @@
 - {eid}_lifecycle.json — 生命周期分析段（L0 原始来源分布 + L2-L7 断点分布 +
   成因汇总 + 召回率/准确率）
 
-所有统计基于因果链过滤后的断点（只含被假设引用的断点），
+所有统计基于 session 级断点，不按假定线索的引用过滤，
 与问题单明细口径一致。逐 case 断点明细由问题单详情页提供，不再在此重复。
 """
 from __future__ import annotations
@@ -33,7 +33,7 @@ class ReportAssembler:
     不执行 L0-L7 判定或因果链分析（那是 RootCauseAnalyzer /
     CausalChainAnalyzer 的职责），只负责将已有结果组装为报告 JSON 并写入文件。
 
-    所有统计口径基于因果链过滤后的断点（只含被假设引用的断点）。
+    所有统计口径基于 session 级断点，不按假定线索的引用过滤。
     """
 
     # ── 主入口 ──────────────────────────────────────────
@@ -46,6 +46,9 @@ class ReportAssembler:
         recall_precision: dict,
         reports_dir: str,
         data_quality_warnings: list[dict] | None = None,
+        case_outcome_summary: dict | None = None,
+        case_session_matches: list[dict] | None = None,
+        eval_mode: str = "dev",
     ) -> str:
         """组装生命周期分析段报告，写入 {reports_dir}/{evaluation_id}_lifecycle.json。
 
@@ -85,10 +88,13 @@ class ReportAssembler:
             ),
             "recall_precision": recall_precision,
             "skipped_cases": self._build_skipped_cases(
-                root_cause_results, causal_chain_result),
+                root_cause_results, causal_chain_result, case_session_matches,
+                eval_mode),
             # 证据不足、未生成问题单的 case，报告里必须说明原因
             "insufficient_cases": causal_chain_result.get(
                 "insufficient_cases", []),
+            # case 级 outcome 分布 + 匹配情况：FP/FN=0 时报告为空，必须说明原因
+            "case_outcome_summary": case_outcome_summary or {},
         }
         if data_quality_warnings:
             report["data_quality_warnings"] = data_quality_warnings
@@ -113,26 +119,43 @@ class ReportAssembler:
     def _build_skipped_cases(
         root_cause_results: list[dict],
         causal_chain_result: dict,
+        case_session_matches: list[dict] | None = None,
+        eval_mode: str = "dev",
     ) -> list[dict]:
-        """列出「参与根因分析但没有生成问题单」的 case 及原因。
+        """列出「没有生成问题单」的 case 及原因。
 
-        问题单由 per_case_breakpoints 驱动。若某 case 既没有假设、也没有
+        问题单由 per_case_breakpoints 驱动。若某 case 既没有假定线索、也没有
         可用的断点，就不会出现在问题单列表里——开发人员会疑惑「这个 case
         为什么没有单」。这里显式列出，说明原因。
+
+        要求：每个误报/漏报要么生成问题单，要么在这里给出未生成的原因。
+        TP/TN 不是问题单对象，不列出。
+        「是否已生成」以 DTS 实际产出的 case_id 为准，不做推断。
 
         Returns:
             [{"case_id", "vuln_title", "outcome", "reason", "detail"}, ...]
         """
-        # 已生成问题单的 case（per_case_breakpoints 里断点或假设非空的）
-        covered = set()
-        for entry in causal_chain_result.get("per_case_breakpoints", []):
-            cid = entry.get("case_id", "")
-            if not cid:
-                continue
-            if entry.get("breakpoints") or entry.get("hypotheses"):
-                covered.add(cid)
+        # 已生成问题单的 case：优先用 DTS 实际生成的 case_id 集合，
+        # 避免「有断点/线索但最终没出单」被误判为已覆盖。
+        # 兼容旧数据（无该字段）时退回按 per_case_breakpoints 推断。
+        actual = causal_chain_result.get("dts_case_ids")
+        if actual is not None:
+            covered = {str(c) for c in actual if c}
+        else:
+            covered = set()
+            for entry in causal_chain_result.get("per_case_breakpoints", []):
+                cid = entry.get("case_id", "")
+                if not cid:
+                    continue
+                if entry.get("breakpoints") or entry.get("hypotheses"):
+                    covered.add(cid)
 
         skipped: list[dict] = []
+        # case_id → 匹配结果，用于把「没生成单」的原因定位到具体环节
+        match_by_cid = {
+            str(m.get("case_id")): m
+            for m in (case_session_matches or []) if m.get("case_id")}
+
         for case in root_cause_results:
             cid = case.get("case_id", "")
             if not cid or cid in covered:
@@ -143,37 +166,83 @@ class ReportAssembler:
             bp_count = len(mining.get("l0_l7_breakpoints") or []) + \
                 len(verify.get("l0_l7_breakpoints") or [])
             fn = case.get("fn_miss") or {}
+            m = match_by_cid.get(cid) or {}
+            sessions = (m.get("mining_sessions") or []) + \
+                (m.get("verify_sessions") or [])
+            no_session = bool(m) and (
+                str(m.get("match_method") or "") == "unmatched" or not sessions)
 
             insufficient = bool(
                 mining.get("insufficient_evidence")
                 or verify.get("insufficient_evidence"))
-            if insufficient:
+            if no_session:
+                # 最可执行的原因：trace 里没有这个 case 的 session，
+                # 后面所有分析都无从谈起。
+                reason = "未匹配到 trace session，无法分析"
+                detail = (str(m.get("match_detail") or "")
+                          or "trace 中没有该 case 的 session")
+            elif insufficient:
                 reason = "证据不足，未生成结论"
                 detail = (
                     (mining.get("root_cause") or {}).get("description")
                     or (verify.get("root_cause") or {}).get("description")
-                    or "没有任何假设能关联到证据卡"
+                    or "没有任何假定线索能关联到证据卡"
                 )
             elif has_hyp:
-                reason, detail = "断点全部未被假设引用", (
-                    f"有假设但 {bp_count} 条断点均未挂到假设上，"
-                    f"过滤后无证据可展示")
+                reason, detail = "有假定线索但未生成问题单", (
+                    f"已产出假定线索，但问题单生成阶段未覆盖该 case")
             elif fn.get("miss_category"):
                 reason, detail = "FN 快捷路径无断点", (
                     f"miss_category={fn.get('miss_category')}，"
                     f"程序判定漏报原因，无 L0-L7 断点")
             elif bp_count:
-                reason, detail = "有断点但无假设", (
-                    f"{bp_count} 条断点均未被任何假设引用，"
-                    f"且 merge 阶段未产出假设")
+                reason, detail = "有断点但无假定线索", (
+                    f"{bp_count} 条断点存在，但 merge 阶段未产出假定线索")
             else:
-                reason, detail = "无假设且无断点", (
-                    "根因分析未产出假设，也没有知识访问断点")
+                if sessions:
+                    reason, detail = "有 session 但根因分析未产出线索和断点", (
+                        "session 已匹配，但压缩/合并阶段没有产出假定线索或断点")
+                else:
+                    reason, detail = "根因分析未产出假定线索和断点", (
+                        "压缩/合并阶段没有产出假定线索或断点")
 
             skipped.append({
                 "case_id": cid,
                 "vuln_title": case.get("vuln_title", ""),
                 "outcome": case.get("outcome", ""),
+                "reason": reason,
+                "detail": detail,
+            })
+
+        # 只列误报/漏报：每个 FP/FN 要么生成问题单（covered），要么在这里
+        # 说明为什么没有单。TP/TN 不是问题单对象，不列。
+        analyzed = {c.get("case_id", "") for c in root_cause_results}
+        runtime = str(eval_mode or "dev").lower() == "runtime"
+        for m in (case_session_matches or []):
+            cid = str(m.get("case_id") or "")
+            outcome = str(m.get("outcome") or "")
+            if not cid or cid in covered or outcome not in ("FP", "FN"):
+                continue
+            # 运行态没有漏报基线：FN 不进入「未生成 DTS 单」清单
+            if runtime and outcome == "FN":
+                continue
+            if cid in analyzed:
+                # 已进入根因分析但没生成单的，上面循环已经给出原因
+                continue
+            method = str(m.get("match_method") or "")
+            detail = str(m.get("match_detail") or "")
+            if method == "unmatched":
+                reason = ("误报，但未匹配到 trace session，无法分析"
+                          if outcome == "FP"
+                          else "漏报，但未匹配到 trace session，无法分析")
+                detail = detail or "trace 中没有该 case 的 session"
+            else:
+                reason = ("误报但未进入根因分析" if outcome == "FP"
+                          else "漏报但未进入根因分析")
+            skipped.append({
+                "case_id": cid,
+                "vuln_title": m.get("vuln_title", ""),
+                "outcome": outcome,
                 "reason": reason,
                 "detail": detail,
             })
@@ -184,9 +253,8 @@ class ReportAssembler:
     ) -> dict:
         """统计 L0 原始来源分布。
 
-        **只统计被假设引用的断点**——读因果链过滤后的
-        per_case_breakpoints，而不是 root_cause_results 里的全量断点。
-        这样汇总结论与问题单明细能对上。
+        **基于 session 级断点统计**——读因果链的 per_case_breakpoints，
+        不按假定线索的引用过滤。这样汇总结论与问题单明细能对上。
 
         l0_source 为 None 或空字符串时归入 "未知"。
         """

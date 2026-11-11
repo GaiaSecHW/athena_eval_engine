@@ -22,6 +22,7 @@ from ..core.causal_levels import (
     LEVEL_RANK as _LEVEL_RANK,
     ALL_LEVELS as _ALL_LEVELS,
     ALL_CAUSES as _ALL_CAUSES,
+    CLUE_MIN_CONFIDENCE,
 )
 from ..infra.log_util import log
 
@@ -451,6 +452,9 @@ class CausalChainAnalyzer:
         """统计多线索维度的分布。
 
         从 root_cause_results 的 mining/verification.hypotheses 中聚合：
+        - 每个 case 只统计置信度 >= CLUE_MIN_CONFIDENCE 的线索；
+        - 若该 case 没有任何线索达到门槛，保留置信度最高的一条（与展示口
+          径一致：全部低于 0.6 时展示最高的一条）；
         - by_responsibility: 按 responsibility 分组计数
         - by_cause_code: 按 cause_code 分组计数（线索维度）
         - by_agent_can_resolve: true/false 计数（agent 能否自行解决）
@@ -469,23 +473,49 @@ class CausalChainAnalyzer:
         resolve_counter: Counter = Counter()
         total = 0
 
+        def _conf(h: dict) -> float:
+            try:
+                return float(h.get("confidence", 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _order_key(h: dict):
+            # 与 DTS 详情页一致：置信度降序 → 最早断裂 L → 证据数 → cause_code
+            return (
+                -_conf(h),
+                _LEVEL_RANK.get(
+                    CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),
+                -len(h.get("evidence_refs") or []),
+                str(h.get("cause_code") or "Z"),
+            )
+
         for case in root_cause_results:
+            case_hyps: list[dict] = []
             for chain_type in ("mining", "verification"):
                 chain_data = case.get(chain_type, {})
                 if not chain_data or not isinstance(chain_data, dict):
                     continue
                 for h in chain_data.get("hypotheses") or []:
-                    if not isinstance(h, dict):
-                        continue
-                    total += 1
-                    resp = h.get("responsibility", "")
-                    if resp:
-                        resp_counter[resp] += 1
-                    cc = h.get("cause_code", "")
-                    if cc:
-                        cause_counter[cc] += 1
-                    can_resolve = h.get("agent_can_resolve")
-                    resolve_counter["true" if can_resolve else "false"] += 1
+                    if isinstance(h, dict):
+                        case_hyps.append(h)
+            if not case_hyps:
+                continue
+            visible = [h for h in case_hyps
+                       if _conf(h) >= CLUE_MIN_CONFIDENCE]
+            # 展示口径：没有任何一条达到门槛时，只展示置信度最高的一条；
+            # 统计必须与展示一致，保留这一条而不是整案丢弃。
+            if not visible:
+                visible = [min(case_hyps, key=_order_key)]
+            for h in visible:
+                total += 1
+                resp = h.get("responsibility", "")
+                if resp:
+                    resp_counter[resp] += 1
+                cc = h.get("cause_code", "")
+                if cc:
+                    cause_counter[cc] += 1
+                can_resolve = h.get("agent_can_resolve")
+                resolve_counter["true" if can_resolve else "false"] += 1
 
         return {
             "by_responsibility": {r: resp_counter.get(r, 0) for r in _ALL_RESPONSIBILITIES},
@@ -511,6 +541,9 @@ class CausalChainAnalyzer:
         imprecise_cases: list[str] = []
 
         for case in root_cause_results:
+            # 漏报没有人工标注（基线只提供漏洞描述），不参与标注质量统计
+            if str(case.get("outcome") or "").upper() == "FN":
+                continue
             cid = case.get("case_id", "")
             merged = {"precision": "precise"}
             for chain_type in ("mining", "verification"):

@@ -23,6 +23,11 @@
 .confirm-btn-no:hover{transform:translateY(-2px);box-shadow:0 6px 18px rgba(220,38,38,.25);background:linear-gradient(135deg,#fef2f2,#fff)}
 .confirm-btn:disabled{opacity:.5;cursor:not-allowed;transform:none!important;box-shadow:none!important}
 .knd{font-size:14px;padding:2px 7px;border-radius:8px;background:var(--p2);color:var(--sub)}
+/* 线索折叠：默认收起，只显示标题行 */
+details.clue-item>summary{list-style:none;cursor:pointer}
+details.clue-item>summary::-webkit-details-marker{display:none}
+details.clue-item>summary::before{content:'▸';display:inline-block;margin-right:8px;color:var(--sub);transition:transform .15s}
+details.clue-item[open]>summary::before{transform:rotate(90deg)}
 </style>
 </head>
 <body>
@@ -87,6 +92,11 @@ document.addEventListener('keydown',function(e){
     if(m){m.remove();}
   }
 });
+// 假定线索：全部展开 / 折叠（默认折叠）
+function toggleAllClues(open){
+  var list=document.querySelectorAll('details.clue-item');
+  for(var i=0;i<list.length;i++){list[i].open=!!open;}
+}
 
 // 知识/记忆使用情况卡片渲染
 function renderKMSummary(km,title){
@@ -207,12 +217,17 @@ async function renderDtsDetailPage(dtsId){
         return c1<c2?-1:(c1>c2?1:0);
       });
       // 展示门槛与正常路径一致：>=0.6；全部低于 0.6 时只展示最高的一条。
-      var dbVisible=dbHyps.filter(function(h){return Number(h.confidence||0)>=0.6;});
+      var dbVisible=dbHyps.filter(function(h){return Number(h.confidence||0)>=DTS_CLUE_MIN_CONFIDENCE;});
       if(!dbVisible.length&&dbHyps.length){dbVisible=[dbHyps[0]];}
       html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)">'
-        +'<h3>假定线索（'+dbVisible.length+' 条）</h3>'
-        +'<div style="font-size:13px;color:var(--sub);margin-bottom:12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
-        +'完整分析数据文件缺失，以下内容从问题单记录恢复；会话明细与证据原文暂不可用。'
+        +'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+        +'<h3 style="margin:0">假定线索（'+dbVisible.length+' 条）</h3>'
+        +'<div style="display:flex;gap:8px">'
+        +'<button class="btn" style="font-size:12px;padding:4px 12px" onclick="toggleAllClues(true)">展开全部</button>'
+        +'<button class="btn" style="font-size:12px;padding:4px 12px" onclick="toggleAllClues(false)">折叠全部</button>'
+        +'</div></div>'
+        +'<div style="font-size:13px;color:var(--sub);margin:8px 0 12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
+        +'完整分析数据文件缺失，以下内容从问题单记录恢复；会话明细与证据原文暂不可用。默认折叠，点击标题行展开。'
         +'</div>';
       if(!dbVisible.length){
         html+='<div style="font-size:14px;color:var(--sub)">问题单记录中也没有线索数据。</div>';
@@ -221,13 +236,13 @@ async function renderDtsDetailPage(dtsId){
         var conf=Number(h.confidence||0);
         var confColor=conf>=0.85?'var(--green)':conf>=0.7?'var(--amber)':'var(--gray)';
         var fs=h.fix_suggestion||{};
-        html+='<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
-          +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+        html+='<details class="clue-item" style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+          +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
           +'<span style="font-weight:600;font-size:14px">线索 '+(idx+1)+'</span>'
           +'<span class="knd" style="background:rgba(220,38,38,.12);color:'+confColor+'">置信度 '+conf.toFixed(2)+'</span>'
           +'<span class="knd">'+esc(DTS_CAUSE_LABELS[h.cause_code]||h.cause_code||'-')+'</span>'
           +'<span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+esc(DTS_RESP_LABELS[h.responsibility]||h.responsibility||'-')+'</span>'
-          +'</div>';
+          +'</summary>';
         if(h.hypothesis){
           html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">线索：</b>'+esc(h.hypothesis)+'</div>';
         }
@@ -238,7 +253,7 @@ async function renderDtsDetailPage(dtsId){
         if(fixText){
           html+='<div style="padding:10px 12px;font-size:13px;color:var(--sub);white-space:pre-wrap"><b>修复建议：</b>'+esc(fixText)+'</div>';
         }
-        html+='</div>';
+        html+='</details>';
       });
       html+='</div>';
     }
@@ -348,11 +363,16 @@ async function renderDtsDetailPage(dtsId){
         },[]);
 
         html+='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--red)">'
-          +'<h3>假定线索（'+allHypotheses.length+' 条）</h3>'
-          +'<div style="font-size:12px;color:var(--sub);margin-bottom:12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
+          +'<div style="display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap">'
+          +'<h3 style="margin:0">假定线索（'+allHypotheses.length+' 条）</h3>'
+          +'<div style="display:flex;gap:8px">'
+          +'<button class="btn" style="font-size:12px;padding:4px 12px" onclick="toggleAllClues(true)">展开全部</button>'
+          +'<button class="btn" style="font-size:12px;padding:4px 12px" onclick="toggleAllClues(false)">折叠全部</button>'
+          +'</div></div>'
+          +'<div style="font-size:12px;color:var(--sub);margin:8px 0 12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
           +'每条线索是一个独立的根因猜测，各自带置信度，按置信度降序排列；同置信度时按最早断裂 L、证据数、cause_code 排序。'
           +'仅展示置信度 ≥ 0.6 的线索；若没有一条达到 0.6，只展示置信度最高的那条。'
-          +'线索之间互不否定，请结合证据逐条判断。'
+          +'线索之间互不否定，请结合证据逐条判断。默认折叠，点击标题行展开。'
           +'</div>';
         // 与后端一致：置信度降序 → 最早 L → 证据数 → cause_code
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
@@ -371,7 +391,7 @@ async function renderDtsDetailPage(dtsId){
         // visible 只影响渲染；supports_hypotheses 的编号仍用 allHypotheses 的下标，
         // 否则隐藏某条线索后断点与线索的对应关系会错位。
         var visibleHyps=allHypotheses.filter(function(h){
-          return Number((h.data||{}).confidence||0)>=0.6;
+          return Number((h.data||{}).confidence||0)>=DTS_CLUE_MIN_CONFIDENCE;
         });
         if(!visibleHyps.length&&allHypotheses.length){visibleHyps=[allHypotheses[0]];}
         visibleHyps.forEach(function(h,vidx){
@@ -396,8 +416,8 @@ async function renderDtsDetailPage(dtsId){
           var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
           var probColor=conf>=0.85?'var(--green)':conf>=0.7?'var(--amber)':'var(--gray)';
           var hypSid=hdata.session_id||'';
-          html+='<div style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
-            +'<div style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
+          html+='<details class="clue-item" style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
+            +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">线索 '+(vidx+1)+'</span>';
           if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
           if(h.isPrimary){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">置信度最高</span>';}
@@ -412,7 +432,7 @@ async function renderDtsDetailPage(dtsId){
           }else if(canResolve===true){
             html+=' <span class="knd" style="background:rgba(34,197,94,.15);color:var(--green)">Agent可解决</span>';
           }
-          html+='</div>';
+          html+='</summary>';
           if(hypDesc){
             html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">线索：</b>'+esc(hypDesc)+'</div>';
           }
@@ -452,11 +472,13 @@ async function renderDtsDetailPage(dtsId){
               html+='<div style="margin-top:6px;padding:8px 10px;background:var(--p2);border-radius:8px">'
                 +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
                 +'<span class="knd">'+esc(b.label)+'</span>'
-                +'<span class="knd">'+(bd.break_level||'-')+'</span>'
+                +'<span class="knd">'+esc(bd.breakpoint||bd.break_level||'-')+'</span>'
                 +'<span class="knd">'+esc(bCause)+'</span>'
                 +'<span class="knd" style="font-family:monospace;font-size:12px">'+esc(bd.session_id||'-')+'</span>'
                 +'</div>';
-              if(bd.evidence){html+='<div style="margin-top:4px;font-size:13px;color:var(--sub);white-space:pre-wrap">'+esc(bd.evidence)+'</div>';}
+              if(bd.query_content){html+='<div style="margin-top:6px;font-size:13px;color:var(--sub)"><b>查询：</b>'+dtsTextView(bd.query_content,'查询内容',120)+'</div>';}
+              if(bd.returned_content){html+='<div style="margin-top:4px;font-size:13px;color:var(--sub)"><b>返回：</b>'+dtsTextView(bd.returned_content,'返回内容',120)+'</div>';}
+              if(bd.l0_source){html+='<div style="margin-top:4px;font-size:12px;color:var(--gray)">知识来源：'+esc(bd.l0_source)+'</div>';}
               html+='</div>';
             });
             html+='</div>';
@@ -505,7 +527,7 @@ async function renderDtsDetailPage(dtsId){
             }
             html+='</div></div>';
           }
-          html+='</div>';
+          html+='</details>';
         });
         html+='</div>';
       }else if(legacyRootCauses.length||legacyFixSuggestions.length){
@@ -539,17 +561,21 @@ async function renderDtsDetailPage(dtsId){
     }
 
     var _hasHypotheses=typeof allHypotheses!=='undefined'&&allHypotheses&&allHypotheses.length>0;
-    // 断点证据：该线索引用的断点
-    if(d.breakpoint_desc){
-      var bpTitle=_hasHypotheses?'支撑断点证据':(d.case_type==='FN'?'漏报原因分析':'误报原因分析');
+    // 有线索引用断点时，断点证据已挂在各条线索下，这里不再重复整段展示；
+    // 无线索、或线索都没有引用断点（如 FN 合成线索）时，仍需展示整段断点证据。
+    var _hasBpRefs=_hasHypotheses&&allHypotheses.some(function(h){
+      var sb=(h.data||{}).supporting_breakpoints;
+      return Array.isArray(sb)&&sb.length>0;
+    });
+    if((!_hasHypotheses||!_hasBpRefs)&&d.breakpoint_desc){
+      var bpTitle=(d.case_type==='FN'?'漏报原因分析':'误报原因分析');
       html+='<div class="card" style="margin-bottom:16px">'
         +'<details><summary style="font-size:15px;color:var(--sub);cursor:pointer;font-weight:600">'+bpTitle+'</summary>'
         +'<div style="margin-top:8px;font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(d.breakpoint_desc)+'</div>'
-        +'</details>';
-      if(d.evidence_uri){
-        html+='<div style="margin-top:12px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+esc(d.evidence_uri)+'</div></div>';
-      }
-      html+='</div>';
+        +'</details></div>';
+    }
+    if(d.evidence_uri){
+      html+='<div class="card" style="margin-bottom:16px"><div style="font-size:14px;color:var(--sub);margin-bottom:4px">证据</div><div style="font-size:13px;font-family:monospace;padding:10px 12px;background:var(--p2);border-radius:8px;word-break:break-all">'+esc(d.evidence_uri)+'</div></div>';
     }
 
     var sessionChains=d.session_chains||{mining:[],verification:[],parent_map:{}};
@@ -677,8 +703,13 @@ async function renderDtsDetailPage(dtsId){
     }
 
     if(d.replay_result){
-      var replayColor=d.replay_result==='false_positive_resolved'?'var(--green)':d.replay_result==='still_vulnerable'?'var(--red)':'var(--gray)';
-      var replayLabel=d.replay_result==='false_positive_resolved'?'误报已消除':d.replay_result==='still_vulnerable'?'漏洞仍存在':'-';
+      var _resolved=(d.replay_result==='false_positive_resolved'||d.replay_result==='false_negative_resolved');
+      var _ongoing=(d.replay_result==='still_vulnerable'||d.replay_result==='still_missed');
+      var replayColor=_resolved?'var(--green)':_ongoing?'var(--red)':'var(--gray)';
+      var replayLabel=d.replay_result==='false_positive_resolved'?'误报已消除'
+        :d.replay_result==='false_negative_resolved'?'漏报已消除'
+        :d.replay_result==='still_vulnerable'?'漏洞仍存在'
+        :d.replay_result==='still_missed'?'漏洞仍未被上报':'-';
       html+='<div class="card" style="margin-bottom:16px"><h3>回归验证</h3>'
         +'<div style="font-size:14px"><span style="color:var(--gray)">回归结果：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+replayColor+'">'+replayLabel+'</span></div>';
       if(d.replay_eval_id){
@@ -714,11 +745,16 @@ async function renderDtsDetailPage(dtsId){
         +'<th style="padding:6px 8px">任务 ID</th>'
         +'<th style="padding:6px 8px">说明</th></tr></thead><tbody>';
       d.regression_history.forEach(function(h){
-        var ok=h.replay_result==='false_positive_resolved';
+        var ok=(h.replay_result==='false_positive_resolved'||h.replay_result==='false_negative_resolved');
         var pend=h.status==='evaluating';
         var err=h.status==='error';
-        var color=ok?'var(--green)':(h.replay_result==='still_vulnerable'?'var(--red)':(err?'var(--red)':'var(--gray)'));
-        var label=ok?'误报已消除':(h.replay_result==='still_vulnerable'?'漏洞仍存在':(pend?'判定中':(err?'判定失败':'-')));
+        var ongoing=(h.replay_result==='still_vulnerable'||h.replay_result==='still_missed');
+        var color=ok?'var(--green)':(ongoing?'var(--red)':(err?'var(--red)':'var(--gray)'));
+        var label=h.replay_result==='false_positive_resolved'?'误报已消除'
+          :h.replay_result==='false_negative_resolved'?'漏报已消除'
+          :h.replay_result==='still_vulnerable'?'漏洞仍存在'
+          :h.replay_result==='still_missed'?'漏洞仍未被上报'
+          :(pend?'判定中':(err?'判定失败':'-'));
         var mm=h.match_method==='llm'?'LLM 匹配':(h.match_method||'-');
         var ts=String(h.submitted_at||'').replace('T',' ').slice(0,19);
         var rd={};

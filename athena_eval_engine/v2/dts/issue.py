@@ -249,6 +249,24 @@ def generate_dts_issues(
                 # 如果同一 case 同时有 FP 路径的 LLM 线索（confidence >= 0.7），
                 # LLM 线索优先进入顶层摘要；FN 合成线索只作次要线索展示。
                 miss_evidence = (fn.get("miss_detail") or {}).get("evidence", "")
+                # 两种漏报场景的修复方向不同：
+                # - sink_not_found：sink 点没被读到 → 扩大挖掘覆盖
+                # - sink_found_no_report：sink 已命中但未识别 → 修正判定/推理/验证
+                if fn.get("miss_category") == "sink_not_found":
+                    fix_location = "挖掘范围/路径覆盖（sink 点未命中）"
+                    fix_action = (
+                        f"扩大挖掘覆盖：{reason}" if reason
+                        else "扩大挖掘覆盖，确保 sink 点被读到"
+                    )
+                    fix_effect = "agent 能覆盖到该 sink 点，避免漏报"
+                else:
+                    fix_location = "漏洞判定/推理/验证（sink 已命中但未识别）"
+                    fix_action = (
+                        f"修正判定逻辑：{sub_label or reason}"
+                        if (sub_label or reason)
+                        else "修正判定逻辑，避免已命中的 sink 被忽略"
+                    )
+                    fix_effect = "agent 能在已定位 sink 的基础上正确判定并上报漏洞"
                 all_hypotheses.append({
                     "hypothesis": reason or f"漏报：{fn.get('miss_category')}",
                     "probability": 0.9,
@@ -271,12 +289,9 @@ def generate_dts_issues(
                         "target": "agent_code",
                         "agent_type": _fn_agent,
                         "knowledge_source": "",
-                        "location": "挖掘范围/路径覆盖（sink 点未命中）",
-                        "action": (
-                            f"扩大挖掘覆盖：{reason}" if reason
-                            else "扩大挖掘覆盖，确保 sink 点被读到"
-                        ),
-                        "expected_effect": "agent 能覆盖到该 sink 点，避免漏报",
+                        "location": fix_location,
+                        "action": fix_action,
+                        "expected_effect": fix_effect,
                     },
                     "_synthesized_from_fn_miss": True,
                 })
@@ -425,6 +440,7 @@ def generate_dts_issues(
 
         # 完整根因分析数据存文件（遵循 Large Payload File Storage Over DB 原则）
         analysis_data_path = None
+        session_chains_snapshot = None
         full_data = case_full_data.get(case_id)
         if full_data and reports_dir:
             file_name = f"{evaluation_id}_dts_{case_id}.json"
@@ -435,6 +451,15 @@ def generate_dts_issues(
                 analysis_data_path = file_name
             except Exception as e:
                 log("DTS", f"写入完整分析数据失败 case={case_id}: {e}")
+
+        # session 调用链快照：生成时固化，页面不再依赖 session_graph 实时状态
+        if full_data:
+            try:
+                from ..persistence.dts_repo import build_session_chains_snapshot
+                session_chains_snapshot = build_session_chains_snapshot(
+                    evaluation_id, full_data)
+            except Exception as e:
+                log("DTS", f"固化 session 链失败 case={case_id}: {e}")
 
         issues.append({
             "dts_id": dts_id,
@@ -453,6 +478,7 @@ def generate_dts_issues(
             "hypotheses": json.dumps(hypotheses, ensure_ascii=False) if hypotheses else None,
             "label_quality": json.dumps(label_quality, ensure_ascii=False) if label_quality else None,
             "analysis_data_path": analysis_data_path,
+            "session_chains": session_chains_snapshot,
             "replay_eval_id": None,
             "replay_result": None,
             "status": "open",

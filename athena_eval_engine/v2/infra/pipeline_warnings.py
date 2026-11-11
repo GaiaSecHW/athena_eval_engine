@@ -85,3 +85,20 @@ def has_warnings(evaluation_id: str) -> bool:
     """指定评测是否有告警。"""
     with _lock:
         return len(_warnings.get(evaluation_id, [])) > 0
+
+
+def add_trace_file_skip(agent_type: str, path: str,
+                        error: object = None) -> None:
+    """记录 trace 文件缺失/不可读告警（解析继续，不中断评测）。
+
+    供各 parser 在单个 session/文件缺失时调用，口径与 WebVulnVerify
+    的「缺 session 文件只告警」一致。
+    """
+    from .log_util import get_eval_ctx  # 延迟导入，避免循环依赖
+    eid = get_eval_ctx()
+    if not eid:
+        return
+    msg = f"trace 文件不可读，已跳过：{path}"
+    if error is not None:
+        msg += f"（{error}）"
+    add(eid, agent_type or "trace", "session_file_missing", "warning", msg)
