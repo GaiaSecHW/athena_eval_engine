@@ -669,7 +669,9 @@ class Orchestrator:
 
         采集策略：
         - 运行态（prod）：原始数据与基线同项目，一次请求拉全量，
-          基线从原始数据中按 engine_confirmed_vulnerable=True 提取。
+          基线从原始数据中按**人工确认结论**（validation_result）提取。
+          不能用 engine_confirmed_vulnerable：未经过引擎研判的 case 该字段
+          恒为 False，会把人工确认的 confirmed_fp 一起过滤掉，导致基线为空。
         - 开发态（dev）：原始数据与基线不同项目，分别请求。
           原始数据拉全量，基线用 final_result=vulnerable 拉引擎判定为漏洞的 case。
         """
@@ -724,14 +726,16 @@ class Orchestrator:
             raw_project_ids = set(alert_center_data.get("project_ids", []))
             same_project = benchmark_set_id in raw_project_ids
 
-            if same_project and alert_center_data.get("cases"):
-                # 运行态：基线从原始数据中提取（engine_confirmed_vulnerable=True）
-                baseline_cases = [
-                    c for c in alert_center_data.get("cases", [])
-                    if c.get("engine_confirmed_vulnerable") is True
-                ]
+            runtime_baseline = bool(
+                same_project and alert_center_data.get("cases"))
+            if runtime_baseline:
+                # 运行态：基线从原始数据中提取，按人工确认结论（validation_result）
+                # 筛选（下面循环统一过滤 finished / vulnerable|not_vulnerable / non_fp）。
+                # 不能用 engine_confirmed_vulnerable：未经过引擎研判的 case 该字段
+                # 恒为 False，会把人工确认的 confirmed_fp 一起过滤掉，导致基线为空。
+                baseline_cases = list(alert_center_data.get("cases", []))
                 log("INGEST", f"基线数据(运行态从原始数据提取): "
-                      f"{len(baseline_cases)} 条 engine_confirmed_vulnerable=True")
+                      f"{len(baseline_cases)} 条（人工确认筛选前）")
             else:
                 # 开发态：基线不同项目，单独请求
                 log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
@@ -770,6 +774,9 @@ class Orchestrator:
                         "false_positive_reason": bm.get("false_positive_reason") or "",
                         "human_confirmation_summary": bm.get("human_confirmation_summary") or "",
                     }
+            if runtime_baseline:
+                log("INGEST", f"运行态基线(人工确认 finished 且非 non_fp): "
+                      f"{len(case_details)} 条")
 
         elif bm_source == "vbench_zip":
             from ..infra.vbench_client import get_benchmark
