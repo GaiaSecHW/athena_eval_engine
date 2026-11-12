@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import json
 import os
+from concurrent.futures import ThreadPoolExecutor
 
 from fastapi import APIRouter, HTTPException
 
@@ -31,11 +32,46 @@ router = APIRouter(prefix="/api/v2/dashboard", tags=["dashboard"])
 from ...config_loader import get_reports_dir
 REPORTS_DIR = get_reports_dir()
 
+# 报告文件读取并发度（I/O 密集，线程足够）
+_IO_WORKERS = 8
+
 # A-K 成因码
 _ALL_CAUSE_CODES = list("ABCDEFGHIJK")
 
 # 6 个 agent 类型（集中配置见 v2/core/agents.py）
 from ..core.agents import ALL_AGENT_TYPES as _ALL_AGENT_TYPES
+
+
+def _eval_status_counts() -> dict:
+    """评测总数与各状态计数（首页 KPI 用，避免前端拉全量评测列表）。"""
+    def _query(cur):
+        cur.execute("SELECT evaluation_status, COUNT(*) FROM evaluation "
+                    "GROUP BY evaluation_status")
+        by_status = {row[0]: int(row[1]) for row in cur.fetchall()}
+        return {"total": sum(by_status.values()), "by_status": by_status}
+    return _db_query(_query)
+
+
+def _completed_eids() -> list[str]:
+    """已完成评测 ID 列表（三个聚合函数共用一次查询）。"""
+    def _query(cur):
+        cur.execute(
+            "SELECT evaluation_id FROM evaluation "
+            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
+        )
+        return [row[0] for row in cur.fetchall()]
+    return _db_query(_query)
+
+
+def _parallel_map(fn, items):
+    """并发执行 fn(item)，按输入顺序返回结果。"""
+    items = list(items)
+    if not items:
+        return []
+    if len(items) == 1:
+        return [fn(items[0])]
+    with ThreadPoolExecutor(max_workers=min(_IO_WORKERS, len(items))) as pool:
+        return list(pool.map(fn, items))
 
 
 def _eval_mode_of(eid: str) -> str:
@@ -56,15 +92,195 @@ def _eval_mode_of(eid: str) -> str:
         return ""
 
 
+# evaluation_summary 列（顺序与 _normalize_summary 对应）
+_SUMMARY_COLS = (
+    "evaluation_id", "eval_mode", "tp_count", "fp_count", "fn_count", "tn_count",
+    "recall_rate", "precision_rate", "fpr_rate",
+    "agent_outcomes", "breakpoint_distribution",
+)
+
+
+def _json_obj(v) -> dict:
+    """JSON 列可能是 str 或已解析的 dict。"""
+    if not v:
+        return {}
+    if isinstance(v, dict):
+        return v
+    try:
+        return json.loads(v) or {}
+    except (json.JSONDecodeError, TypeError):
+        return {}
+
+
+def _normalize_summary(row: dict) -> dict:
+    """把 evaluation_summary 行归一成聚合用的结构。"""
+    return {
+        "eval_mode": row.get("eval_mode") or "unknown",
+        "tp": int(row.get("tp_count") or 0),
+        "fp": int(row.get("fp_count") or 0),
+        "fn": int(row.get("fn_count") or 0),
+        "tn": int(row.get("tn_count") or 0),
+        "agent_outcomes": _json_obj(row.get("agent_outcomes")),
+        "breakpoint_distribution": _json_obj(row.get("breakpoint_distribution")),
+    }
+
+
+def _load_summaries(eids: list[str]) -> dict[str, dict]:
+    """从 evaluation_summary 读汇总；旧评测缺行时从报告文件回填（一次性）。"""
+    if not eids:
+        return {}
+    cols = ", ".join(_SUMMARY_COLS)
+
+    def _query(cur):
+        ph = ",".join(["%s"] * len(eids))
+        cur.execute(
+            f"SELECT {cols} FROM evaluation_summary "
+            f"WHERE evaluation_id IN ({ph})",
+            tuple(eids),
+        )
+        return [dict(zip(_SUMMARY_COLS, r)) for r in cur.fetchall()]
+
+    try:
+        rows = _db_query(_query)
+    except Exception as e:
+        # 表未迁移/DB 异常：退回读文件，保证看板可用
+        log("DASHBOARD", f"读取 evaluation_summary 失败，回退文件读取: {e}")
+        return _backfill_summaries(eids, persist=False)
+    out = {r["evaluation_id"]: _normalize_summary(r) for r in rows}
+    missing = [eid for eid in eids if eid not in out]
+    if missing:
+        out.update(_backfill_summaries(missing))
+    return out
+
+
+def _backfill_summaries(eids: list[str], persist: bool = True) -> dict[str, dict]:
+    """旧评测（FINALIZE 之前完成）没有索引行：读一次报告文件并回写。"""
+    def _read_one(eid: str):
+        mode = _eval_mode_of(eid) or "unknown"
+
+        rp: dict = {}
+        base_path = os.path.join(REPORTS_DIR, f"{eid}.json")
+        if os.path.isfile(base_path):
+            try:
+                with open(base_path, "r", encoding="utf-8") as f:
+                    rp = (json.load(f) or {}).get("recall_precision") or {}
+            except Exception:
+                rp = {}
+
+        agent_outcomes: dict = {}
+        cm_path = os.path.join(REPORTS_DIR, f"{eid}_debug_case_matching.json")
+        if os.path.isfile(cm_path):
+            try:
+                with open(cm_path, "r", encoding="utf-8") as f:
+                    cm = json.load(f) or {}
+                agent_outcomes = cm.get("agent_outcomes") or {}
+                if not agent_outcomes:
+                    # 旧 dump 无 agent_outcomes：从 matches + parsing 反推
+                    agent_outcomes = _agent_outcomes_from_matches(eid, cm)
+            except Exception as e:
+                log("DASHBOARD", f"回填 case_matching 失败 {eid}: {e}")
+
+        bp: dict = {}
+        lp = os.path.join(REPORTS_DIR, f"{eid}_lifecycle.json")
+        if os.path.isfile(lp):
+            try:
+                with open(lp, "r", encoding="utf-8") as f:
+                    bp = (json.load(f) or {}).get("breakpoint_distribution") or {}
+            except Exception:
+                bp = {}
+
+        return eid, mode, rp, agent_outcomes, bp
+
+    out: dict[str, dict] = {}
+    upserts: list[tuple] = []
+    for item in _parallel_map(_read_one, eids):
+        if not item:
+            continue
+        eid, mode, rp, agent_outcomes, bp = item
+        out[eid] = {
+            "eval_mode": mode,
+            "tp": int(rp.get("tp_count") or 0),
+            "fp": int(rp.get("fp_count") or 0),
+            "fn": int(rp.get("fn_count") or 0),
+            "tn": int(rp.get("tn_count") or 0),
+            "agent_outcomes": agent_outcomes,
+            "breakpoint_distribution": bp,
+        }
+        upserts.append((
+            eid, mode,
+            out[eid]["tp"], out[eid]["fp"], out[eid]["fn"], out[eid]["tn"],
+            rp.get("recall_rate"), rp.get("precision_rate"), rp.get("fpr_rate"),
+            json.dumps(agent_outcomes, ensure_ascii=False),
+            json.dumps(bp, ensure_ascii=False),
+        ))
+
+    if upserts and persist:
+        def _write(cur):
+            cur.executemany(
+                "INSERT INTO evaluation_summary "
+                "(evaluation_id, eval_mode, tp_count, fp_count, fn_count, tn_count, "
+                " recall_rate, precision_rate, fpr_rate, agent_outcomes, "
+                " breakpoint_distribution) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE "
+                "eval_mode=VALUES(eval_mode), tp_count=VALUES(tp_count), "
+                "fp_count=VALUES(fp_count), fn_count=VALUES(fn_count), "
+                "tn_count=VALUES(tn_count), recall_rate=VALUES(recall_rate), "
+                "precision_rate=VALUES(precision_rate), fpr_rate=VALUES(fpr_rate), "
+                "agent_outcomes=VALUES(agent_outcomes), "
+                "breakpoint_distribution=VALUES(breakpoint_distribution)",
+                upserts,
+            )
+        try:
+            _db_query(_write)
+        except Exception as e:
+            log("DASHBOARD", f"回填 evaluation_summary 失败: {e}")
+
+    return out
+
+
+def _agent_outcomes_from_matches(eid: str, cm: dict) -> dict:
+    """旧 dump 无 agent_outcomes：从 matches + parsing 反推各 agent TP/FP。"""
+    sid_to_agent: dict[str, str] = {}
+    ps_path = os.path.join(REPORTS_DIR, f"{eid}_debug_parsing.json")
+    if os.path.isfile(ps_path):
+        try:
+            with open(ps_path, "r", encoding="utf-8") as f:
+                ps = json.load(f) or {}
+            for pack in ps.get("data_packs", []):
+                at = pack.get("agent_type", "")
+                for s in (pack.get("sessions", []) or []):
+                    sid = s.get("session_id", "")
+                    if sid and at:
+                        sid_to_agent[sid] = at
+        except Exception as e:
+            log("DASHBOARD", f"读取 parsing 失败 {eid}: {e}")
+
+    stats: dict[str, dict] = {}
+    for m in (cm.get("matches", []) or []):
+        outcome = m.get("outcome", "")
+        if outcome not in ("TP", "FP"):
+            continue
+        key = "tp" if outcome == "TP" else "fp"
+        mining = m.get("mining_sessions", []) or []
+        bumped = set()
+        for sid in mining:
+            agent = sid_to_agent.get(sid, "")
+            if agent and agent not in bumped:
+                bumped.add(agent)
+                a = stats.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
+                a[key] = a.get(key, 0) + 1
+    return stats
+
+
 # 断点矩阵的 L 级别（L1 是前置判定，不是断点）
 _BP_LEVELS = ["L2", "L3", "L4", "L5", "L6", "L7", "L8"]
 
 
-def _read_breakpoint_distribution() -> dict:
-    """汇总所有已完成评测的断点分布（agent × L2-L8），按 eval_mode 分组。
+def _aggregate_breakpoints(summaries: dict[str, dict]) -> dict:
+    """汇总断点分布（agent × L2-L8），按 eval_mode 分组。
 
-    数据来源：每个评测的 {eid}_lifecycle.json 里的 breakpoint_distribution。
-    计数单位是断点（session 级），不是问题单数。
+    数据来自 evaluation_summary.breakpoint_distribution，不读 lifecycle 文件。
     """
     def _empty() -> dict:
         return {a: {lv: 0 for lv in _BP_LEVELS} for a in _ALL_AGENT_TYPES}
@@ -73,30 +289,9 @@ def _read_breakpoint_distribution() -> dict:
         "runtime": _empty(), "dev": _empty(), "unknown": _empty(),
     }
 
-    def _query(cur):
-        cur.execute(
-            "SELECT evaluation_id FROM evaluation "
-            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
-        )
-        return [row[0] for row in cur.fetchall()]
-
-    try:
-        eids = _db_query(_query)
-    except Exception as e:
-        log("DASHBOARD", f"查询断点分布失败: {e}")
-        return grouped
-
-    for eid in eids:
-        path = os.path.join(REPORTS_DIR, f"{eid}_lifecycle.json")
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                dist = (json.loads(f.read()) or {}).get(
-                    "breakpoint_distribution") or {}
-        except Exception:
-            continue
-        mode = _eval_mode_of(eid) or "unknown"
+    for s in summaries.values():
+        mode = s.get("eval_mode") or "unknown"
+        dist = s.get("breakpoint_distribution") or {}
         bucket = grouped.setdefault(mode, _empty())
         for agent, levels in dist.items():
             if not isinstance(levels, dict):
@@ -108,17 +303,14 @@ def _read_breakpoint_distribution() -> dict:
     return grouped
 
 
-def _read_eval_reports() -> dict:
-    """读取所有已完成评测的 {eid}.json 报告 recall_precision 数据，按 eval_mode 分组。
-
-    从 evaluation 表查 COMPLETED / COMPLETED_WITH_WARNINGS 评测，
-    逐个读报告文件（不存在跳过）。
+def _aggregate_reports(summaries: dict[str, dict]) -> dict:
+    """按 eval_mode 汇总 recall_precision（来自 evaluation_summary）。
 
     Returns:
         {
             "runtime": {"tp": N, "fp": N, "fn": N, "tn": N, "count": N},
-            "dev": {"tp": N, "fp": N, "fn": N, "tn": N, "count": N},
-            "unknown": {...},   # eval_mode 文件缺失的评测
+            "dev": {...},
+            "unknown": {...},
         }
     """
     grouped: dict[str, dict] = {
@@ -127,52 +319,22 @@ def _read_eval_reports() -> dict:
         "unknown": {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "count": 0},
     }
 
-    def _query(cur):
-        cur.execute(
-            "SELECT evaluation_id FROM evaluation "
-            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
-        )
-        return [row[0] for row in cur.fetchall()]
-
-    try:
-        eids = _db_query(_query)
-    except Exception as e:
-        log("DASHBOARD", f"查询已完成评测失败: {e}")
-        raise HTTPException(status_code=500, detail=f"查询已完成评测失败: {e}")
-
-    for eid in eids:
-        path = os.path.join(REPORTS_DIR, f"{eid}.json")
-        if not os.path.isfile(path):
-            continue
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                data = json.loads(f.read())
-            rp = data.get("recall_precision") or {}
-            mode = _eval_mode_of(eid) or "unknown"
-            bucket = grouped.setdefault(mode, {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "count": 0})
-            bucket["tp"] += rp.get("tp_count") or 0
-            bucket["fp"] += rp.get("fp_count") or 0
-            # 运行态没有漏报基线：历史报告里即使有 FN 也不计入运行态统计
-            bucket["fn"] += (0 if mode == "runtime"
-                             else (rp.get("fn_count") or 0))
-            bucket["tn"] += rp.get("tn_count") or 0
-            bucket["count"] += 1
-        except Exception as e:
-            log("DASHBOARD", f"读取报告失败 {eid}: {e}")
-            continue
+    for s in summaries.values():
+        mode = s.get("eval_mode") or "unknown"
+        bucket = grouped.setdefault(mode, {"tp": 0, "fp": 0, "fn": 0, "tn": 0, "count": 0})
+        bucket["tp"] += s.get("tp", 0)
+        bucket["fp"] += s.get("fp", 0)
+        # 运行态没有漏报基线：历史报告里即使有 FN 也不计入运行态统计
+        bucket["fn"] += (0 if mode == "runtime" else s.get("fn", 0))
+        bucket["tn"] += s.get("tn", 0)
+        bucket["count"] += 1
     return grouped
 
 
-def _read_agent_fpr() -> dict:
-    """反推各 agent 的 TP/FP/FN（来自完成评测的 case_matching + parsing），按 eval_mode 分组。
+def _aggregate_agent_fpr(summaries: dict[str, dict]) -> dict:
+    """按 eval_mode 汇总各 agent 的 TP/FP/FN（来自 evaluation_summary）。
 
-    口径与总体误报率一致：agent 误报率 = FP / (TP + FP)、漏报率 = FN / (TP + FN)。
-
-    数据来源：
-    - {eid}_debug_case_matching.json：每个 case 的 outcome + mining_sessions，
-      以及新 dump 的 agent_outcomes 字段（含 TP/FP/FN）
-    - {eid}_debug_parsing.json：session_id → agent_type 映射
-    - {eid}_debug_ingesting.json：eval_mode（runtime/dev）
+    口径：agent 误报率 = FP / (TP + FP)、漏报率 = FN / (TP + FN)。
 
     Returns:
         {
@@ -185,87 +347,20 @@ def _read_agent_fpr() -> dict:
         "runtime": {}, "dev": {}, "unknown": {},
     }
 
-    def _bump(mode: str, agent: str, key: str):
-        if not agent:
-            return
-        bucket = grouped.setdefault(mode, {})
-        a = bucket.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
-        a[key] = a.get(key, 0) + 1
-
-    # 复用已完成评测列表
-    def _query(cur):
-        cur.execute(
-            "SELECT evaluation_id FROM evaluation "
-            "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS')"
-        )
-        return [row[0] for row in cur.fetchall()]
-
-    try:
-        eids = _db_query(_query)
-    except Exception as e:
-        log("DASHBOARD", f"查询已完成评测失败(agent_fpr): {e}")
-        raise HTTPException(status_code=500, detail=f"查询已完成评测失败(agent_fpr): {e}")
-
-    for eid in eids:
-        mode = _eval_mode_of(eid) or "unknown"
-        cm_path = os.path.join(REPORTS_DIR, f"{eid}_debug_case_matching.json")
-        if not os.path.isfile(cm_path):
-            continue
-        try:
-            with open(cm_path, "r", encoding="utf-8") as f:
-                cm = json.loads(f.read())
-        except Exception as e:
-            log("DASHBOARD", f"读取 case_matching 失败 {eid}: {e}")
-            continue
-
-        # 优先用 agent_outcomes（含 TP/FP/FN——新 dump 字段，直接统计各 agent）
-        ao = cm.get("agent_outcomes", {}) or {}
-        if ao:
-            for agent, st in ao.items():
-                tp = st.get("tp", 0) or 0
-                fp = st.get("fp", 0) or 0
-                # 运行态没有漏报基线：不统计 FN
-                fn = 0 if mode == "runtime" else (st.get("fn", 0) or 0)
-                bucket = grouped.setdefault(mode, {})
-                a = bucket.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
-                a["tp"] += tp
-                a["fp"] += fp
-                a["fn"] += fn
-            continue
-
-        # 回退：旧 dump 无 agent_outcomes，从 matches（仅 FP/FN）+ parsing 反推
-        # session_id → agent_type 映射（从 parsing 数据）
-        sid_to_agent: dict[str, str] = {}
-        ps_path = os.path.join(REPORTS_DIR, f"{eid}_debug_parsing.json")
-        if os.path.isfile(ps_path):
-            try:
-                with open(ps_path, "r", encoding="utf-8") as f:
-                    ps = json.loads(f.read())
-                for pack in ps.get("data_packs", []):
-                    at = pack.get("agent_type", "")
-                    for s in (pack.get("sessions", []) or []):
-                        sid = s.get("session_id", "")
-                        if sid and at:
-                            sid_to_agent[sid] = at
-            except Exception as e:
-                log("DASHBOARD", f"读取 parsing 失败 {eid}: {e}")
-
-        for m in (cm.get("matches", []) or []):
-            outcome = m.get("outcome", "")
-            if outcome not in ("TP", "FP"):
+    for s in summaries.values():
+        mode = s.get("eval_mode") or "unknown"
+        for agent, st in (s.get("agent_outcomes") or {}).items():
+            if not isinstance(st, dict):
                 continue
-            key = "tp" if outcome == "TP" else "fp"
-            mining = m.get("mining_sessions", []) or []
-            if not mining:
-                continue
-            # 该 case 的挖掘 agent：取第一个 mining session 的 agent（
-            # 多个 session 同 agent 时只算一次，避免重复计数）
-            bumped = set()
-            for sid in mining:
-                agent = sid_to_agent.get(sid, "")
-                if agent and agent not in bumped:
-                    bumped.add(agent)
-                    _bump(mode, agent, key)
+            tp = st.get("tp", 0) or 0
+            fp = st.get("fp", 0) or 0
+            # 运行态没有漏报基线：不统计 FN
+            fn = 0 if mode == "runtime" else (st.get("fn", 0) or 0)
+            bucket = grouped.setdefault(mode, {})
+            a = bucket.setdefault(agent, {"tp": 0, "fp": 0, "fn": 0})
+            a["tp"] += tp
+            a["fp"] += fp
+            a["fn"] += fn
     return grouped
 
 
@@ -395,8 +490,16 @@ def get_dashboard_overview():
     """
     from datetime import datetime, timezone, timedelta
 
+    # 已完成评测列表 + 汇总索引：一次查询拿到全部聚合输入，不读大报告文件
+    try:
+        eids = _completed_eids()
+    except Exception as e:
+        log("DASHBOARD", f"查询已完成评测失败: {e}")
+        raise HTTPException(status_code=500, detail=f"查询已完成评测失败: {e}")
+    summaries = _load_summaries(eids)
+
     # 1. 跨评测 fpr/fnr（按 eval_mode 分组：runtime/dev/unknown）
-    reports = _read_eval_reports()
+    reports = _aggregate_reports(summaries)
     overall_by_mode: dict[str, dict] = {}
     for mode in ("runtime", "dev", "unknown"):
         b = reports.get(mode, {}) or {}
@@ -433,7 +536,7 @@ def get_dashboard_overview():
         overall_by_mode[mode]["post_fnr"] = None if mode == "runtime" else post_fnr
 
     # 3. agent 明细：按 eval_mode 分组（runtime/dev/unknown）
-    agent_fpr_stats = _read_agent_fpr()  # {mode: {agent: {tp, fp, fn}}}
+    agent_fpr_stats = _aggregate_agent_fpr(summaries)  # {mode: {agent: {tp, fp, fn}}}
     agent_detail_by_mode: dict[str, list] = {
         "runtime": [], "dev": [], "unknown": [],
     }
@@ -466,7 +569,13 @@ def get_dashboard_overview():
         agent_detail_by_mode[mode] = _build_agent_detail(stats)
 
     now_cst = datetime.now(timezone(timedelta(hours=8)))
+    try:
+        eval_counts = _eval_status_counts()
+    except Exception as e:
+        log("DASHBOARD", f"查询评测状态计数失败: {e}")
+        eval_counts = {"total": 0, "by_status": {}}
     return {
+        "evaluations": eval_counts,
         "overall": {
             "runtime": overall_by_mode.get("runtime", {}),
             "dev": overall_by_mode.get("dev", {}),
@@ -483,7 +592,7 @@ def get_dashboard_overview():
         },
         "agent_detail": agent_detail_by_mode,
         "cause_agent_matrix": agg.get("cause_agent_matrix", {}),
-        "breakpoint_matrix": _read_breakpoint_distribution(),
+        "breakpoint_matrix": _aggregate_breakpoints(summaries),
         "dts": agg.get("dts", {}),
         "updated_at": now_cst.strftime("%Y-%m-%d %H:%M:%S"),
     }

@@ -81,15 +81,19 @@ renderNav('/');
 
 async function renderHome(){
   $("view").innerHTML='<div class="home-dashboard"><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>加载看板…</h3></div></div>';
-  var evals=[],dtsStats={},dash={};
-  try{evals=await jgetAllEvaluations();}catch(e){}
-  try{dtsStats=await jget("/api/v2/dts/stats");}catch(e){}
-  try{dash=await jget("/api/v2/dashboard/overview");}catch(e){}
+  // 两个接口互不依赖，并发请求；评测计数由 overview 聚合返回，不再拉全量列表
+  var _res=await Promise.all([
+    jget("/api/v2/dts/stats").catch(function(){return {};}),
+    jget("/api/v2/dashboard/overview").catch(function(){return {};})
+  ]);
+  var dtsStats=_res[0],dash=_res[1];
 
-  var total=evals.length;
-  var completed=evals.filter(function(e){return e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS';}).length;
-  var running=evals.filter(function(e){return ['RUNNING','VALIDATING','INGESTING','PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS','RESOLVING','REPORTING','FINALIZING'].indexOf(e.status)>=0;}).length;
-  var failed=evals.filter(function(e){return e.status==='FAILED';}).length;
+  var evCounts=dash.evaluations||{};
+  var evByStatus=evCounts.by_status||{};
+  var total=evCounts.total||0;
+  var completed=(evByStatus.COMPLETED||0)+(evByStatus.COMPLETED_WITH_WARNINGS||0);
+  var running=['RUNNING','VALIDATING','INGESTING','PARSING','CASE_MATCHING','ROOT_CAUSE_ANALYSIS','RESOLVING','REPORTING','FINALIZING'].reduce(function(s,k){return s+(evByStatus[k]||0);},0);
+  var failed=evByStatus.FAILED||0;
 
   var dtsTotal=dtsStats.total||0;
   var dtsByStatus=dtsStats.by_status||{};

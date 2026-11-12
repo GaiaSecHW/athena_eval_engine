@@ -71,8 +71,13 @@ def report_page():
     return _read_page("report.html")
 
 
-def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
-    """同步逻辑：查 DB + 解析 config_json + 组装响应。"""
+def _list_evaluations_sync(page: int, page_size: int, offset: int,
+                           alive: bool = True) -> dict:
+    """同步逻辑：查 DB + 解析 config_json + 组装响应。
+
+    alive=False 时跳过平台任务存活校验（逐项目网络调用），列表立即返回，
+    由前端另行请求 /api/v1/eval-alive-status 异步补全 task_deleted。
+    """
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
@@ -127,32 +132,36 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
                           "vc_source_task_name": vc_source_task_name,
                           "progress": get_progress(r[0]) if r[2] not in ("COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED", "CANCELLED") else ""})
 
-        # 标记任务已从平台删除（与漏洞中心隐藏 case 同一口径：schedule batch-alive）。
-        # 校验失败时不误标，保持 task_deleted=False。
-        from ...application.platform_service import filter_alive_tasks
-        from ...infrastructure.log_util import log as _log
-        by_proj: dict[str, set[str]] = {}
-        for pid, tid in task_pairs:
-            if pid and tid:
-                by_proj.setdefault(pid, set()).add(tid)
-        alive_by_proj: dict[str, set[str]] = {}
-        if by_proj:
-            from concurrent.futures import ThreadPoolExecutor
+        if alive:
+            # 标记任务已从平台删除（与漏洞中心隐藏 case 同一口径：schedule batch-alive）。
+            # 校验失败时不误标，保持 task_deleted=False。
+            from ...application.platform_service import filter_alive_tasks
+            from ...infrastructure.log_util import log as _log
+            by_proj: dict[str, set[str]] = {}
+            for pid, tid in task_pairs:
+                if pid and tid:
+                    by_proj.setdefault(pid, set()).add(tid)
+            alive_by_proj: dict[str, set[str]] = {}
+            if by_proj:
+                from concurrent.futures import ThreadPoolExecutor
 
-            def _check_alive(item):
-                pid, tids = item
-                try:
-                    return pid, filter_alive_tasks(pid, sorted(tids))
-                except Exception as e:
-                    _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
-                    return pid, set(tids)
+                def _check_alive(item):
+                    pid, tids = item
+                    try:
+                        return pid, filter_alive_tasks(pid, sorted(tids))
+                    except Exception as e:
+                        _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
+                        return pid, set(tids)
 
-            with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
-                for pid, alive in pool.map(_check_alive, list(by_proj.items())):
-                    alive_by_proj[pid] = alive
-        for ev, (pid, tid) in zip(evals, task_pairs):
-            ev["task_deleted"] = bool(
-                pid and tid and tid not in alive_by_proj.get(pid, set()))
+                with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+                    for pid, alive_ids in pool.map(_check_alive, list(by_proj.items())):
+                        alive_by_proj[pid] = alive_ids
+            for ev, (pid, tid) in zip(evals, task_pairs):
+                ev["task_deleted"] = bool(
+                    pid and tid and tid not in alive_by_proj.get(pid, set()))
+        else:
+            for ev in evals:
+                ev["task_deleted"] = False
 
         return {
             "evaluations": evals,
@@ -166,8 +175,73 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int) -> dict:
 
 
 @router.get("/api/v1/evaluations")
-async def list_evaluations(page: int = 1, page_size: int = 20):
+async def list_evaluations(page: int = 1, page_size: int = 20, alive: bool = True):
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
-    return await asyncio.to_thread(_list_evaluations_sync, page, page_size, offset)
+    return await asyncio.to_thread(
+        _list_evaluations_sync, page, page_size, offset, alive)
+
+
+def _eval_alive_status_sync(eids: list[str]) -> dict[str, bool]:
+    """批量校验评测对应平台任务是否已删除，返回 {evaluation_id: deleted}。"""
+    if not eids:
+        return {}
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["%s"] * len(eids))
+        cur.execute(
+            "SELECT e.evaluation_id, s.config_json FROM evaluation e "
+            "LEFT JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
+            f"WHERE e.evaluation_id IN ({placeholders})",
+            tuple(eids),
+        )
+        pairs: list[tuple[str, str, str]] = []
+        for eid, cfg in cur.fetchall():
+            pid = tid = ""
+            if cfg:
+                try:
+                    manifest = (json.loads(cfg) or {}).get("manifest", {})
+                    pid = manifest.get("kg_project_id") or ""
+                    tid = manifest.get("kg_task_id") or ""
+                except (json.JSONDecodeError, TypeError):
+                    pass
+            pairs.append((eid, pid, tid))
+    finally:
+        conn.close()
+
+    from ...application.platform_service import filter_alive_tasks
+    from ...infrastructure.log_util import log as _log
+    by_proj: dict[str, set[str]] = {}
+    for _, pid, tid in pairs:
+        if pid and tid:
+            by_proj.setdefault(pid, set()).add(tid)
+    alive_by_proj: dict[str, set[str]] = {}
+    if by_proj:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _check_alive(item):
+            pid, tids = item
+            try:
+                return pid, filter_alive_tasks(pid, sorted(tids))
+            except Exception as e:
+                _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
+                return pid, set(tids)
+
+        with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+            for pid, alive_ids in pool.map(_check_alive, list(by_proj.items())):
+                alive_by_proj[pid] = alive_ids
+
+    return {
+        eid: bool(pid and tid and tid not in alive_by_proj.get(pid, set()))
+        for eid, pid, tid in pairs
+    }
+
+
+@router.get("/api/v1/eval-alive-status")
+async def eval_alive_status(eids: str = ""):
+    """按评测 ID 批量返回 task_deleted（列表页异步补全置灰状态用）。"""
+    ids = [e.strip() for e in (eids or "").split(",") if e.strip()]
+    deleted = await asyncio.to_thread(_eval_alive_status_sync, ids)
+    return {"deleted": deleted}

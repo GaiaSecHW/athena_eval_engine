@@ -210,6 +210,7 @@ class Orchestrator:
             # 收集 pipeline 执行中的数据质量告警（drain 清空，后续 has_warnings 用本地变量）
             data_quality_warnings = _pw.drain(evaluation_id)
 
+            recall_precision = None
             if _has_lifecycle_report(evaluation_id, reports_dir) and \
                     os.path.isfile(os.path.join(reports_dir, f"{evaluation_id}.json")):
                 log("ORCH", "REPORTING skipped: lifecycle + base report 已存在"
@@ -240,7 +241,13 @@ class Orchestrator:
             assert_transition(stages.REPORTING, "FINALIZING")
             _set_status_safe(evaluation_id, "FINALIZING")
             _set_progress(evaluation_id, "完成...")
-            self._finalize(evaluation_id, reports_dir, causal_chain)
+            self._finalize(
+                evaluation_id, reports_dir, causal_chain,
+                recall_precision=recall_precision,
+                eval_mode=eval_mode,
+                agent_outcomes=_calc_agent_outcomes(
+                    case_session_matches, data_packs),
+            )
             # 有数据质量告警时标记为 COMPLETED_WITH_WARNINGS
             if data_quality_warnings:
                 _set_status_safe(evaluation_id, "COMPLETED_WITH_WARNINGS")
@@ -1405,17 +1412,32 @@ class Orchestrator:
     def _finalize(
         self, evaluation_id: str, reports_dir: str,
         causal_chain: dict,
+        recall_precision: dict | None = None,
+        eval_mode: str = "dev",
+        agent_outcomes: dict | None = None,
     ):
         """写入 evaluation_report 表，状态设为 COMPLETED。
 
         将报告 JSON 路径写入 evaluation_report 表，
         供 /report/status 和 /report/lifecycle 端点查询。
+
+        同时写入 evaluation_summary 小索引表：首页看板只需一次 SQL 聚合，
+        不再逐个读取 {eid}.json / _debug_case_matching.json / _lifecycle.json。
         """
         # 检查 lifecycle report 是否存在
         lifecycle_path = os.path.join(
             reports_dir, f"{evaluation_id}_lifecycle.json",
         )
         base_path = os.path.join(reports_dir, f"{evaluation_id}.json")
+
+        # 重试路径跳过 REPORTING 时 recall_precision 未计算，从基础报告补读
+        rp = recall_precision
+        if not rp:
+            try:
+                with open(base_path, "r", encoding="utf-8") as f:
+                    rp = (json.load(f) or {}).get("recall_precision") or {}
+            except Exception:
+                rp = {}
 
         report_data = {
             "evaluation_id": evaluation_id,
@@ -1455,6 +1477,36 @@ class Orchestrator:
                     f"snap-{evaluation_id}",
                     base_path,
                     _json_dumps(report_data),
+                ),
+            )
+            # 小索引：看板聚合只读此表，不碰大报告文件
+            cur.execute(
+                "INSERT INTO evaluation_summary "
+                "(evaluation_id, eval_mode, tp_count, fp_count, fn_count, tn_count, "
+                " recall_rate, precision_rate, fpr_rate, agent_outcomes, "
+                " breakpoint_distribution) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON DUPLICATE KEY UPDATE "
+                "eval_mode=VALUES(eval_mode), "
+                "tp_count=VALUES(tp_count), fp_count=VALUES(fp_count), "
+                "fn_count=VALUES(fn_count), tn_count=VALUES(tn_count), "
+                "recall_rate=VALUES(recall_rate), "
+                "precision_rate=VALUES(precision_rate), "
+                "fpr_rate=VALUES(fpr_rate), "
+                "agent_outcomes=VALUES(agent_outcomes), "
+                "breakpoint_distribution=VALUES(breakpoint_distribution)",
+                (
+                    evaluation_id,
+                    eval_mode or "",
+                    int(rp.get("tp_count") or 0),
+                    int(rp.get("fp_count") or 0),
+                    int(rp.get("fn_count") or 0),
+                    int(rp.get("tn_count") or 0),
+                    rp.get("recall_rate"),
+                    rp.get("precision_rate"),
+                    rp.get("fpr_rate"),
+                    _json_dumps(agent_outcomes or {}),
+                    _json_dumps(causal_chain.get("cross_attribution_matrix") or {}),
                 ),
             )
 

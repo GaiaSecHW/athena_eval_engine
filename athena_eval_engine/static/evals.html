@@ -43,8 +43,30 @@
 renderNav('/evals');
 
 let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";
+// 已查询过存活状态的评测 ID，避免重复请求
+let _evAliveChecked={};
+
+// 列表秒回后，按当前可见页异步补全「平台任务已删除」置灰状态
+async function loadAliveFor(pageItems){
+  var need=pageItems.map(function(e){return e.evaluation_id;})
+    .filter(function(id){return id&&!_evAliveChecked[id];});
+  if(!need.length)return;
+  need.forEach(function(id){_evAliveChecked[id]=true;});
+  try{
+    var d=await jget("/api/v1/eval-alive-status?eids="+encodeURIComponent(need.join(",")));
+    var del=d.deleted||{};
+    var changed=false;
+    _evData.forEach(function(e){
+      if(e.evaluation_id in del && !!e.task_deleted!==!!del[e.evaluation_id]){
+        e.task_deleted=!!del[e.evaluation_id];changed=true;
+      }
+    });
+    if(changed)renderEvList();
+  }catch(e){}
+}
 
 async function renderEvals(){
+  _evAliveChecked={};
   _evData=await jgetAllEvaluations();_evPage=1;
   $("view").innerHTML=`<div class="page-body">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
@@ -68,6 +90,7 @@ function evPage(p){_evPage=p;renderEvList();}
 // 只刷新数据，不重建页面、不重置页码/筛选/搜索（重跑、取消、删除后使用）
 async function refreshEvalsData(){
   try{
+    _evAliveChecked={};
     _evData=await jgetAllEvaluations();
     const cnt=$("ev-total-count");
     if(cnt)cnt.textContent="共 "+_evData.length+" 条";
@@ -127,6 +150,8 @@ function renderEvList(){
     html+=pgHtml;
   }
   el.innerHTML=html;
+  // 可见页的置灰状态异步补全（不阻塞列表渲染）
+  loadAliveFor(pageItems);
 }
 
 // 评测操作

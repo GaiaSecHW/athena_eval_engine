@@ -514,6 +514,80 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN session_chains MEDIUMTEXT AFTER analysis_data_path",
         ],
     },
+    {
+        "id": "035_agent_owner_config",
+        "desc": "创建 agent_owner_config 表——agent_type → 负责人/WeLink 目标映射（日报推送用）",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS agent_owner_config ("
+            "  agent_type VARCHAR(32) PRIMARY KEY,"
+            "  display_name VARCHAR(64) NOT NULL DEFAULT '',"
+            "  owner_name VARCHAR(128) NOT NULL DEFAULT '',"
+            "  target_type VARCHAR(16) NOT NULL DEFAULT 'user',"
+            "  target_id VARCHAR(128) NOT NULL DEFAULT '',"
+            "  enabled TINYINT(1) NOT NULL DEFAULT 0,"
+            "  _version INT NOT NULL DEFAULT 1,"
+            "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "INSERT IGNORE INTO agent_owner_config (agent_type, display_name, enabled) VALUES"
+            " ('turing','挖掘Agent(Turing)',0),"
+            " ('argo','挖掘Agent(Argo)',0),"
+            " ('secmate','挖掘Agent(SecMate)',0),"
+            " ('dataflow','挖掘Agent(Dataflow)',0),"
+            " ('cvuln_verify','验证Agent(CVulnVerify)',0),"
+            " ('webvuln_verify','验证Agent(WebVulnVerify)',0)",
+        ],
+    },
+    {
+        "id": "036_notification_log",
+        "desc": "创建 notification_log 表——记录日报发送窗口与结果，支撑「上次成功发送至今」",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS notification_log ("
+            "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
+            "  agent_type VARCHAR(32) NOT NULL,"
+            "  channel VARCHAR(16) NOT NULL DEFAULT 'welink',"
+            "  recipient VARCHAR(256) NOT NULL DEFAULT '',"
+            "  window_start DATETIME(3) NOT NULL,"
+            "  window_end DATETIME(3) NOT NULL,"
+            "  content_hash VARCHAR(64) NOT NULL DEFAULT '',"
+            "  status VARCHAR(16) NOT NULL DEFAULT 'sent',"
+            "  error TEXT,"
+            "  sent_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  INDEX idx_notify_agent (agent_type, channel, sent_at),"
+            "  INDEX idx_notify_window (window_end)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
+    {
+        "id": "037_evaluation_created_at_index",
+        "desc": "evaluation.created_at 加索引——评测列表 ORDER BY created_at DESC 分页避免全表 filesort",
+        "sql": [
+            "ALTER TABLE evaluation ADD INDEX idx_eval_created (created_at)",
+        ],
+    },
+    {
+        "id": "038_evaluation_summary",
+        "desc": "评测汇总索引表——FINALIZE 写入 recall_precision/agent_outcomes/断点分布，"
+                "首页看板不再逐个读大报告文件",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS evaluation_summary ("
+            "  evaluation_id VARCHAR(64) PRIMARY KEY,"
+            "  eval_mode VARCHAR(16) NOT NULL DEFAULT '',"
+            "  tp_count INT NOT NULL DEFAULT 0,"
+            "  fp_count INT NOT NULL DEFAULT 0,"
+            "  fn_count INT NOT NULL DEFAULT 0,"
+            "  tn_count INT NOT NULL DEFAULT 0,"
+            "  recall_rate DOUBLE NULL,"
+            "  precision_rate DOUBLE NULL,"
+            "  fpr_rate DOUBLE NULL,"
+            "  agent_outcomes JSON NULL,"
+            "  breakpoint_distribution JSON NULL,"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
+            "    ON UPDATE CURRENT_TIMESTAMP(3)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

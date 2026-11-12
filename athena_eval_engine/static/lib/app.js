@@ -34,15 +34,21 @@ async function jdel(u){const r=await F(u,{method:"DELETE"});if(!r.ok)throw new E
 
 // 分页拉取全部评测：后端 page_size 上限 100，直接传更大的值会被截断，
 // 只拿首页会让「评测总数」和状态统计永久停在 100。
+// 先取第 1 页拿到 total，其余页按 4 并发批量拉取，减少串行等待。
 async function jgetAllEvaluations(){
-  const pageSize=100;let page=1,all=[],total=null;
-  while(true){
-    const d=await jget(`/api/v1/evaluations?page=${page}&page_size=${pageSize}`);
-    const items=d.evaluations||[];
-    all=all.concat(items);
-    if(total===null)total=Number(d.total||0);
-    if(!items.length||items.length<pageSize||all.length>=total)break;
-    page++;
+  const pageSize=100,CONC=4;
+  // alive=0：跳过平台任务存活校验（逐项目网络调用），列表秒回；
+  // task_deleted 由列表页按可见页异步补全。
+  const first=await jget(`/api/v1/evaluations?page=1&page_size=${pageSize}&alive=0`);
+  let all=(first.evaluations||[]).slice();
+  const total=Number(first.total||0);
+  const pages=Math.max(1,Math.ceil(total/pageSize));
+  for(let start=2;start<=pages;start+=CONC){
+    const batch=[];
+    for(let p=start;p<start+CONC&&p<=pages;p++)batch.push(p);
+    const ds=await Promise.all(batch.map(p=>
+      jget(`/api/v1/evaluations?page=${p}&page_size=${pageSize}&alive=0`)));
+    ds.forEach(d=>{all=all.concat(d.evaluations||[]);});
   }
   return all;
 }

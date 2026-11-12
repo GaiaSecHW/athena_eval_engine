@@ -504,6 +504,7 @@ def delete_evaluation(evaluation_id: str):
             "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
             "tool_action_fact", "resource_fact", "task_run", "trace_source",
             "evaluation_report", "dts_issue", "knowledge_access_detail",
+            "evaluation_summary",
         ]
         for t in eid_tables:
             cur.execute(f"DELETE FROM {t} WHERE evaluation_id=%s", (evaluation_id,))
