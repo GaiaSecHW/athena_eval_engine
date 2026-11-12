@@ -45,8 +45,7 @@ renderNav('/evals');
 let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";
 
 async function renderEvals(){
-  const d=await jget("/api/v1/evaluations?page_size=9999");
-  _evData=d.evaluations||[];_evPage=1;
+  _evData=await jgetAllEvaluations();_evPage=1;
   $("view").innerHTML=`<div class="page-body">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:280px" value="${_evQ}">
@@ -69,8 +68,7 @@ function evPage(p){_evPage=p;renderEvList();}
 // 只刷新数据，不重建页面、不重置页码/筛选/搜索（重跑、取消、删除后使用）
 async function refreshEvalsData(){
   try{
-    const d=await jget("/api/v1/evaluations?page_size=9999");
-    _evData=d.evaluations||[];
+    _evData=await jgetAllEvaluations();
     const cnt=$("ev-total-count");
     if(cnt)cnt.textContent="共 "+_evData.length+" 条";
     renderEvList();

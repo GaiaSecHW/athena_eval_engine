@@ -82,7 +82,7 @@ renderNav('/');
 async function renderHome(){
   $("view").innerHTML='<div class="home-dashboard"><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>加载看板…</h3></div></div>';
   var evals=[],dtsStats={},dash={};
-  try{evals=(await jget("/api/v1/evaluations?page_size=9999")).evaluations||[];}catch(e){}
+  try{evals=await jgetAllEvaluations();}catch(e){}
   try{dtsStats=await jget("/api/v2/dts/stats");}catch(e){}
   try{dash=await jget("/api/v2/dashboard/overview");}catch(e){}
 

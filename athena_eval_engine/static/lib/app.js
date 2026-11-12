@@ -32,6 +32,21 @@ async function jpost(u,b){const r=await F(u,{method:"POST",headers:{"Content-Typ
 async function jput(u,b){const r=await F(u,{method:"PUT",headers:{"Content-Type":"application/json"},body:JSON.stringify(b)});if(!r.ok)throw new Error(await _httpError(r));return r.json();}
 async function jdel(u){const r=await F(u,{method:"DELETE"});if(!r.ok)throw new Error(await _httpError(r));return r.json();}
 
+// 分页拉取全部评测：后端 page_size 上限 100，直接传更大的值会被截断，
+// 只拿首页会让「评测总数」和状态统计永久停在 100。
+async function jgetAllEvaluations(){
+  const pageSize=100;let page=1,all=[],total=null;
+  while(true){
+    const d=await jget(`/api/v1/evaluations?page=${page}&page_size=${pageSize}`);
+    const items=d.evaluations||[];
+    all=all.concat(items);
+    if(total===null)total=Number(d.total||0);
+    if(!items.length||items.length<pageSize||all.length>=total)break;
+    page++;
+  }
+  return all;
+}
+
 // 格式化
 function fmtDate(s){if(!s)return'-';const d=new Date(s+'Z');if(isNaN(d))return s;const b=new Date(d.getTime()+8*3600000);const p=n=>String(n).padStart(2,'0');return b.getUTCFullYear()+'-'+p(b.getUTCMonth()+1)+'-'+p(b.getUTCDate())+' '+p(b.getUTCHours())+':'+p(b.getUTCMinutes());}
 function fmtTs(ts){if(!ts)return'';const d=new Date(ts+8*3600000);const p=n=>String(n).padStart(2,'0');return p(d.getUTCMonth()+1)+'-'+p(d.getUTCDate())+' '+p(d.getUTCHours())+':'+p(d.getUTCMinutes())+':'+p(d.getUTCSeconds());}
