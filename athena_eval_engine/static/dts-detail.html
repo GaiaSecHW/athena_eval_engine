@@ -160,7 +160,7 @@ async function renderDtsDetailPage(dtsId){
   try{
     var d=await jget(`/api/v2/dts/${dtsId}`);
     var caseData=d.analysis_data||null;
-    var causeLabel=DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
+    var causeLabel=DTS_CAUSE_DESCRIPTIONS[d.cause_code]||DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
     var respLabel=dtsRespLabel(d.responsibility);
     var caseTypeLabel=DTS_CASE_TYPE_LABELS[d.case_type]||d.case_type||'-';
     var statusLabel=DTS_STATUS_LABELS[d.status]||d.status||'-';
@@ -178,7 +178,7 @@ async function renderDtsDetailPage(dtsId){
       +'<div><span style="color:var(--gray)">Agent：</span><b>'+esc(agentLabel)+'</b></div>'
       +'<div><span style="color:var(--gray)">责任方：</span><b>'+esc(respLabel)+'</b></div>'
       +'<div><span style="color:var(--gray)">成因：</span><b>'+esc(causeLabel)+'</b></div>'
-      +'<div><span style="color:var(--gray)">断点级别：</span><b>'+esc(d.breakpoint_level||'-')+'</b></div>'
+      +'<div><span style="color:var(--gray)">断点级别：</span><b>'+esc((function(){var lv=d.breakpoint_level||'';return lv?(lv+' '+(LEVEL_LABELS[lv]||'')+'（'+(LEVEL_DESCRIPTIONS[lv]||'')+'）'):'-';})())+'</b></div>'
       +'<div><span style="color:var(--gray)">Case ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.case_id||'-')+'</b></div>'
       +'<div><span style="color:var(--gray)">评测 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.evaluation_id||'-')+'</b></div>'
       +'</div>';
@@ -240,7 +240,7 @@ async function renderDtsDetailPage(dtsId){
           +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
           +'<span style="font-weight:600;font-size:14px">线索 '+(idx+1)+'</span>'
           +'<span class="knd" style="background:rgba(220,38,38,.12);color:'+confColor+'">置信度 '+conf.toFixed(2)+'</span>'
-          +'<span class="knd">'+esc(DTS_CAUSE_LABELS[h.cause_code]||h.cause_code||'-')+'</span>'
+          +'<span class="knd" title="'+esc(DTS_CAUSE_DESCRIPTIONS[h.cause_code]||'')+'">'+esc(DTS_CAUSE_DESCRIPTIONS[h.cause_code]||DTS_CAUSE_LABELS[h.cause_code]||h.cause_code||'-')+'</span>'
           +'<span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+esc(DTS_RESP_LABELS[h.responsibility]||h.responsibility||'-')+'</span>'
           +'</summary>';
         if(h.hypothesis){
@@ -412,7 +412,7 @@ async function renderDtsDetailPage(dtsId){
           var location=fs.location||'';
           var action=fs.action||'';
           var expected=fs.expected_effect||'';
-          var causeLabel=DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
+          var causeLabel=DTS_CAUSE_DESCRIPTIONS[causeCode]||DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
           var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
           var probColor=conf>=0.85?'var(--green)':conf>=0.7?'var(--amber)':'var(--gray)';
           var hypSid=hdata.session_id||'';
@@ -468,7 +468,7 @@ async function renderDtsDetailPage(dtsId){
             html+='<div style="padding:10px 12px;font-size:14px;border-bottom:1px solid var(--bd)"><b style="color:var(--sub)">支撑断点（'+myBps.length+' 条）：</b>';
             myBps.forEach(function(b){
               var bd=b.data;
-              var bCause=DTS_CAUSE_LABELS[bd.cause_code]||bd.cause_code||'-';
+              var bCause=DTS_CAUSE_DESCRIPTIONS[bd.cause_code]||DTS_CAUSE_LABELS[bd.cause_code]||bd.cause_code||'-';
               html+='<div style="margin-top:6px;padding:8px 10px;background:var(--p2);border-radius:8px">'
                 +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
                 +'<span class="knd">'+esc(b.label)+'</span>'

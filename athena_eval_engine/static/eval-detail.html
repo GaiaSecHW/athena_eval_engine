@@ -155,8 +155,9 @@ function renderLifecycle(lc){
 
   return '<div class="card" style="margin-bottom:16px"><h3>L0-L8 生命周期分析</h3>'
     +'<h4 style="font-size:16px;margin-bottom:8px">断点交叉归因矩阵（Agent × 级别）</h4>'
-    +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th>'+l+'</th>';}).join('')+'</tr></thead><tbody>'
+    +'<div style="overflow-x:auto"><table><thead><tr><th>Agent</th>'+levels.map(function(l){return'<th title="'+(LEVEL_DESCRIPTIONS[l]||'').replace(/"/g,'&quot;')+'">'+l+' '+(LEVEL_LABELS[l]||'')+'</th>';}).join('')+'</tr></thead><tbody>'
     +matrixRows+'</tbody></table></div>'
+    +levelLegendHtml()
     +'<div style="font-size:13px;color:var(--sub);margin-top:10px">统计口径：按 session 级断点统计，不按假定线索的引用过滤。逐 case 明细（假定线索 + 支撑断点）见下方问题单列表。</div>'
     +'</div>';
 }
@@ -410,7 +411,7 @@ function renderDtsSection(evalId,issues,stats){
 
   var listHtml='';
   if(issues.length){
-    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>类型</th><th>责任方</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
+    listHtml='<div class="card" style="margin-bottom:16px"><h3>问题单列表</h3><table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>类型</th><th>责任方</th><th>级别</th><th>成因</th><th>状态</th><th>操作</th></tr></thead><tbody>';
     issues.forEach(function(i){
       listHtml+='<tr>'
         +'<td style="font-size:13px;font-family:monospace">'+(i.dts_id||'')+'</td>'
@@ -418,7 +419,8 @@ function renderDtsSection(evalId,issues,stats){
         +'<td style="font-size:12px;font-family:monospace;max-width:160px;overflow:hidden;text-overflow:ellipsis" title="'+(i.case_id||'')+'">'+(i.case_id||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
         +'<td style="font-size:14px">'+dtsRespLabel(i.responsibility)+'</td>'
-        +'<td style="font-size:14px">'+(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
+        +'<td style="font-size:13px;white-space:nowrap" title="'+(function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return (LEVEL_DESCRIPTIONS[lv]||'').replace(/"/g,'&quot;');})()+'">'+(function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return lv?(lv+' '+(LEVEL_LABELS[lv]||'')):'-';})()+'</td>'
+        +'<td style="font-size:13px">'+esc(DTS_CAUSE_DESCRIPTIONS[i.cause_code]||DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
         +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+DTS_STATUS_COLORS[i.status]+'">'+DTS_STATUS_LABELS[i.status]+'</span></td>'
         +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="goDtsFrom(\''+i.dts_id+'\',\'evals\')">详情</button></td>'
         +'</tr>';

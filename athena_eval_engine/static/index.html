@@ -142,6 +142,7 @@ async function renderHome(){
     +renderAgentDetail(devAgent, 'dev')
     +renderBreakpointMatrix(bpMatrix.runtime, '运行态 · 断点分布（Agent × L 级别）')
     +renderBreakpointMatrix(bpMatrix.dev, '开发态 · 断点分布（Agent × L 级别）')
+    +levelLegendHtml()
 
     +'</div>';
   $("view").innerHTML=html;
@@ -157,7 +158,7 @@ function renderKPICard(label,value,icon,gradient){
 function renderBreakpointMatrix(matrix, title){
   matrix=matrix||{};
   var levels=['L2','L3','L4','L5','L6','L7','L8'];
-  var levelLabels={L2:'发起访问',L3:'查询聚焦',L4:'知识存在',L5:'成功取回',L6:'引用内容',L7:'影响结论',L8:'其他维度'};
+  var levelLabels=LEVEL_LABELS;
   var agents=AGENT_TYPES.slice();
   var grand=0,max=0;
   var rows=agents.map(function(a){
@@ -170,7 +171,7 @@ function renderBreakpointMatrix(matrix, title){
     return {agent:a,cells:cells,total:total};
   });
   var head='<th>Agent</th>'+levels.map(function(l){
-    return '<th>'+l+' '+levelLabels[l]+'</th>';
+    return '<th title="'+esc(LEVEL_DESCRIPTIONS[l]||'')+'">'+l+' '+levelLabels[l]+'</th>';
   }).join('')+'<th>合计</th>';
   var body=rows.map(function(r){
     var tds=r.cells.map(function(v){

@@ -153,7 +153,7 @@ function renderDtsTable(){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
-  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
+  var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>级别</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
   filtered.forEach(function(i){
     var lqPrecision='',lqColor='var(--gray)',lqLabel='-';
     try{
@@ -173,7 +173,8 @@ function renderDtsTable(){
       +'<td><span class="bdg" style="background:rgba('+(i.case_type==='FP'?'248,113,113':'251,191,36')+',.18);color:'+(i.case_type==='FP'?'var(--red)':'var(--amber)')+'">'+esc(DTS_CASE_TYPE_LABELS[i.case_type]||i.case_type||'-')+'</span></td>'
       +'<td style="font-size:14px">'+esc(dtsAgentLabel(i.agent_type))+'</td>'
       +'<td style="font-size:14px">'+esc(dtsRespLabel(i.responsibility))+'</td>'
-      +'<td style="font-size:14px">'+esc(DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
+      +'<td style="font-size:13px;white-space:nowrap" title="'+esc((function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return LEVEL_DESCRIPTIONS[lv]||'';})())+'">'+esc((function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return lv?(lv+' '+(LEVEL_LABELS[lv]||'')):'-';})())+'</td>'
+      +'<td style="font-size:13px;max-width:340px">'+esc(DTS_CAUSE_DESCRIPTIONS[i.cause_code]||DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
       +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+esc(DTS_STATUS_LABELS[i.status])+'</span></td>'
       +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+esc(lqLabel)+'</span>':'-')+'</td>'
       +'<td style="font-size:13px;color:var(--sub)">'+esc(fmtDate(i.created_at))+'</td>'
@@ -193,7 +194,7 @@ function renderDtsStats(stats){
     var v=byStatus[s]||0;
     html+='<div class="mcard" style="border-color:'+(DTS_STATUS_COLORS[s]||'var(--gray)')+'33"><div class="mc-label">'+DTS_STATUS_LABELS[s]+'</div><div class="mc-val" style="color:'+(DTS_STATUS_COLORS[s]||'var(--gray)')+';font-size:20px">'+v+'</div></div>';
   });
-  html+='</div>';
+  html+='</div>'+levelLegendHtml()+causeLegendHtml();
   $("dts-stats").innerHTML=html;
 }
 

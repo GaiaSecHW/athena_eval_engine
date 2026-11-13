@@ -58,15 +58,8 @@ _RESPONSIBILITY_LABELS: dict[str, str] = {
 
 _OTHER_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
 
-_LEVEL_LABELS: dict[str, str] = {
-    "L2": "发起访问",
-    "L3": "查询聚焦",
-    "L4": "知识存在",
-    "L5": "成功取回",
-    "L6": "引用内容",
-    "L7": "影响结论",
-    "L8": "其他维度",
-}
+# L 级别标准标签统一从 core.causal_levels 导入（单一权威源）
+from ..core.causal_levels import LEVEL_LABELS as _LEVEL_LABELS
 
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 _OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")

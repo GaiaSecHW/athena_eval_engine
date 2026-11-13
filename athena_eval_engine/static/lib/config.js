@@ -25,15 +25,63 @@ const DTS_STATUS_LABELS = {"open":"未关闭","passed":"回归通过","failed":"
 const DTS_STATUS_COLORS = {"open":"var(--gray)","passed":"var(--green)","failed":"var(--red)"};
 const DTS_RESP_LABELS = {"agent":"Agent","knowledge":"知识库","knowledge_base":"知识库","memory":"记忆","external_data_source":"外部数据源","eval_process":"评测流程"};
 const DTS_CASE_TYPE_LABELS = {"FP":"误报","FN":"漏报"};
-// cause_code → 展示标签；文案必须与后端 core/causal_levels.py 的 CAUSE_LABELS 一致
+// ── L 级别 / 成因 标准标签（唯一来源，与后端 core/causal_levels.py 一致）──
+// L 级别是「检查项」，成因码是「失败原因」，两者不得混用：
+//   L2 永远叫「发起访问」；「该查没查」是成因 A 的标签。
+const LEVEL_LABELS = {
+  "L2":"发起访问","L3":"查询聚焦","L4":"知识存在","L5":"成功取回",
+  "L6":"引用内容","L7":"影响结论","L8":"其他维度"
+};
+// cause_code → 标准短标签（失败原因）
 const DTS_CAUSE_LABELS = {
-  "A":"L2断(该查没查)","B":"L3断(查询太泛)","C":"L4断(查了没得)","D":"L5断(链路问题)","E":"L6断(查到没用)",
-  "F":"L7断(用了没推动)","G":"L7负向(知识误导)","H":"L8断(流程缺陷/其他)","I":"L8断(调用链中断)","J":"L8断(模型幻觉)","K":"L8断(验证否定真漏洞)"
+  "A":"该查没查","B":"查询太泛","C":"查了没得","D":"链路问题","E":"查到没用",
+  "F":"用了没推动","G":"知识误导","H":"流程缺陷/其他","I":"调用链中断","J":"模型幻觉","K":"验证否定真漏洞"
+};
+// L 级别 → 完整含义（列头 tooltip / 图例 / 报告说明使用）
+const LEVEL_DESCRIPTIONS = {
+  "L2":"是否发起知识/记忆访问",
+  "L3":"查询是否聚焦当前任务",
+  "L4":"知识库/记忆中是否存在所需知识",
+  "L5":"知识内容是否成功取回",
+  "L6":"推理是否引用了返回内容",
+  "L7":"知识是否影响了最终结论",
+  "L8":"知识链路正常，问题在其他维度"
+};
+// cause_code → 完整含义（与后端 core/causal_levels.py 的 CAUSE_DESCRIPTIONS 一致）
+const DTS_CAUSE_DESCRIPTIONS = {
+  "A":"该查没查（召回意识不足，含不知道要查什么）",
+  "B":"查询太泛（查询不聚焦）",
+  "C":"查了没得（知识覆盖度不足）",
+  "D":"链路问题（工具失败/超时）",
+  "E":"查到没用（死知识，推理未引用）",
+  "F":"用了没推动（未影响结论）",
+  "G":"知识误导（知识内容有误/过时/不适用）",
+  "H":"流程缺陷/其他（挖掘方向偏差、重复上报未识别、逻辑跳跃等 agent 流程问题）",
+  "I":"调用链中断（找到 sink 未追踪到 source 入口）",
+  "J":"模型幻觉（虚构不存在的防护措施/漏洞逻辑）",
+  "K":"验证否定真漏洞（挖掘 CONFIRMED 但验证 agent 否定）"
+};
+// cause_code → L 级别
+const DTS_CAUSE_TO_LEVEL = {
+  A:"L2",B:"L3",C:"L4",D:"L5",E:"L6",F:"L7",G:"L7",H:"L8",I:"L8",J:"L8",K:"L8"
 };
 // cause_code → 排序权重（最早断裂优先），与后端 core/causal_levels.py 一致
 const DTS_LEVEL_RANK = {A:2,B:3,C:4,D:5,E:6,F:7,G:7,H:8,I:8,J:8,K:8};
 // 假定线索展示/统计门槛，与后端 core/causal_levels.py 的 CLUE_MIN_CONFIDENCE 一致
 const DTS_CLUE_MIN_CONFIDENCE = 0.6;
+
+// 图例：让读报告的人不用猜短标签含义
+const _LEGEND_STYLE='font-size:12px;color:var(--sub);line-height:1.9;margin-top:10px;display:flex;flex-wrap:wrap;gap:2px 18px';
+function levelLegendHtml(){
+  return '<div style="'+_LEGEND_STYLE+'">'+['L2','L3','L4','L5','L6','L7','L8'].map(function(l){
+    return '<span><b>'+l+' '+LEVEL_LABELS[l]+'</b>：'+LEVEL_DESCRIPTIONS[l]+'</span>';
+  }).join('')+'</div>';
+}
+function causeLegendHtml(){
+  return '<div style="'+_LEGEND_STYLE+'">'+['A','B','C','D','E','F','G','H','I','J','K'].map(function(c){
+    return '<span><b>'+c+' '+DTS_CAUSE_LABELS[c]+'</b>：'+DTS_CAUSE_DESCRIPTIONS[c]+'</span>';
+  }).join('')+'</div>';
+}
 
 // 指标定义（M5/M6/M11/M12/M13）— 与 DB metric_result 的 metric_id 一致
 const MI = {

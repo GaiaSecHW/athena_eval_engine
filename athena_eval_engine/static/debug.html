@@ -30,6 +30,11 @@ tr:hover { background: #f5f5ff; }
 .badge-pending { background: #f39c12; color: #fff; }
 .badge-inconclusive { background: #95a5a6; color: #fff; }
 </style>
+<script>
+// 同步加载共享常量（LEVEL_LABELS / DTS_CAUSE_LABELS 等），与其它页面同一来源
+var _cfgLib = (location.pathname.indexOf('/eval/') === 0) ? '/eval/static/lib/' : '/static/lib/';
+document.write('<script src="' + _cfgLib + 'config.js"><\/script>');
+</script>
 </head>
 <body>
 <h1 id="title">调试</h1>
@@ -1144,14 +1149,11 @@ RENDERERS.root_cause = function(el, data) {
     }
   }
   if (Object.keys(bpCounts).length > 0) {
-    html += `<div style="margin:8px 0;color:#888;font-size:14px;">L0-L7 断点分布：</div>`;
+    html += `<div style="margin:8px 0;color:#888;font-size:14px;">L2-L8 断点分布：</div>`;
     html += `<div class="stats">`;
-    const bpLabels = {
-      "L2": "L2 发起访问", "L3": "L3 查询准确", "L4": "L4 知识存在",
-      "L5": "L5 成功取回", "L6": "L6 被使用", "L7": "L7 影响结论",
-    };
+    const bpLabels = LEVEL_LABELS;
     for (const [lvl, cnt] of Object.entries(bpCounts).sort()) {
-      html += `<div class="stat"><div class="num" style="color:#e74c3c">${cnt}</div><div class="label">${bpLabels[lvl] || lvl}</div></div>`;
+      html += `<div class="stat"><div class="num" style="color:#e74c3c">${cnt}</div><div class="label">${lvl} ${bpLabels[lvl] || ''}</div></div>`;
     }
     html += `</div>`;
   }
@@ -1395,7 +1397,7 @@ function _renderChain(chainData, label, color, catLabels, catColor) {
   const bps = chainData.l0_l7_breakpoints || [];
   if (bps.length > 0) {
     html += `<details style="margin:8px 0;">`;
-    html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">L0-L7 断点 (${bps.length})</summary>`;
+    html += `<summary style="color:#f39c12;font-weight:600;font-size:14px;cursor:pointer;">L2-L8 断点 (${bps.length})</summary>`;
     html += `<table style="margin-top:6px;"><thead><tr><th>会话</th><th>断点</th><th>成因</th><th>L1</th><th>L2</th><th>L3</th><th>L4</th><th>L5</th><th>L6</th><th>L7</th><th>查询内容</th><th>返回内容</th></tr></thead><tbody>`;
     for (const bp of bps) {
       const lvl = bp.breakpoint || "—";
