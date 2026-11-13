@@ -134,15 +134,29 @@ def set_env(update: EnvUpdate):
     return {"status": "ok"}
 
 
+def _mask_token(token: str) -> str:
+    """只展示前 3 位和后 3 位，中间用 **** 代替。"""
+    if not token:
+        return ""
+    if len(token) <= 6:
+        return "****"
+    return token[:3] + "****" + token[-3:]
+
+
 @router.get("/xiaoluban-token")
 def get_xiaoluban_token():
-    """返回小鲁班 token（系统设置页展示/复制用）。"""
-    return {"token": _db_xiaoluban_token()}
+    """返回脱敏后的小鲁班 token；完整 token 不再对外返回。"""
+    full = _db_xiaoluban_token()
+    return {"configured": bool(full), "token": _mask_token(full)}
 
 
 @router.put("/xiaoluban-token")
 def set_xiaoluban_token(update: XiaolubanTokenUpdate):
     value = (update.token or "").strip()
+    if not value:
+        # 留空表示不修改，避免误把已保存的 token 清空
+        return {"status": "unchanged",
+                "configured": bool(_db_xiaoluban_token())}
 
     def _do(cur):
         cur.execute(
@@ -152,7 +166,8 @@ def set_xiaoluban_token(update: XiaolubanTokenUpdate):
             (value,))
     _db_query(_do)
     log("NOTIFY", "更新小鲁班 token")
-    return {"status": "ok"}
+    return {"status": "ok", "configured": True,
+            "token": _mask_token(value)}
 
 
 @router.get("/daily-time")
