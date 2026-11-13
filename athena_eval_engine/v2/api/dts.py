@@ -14,12 +14,14 @@ from __future__ import annotations
 
 import re
 import socket
+import threading
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from ...infrastructure.concurrency import get as _conc_get
 from ..infra.log_util import log
 from ..persistence.dts_repo import (
     get_dts_issue,
@@ -592,7 +594,27 @@ def _run_regression_async(req: "RegressionVerifyRequest", issue: dict | None,
 
 # 回归验证的 LLM 工作线程池。接口最多阻塞 REGRESSION_BLOCK_SECONDS 秒，
 # 超时后任务继续在后台跑完并更新问题单。
-_regression_pool = ThreadPoolExecutor(max_workers=4, thread_name_prefix="dts-regression")
+# 池大小由系统配置 regression_workers 控制，配置变化时自动重建。
+_regression_pool: ThreadPoolExecutor | None = None
+_regression_pool_size = 0
+_regression_pool_lock = threading.Lock()
+
+
+def _get_regression_pool() -> ThreadPoolExecutor:
+    global _regression_pool, _regression_pool_size
+    size = max(1, int(_conc_get("regression_workers") or 8))
+    with _regression_pool_lock:
+        if _regression_pool is None or _regression_pool_size != size:
+            if _regression_pool is not None:
+                # 旧池不再接收新任务；已在跑的任务继续完成
+                _regression_pool.shutdown(wait=False)
+            _regression_pool = ThreadPoolExecutor(
+                max_workers=size, thread_name_prefix="dts-regression")
+            _regression_pool_size = size
+            log("DTS_API", f"回归验证线程池重建: max_workers={size}")
+        return _regression_pool
+
+
 REGRESSION_BLOCK_SECONDS = 280
 
 
@@ -677,7 +699,7 @@ def regression_verify(req: RegressionVerifyRequest, request: Request):
             "", "evaluating", "回归验证处理中，请稍后查询", req.vuln_title, "",
         )
 
-    future = _regression_pool.submit(
+    future = _get_regression_pool().submit(
         _run_regression_async, req, issue, match_method, result_id,
         caller_service)
 

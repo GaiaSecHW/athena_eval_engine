@@ -21,6 +21,9 @@ _defaults = {
 
     # ── PARSING 阶段 ──
     "parse_workers": 4,              # Trace 解析并行（非 LLM）
+
+    # ── DTS 回归验证 ──
+    "regression_workers": 8,         # 回归验证异步线程池大小（非 LLM 门控）
 }
 
 _config = dict(_defaults)
@@ -32,6 +35,7 @@ _RANGES = {
     "max_concurrent_evals": (1, 10),
     "eval_pool_max": (1, 50),
     "parse_workers": (1, 50),
+    "regression_workers": (1, 64),
 }
 
 

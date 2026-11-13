@@ -31,6 +31,7 @@ class SystemConfigUpdate(BaseModel):
     max_concurrent_evals: int | None = Field(default=None, ge=1, le=10)
     eval_pool_max: int | None = Field(default=None, ge=1, le=50)
     parse_workers: int | None = Field(default=None, ge=1, le=50)
+    regression_workers: int | None = Field(default=None, ge=1, le=64)
     reasoning_effort: str | None = Field(default=None, pattern="^(none|low|high|max)$")
     # LLM 采样参数：temperature 0-2；seed=-1 表示不发送 seed
     llm_temperature: float | None = Field(default=None, ge=0.0, le=2.0)
