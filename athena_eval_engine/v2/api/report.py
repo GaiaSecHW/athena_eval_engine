@@ -182,7 +182,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             def _check_alive(item):
                 _pid, _tids = item
                 try:
-                    return _pid, ps.filter_alive_tasks(_pid, sorted(_tids))
+                    return _pid, ps.filter_alive_tasks(
+                        _pid, sorted(_tids), timeout=2.0, retries=1)
                 except Exception as e:
                     log("REPORT", f"任务存活校验失败 project={_pid}: {e}")
                     return _pid, set(_tids)
@@ -255,7 +256,8 @@ def alive(pairs: str = ""):
     def _check(item):
         pid, tids = item
         try:
-            return pid, ps.filter_alive_tasks(pid, sorted(tids))
+            return pid, ps.filter_alive_tasks(
+                pid, sorted(tids), timeout=2.0, retries=1)
         except Exception as e:
             log("REPORT", f"任务存活校验失败 project={pid}: {e}")
             return pid, set(tids)

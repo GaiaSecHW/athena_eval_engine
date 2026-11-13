@@ -148,7 +148,8 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
                 def _check_alive(item):
                     pid, tids = item
                     try:
-                        return pid, filter_alive_tasks(pid, sorted(tids))
+                        return pid, filter_alive_tasks(
+                            pid, sorted(tids), timeout=2.0, retries=1)
                     except Exception as e:
                         _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
                         return pid, set(tids)
@@ -224,7 +225,8 @@ def _eval_alive_status_sync(eids: list[str]) -> dict[str, bool]:
         def _check_alive(item):
             pid, tids = item
             try:
-                return pid, filter_alive_tasks(pid, sorted(tids))
+                return pid, filter_alive_tasks(
+                    pid, sorted(tids), timeout=2.0, retries=1)
             except Exception as e:
                 _log("EVALS", f"任务存活校验失败 project={pid}: {e}")
                 return pid, set(tids)

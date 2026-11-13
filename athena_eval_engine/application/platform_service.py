@@ -141,13 +141,16 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
     return out
 
 
-def filter_alive_tasks(project_id: str, task_ids) -> set[str]:
+def filter_alive_tasks(project_id: str, task_ids, *,
+                       timeout: float = 5.0, retries: int = 2) -> set[str]:
     """返回 task_ids 中在 schedule 服务里存在且未删除的子集（60s 缓存）。
 
     与漏洞中心 case 列表的软删任务过滤同一口径（batch-alive 接口）：
     任务被删除后，告警中心会隐藏其全部 case，重跑必然在 INGESTING 因基线为空失败。
 
     接口调用失败时抛异常——"无法校验"不能当成"任务已删除"。
+    纯展示用途的调用方可传较小的 timeout/retries（如 2s/1 次）快速失败，
+    避免 schedule 服务异常时把页面拖住十几秒。
     """
     if not project_id or not task_ids:
         return set()
@@ -162,7 +165,8 @@ def filter_alive_tasks(project_id: str, task_ids) -> set[str]:
     url = (f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/"
            f"{project_id}/user-tasks/batch-alive")
     data = http_post(url, json_body={"task_ids": sorted(requested)},
-                     retries=2, retry_delay=1.0, timeout=5, log_tag="PLATFORM")
+                     retries=retries, retry_delay=1.0, timeout=timeout,
+                     log_tag="PLATFORM")
     if not isinstance(data, dict) or data.get("alive_task_ids") is None:
         raise RuntimeError(f"batch-alive 响应异常: {data!r}")
     alive = frozenset(str(t) for t in data.get("alive_task_ids") or [])
