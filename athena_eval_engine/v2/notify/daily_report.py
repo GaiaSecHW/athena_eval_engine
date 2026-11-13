@@ -582,10 +582,11 @@ def _compact_levels(items: list[dict]) -> str:
             counts[level] += 1
         else:
             unknown += 1
-    parts = [f"{level} {_LEVEL_LABELS.get(level, '')}:{counts[level]} 条"
+    parts = [f"{level} {_LEVEL_LABELS.get(level, '')}根因问题:"
+             f"{counts[level]} 条"
              for level in ALL_LEVELS if counts[level] > 0]
     if unknown:
-        parts.append(f"未知:{unknown} 条")
+        parts.append(f"未知根因问题:{unknown} 条")
     return "  ".join(parts)
 
 
