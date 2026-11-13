@@ -43,3 +43,7 @@ baseline.json
 baseline_data.json
 independent_fpr*.py
 null
+
+# 本地通知凭证（HR Cookie / 小鲁班 token，勿入库）
+scripts/hr-cookie.txt
+scripts/xiaoluban-token.txt

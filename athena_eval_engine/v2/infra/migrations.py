@@ -654,6 +654,21 @@ MIGRATIONS = [
             "DELETE FROM system_config WHERE config_key='notify_token'",
         ],
     },
+    {
+        "id": "044_notify_calendar",
+        "desc": "创建 notify_calendar 表——节假日/调休日期按行存储，"
+                "避免 system_config.config_value 512 字符上限",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS notify_calendar ("
+            "  calendar_date DATE PRIMARY KEY,"
+            "  day_type VARCHAR(16) NOT NULL,"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
+            "    ON UPDATE CURRENT_TIMESTAMP(3)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+            "DELETE FROM system_config "
+            "WHERE config_key IN ('notify_holidays','notify_workdays')",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

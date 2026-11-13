@@ -96,13 +96,46 @@ async function renderSystem(){
       </div>
       <div id="notify_env_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
-    <div id="notify-container"><div style="color:var(--sub)">加载中...</div></div></div>`;
+    <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
+      <label style="font-weight:600;font-size:14px">发送时间</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">每天几点发送（Asia/Shanghai），修改后 60 秒内生效。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="notify_daily_time" type="time" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyTime()">保存</button>
+      </div>
+      <div id="notify_time_msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
+      <label style="font-weight:600;font-size:14px">工作日日历</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">默认周一到周五发送，周末不发。节假日填“不发送日期”，调休上班的周末填“上班日期”。每行一个 YYYY-MM-DD。</div>
+      <div id="notify_workdays_range" style="font-size:12px;color:var(--sub);margin:4px 0">已导入范围：-</div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div><label style="font-size:12px;color:var(--sub)">不发送日期（节假日）</label><textarea id="notify_holidays" rows="4" placeholder="2026-10-01&#10;2026-10-02" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace;resize:vertical"></textarea></div>
+        <div><label style="font-size:12px;color:var(--sub)">上班日期（调休）</label><textarea id="notify_workdays" rows="4" placeholder="2026-10-11" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace;resize:vertical"></textarea></div>
+      </div>
+      <div style="margin-top:8px"><button class="btn" style="font-size:13px;padding:6px 14px" onclick="saveNotifyWorkdays()">保存</button></div>
+      <div id="notify_workdays_msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div id="notify-container"><div style="color:var(--sub)">加载中...</div></div>
+    <div style="margin-top:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px">
+        <label style="font-weight:600;font-size:14px">发送状态</label>
+        <div style="display:flex;gap:8px">
+          <button class="btn g" style="font-size:13px;padding:6px 14px" onclick="runNotifyNow('')">立即发送全部</button>
+          <button class="btn" style="font-size:13px;padding:6px 14px" onclick="loadNotifyStatus()">刷新状态</button>
+        </div>
+      </div>
+      <div id="notify_status"><div style="color:var(--sub)">加载中...</div></div>
+    </div></div>`;
   $("view").innerHTML=h;
   loadDatasources();
   loadLlmStatus();
   loadXiaolubanToken();
   loadNotifyEnv();
+  loadNotifyTime();
+  loadNotifyWorkdays();
   loadNotifyOwners();
+  loadNotifyStatus();
 }
 function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
 async function saveSystemConfig(){
@@ -237,6 +270,92 @@ async function saveNotifyEnv(){
   var msg=$("notify_env_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
   try{await jput("/api/v2/notify/env",{env_name:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
   catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+
+async function loadNotifyTime(){
+  try{const d=await jget("/api/v2/notify/daily-time");var el=$("notify_daily_time");if(el)el.value=d.daily_time||'09:00';}
+  catch(e){var m=$("notify_time_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+async function saveNotifyTime(){
+  var el=$("notify_daily_time");if(!el)return;
+  var msg=$("notify_time_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{await jput("/api/v2/notify/daily-time",{daily_time:el.value});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+  catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+function _setWorkdaysRange(d){
+  var el=$("notify_workdays_range");if(!el)return;
+  if(d&&d.min_date&&d.max_date){
+    el.textContent='已导入范围：'+d.min_date+' ~ '+d.max_date+'；范围外按周一至周五发送、周末不发送';
+  }else{
+    el.textContent='尚未导入公司日历；当前按周一至周五发送、周末不发送';
+  }
+}
+async function loadNotifyWorkdays(){
+  try{
+    const d=await jget("/api/v2/notify/workdays");
+    var h=$("notify_holidays");if(h)h.value=(d.holidays||[]).join("\n");
+    var w=$("notify_workdays");if(w)w.value=(d.workdays||[]).join("\n");
+    _setWorkdaysRange(d);
+  }catch(e){var m=$("notify_workdays_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+function _parseDates(v){return (v||'').split(/[\s,，;；]+/).map(function(x){return x.trim();}).filter(Boolean);}
+async function saveNotifyWorkdays(){
+  var h=$("notify_holidays"), w=$("notify_workdays");
+  var msg=$("notify_workdays_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{
+    const d=await jput("/api/v2/notify/workdays",{holidays:_parseDates(h?h.value:''),workdays:_parseDates(w?w.value:'')});
+    if(h)h.value=(d.holidays||[]).join("\n");
+    if(w)w.value=(d.workdays||[]).join("\n");
+    _setWorkdaysRange(d);
+    if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+async function loadNotifyStatus(){
+  var c=$("notify_status");if(!c)return;
+  try{const d=await jget("/api/v2/notify/status");renderNotifyStatus(d);}
+  catch(e){c.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+function renderNotifyStatus(d){
+  var c=$("notify_status");if(!c)return;
+  var owners=d.owners||[];
+  var html='<div style="font-size:13px;color:var(--sub);margin-bottom:8px">每天 '+esc(d.daily_time||'09:00')+' 发送'+(d.workday_today===false?' · <span style="color:var(--amber)">今天非工作日，不自动发送</span>':'')+(d.running?' · <span style="color:var(--amber)">发送中…</span>':'')+'</div>';
+  if(!owners.length){c.innerHTML=html+'<div style="color:var(--sub)">无 owner 配置</div>';return;}
+  html+='<div style="overflow-x:auto"><table><thead><tr><th>Owner</th><th>负责人</th><th>最近发送</th><th>状态</th><th>统计窗口</th><th>错误</th><th></th></tr></thead><tbody>';
+  owners.forEach(function(o){
+    var last=o.last||{};
+    var st=last.status||'-';
+    var stColor=st==='sent'?'var(--green)':(st==='failed'?'var(--red)':'var(--gray)');
+    var win=last.window_start?(fmtDate(last.window_start)+' ~ '+fmtDate(last.window_end)):'-';
+    html+='<tr>'+
+      '<td>'+esc(o.display_name||o.owner_key)+'</td>'+
+      '<td>'+esc(o.owner_name||'-')+'</td>'+
+      '<td>'+esc(last.sent_at?fmtDate(last.sent_at):'-')+'</td>'+
+      '<td style="color:'+stColor+'">'+esc(st)+'</td>'+
+      '<td style="font-size:12px;color:var(--sub)">'+esc(win)+'</td>'+
+      '<td style="font-size:12px;color:var(--red);max-width:220px;word-break:break-all">'+esc(last.error||'')+'</td>'+
+      '<td><button class="btn g" style="font-size:12px;padding:4px 10px;white-space:nowrap" onclick="runNotifyNow(\''+esc(o.owner_key)+'\')">发送</button></td>'+
+      '</tr>';
+  });
+  html+='</tbody></table></div>';
+  c.innerHTML=html;
+}
+async function runNotifyNow(ownerKey){
+  var c=$("notify_status");if(c)c.innerHTML='<span style="color:var(--sub)">发送中…</span>';
+  try{
+    var url="/api/v2/notify/run";
+    if(ownerKey)url+="?owner_key="+encodeURIComponent(ownerKey);
+    await jpost(url,{});
+    var tries=0;
+    var timer=setInterval(async function(){
+      tries++;
+      try{
+        const d=await jget("/api/v2/notify/status");
+        renderNotifyStatus(d);
+        if(!d.running){clearInterval(timer);}
+      }catch(e){}
+      if(tries>40)clearInterval(timer);
+    },3000);
+  }catch(e){if(c)c.innerHTML='<span style="color:var(--red)">'+esc(String(e))+'</span>';}
 }
 
 let _notifyData=null;
