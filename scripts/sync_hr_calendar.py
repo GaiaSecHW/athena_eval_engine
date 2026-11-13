@@ -13,7 +13,7 @@ Cookie 只从本地文件/环境变量读取，不上传、不写库；eval 只�
 
 两套环境：
     python scripts\\sync_hr_calendar.py --base-url http://chimera-g.icsl.huawei.com/eval
-    python scripts\\sync_hr_calendar.py --base-url http://chimera-y.icsl.huawei.com:8888/eval
+    python scripts\\sync_hr_calendar.py --base-url http://chimera-y.icsl.huawei.com/eval
 """
 from __future__ import annotations
 

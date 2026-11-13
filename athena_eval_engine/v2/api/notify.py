@@ -45,7 +45,8 @@ def _normalize_dates(values: list[str]) -> list[str]:
 router = APIRouter(prefix="/api/v2/notify", tags=["notify"])
 
 _TARGET_TYPES = ("user", "group")
-_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
+# 知识库 / 外部数据源 / 评测流程合并为一个责任方
+_RESPONSIBILITIES = ("other",)
 
 
 def _db_env_name() -> str:
@@ -74,8 +75,7 @@ def _owner_display_name(owner_key: str) -> str:
     kind, _, key = owner_key.partition(":")
     if kind == "agent":
         return AGENT_DISPLAY_NAMES.get(key, key)
-    labels = {"knowledge": "知识库", "external_data_source": "外部数据源",
-              "eval_process": "评测流程"}
+    labels = {"other": "其他责任（知识库/外部数据源/评测流程）"}
     return labels.get(key, key)
 
 

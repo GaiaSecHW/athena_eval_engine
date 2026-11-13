@@ -669,6 +669,24 @@ MIGRATIONS = [
             "WHERE config_key IN ('notify_holidays','notify_workdays')",
         ],
     },
+    {
+        "id": "045_combine_responsibility_owners",
+        "desc": "知识库/外部数据源/评测流程合并为单一责任方 resp:other，"
+                "沿用知识库负责人的接收配置",
+        "sql": [
+            "INSERT IGNORE INTO notify_owner_config "
+            "(owner_key, owner_kind, display_name, enabled) VALUES "
+            "('resp:other','responsibility','其他责任（知识库/外部数据源/评测流程）',0)",
+            "UPDATE notify_owner_config o "
+            "JOIN notify_owner_config k ON k.owner_key='resp:knowledge' "
+            "SET o.owner_name=k.owner_name, o.target_type=k.target_type, "
+            "    o.target_id=k.target_id, o.enabled=k.enabled "
+            "WHERE o.owner_key='resp:other' "
+            "  AND (o.owner_name='' OR o.target_id='')",
+            "DELETE FROM notify_owner_config WHERE owner_key IN "
+            "('resp:knowledge','resp:external_data_source','resp:eval_process')",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

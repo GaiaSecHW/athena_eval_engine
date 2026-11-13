@@ -441,7 +441,13 @@ def list_dts_issues(
     if agent_type:
         where_parts.append("FIND_IN_SET(%s, d.agent_type) > 0")
         params.append(agent_type)
-    if responsibility:
+    if responsibility == "other":
+        # 知识库 / 外部数据源 / 评测流程合并为一个责任方
+        where_parts.append(
+            "(FIND_IN_SET('knowledge', d.responsibility) > 0 "
+            "OR FIND_IN_SET('external_data_source', d.responsibility) > 0 "
+            "OR FIND_IN_SET('eval_process', d.responsibility) > 0)")
+    elif responsibility:
         where_parts.append("FIND_IN_SET(%s, d.responsibility) > 0")
         params.append(responsibility)
     if status == "open":

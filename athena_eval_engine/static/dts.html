@@ -80,6 +80,7 @@ async function renderDtsList(){
         </select>
         <select id="dts-f-resp" onchange="_dtsFilter.responsibility=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部责任方</option>
+          <option value="other">其他责任（知识库/外部数据源/评测流程）</option>
           <option value="agent">Agent</option>
           <option value="knowledge">知识/记忆</option>
           <option value="external_data_source">外部数据源</option>

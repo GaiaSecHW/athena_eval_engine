@@ -49,10 +49,13 @@ _TRACE_KIND_TO_AGENT: dict[str, str] = {
 }
 
 _RESPONSIBILITY_LABELS: dict[str, str] = {
+    "other": "其他责任（知识库/外部数据源/评测流程）",
     "knowledge": "知识库",
     "external_data_source": "外部数据源",
     "eval_process": "评测流程",
 }
+
+_OTHER_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
 
 _LEVEL_LABELS: dict[str, str] = {
     "L2": "发起访问",
@@ -217,6 +220,11 @@ def _issue_filter(owner_kind: str, owner_value: str) -> tuple[str, list]:
         return ("(responsibility IS NULL OR responsibility = '' "
                 "OR FIND_IN_SET('agent', responsibility) > 0) "
                 "AND FIND_IN_SET(%s, agent_type) > 0", [owner_value])
+    if owner_value == "other":
+        # 知识库 / 外部数据源 / 评测流程合并为一个责任方
+        return ("(" + " OR ".join(
+            f"FIND_IN_SET('{r}', responsibility) > 0"
+            for r in _OTHER_RESPONSIBILITIES) + ")", [])
     return "FIND_IN_SET(%s, responsibility) > 0", [owner_value]
 
 
