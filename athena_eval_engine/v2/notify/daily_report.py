@@ -498,10 +498,19 @@ def build_reports(owner_key: str | None = None,
     }
 
 
-# ── Markdown 渲染 ─────────────────────────────────────
+# ── 消息渲染（HTML span + emoji） ─────────────────────
 
-def _md_link(text: str, url: str) -> str:
-    return f"[{text}]({url})"
+def _span(text, color: str | None = None, bold: bool = False,
+          size: int | None = None) -> str:
+    styles = []
+    if color:
+        styles.append(f"color:{color}")
+    if bold:
+        styles.append("font-weight:bold")
+    if size:
+        styles.append(f"font-size:{size}px")
+    return (f'<span style="{";".join(styles)}">{text}</span>'
+            if styles else str(text))
 
 
 def _env_prefix(report: dict) -> str:
@@ -539,36 +548,75 @@ def render_agent_text(report: dict) -> str:
     urls = report.get("urls") or {}
 
     lines = [
-        f"### {_env_prefix(report)}Agent 测试日报 · {short}",
-        f"**负责人**：{owner}",
-        f"**统计窗口**：{start} ~ {end}",
-        "",
-        f"#### 一、评测（{ev.get('total', 0)} 个）",
-        f"- 完成 **{ev.get('completed', 0)}** / 失败 **{ev.get('failed', 0)}**",
-        f"- 误报率 **{_pct(ev.get('fpr'))}**"
-        f"（FP {ev.get('fp', 0)} / TP+FP {ev.get('tp', 0) + ev.get('fp', 0)}）",
-        f"- 准确率 **{_pct(ev.get('precision'))}**",
-        f"- TP {ev.get('tp', 0)} · FP {ev.get('fp', 0)}"
-        f" · FN {ev.get('fn', 0)} · TN {ev.get('tn', 0)}",
+        _span(f"🧪 {_env_prefix(report)}奇美拉测评日报 · {short}",
+              color="#2563eb", bold=True, size=16),
+        f"👤 负责人：{owner}",
+        f"🕒 统计窗口：{start} ~ {end}",
     ]
-    tasks = [e.get("task_name") for e in (ev.get("items") or [])
-             if e.get("task_name")]
-    if tasks:
-        lines.append("- 任务：" + "、".join(dict.fromkeys(tasks)))
 
+    total = int(ev.get("total") or 0)
+    completed = int(ev.get("completed") or 0)
+    failed = int(ev.get("failed") or 0)
     failed_items = ev.get("failed_items") or []
-    if failed_items:
-        ids = "、".join(
-            f"{i.get('evaluation_id')}({i.get('task_name') or '-'})"
-            for i in failed_items[:5])
-        more = f" 等 {len(failed_items)} 个" if len(failed_items) > 5 else ""
-        lines.append(f"- 失败评测：{ids}{more}")
+    if total > 0:
+        lines += ["", _span(f"📊 评测（{total} 个）", bold=True)]
+        status_parts = []
+        if completed > 0:
+            status_parts.append(
+                f"✅ 完成 {_span(completed, color='#16a34a', bold=True)}")
+        if failed > 0:
+            status_parts.append(
+                f"❌ 失败 {_span(failed, color='#dc2626', bold=True)}")
+        if status_parts:
+            lines.append(" · ".join(status_parts))
 
-    lines += ["", f"#### 二、新增问题单（{len(new_issues)}）"]
-    lines.append(_compact_levels(new_issues) if new_issues else "无新增")
+        metric_parts = []
+        for key, label, icon, color in (
+                ("tp", "真阳性", "🎯", "#16a34a"),
+                ("fp", "误报", "🚨", "#dc2626"),
+                ("fn", "漏报", "🕳️", "#d97706"),
+                ("tn", "真阴性", "✅", "#16a34a")):
+            value = int(ev.get(key) or 0)
+            if value > 0:
+                metric_parts.append(
+                    f"{icon} {label} {_span(value, color=color, bold=True)}")
+        if metric_parts:
+            lines.append(" · ".join(metric_parts))
 
-    lines += ["", f"#### 三、未关闭问题单（{open_issues.get('total', 0)}）",
-              f"{_md_link('查看全部', urls.get('issue_list', ''))}"]
+        rate_parts = []
+        for key, label, icon, color in (
+                ("fpr", "误报率", "📉", "#d97706"),
+                ("precision", "准确率", "📈", "#16a34a")):
+            value = ev.get(key)
+            if value is not None and float(value) != 0:
+                rate_parts.append(
+                    f"{icon} {label} {_span(_pct(value), color=color, bold=True)}")
+        if rate_parts:
+            lines.append(" · ".join(rate_parts))
+
+        tasks = [e.get("task_name") for e in (ev.get("items") or [])
+                 if e.get("task_name")]
+        if tasks:
+            lines.append("📁 任务：" + "、".join(dict.fromkeys(tasks)))
+
+        if failed_items:
+            ids = "、".join(
+                f"{i.get('evaluation_id')}({i.get('task_name') or '-'})"
+                for i in failed_items[:5])
+            more = f" 等 {len(failed_items)} 个" if len(failed_items) > 5 else ""
+            lines.append(f"❌ 失败评测：{ids}{more}")
+
+    if new_issues:
+        lines += ["", _span(f"🆕 新增问题单（{len(new_issues)}）", bold=True),
+                  f"🧩 {_compact_levels(new_issues)}"]
+
+    open_total = int(open_issues.get("total") or 0)
+    if open_total > 0:
+        lines += ["", _span(f"⚠️ 未关闭问题单（{open_total}）", bold=True)]
+
+    if new_issues or open_total > 0:
+        lines += ["", f"🔗 查看全部：{urls.get('issue_list', '')}"]
+
     return "\n".join(lines)
 
 
@@ -580,22 +628,39 @@ def render_responsibility_text(report: dict) -> str:
     totals = report.get("totals") or {}
 
     lines = [
-        f"### {_env_prefix(report)}{report.get('display_name', '')}问题日报",
-        f"**负责人**：{owner}",
-        f"**统计窗口**：{start} ~ {end}",
-        f"**汇总**：新增 {totals.get('new', 0)} · 未关闭 {totals.get('open', 0)}",
+        _span(f"🧪 {_env_prefix(report)}奇美拉测评日报 · "
+              f"{report.get('display_name', '')}",
+              color="#2563eb", bold=True, size=16),
+        f"👤 负责人：{owner}",
+        f"🕒 统计窗口：{start} ~ {end}",
     ]
+    summary_parts = []
+    if int(totals.get("new") or 0) > 0:
+        summary_parts.append(f"新增 {totals['new']}")
+    if int(totals.get("open") or 0) > 0:
+        summary_parts.append(f"未关闭 {totals['open']}")
+    if summary_parts:
+        lines.append("📌 汇总：" + " · ".join(summary_parts))
 
     for group in report.get("groups") or []:
         new_items = group.get("new_issues") or []
         open_issues = group.get("open_issues") or {}
-        if not new_items and not open_issues.get("total"):
+        open_total = int(open_issues.get("total") or 0)
+        if not new_items and open_total == 0:
             continue
-        lines += ["", f"#### {group.get('display_name', group.get('agent_type'))}"
-                      f"（新增 {len(new_items)} / 未关闭 {open_issues.get('total', 0)}）"]
-        lines.append(_compact_levels(new_items) if new_items else "无新增")
+        header_parts = []
+        if new_items:
+            header_parts.append(f"新增 {len(new_items)}")
+        if open_total > 0:
+            header_parts.append(f"未关闭 {open_total}")
+        lines += ["", _span(
+            f"🤖 {group.get('display_name', group.get('agent_type'))}"
+            f"（{' / '.join(header_parts)}）", bold=True)]
+        if new_items:
+            lines.append(f"🧩 {_compact_levels(new_items)}")
         group_url = group.get("url") or (report.get("urls") or {}).get("issue_list", "")
-        lines.append(f"{_md_link('查看全部', group_url)}")
+        if group_url:
+            lines.append(f"🔗 查看全部：{group_url}")
 
     return "\n".join(lines)
 

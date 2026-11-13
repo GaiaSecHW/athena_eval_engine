@@ -15,7 +15,7 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...config_loader import EVAL_ENV_NAME
+from ...config_loader import EVAL_ENV_NAME, EVAL_PUBLIC_URL
 from ..core.agents import AGENT_DISPLAY_NAMES, ALL_AGENT_SET
 from ..infra.database import connect as _connect
 from ..infra.db_utils import db_query as _db_query
@@ -57,8 +57,16 @@ def _db_env_name() -> str:
             "WHERE config_key='notify_env_name'")
         row = cur.fetchone()
         return (row[0] or "") if row else ""
-    value = _db_query(_do)
-    return value or EVAL_ENV_NAME
+    value = _db_query(_do) or EVAL_ENV_NAME
+    if value:
+        return value
+    # 未显式配置时从公网地址推断，保证标题始终带环境名
+    url = EVAL_PUBLIC_URL.lower()
+    if "chimera-y" in url:
+        return "yellow"
+    if "chimera-g" in url:
+        return "green"
+    return ""
 
 
 def _db_xiaoluban_token() -> str:

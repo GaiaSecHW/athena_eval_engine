@@ -119,14 +119,26 @@ def _today_start_utc() -> datetime:
 
 
 def _is_empty(report: dict) -> bool:
+    """所有指标都是 0/NA 且没有问题单时，当天不发送。"""
     if report.get("owner_kind") == "agent":
         ev = report.get("evaluations") or {}
-        open_total = (report.get("open_issues") or {}).get("total", 0)
-        return (ev.get("total", 0) == 0
-                and not (report.get("new_issues") or [])
-                and open_total == 0)
+        if int(ev.get("failed") or 0) > 0:
+            return False
+        if report.get("new_issues"):
+            return False
+        if int((report.get("open_issues") or {}).get("total") or 0) > 0:
+            return False
+        for key in ("tp", "fp", "fn", "tn"):
+            if int(ev.get(key) or 0) > 0:
+                return False
+        for key in ("fpr", "precision"):
+            value = ev.get(key)
+            if value is not None and float(value) != 0:
+                return False
+        return True
     totals = report.get("totals") or {}
-    return totals.get("new", 0) == 0 and totals.get("open", 0) == 0
+    return (int(totals.get("new") or 0) == 0
+            and int(totals.get("open") or 0) == 0)
 
 
 def is_running() -> bool:
