@@ -87,11 +87,21 @@ async function renderSystem(){
       </div>
       <div id="notify_token_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
+    <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
+      <label style="font-weight:600;font-size:14px">环境标识</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">日报标题前缀，例如 green / yellow。两套 eval 环境各配各的，收到消息时可直接区分。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="notify_env" placeholder="green / yellow" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyEnv()">保存</button>
+      </div>
+      <div id="notify_env_msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
     <div id="notify-container"><div style="color:var(--sub)">加载中...</div></div></div>`;
   $("view").innerHTML=h;
   loadDatasources();
   loadLlmStatus();
   loadNotifyToken();
+  loadNotifyEnv();
   loadNotifyOwners();
 }
 function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
@@ -223,6 +233,17 @@ async function saveNotifyToken(){
   var el=$("notify_token");if(!el)return;
   var msg=$("notify_token_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
   try{await jput("/api/v2/notify/token",{token:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+  catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+
+async function loadNotifyEnv(){
+  try{const d=await jget("/api/v2/notify/env");var el=$("notify_env");if(el)el.value=d.env_name||'';}
+  catch(e){var m=$("notify_env_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+async function saveNotifyEnv(){
+  var el=$("notify_env");if(!el)return;
+  var msg=$("notify_env_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{await jput("/api/v2/notify/env",{env_name:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
   catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 

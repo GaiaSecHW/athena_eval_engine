@@ -633,6 +633,20 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue DROP INDEX idx_dts_status",
         ],
     },
+    {
+        "id": "042_notification_log_owner_key",
+        "desc": "notification_log.agent_type 改为 owner_key——日报 owner 从 agent 扩展为 "
+                "agent/责任方；旧行补 agent: 前缀",
+        "sql": [
+            "ALTER TABLE notification_log CHANGE COLUMN agent_type "
+            "owner_key VARCHAR(64) NOT NULL",
+            "UPDATE notification_log SET owner_key=CONCAT('agent:', owner_key) "
+            "WHERE owner_key NOT LIKE '%:%'",
+            "ALTER TABLE notification_log DROP INDEX idx_notify_agent",
+            "ALTER TABLE notification_log ADD INDEX idx_notify_owner "
+            "(owner_key, channel, sent_at)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

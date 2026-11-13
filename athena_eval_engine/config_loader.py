@@ -70,6 +70,9 @@ EVAL_ERROR_LOG = os.environ.get("EVAL_ERROR_LOG", "/data/logs/eval_errors.log")
 EVAL_PUBLIC_URL = os.environ.get(
     "EVAL_PUBLIC_URL", "http://chimera-g.icsl.huawei.com/eval").rstrip("/")
 
+# 环境标识（green / yellow），日报标题用；系统设置页可覆盖
+EVAL_ENV_NAME = os.environ.get("EVAL_ENV_NAME", "")
+
 
 def get_reports_dir() -> str:
     """返回报告目录路径（单一来源）。"""

@@ -33,6 +33,7 @@ from ..core.agents import (
     ALL_AGENT_SET,
     ALL_AGENT_TYPES,
 )
+from ..core.causal_levels import ALL_LEVELS
 from ..infra.db_utils import db_query as _db_query
 
 # trace_kind → agent_type（与 v2/parsers 的别名表保持一致）
@@ -53,11 +54,18 @@ _RESPONSIBILITY_LABELS: dict[str, str] = {
     "eval_process": "评测流程",
 }
 
+_LEVEL_LABELS: dict[str, str] = {
+    "L2": "发起访问",
+    "L3": "查询聚焦",
+    "L4": "知识存在",
+    "L5": "成功取回",
+    "L6": "引用内容",
+    "L7": "影响结论",
+    "L8": "其他维度",
+}
+
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 _OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")
-_LIST_LIMIT = 20
-_GROUP_LIST_LIMIT = 10
-
 _CHANNEL = "welink"
 
 
@@ -380,6 +388,8 @@ def _build_responsibility_report(owner: dict, since: datetime,
                 "display_name": AGENT_DISPLAY_NAMES.get(agent, agent),
                 "new_issues": [],
                 "open_issues": {"total": 0, "items": []},
+                "url": (f"{EVAL_PUBLIC_URL}/dts?responsibility={responsibility}"
+                        f"&agent_type={agent}&status=open"),
             }
         return groups[agent]
 
@@ -468,16 +478,26 @@ def _md_link(text: str, url: str) -> str:
     return f"[{text}]({url})"
 
 
-def _render_issue_list(items: list[dict], limit: int) -> list[str]:
-    lines: list[str] = []
-    for idx, item in enumerate(items[:limit], 1):
-        lines.append(
-            f"{idx}. `[{item.get('case_type')}][{item.get('breakpoint_level')}]"
-            f"[{item.get('cause_code')}]` {item.get('vuln_title')}")
-        lines.append(f"   {_md_link('查看详情', item.get('url', ''))}")
-    if len(items) > limit:
-        lines.append(f"   ... 还有 {len(items) - limit} 条，见列表")
-    return lines
+def _env_prefix(report: dict) -> str:
+    env = str(report.get("env_name") or "").strip()
+    return f"【{env}】" if env else ""
+
+
+def _compact_levels(items: list[dict]) -> str:
+    """按 L2-L8 统计新增问题单，输出一行紧凑分布。"""
+    counts = {level: 0 for level in ALL_LEVELS}
+    unknown = 0
+    for item in items:
+        level = str(item.get("breakpoint_level") or "").strip().upper()
+        if level in counts:
+            counts[level] += 1
+        else:
+            unknown += 1
+    parts = [f"{level} {_LEVEL_LABELS.get(level, '')}:{counts[level]} 条"
+             for level in ALL_LEVELS if counts[level] > 0]
+    if unknown:
+        parts.append(f"未知:{unknown} 条")
+    return "  ".join(parts)
 
 
 def render_agent_text(report: dict) -> str:
@@ -490,9 +510,10 @@ def render_agent_text(report: dict) -> str:
     owner = report.get("owner_name") or "未配置负责人"
     start = _fmt_local(_parse_dt(window.get("start")))
     end = _fmt_local(_parse_dt(window.get("end")))
+    urls = report.get("urls") or {}
 
     lines = [
-        f"### Agent 测试日报 · {short}",
+        f"### {_env_prefix(report)}Agent 测试日报 · {short}",
         f"**负责人**：{owner}",
         f"**统计窗口**：{start} ~ {end}",
         "",
@@ -511,35 +532,17 @@ def render_agent_text(report: dict) -> str:
 
     failed_items = ev.get("failed_items") or []
     if failed_items:
-        lines += ["", "**失败评测**"]
-        for idx, item in enumerate(failed_items[:_LIST_LIMIT], 1):
-            err = (item.get("error_message") or "").replace("\n", " ")[:200]
-            lines.append(
-                f"{idx}. `{item.get('evaluation_id')}` "
-                f"{item.get('task_name') or '-'} — {err}")
-            lines.append(f"   {_md_link('查看详情', item.get('url', ''))}")
-        if len(failed_items) > _LIST_LIMIT:
-            lines.append(f"   ... 还有 {len(failed_items) - _LIST_LIMIT} 个")
+        ids = "、".join(
+            f"{i.get('evaluation_id')}({i.get('task_name') or '-'})"
+            for i in failed_items[:5])
+        more = f" 等 {len(failed_items)} 个" if len(failed_items) > 5 else ""
+        lines.append(f"- 失败评测：{ids}{more}")
 
     lines += ["", f"#### 二、新增问题单（{len(new_issues)}）"]
-    lines += _render_issue_list(new_issues, _LIST_LIMIT) if new_issues else ["无"]
+    lines.append(_compact_levels(new_issues) if new_issues else "无新增")
 
-    lines += ["", f"#### 三、未关闭问题单（{open_issues.get('total', 0)}）"]
-    open_items = open_issues.get("items") or []
-    if open_items:
-        for idx, item in enumerate(open_items[:_LIST_LIMIT], 1):
-            lines.append(
-                f"{idx}. `[{item.get('status')}][{item.get('case_type')}]`"
-                f" {item.get('vuln_title')}")
-            lines.append(f"   {_md_link('查看详情', item.get('url', ''))}")
-        if open_issues.get("total", 0) > _LIST_LIMIT:
-            lines.append(f"   ... 还有 {open_issues.get('total', 0) - _LIST_LIMIT} 条")
-    else:
-        lines.append("无")
-
-    urls = report.get("urls") or {}
-    lines += ["", f"{_md_link('评测列表', urls.get('eval_list', ''))} · "
-                  f"{_md_link('问题单列表', urls.get('issue_list', ''))}"]
+    lines += ["", f"#### 三、未关闭问题单（{open_issues.get('total', 0)}）",
+              f"{_md_link('查看全部', urls.get('issue_list', ''))}"]
     return "\n".join(lines)
 
 
@@ -551,7 +554,7 @@ def render_responsibility_text(report: dict) -> str:
     totals = report.get("totals") or {}
 
     lines = [
-        f"### {report.get('display_name', '')}问题日报",
+        f"### {_env_prefix(report)}{report.get('display_name', '')}问题日报",
         f"**负责人**：{owner}",
         f"**统计窗口**：{start} ~ {end}",
         f"**汇总**：新增 {totals.get('new', 0)} · 未关闭 {totals.get('open', 0)}",
@@ -564,23 +567,10 @@ def render_responsibility_text(report: dict) -> str:
             continue
         lines += ["", f"#### {group.get('display_name', group.get('agent_type'))}"
                       f"（新增 {len(new_items)} / 未关闭 {open_issues.get('total', 0)}）"]
-        if new_items:
-            lines.append("**新增**")
-            lines += _render_issue_list(new_items, _GROUP_LIST_LIMIT)
-        if open_issues.get("items"):
-            lines.append("**未关闭**")
-            for idx, item in enumerate(
-                    (open_issues.get("items") or [])[:_GROUP_LIST_LIMIT], 1):
-                lines.append(
-                    f"{idx}. `[{item.get('status')}][{item.get('case_type')}]`"
-                    f" {item.get('vuln_title')}")
-                lines.append(f"   {_md_link('查看详情', item.get('url', ''))}")
-            if open_issues.get("total", 0) > _GROUP_LIST_LIMIT:
-                lines.append(
-                    f"   ... 还有 {open_issues.get('total', 0) - _GROUP_LIST_LIMIT} 条")
+        lines.append(_compact_levels(new_items) if new_items else "无新增")
+        group_url = group.get("url") or (report.get("urls") or {}).get("issue_list", "")
+        lines.append(f"{_md_link('查看全部', group_url)}")
 
-    urls = report.get("urls") or {}
-    lines += ["", f"{_md_link('问题单列表', urls.get('issue_list', ''))}"]
     return "\n".join(lines)
 
 

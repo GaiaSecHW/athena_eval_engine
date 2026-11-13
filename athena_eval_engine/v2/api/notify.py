@@ -21,6 +21,7 @@ import secrets
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
+from ...config_loader import EVAL_ENV_NAME
 from ..core.agents import AGENT_DISPLAY_NAMES, ALL_AGENT_SET
 from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
@@ -42,6 +43,18 @@ def _db_token() -> str:
         row = cur.fetchone()
         return (row[0] or "") if row else ""
     return _db_query(_do)
+
+
+def _db_env_name() -> str:
+    """环境标识：system_config.notify_env_name → EVAL_ENV_NAME → 空。"""
+    def _do(cur):
+        cur.execute(
+            "SELECT config_value FROM system_config "
+            "WHERE config_key='notify_env_name'")
+        row = cur.fetchone()
+        return (row[0] or "") if row else ""
+    value = _db_query(_do)
+    return value or EVAL_ENV_NAME
 
 
 def _require_token(request: Request) -> None:
@@ -96,6 +109,10 @@ class TokenUpdate(BaseModel):
     token: str
 
 
+class EnvUpdate(BaseModel):
+    env_name: str
+
+
 @router.get("/token")
 def get_token():
     """返回当前日报 token（系统设置页展示/复制用）。"""
@@ -121,6 +138,27 @@ def set_token(update: TokenUpdate):
 def generate_token():
     """生成一个随机 token（不落库，由页面点保存后写入）。"""
     return {"token": secrets.token_urlsafe(32)}
+
+
+@router.get("/env")
+def get_env():
+    """返回环境标识（green / yellow），系统设置页展示用。"""
+    return {"env_name": _db_env_name()}
+
+
+@router.put("/env")
+def set_env(update: EnvUpdate):
+    value = (update.env_name or "").strip()
+
+    def _do(cur):
+        cur.execute(
+            "INSERT INTO system_config (config_key, config_value) "
+            "VALUES ('notify_env_name', %s) "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (value,))
+    _db_query(_do)
+    log("NOTIFY", f"更新环境标识: {value or '(空)'}")
+    return {"status": "ok"}
 
 
 @router.get("/owners")
@@ -175,7 +213,10 @@ def daily_report(owner_key: str | None = None,
                                until=until, force=force)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    env_name = _db_env_name()
+    result["env_name"] = env_name
     for report in result.get("agents", []):
+        report["env_name"] = env_name
         report["text"] = render_text(report)
     return result
 
