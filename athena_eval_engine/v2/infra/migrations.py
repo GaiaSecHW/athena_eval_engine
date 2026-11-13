@@ -647,6 +647,13 @@ MIGRATIONS = [
             "(owner_key, channel, sent_at)",
         ],
     },
+    {
+        "id": "043_drop_notify_token",
+        "desc": "删除离线脚本用的 system_config.notify_token（日报改为 eval 服务端发送）",
+        "sql": [
+            "DELETE FROM system_config WHERE config_key='notify_token'",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

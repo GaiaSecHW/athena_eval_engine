@@ -79,14 +79,13 @@ async function renderSystem(){
     <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
     <div class="card" style="margin-top:20px"><h3>日报通知配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">配置每个 agent / 责任方的 WeLink 负责人。未配置或未启用的 owner 不会发送日报。工号格式：拼音首字母+工号（如 w0012345）。</div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
-      <label style="font-weight:600;font-size:14px">日报 API Token</label>
-      <div style="font-size:12px;color:var(--sub);margin:4px 0">离线脚本调用日报接口时使用；留空则不校验。脚本侧需配置同一个 token。</div>
+      <label style="font-weight:600;font-size:14px">小鲁班 Token</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">在 WeLink 里找「小鲁班」，发送“获取发送token”，把返回的 token 粘贴到这里。token 过期时重新获取并更新。</div>
       <div style="display:flex;gap:8px;align-items:center">
-        <input id="notify_token" placeholder="点击右侧随机生成" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
-        <button class="btn g" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="genNotifyToken()">随机生成</button>
-        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyToken()">保存</button>
+        <input id="notify_xiaoluban" placeholder="粘贴小鲁班 token" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveXiaolubanToken()">保存</button>
       </div>
-      <div id="notify_token_msg" style="margin-top:8px;font-size:13px"></div>
+      <div id="notify_xiaoluban_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
       <label style="font-weight:600;font-size:14px">环境标识</label>
@@ -101,7 +100,7 @@ async function renderSystem(){
   $("view").innerHTML=h;
   loadDatasources();
   loadLlmStatus();
-  loadNotifyToken();
+  loadXiaolubanToken();
   loadNotifyEnv();
   loadNotifyOwners();
 }
@@ -218,22 +217,14 @@ async function toggleDsEnabled(i){
   catch(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'切换失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});}
 }
 
-async function loadNotifyToken(){
-  try{const d=await jget("/api/v2/notify/token");var el=$("notify_token");if(el)el.value=d.token||'';}
-  catch(e){var m=$("notify_token_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+async function loadXiaolubanToken(){
+  try{const d=await jget("/api/v2/notify/xiaoluban-token");var el=$("notify_xiaoluban");if(el)el.value=d.token||'';}
+  catch(e){var m=$("notify_xiaoluban_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
 }
-async function genNotifyToken(){
-  var msg=$("notify_token_msg");
-  try{
-    const d=await jpost("/api/v2/notify/token/generate",{});
-    var el=$("notify_token");if(el)el.value=d.token||'';
-    if(msg)msg.innerHTML='<span style="color:var(--sub)">已生成，点“保存”生效</span>';
-  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">生成失败: '+esc(String(e))+'</span>';}
-}
-async function saveNotifyToken(){
-  var el=$("notify_token");if(!el)return;
-  var msg=$("notify_token_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
-  try{await jput("/api/v2/notify/token",{token:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+async function saveXiaolubanToken(){
+  var el=$("notify_xiaoluban");if(!el)return;
+  var msg=$("notify_xiaoluban_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{await jput("/api/v2/notify/xiaoluban-token",{token:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
   catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 

@@ -368,6 +368,10 @@ def _on_startup():
     from ...v2.sync.project_task_sync import schedule_loop as _sync_loop
     _sync_thread = threading.Thread(target=_sync_loop, name="project-task-sync", daemon=True)
     _sync_thread.start()
+    # 日报定时发送（每天 09:00，小鲁班）
+    from ...v2.notify.scheduler import schedule_loop as _notify_loop
+    _notify_thread = threading.Thread(target=_notify_loop, name="daily-notify", daemon=True)
+    _notify_thread.start()
 
 
 @app.on_event("shutdown")

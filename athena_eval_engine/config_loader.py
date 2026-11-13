@@ -73,6 +73,10 @@ EVAL_PUBLIC_URL = os.environ.get(
 # 环境标识（green / yellow），日报标题用；系统设置页可覆盖
 EVAL_ENV_NAME = os.environ.get("EVAL_ENV_NAME", "")
 
+# 小鲁班消息发送接口
+XIAOLUBAN_URL = os.environ.get(
+    "XIAOLUBAN_URL", "http://xiaoluban.rnd.huawei.com:80/")
+
 
 def get_reports_dir() -> str:
     """返回报告目录路径（单一来源）。"""

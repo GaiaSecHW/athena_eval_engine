@@ -66,7 +66,7 @@ _LEVEL_LABELS: dict[str, str] = {
 
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 _OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")
-_CHANNEL = "welink"
+_CHANNEL = "xiaoluban"
 
 
 def _now_utc() -> datetime:
@@ -169,6 +169,24 @@ def last_sent_at(owner_key: str, channel: str = _CHANNEL) -> datetime | None:
         row = cur.fetchone()
         return row[0] if row else None
     return _db_query(_do)
+
+
+def record_send(owner_key: str, recipient: str, window_start: str,
+                window_end: str, content_hash: str, status: str,
+                error: str | None = None, channel: str = _CHANNEL) -> None:
+    """写入一次发送记录（sent/failed）。"""
+    start = _parse_dt(window_start) or _now_utc()
+    end = _parse_dt(window_end) or _now_utc()
+
+    def _do(cur):
+        cur.execute(
+            "INSERT INTO notification_log "
+            "(owner_key, channel, recipient, window_start, window_end, "
+            " content_hash, status, error) "
+            "VALUES (%s,%s,%s,%s,%s,%s,%s,%s)",
+            (owner_key, channel, recipient, start, end,
+             content_hash, status, error))
+    _db_query(_do)
 
 
 def _load_evaluations(since: datetime, until: datetime) -> list[dict]:
