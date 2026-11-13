@@ -515,11 +515,12 @@ MIGRATIONS = [
         ],
     },
     {
-        "id": "035_agent_owner_config",
-        "desc": "创建 agent_owner_config 表——agent_type → 负责人/WeLink 目标映射（日报推送用）",
+        "id": "035_notify_owner_config",
+        "desc": "创建 notify_owner_config 表——agent / 责任方 → 负责人 + WeLink 目标映射",
         "sql": [
-            "CREATE TABLE IF NOT EXISTS agent_owner_config ("
-            "  agent_type VARCHAR(32) PRIMARY KEY,"
+            "CREATE TABLE IF NOT EXISTS notify_owner_config ("
+            "  owner_key VARCHAR(64) PRIMARY KEY,"
+            "  owner_kind VARCHAR(16) NOT NULL DEFAULT 'agent',"
             "  display_name VARCHAR(64) NOT NULL DEFAULT '',"
             "  owner_name VARCHAR(128) NOT NULL DEFAULT '',"
             "  target_type VARCHAR(16) NOT NULL DEFAULT 'user',"
@@ -529,22 +530,26 @@ MIGRATIONS = [
             "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
             "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
-            "INSERT IGNORE INTO agent_owner_config (agent_type, display_name, enabled) VALUES"
-            " ('turing','挖掘Agent(Turing)',0),"
-            " ('argo','挖掘Agent(Argo)',0),"
-            " ('secmate','挖掘Agent(SecMate)',0),"
-            " ('dataflow','挖掘Agent(Dataflow)',0),"
-            " ('cvuln_verify','验证Agent(CVulnVerify)',0),"
-            " ('webvuln_verify','验证Agent(WebVulnVerify)',0)",
+            "INSERT IGNORE INTO notify_owner_config "
+            "(owner_key, owner_kind, display_name, enabled) VALUES"
+            " ('agent:turing','agent','挖掘Agent(Turing)',0),"
+            " ('agent:argo','agent','挖掘Agent(Argo)',0),"
+            " ('agent:secmate','agent','挖掘Agent(SecMate)',0),"
+            " ('agent:dataflow','agent','挖掘Agent(Dataflow)',0),"
+            " ('agent:cvuln_verify','agent','验证Agent(CVulnVerify)',0),"
+            " ('agent:webvuln_verify','agent','验证Agent(WebVulnVerify)',0),"
+            " ('resp:knowledge','responsibility','知识库',0),"
+            " ('resp:external_data_source','responsibility','外部数据源',0),"
+            " ('resp:eval_process','responsibility','评测流程',0)",
         ],
     },
     {
         "id": "036_notification_log",
-        "desc": "创建 notification_log 表——记录日报发送窗口与结果，支撑「上次成功发送至今」",
+        "desc": "创建 notification_log 表——记录每个 owner 的日报发送窗口与结果",
         "sql": [
             "CREATE TABLE IF NOT EXISTS notification_log ("
             "  id BIGINT AUTO_INCREMENT PRIMARY KEY,"
-            "  agent_type VARCHAR(32) NOT NULL,"
+            "  owner_key VARCHAR(64) NOT NULL,"
             "  channel VARCHAR(16) NOT NULL DEFAULT 'welink',"
             "  recipient VARCHAR(256) NOT NULL DEFAULT '',"
             "  window_start DATETIME(3) NOT NULL,"
@@ -554,7 +559,7 @@ MIGRATIONS = [
             "  error TEXT,"
             "  sent_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
             "  created_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
-            "  INDEX idx_notify_agent (agent_type, channel, sent_at),"
+            "  INDEX idx_notify_owner (owner_key, channel, sent_at),"
             "  INDEX idx_notify_window (window_end)"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
@@ -586,6 +591,37 @@ MIGRATIONS = [
             "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
             "    ON UPDATE CURRENT_TIMESTAMP(3)"
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
+    {
+        "id": "039_dts_issue_created_at_index",
+        "desc": "dts_issue.created_at 加索引——问题单列表 ORDER BY created_at DESC 分页避免全表 filesort",
+        "sql": [
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_created (created_at)",
+        ],
+    },
+    {
+        "id": "040_ui_query_indexes",
+        "desc": "补齐界面查询缺失索引：评测按状态/任务查询、问题单按 case/eval+时间/"
+                "状态+时间/case_type+时间/cause_code 查询",
+        "sql": [
+            # 首页看板已完成评测筛选、状态计数、启动续跑/看门狗
+            "ALTER TABLE evaluation ADD INDEX idx_eval_status (evaluation_status)",
+            # /api/v2/report/summary 关联评测：覆盖索引，避免回表读 error_message 等大字段
+            # SELECT task_id,evaluation_id,evaluation_status,created_at
+            # WHERE task_id != '' AND evaluation_status != 'CANCELLED'
+            "ALTER TABLE evaluation ADD INDEX idx_eval_task_cover "
+            "(task_id, evaluation_status, evaluation_id, created_at)",
+            # /api/v2/dts/by-case：WHERE case_id = ?（uk_dts_eval_case 左前缀是 eval，覆盖不到）
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_case_id (case_id)",
+            # 评测详情拉该评测全部问题单：WHERE evaluation_id=? ORDER BY created_at DESC
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_eval_created (evaluation_id, created_at)",
+            # 问题单列表按状态过滤 + 按创建时间排序
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_status_created (status, created_at)",
+            # 问题单列表按类型过滤 + 按创建时间排序
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_case_created (case_type, created_at)",
+            # 看板/列表按成因过滤与 GROUP BY cause_code
+            "ALTER TABLE dts_issue ADD INDEX idx_dts_cause (cause_code)",
         ],
     },
 ]

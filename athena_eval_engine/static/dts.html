@@ -40,6 +40,16 @@
 renderNav('/dts');
 
 let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',q:''};
+// 支持从日报链接直接带过滤条件：/dts?agent_type=argo&status=open
+(function(){
+  try{
+    var qs=new URLSearchParams(location.search);
+    var at=qs.get('agent_type');if(at)_dtsFilter.agent_type=at;
+    var st=qs.get('status');if(st)_dtsFilter.status=st;
+    var ct=qs.get('case_type');if(ct)_dtsFilter.case_type=ct;
+    var rs=qs.get('responsibility');if(rs)_dtsFilter.responsibility=rs;
+  }catch(e){}
+})();
 let _dtsPage=1;
 let _dtsPageSize=20;
 let _dtsTotal=0;
@@ -68,7 +78,7 @@ async function renderDtsList(){
           <option value="FP">误报</option>
           <option value="FN">漏报</option>
         </select>
-        <select id="dts-f-resp" onchange="_dtsFilter.responsibility=this.value;renderDtsTable()" style="width:auto;max-width:140px">
+        <select id="dts-f-resp" onchange="_dtsFilter.responsibility=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部责任方</option>
           <option value="agent">Agent</option>
           <option value="knowledge">知识/记忆</option>
@@ -89,6 +99,9 @@ async function renderDtsList(){
       if(at===_cur)o.selected=true;
     });
   }
+  var _stSel=$('dts-f-status');if(_stSel&&_dtsFilter.status)_stSel.value=_dtsFilter.status;
+  var _ctSel=$('dts-f-case');if(_ctSel&&_dtsFilter.case_type)_ctSel.value=_dtsFilter.case_type;
+  var _rsSel=$('dts-f-resp');if(_rsSel&&_dtsFilter.responsibility)_rsSel.value=_dtsFilter.responsibility;
   loadDtsPage();
 }
 
@@ -97,6 +110,7 @@ async function loadDtsPage(){
   if(_dtsFilter.status)params.push('status='+encodeURIComponent(_dtsFilter.status));
   if(_dtsFilter.agent_type)params.push('agent_type='+encodeURIComponent(_dtsFilter.agent_type));
   if(_dtsFilter.case_type)params.push('case_type='+encodeURIComponent(_dtsFilter.case_type));
+  if(_dtsFilter.responsibility)params.push('responsibility='+encodeURIComponent(_dtsFilter.responsibility));
   var url='/api/v2/dts?'+params.join('&');
   try{
     var d=await jget(url);

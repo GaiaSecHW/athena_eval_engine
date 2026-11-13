@@ -110,6 +110,7 @@ def list_issues(
     status: str | None = None,
     cause_code: str | None = None,
     case_type: str | None = None,
+    responsibility: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
@@ -121,6 +122,7 @@ def list_issues(
             status=status,
             cause_code=cause_code,
             case_type=case_type,
+            responsibility=responsibility,
             limit=limit,
             offset=offset,
         )

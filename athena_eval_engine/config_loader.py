@@ -66,6 +66,10 @@ EVAL_STATIC_OVERRIDE = os.environ.get("EVAL_STATIC_OVERRIDE", "/data/static")
 # 异常日志文件路径（k8s 中通过环境变量配置，默认 /data/logs/eval_errors.log）
 EVAL_ERROR_LOG = os.environ.get("EVAL_ERROR_LOG", "/data/logs/eval_errors.log")
 
+# 对外访问地址（日报里的详情链接用；可用 EVAL_PUBLIC_URL 覆盖）
+EVAL_PUBLIC_URL = os.environ.get(
+    "EVAL_PUBLIC_URL", "http://chimera-g.icsl.huawei.com/eval").rstrip("/")
+
 
 def get_reports_dir() -> str:
     """返回报告目录路径（单一来源）。"""

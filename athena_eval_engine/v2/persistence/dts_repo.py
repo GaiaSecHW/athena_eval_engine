@@ -66,6 +66,23 @@ _SELECT_COLUMNS = (
 # JOIN evaluation 表获取评测名称
 _FROM_JOIN = " dts_issue d LEFT JOIN evaluation e ON d.evaluation_id = e.evaluation_id"
 
+# 列表页专用精简列：不取 session_chains(MEDIUMTEXT)/breakpoint_desc/root_cause/
+# solution/hypotheses/replay_data 等大字段——列表只展示标题/类型/状态/质量。
+_LIST_COLUMNS = (
+    "d.dts_id, d.evaluation_id, d.task_id, d.case_id, d.vuln_title, d.agent_type,"
+    " d.case_type, d.cause_code, d.breakpoint_level, d.label_quality,"
+    " d.status, d.responsibility,"
+    " d.created_at, d.updated_at, d.closed_at,"
+    " e.evaluation_name"
+)
+
+_LIST_KEYS = (
+    "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
+    "case_type", "cause_code", "breakpoint_level", "label_quality",
+    "status", "responsibility", "created_at", "updated_at", "closed_at",
+    "evaluation_name",
+)
+
 
 # ---------------------------------------------------------------------------
 # DB 连接重试（从 v2/infra/db_utils.py 导入）
@@ -90,6 +107,11 @@ def _row_to_dict(row) -> dict:
         "evaluation_name",
     )
     return {k: row[i] for i, k in enumerate(keys)}
+
+
+def _row_to_list_dict(row) -> dict:
+    """列表查询精简列 → dict。"""
+    return {k: row[i] for i, k in enumerate(_LIST_KEYS)}
 
 
 # ---------------------------------------------------------------------------
@@ -401,6 +423,7 @@ def list_dts_issues(
     status: str | None = None,
     cause_code: str | None = None,
     case_type: str | None = None,
+    responsibility: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
@@ -418,7 +441,13 @@ def list_dts_issues(
     if agent_type:
         where_parts.append("FIND_IN_SET(%s, d.agent_type) > 0")
         params.append(agent_type)
-    if status:
+    if responsibility:
+        where_parts.append("FIND_IN_SET(%s, d.responsibility) > 0")
+        params.append(responsibility)
+    if status == "open":
+        # 未关闭 = 尚未回归通过/判定非问题
+        where_parts.append("d.status NOT IN ('passed','not_issue')")
+    elif status:
         where_parts.append("d.status = %s")
         params.append(status)
     if cause_code:
@@ -434,9 +463,9 @@ def list_dts_issues(
         # 查总数
         cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", tuple(params))
         total = cur.fetchone()[0]
-        # 查当前页
+        # 查当前页（精简列，避免拉取大字段）
         sql = (
-            f"SELECT {_SELECT_COLUMNS} FROM{_FROM_JOIN}{where_clause}"
+            f"SELECT {_LIST_COLUMNS} FROM{_FROM_JOIN}{where_clause}"
             f" ORDER BY d.created_at DESC LIMIT %s OFFSET %s"
         )
         cur.execute(sql, tuple(params + [limit, offset]))
@@ -444,7 +473,7 @@ def list_dts_issues(
         return rows, total
 
     rows, total = _db_query(_do_query)
-    return [_row_to_dict(r) for r in rows], total
+    return [_row_to_list_dict(r) for r in rows], total
 
 
 def update_dts_issue(dts_id: str, updates: dict) -> bool:

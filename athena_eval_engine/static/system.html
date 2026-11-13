@@ -75,10 +75,24 @@ async function renderSystem(){
       <div style="border-top:1px solid var(--bd);padding-top:16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button class="btn g" style="font-size:13px;padding:8px 20px" onclick="testLlmConnection()">测试连通性</button><span id="llm_test_status" style="font-size:13px;color:var(--sub)"></span></div><div id="llm_test_result" style="font-size:13px"></div></div>
     </div>
     </div>
-    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>`;
+    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
+    <div class="card" style="margin-top:20px"><h3>日报通知配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">配置每个 agent / 责任方的 WeLink 负责人。未配置或未启用的 owner 不会发送日报。工号格式：拼音首字母+工号（如 w0012345）。</div>
+    <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
+      <label style="font-weight:600;font-size:14px">日报 API Token</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">离线脚本调用日报接口时使用；留空则不校验。脚本侧需配置同一个 token。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="notify_token" placeholder="点击右侧随机生成" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <button class="btn g" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="genNotifyToken()">随机生成</button>
+        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyToken()">保存</button>
+      </div>
+      <div id="notify_token_msg" style="margin-top:8px;font-size:13px"></div>
+    </div>
+    <div id="notify-container"><div style="color:var(--sub)">加载中...</div></div></div>`;
   $("view").innerHTML=h;
   loadDatasources();
   loadLlmStatus();
+  loadNotifyToken();
+  loadNotifyOwners();
 }
 function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
 async function saveSystemConfig(){
@@ -191,6 +205,54 @@ async function toggleDsEnabled(i){
   var ds=_dsData[i];if(!ds)return;
   try{await jput("/api/v2/datasources/"+ds.agent_type,{enabled:!ds.enabled});loadDatasources();}
   catch(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'切换失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});}
+}
+
+async function loadNotifyToken(){
+  try{const d=await jget("/api/v2/notify/token");var el=$("notify_token");if(el)el.value=d.token||'';}
+  catch(e){var m=$("notify_token_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+async function genNotifyToken(){
+  var msg=$("notify_token_msg");
+  try{
+    const d=await jpost("/api/v2/notify/token/generate",{});
+    var el=$("notify_token");if(el)el.value=d.token||'';
+    if(msg)msg.innerHTML='<span style="color:var(--sub)">已生成，点“保存”生效</span>';
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">生成失败: '+esc(String(e))+'</span>';}
+}
+async function saveNotifyToken(){
+  var el=$("notify_token");if(!el)return;
+  var msg=$("notify_token_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{await jput("/api/v2/notify/token",{token:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+  catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+
+let _notifyData=null;
+async function loadNotifyOwners(){
+  try{const d=await jget("/api/v2/notify/owners");_notifyData=d.owners||[];renderNotifyOwners();}
+  catch(e){var c=$("notify-container");if(c)c.innerHTML='<div style="color:var(--red)">加载失败: '+esc(String(e))+'</div>';}
+}
+function renderNotifyOwners(){
+  var c=$("notify-container");if(!c)return;
+  if(!_notifyData||!_notifyData.length){c.innerHTML='<div style="color:var(--sub)">无配置</div>';return;}
+  c.innerHTML=_notifyData.map(function(o,i){
+    var kindLabel=o.owner_kind==='agent'?'Agent':'责任方';
+    var targetType=o.target_type||'user';
+    return '<div style="border:1px solid var(--bd);border-radius:10px;padding:14px;margin-bottom:12px">'+
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px"><b style="font-size:15px">'+esc(o.display_name||o.owner_key)+'</b><span class="knd">'+kindLabel+'</span><span style="font-size:12px;color:var(--gray);font-family:monospace">'+esc(o.owner_key)+'</span></div>'+
+      '<div style="display:grid;grid-template-columns:1.2fr .8fr 1.5fr auto;gap:10px;align-items:end">'+
+      '<div><label style="font-size:12px;color:var(--sub)">负责人</label><input id="nt_'+i+'_name" value="'+esc(o.owner_name||'')+'" placeholder="如 张三" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"></div>'+
+      '<div><label style="font-size:12px;color:var(--sub)">类型</label><select id="nt_'+i+'_type" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"><option value="user"'+(targetType==='user'?' selected':'')+'>个人</option><option value="group"'+(targetType==='group'?' selected':'')+'>群</option></select></div>'+
+      '<div><label style="font-size:12px;color:var(--sub)">工号 / 群号</label><input id="nt_'+i+'_id" value="'+esc(o.target_id||'')+'" placeholder="w0012345 或 1234567891011" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);font-family:monospace"></div>'+
+      '<div style="display:flex;gap:10px;align-items:center"><label style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub);margin:0;cursor:pointer;white-space:nowrap"><input id="nt_'+i+'_enabled" type="checkbox"'+(o.enabled?' checked':'')+' style="width:auto"> 启用</label><button class="btn g" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyOwner('+i+')">保存</button></div>'+
+      '</div><div id="nt_'+i+'_msg" style="margin-top:8px;font-size:13px"></div></div>';
+  }).join('');
+}
+async function saveNotifyOwner(i){
+  var o=_notifyData&&_notifyData[i];if(!o)return;
+  var body={owner_key:o.owner_key,owner_name:$("nt_"+i+"_name").value.trim(),target_type:$("nt_"+i+"_type").value,target_id:$("nt_"+i+"_id").value.trim(),enabled:$("nt_"+i+"_enabled").checked};
+  var msg=$("nt_"+i+"_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{await jput("/api/v2/notify/owners",body);if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+  catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 
 renderSystem();
