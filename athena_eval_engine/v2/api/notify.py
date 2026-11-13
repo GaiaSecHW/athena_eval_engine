@@ -15,12 +15,16 @@ from datetime import datetime
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
 
-from ...config_loader import EVAL_ENV_NAME, EVAL_PUBLIC_URL
 from ..core.agents import AGENT_DISPLAY_NAMES, ALL_AGENT_SET
 from ..infra.database import connect as _connect
 from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
 from ..notify import scheduler
+from ..notify.daily_report import (
+    get_env_name,
+    get_public_url,
+    invalidate_public_url_cache,
+)
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -47,26 +51,6 @@ router = APIRouter(prefix="/api/v2/notify", tags=["notify"])
 _TARGET_TYPES = ("user", "group")
 # 知识库 / 外部数据源 / 评测流程合并为一个责任方
 _RESPONSIBILITIES = ("other",)
-
-
-def _db_env_name() -> str:
-    """环境标识：system_config.notify_env_name → EVAL_ENV_NAME → 空。"""
-    def _do(cur):
-        cur.execute(
-            "SELECT config_value FROM system_config "
-            "WHERE config_key='notify_env_name'")
-        row = cur.fetchone()
-        return (row[0] or "") if row else ""
-    value = _db_query(_do) or EVAL_ENV_NAME
-    if value:
-        return value
-    # 未显式配置时从公网地址推断，保证标题始终带环境名
-    url = EVAL_PUBLIC_URL.lower()
-    if "chimera-y" in url:
-        return "yellow"
-    if "chimera-g" in url:
-        return "green"
-    return ""
 
 
 def _db_xiaoluban_token() -> str:
@@ -108,6 +92,10 @@ class EnvUpdate(BaseModel):
     env_name: str
 
 
+class PublicUrlUpdate(BaseModel):
+    public_url: str
+
+
 class XiaolubanTokenUpdate(BaseModel):
     token: str
 
@@ -123,8 +111,8 @@ class WorkdayUpdate(BaseModel):
 
 @router.get("/env")
 def get_env():
-    """返回环境标识（green / yellow），系统设置页展示用。"""
-    return {"env_name": _db_env_name()}
+    """返回环境标识和对外访问地址，系统设置页展示用。"""
+    return {"env_name": get_env_name(), "public_url": get_public_url()}
 
 
 @router.put("/env")
@@ -140,6 +128,32 @@ def set_env(update: EnvUpdate):
     _db_query(_do)
     log("NOTIFY", f"更新环境标识: {value or '(空)'}")
     return {"status": "ok"}
+
+
+@router.get("/public-url")
+def get_public_url_endpoint():
+    return {"public_url": get_public_url()}
+
+
+@router.put("/public-url")
+def set_public_url(update: PublicUrlUpdate):
+    value = (update.public_url or "").strip().rstrip("/")
+    if value and not (value.startswith("http://")
+                      or value.startswith("https://")):
+        raise HTTPException(
+            status_code=400,
+            detail="public_url must start with http:// or https://")
+
+    def _do(cur):
+        cur.execute(
+            "INSERT INTO system_config (config_key, config_value) "
+            "VALUES ('notify_public_url', %s) "
+            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+            (value,))
+    _db_query(_do)
+    invalidate_public_url_cache()
+    log("NOTIFY", f"更新对外访问地址: {value or '(空)'}")
+    return {"status": "ok", "public_url": value}
 
 
 def _mask_token(token: str) -> str:

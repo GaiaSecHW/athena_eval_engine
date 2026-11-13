@@ -24,9 +24,10 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import time
 from datetime import datetime, timedelta, timezone
 
-from ...config_loader import EVAL_PUBLIC_URL, get_reports_dir
+from ...config_loader import EVAL_ENV_NAME, EVAL_PUBLIC_URL, get_reports_dir
 from ..core.agents import (
     AGENT_DISPLAY_NAMES,
     AGENT_SHORT_LABELS,
@@ -74,6 +75,53 @@ _CHANNEL = "xiaoluban"
 
 def _now_utc() -> datetime:
     return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+_public_url_cache: tuple[float, str] | None = None
+_PUBLIC_URL_CACHE_SECONDS = 60.0
+
+
+def get_public_url() -> str:
+    """对外访问地址：system_config.notify_public_url → EVAL_PUBLIC_URL。"""
+    global _public_url_cache
+    now = time.monotonic()
+    if (_public_url_cache
+            and now - _public_url_cache[0] < _PUBLIC_URL_CACHE_SECONDS):
+        return _public_url_cache[1]
+
+    def _do(cur):
+        cur.execute(
+            "SELECT config_value FROM system_config "
+            "WHERE config_key='notify_public_url'")
+        row = cur.fetchone()
+        return (row[0] or "") if row else ""
+    value = (_db_query(_do) or EVAL_PUBLIC_URL).rstrip("/")
+    _public_url_cache = (now, value)
+    return value
+
+
+def invalidate_public_url_cache() -> None:
+    global _public_url_cache
+    _public_url_cache = None
+
+
+def get_env_name() -> str:
+    """环境标识：system_config.notify_env_name → EVAL_ENV_NAME → 公网地址推断。"""
+    def _do(cur):
+        cur.execute(
+            "SELECT config_value FROM system_config "
+            "WHERE config_key='notify_env_name'")
+        row = cur.fetchone()
+        return (row[0] or "") if row else ""
+    value = _db_query(_do) or EVAL_ENV_NAME
+    if value:
+        return value
+    url = get_public_url().lower()
+    if "chimera-y" in url:
+        return "yellow"
+    if "chimera-g" in url:
+        return "green"
+    return ""
 
 
 def _parse_dt(value: str | None) -> datetime | None:
@@ -274,7 +322,7 @@ def _load_open_issues(owner_kind: str, owner_value: str,
     return _db_query(_do)
 
 
-def _issue_item(item: dict) -> dict:
+def _issue_item(item: dict, public_url: str) -> dict:
     return {
         "dts_id": item["dts_id"],
         "case_id": item.get("case_id") or "",
@@ -286,12 +334,12 @@ def _issue_item(item: dict) -> dict:
         "status": item.get("status") or "",
         "solution": item.get("solution") or "",
         "responsibility": item.get("responsibility") or "",
-        "url": f"{EVAL_PUBLIC_URL}/dts/{item['dts_id']}",
+        "url": f"{public_url}/dts/{item['dts_id']}",
     }
 
 
 def _build_agent_report(owner: dict, since: datetime, until: datetime,
-                        evaluations: list[dict]) -> dict:
+                        evaluations: list[dict], public_url: str) -> dict:
     agent_type = _split_owner_key(owner["owner_key"])[1]
     display_name = (owner.get("display_name")
                     or AGENT_DISPLAY_NAMES.get(agent_type, agent_type))
@@ -327,7 +375,7 @@ def _build_agent_report(owner: dict, since: datetime, until: datetime,
                 "name": ev.get("evaluation_name") or ev["evaluation_id"],
                 "task_name": task_name,
                 "error_message": ev.get("error_message") or "",
-                "url": f"{EVAL_PUBLIC_URL}/evals/{ev['evaluation_id']}",
+                "url": f"{public_url}/evals/{ev['evaluation_id']}",
             })
             continue
 
@@ -350,7 +398,7 @@ def _build_agent_report(owner: dict, since: datetime, until: datetime,
             "fpr": round(ev_fp / (ev_tp + ev_fp), 4) if (ev_tp + ev_fp) > 0 else None,
             "precision": (round(ev_tp / (ev_tp + ev_fp), 4)
                           if (ev_tp + ev_fp) > 0 else None),
-            "url": f"{EVAL_PUBLIC_URL}/evals/{ev['evaluation_id']}",
+            "url": f"{public_url}/evals/{ev['evaluation_id']}",
         })
 
     new_issues = _load_new_issues("agent", agent_type, since, until)
@@ -378,14 +426,14 @@ def _build_agent_report(owner: dict, since: datetime, until: datetime,
             "items": agent_evals,
             "failed_items": failed_evals,
         },
-        "new_issues": [_issue_item(i) for i in new_issues],
+        "new_issues": [_issue_item(i, public_url) for i in new_issues],
         "open_issues": {
             "total": open_total,
-            "items": [_issue_item(i) for i in open_issues],
+            "items": [_issue_item(i, public_url) for i in open_issues],
         },
         "urls": {
-            "eval_list": f"{EVAL_PUBLIC_URL}/evals",
-            "issue_list": f"{EVAL_PUBLIC_URL}/dts?agent_type={agent_type}&status=open",
+            "eval_list": f"{public_url}/evals",
+            "issue_list": f"{public_url}/dts?agent_type={agent_type}&status=open",
         },
     }
 
@@ -396,7 +444,7 @@ def _split_agent_types(agent_type: str) -> list[str]:
 
 
 def _build_responsibility_report(owner: dict, since: datetime,
-                                 until: datetime) -> dict:
+                                 until: datetime, public_url: str) -> dict:
     responsibility = _split_owner_key(owner["owner_key"])[1]
     display_name = (owner.get("display_name")
                     or _RESPONSIBILITY_LABELS.get(responsibility, responsibility))
@@ -414,18 +462,18 @@ def _build_responsibility_report(owner: dict, since: datetime,
                 "display_name": AGENT_DISPLAY_NAMES.get(agent, agent),
                 "new_issues": [],
                 "open_issues": {"total": 0, "items": []},
-                "url": (f"{EVAL_PUBLIC_URL}/dts?responsibility={responsibility}"
+                "url": (f"{public_url}/dts?responsibility={responsibility}"
                         f"&agent_type={agent}&status=open"),
             }
         return groups[agent]
 
     for item in new_issues:
         for agent in _split_agent_types(item.get("agent_type")):
-            _group(agent)["new_issues"].append(_issue_item(item))
+            _group(agent)["new_issues"].append(_issue_item(item, public_url))
     for item in open_issues:
         for agent in _split_agent_types(item.get("agent_type")):
             g = _group(agent)
-            g["open_issues"]["items"].append(_issue_item(item))
+            g["open_issues"]["items"].append(_issue_item(item, public_url))
             g["open_issues"]["total"] += 1
 
     ordered = sorted(groups.values(),
@@ -444,7 +492,7 @@ def _build_responsibility_report(owner: dict, since: datetime,
         "groups": ordered,
         "totals": {"new": len(new_issues), "open": open_total},
         "urls": {
-            "issue_list": (f"{EVAL_PUBLIC_URL}/dts?"
+            "issue_list": (f"{public_url}/dts?"
                            f"responsibility={responsibility}&status=open"),
         },
     }
@@ -480,20 +528,26 @@ def build_reports(owner_key: str | None = None,
     else:
         evaluations = []
 
+    public_url = get_public_url()
     reports = []
     for owner in owners:
         kind = owner.get("owner_kind") or _split_owner_key(owner["owner_key"])[0]
         win_start = windows[owner["owner_key"]]
         if kind == "agent":
             reports.append(_build_agent_report(
-                owner, win_start, until_dt, evaluations))
+                owner, win_start, until_dt, evaluations, public_url))
         else:
             reports.append(_build_responsibility_report(
-                owner, win_start, until_dt))
+                owner, win_start, until_dt, public_url))
+
+    env_name = get_env_name()
+    for report in reports:
+        report["env_name"] = env_name
 
     return {
         "generated_at": _iso(_now_utc()),
         "until": _iso(until_dt),
+        "env_name": env_name,
         "agents": reports,
     }
 

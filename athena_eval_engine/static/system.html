@@ -96,6 +96,13 @@ async function renderSystem(){
         <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyEnv()">保存</button>
       </div>
       <div id="notify_env_msg" style="margin-top:8px;font-size:13px"></div>
+      <label style="font-weight:600;font-size:14px;display:block;margin-top:14px">对外访问地址</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">日报消息里的链接前缀，例如 green: http://chimera-g.icsl.huawei.com/eval，yellow: http://chimera-y.icsl.huawei.com/eval。</div>
+      <div style="display:flex;gap:8px;align-items:center">
+        <input id="notify_public_url" placeholder="http://chimera-y.icsl.huawei.com/eval" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyPublicUrl()">保存</button>
+      </div>
+      <div id="notify_public_url_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
       <label style="font-weight:600;font-size:14px">发送时间</label>
@@ -277,14 +284,26 @@ async function saveXiaolubanToken(){
 }
 
 async function loadNotifyEnv(){
-  try{const d=await jget("/api/v2/notify/env");var el=$("notify_env");if(el)el.value=d.env_name||'';}
-  catch(e){var m=$("notify_env_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+  try{
+    const d=await jget("/api/v2/notify/env");
+    var el=$("notify_env");if(el)el.value=d.env_name||'';
+    var pu=$("notify_public_url");if(pu)pu.value=d.public_url||'';
+  }catch(e){var m=$("notify_env_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
 }
 async function saveNotifyEnv(){
   var el=$("notify_env");if(!el)return;
   var msg=$("notify_env_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
   try{await jput("/api/v2/notify/env",{env_name:el.value.trim()});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
   catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+async function saveNotifyPublicUrl(){
+  var el=$("notify_public_url");if(!el)return;
+  var msg=$("notify_public_url_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  try{
+    const d=await jput("/api/v2/notify/public-url",{public_url:el.value.trim()});
+    el.value=d.public_url||'';
+    if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 
 async function loadNotifyTime(){
