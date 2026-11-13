@@ -151,7 +151,7 @@ async function load(page){
   const tk=($("f-task")||{}).value?$("f-task").value.trim():"";
   const ag=($("f-agent")||{}).value||"";
   const sortVal=($("f-sort")||{}).value||"created_at_desc";
-  const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE});
+  const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE,alive:"0"});
   if(pj)params.set("keyword",pj);
   if(tk)params.set("keyword",tk);
   if(ag)params.set("agent",ag);
@@ -167,8 +167,26 @@ async function load(page){
     const totalPages=Math.max(1,Math.ceil((d.total||0)/PAGE_SIZE));
     if(curPage>totalPages){curPage=totalPages;return load(curPage);}
     render(d);
+    loadAlive(d.items||[]);
   }catch(e){showErr("加载失败："+errMsg(e),"加载失败");}
   finally{if(btn)btn.disabled=false;}
+}
+
+// 列表先渲染，平台任务存活状态异步补全（逐项目网络调用，不阻塞首屏）
+function loadAlive(items){
+  var need=items.filter(function(i){return i.project_id&&i.task_id;})
+    .map(function(i){return i.project_id+":"+i.task_id;});
+  if(!need.length)return;
+  jget("/api/v2/report/alive?pairs="+encodeURIComponent(need.join(",")))
+    .then(function(r){
+      var del=r.deleted||{};
+      var changed=false;
+      items.forEach(function(i){
+        var k=i.project_id+":"+i.task_id;
+        if(k in del && !!i.task_deleted!==!!del[k]){i.task_deleted=!!del[k];changed=true;}
+      });
+      if(changed)render(_data);
+    }).catch(function(){});
 }
 
 function render(d){

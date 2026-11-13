@@ -23,7 +23,7 @@ router = APIRouter(prefix="/api/v2/report", tags=["report"])
 def summary(project_id: str | None = None, task_id: str | None = None,
             keyword: str | None = None, agent: str | None = None,
             sort_by: str = "created_at", sort_dir: str = "desc",
-            page: int = 1, page_size: int = 20):
+            page: int = 1, page_size: int = 20, alive: bool = True):
     """从数据库读取项目/任务漏洞统计汇总（定时采集写入）。
 
     支持按项目/任务/关键词过滤 + 分页：
@@ -168,26 +168,28 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             }
 
     # 任务是否已从平台删除（与评测列表/漏洞中心同一口径：schedule batch-alive）
-    by_proj: dict[str, set[str]] = {}
-    for r in rows:
-        _pid, _tid = r.get("project_id"), r.get("task_id")
-        if _pid and _tid:
-            by_proj.setdefault(_pid, set()).add(_tid)
+    # alive=False 时跳过（逐项目网络调用很慢），由前端异步补全 task_deleted。
     alive_by_proj: dict[str, set[str]] = {}
-    if by_proj:
-        from concurrent.futures import ThreadPoolExecutor
+    if alive:
+        by_proj: dict[str, set[str]] = {}
+        for r in rows:
+            _pid, _tid = r.get("project_id"), r.get("task_id")
+            if _pid and _tid:
+                by_proj.setdefault(_pid, set()).add(_tid)
+        if by_proj:
+            from concurrent.futures import ThreadPoolExecutor
 
-        def _check_alive(item):
-            _pid, _tids = item
-            try:
-                return _pid, ps.filter_alive_tasks(_pid, sorted(_tids))
-            except Exception as e:
-                log("REPORT", f"任务存活校验失败 project={_pid}: {e}")
-                return _pid, set(_tids)
+            def _check_alive(item):
+                _pid, _tids = item
+                try:
+                    return _pid, ps.filter_alive_tasks(_pid, sorted(_tids))
+                except Exception as e:
+                    log("REPORT", f"任务存活校验失败 project={_pid}: {e}")
+                    return _pid, set(_tids)
 
-        with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
-            for _pid, _alive in pool.map(_check_alive, list(by_proj.items())):
-                alive_by_proj[_pid] = _alive
+            with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+                for _pid, _alive in pool.map(_check_alive, list(by_proj.items())):
+                    alive_by_proj[_pid] = _alive
 
     # 给每行补评测关联 + 误报率（运行态只有误报率，无漏报）
     for r in rows:
@@ -222,6 +224,51 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         "items": rows,
         "all_agents": all_agents,
         "kpi": kpi,
+    }
+
+
+@router.get("/alive")
+def alive(pairs: str = ""):
+    """批量校验 (project_id:task_id) 是否仍在平台存在。
+
+    供列表页在渲染后异步补全 task_deleted，避免阻塞主列表请求。
+    pairs 格式：`pid1:tid1,pid2:tid2`。
+    """
+    parsed: list[tuple[str, str]] = []
+    for p in (pairs or "").split(","):
+        p = p.strip()
+        if ":" not in p:
+            continue
+        pid, tid = p.split(":", 1)
+        if pid and tid:
+            parsed.append((pid, tid))
+    if not parsed:
+        return {"deleted": {}}
+
+    by_proj: dict[str, set[str]] = {}
+    for pid, tid in parsed:
+        by_proj.setdefault(pid, set()).add(tid)
+    alive_by_proj: dict[str, set[str]] = {}
+
+    from concurrent.futures import ThreadPoolExecutor
+
+    def _check(item):
+        pid, tids = item
+        try:
+            return pid, ps.filter_alive_tasks(pid, sorted(tids))
+        except Exception as e:
+            log("REPORT", f"任务存活校验失败 project={pid}: {e}")
+            return pid, set(tids)
+
+    with ThreadPoolExecutor(max_workers=min(8, len(by_proj))) as pool:
+        for pid, alive_ids in pool.map(_check, list(by_proj.items())):
+            alive_by_proj[pid] = alive_ids
+
+    return {
+        "deleted": {
+            f"{pid}:{tid}": tid not in alive_by_proj.get(pid, set())
+            for pid, tid in parsed
+        }
     }
 
 

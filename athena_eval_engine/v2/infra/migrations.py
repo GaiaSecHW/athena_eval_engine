@@ -624,6 +624,15 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD INDEX idx_dts_cause (cause_code)",
         ],
     },
+    {
+        "id": "041_drop_redundant_dts_indexes",
+        "desc": "删除被复合索引覆盖的冗余单列索引：idx_dts_eval(evaluation_id) 被 "
+                "idx_dts_eval_created 覆盖，idx_dts_status(status) 被 idx_dts_status_created 覆盖",
+        "sql": [
+            "ALTER TABLE dts_issue DROP INDEX idx_dts_eval",
+            "ALTER TABLE dts_issue DROP INDEX idx_dts_status",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
