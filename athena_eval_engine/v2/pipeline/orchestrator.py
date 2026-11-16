@@ -681,7 +681,8 @@ class Orchestrator:
           恒为 False，会把人工确认的 confirmed_fp 一起过滤掉，导致基线为空。
         - 开发态（dev）：原始数据与基线是**不同任务**（回归评测通常同项目、
           不同任务，如新版本任务对比老版本基线任务），分别请求。
-          原始数据拉全量，基线用 final_result=vulnerable 拉引擎判定为漏洞的 case。
+          原始数据拉全量，基线只取**人工确认漏洞**（validation_result=vulnerable），
+          人工确认误报不作为基线。
         """
         manifest = cfg.get("manifest", {})
         entries = manifest.get("entries", [])
@@ -763,11 +764,17 @@ class Orchestrator:
                 if c.get("current_stage") != "finished":
                     continue
                 vr = c.get("validation_result")
-                if vr not in ("vulnerable", "not_vulnerable"):
-                    continue
-                # 排除 non_fp：人工判定不是漏洞但理由不属于误报分类，不参与分析
-                if c.get("false_positive_group") == "non_fp":
-                    continue
+                if runtime_baseline:
+                    # 运行态：人工确认漏洞与误报都参与（误报就是运行态的分析对象）
+                    if vr not in ("vulnerable", "not_vulnerable"):
+                        continue
+                    # 排除 non_fp：人工判定不是漏洞但理由不属于误报分类，不参与分析
+                    if c.get("false_positive_group") == "non_fp":
+                        continue
+                else:
+                    # 开发态：基线只取人工确认漏洞，不把误报数据当基线
+                    if vr != "vulnerable":
+                        continue
                 expected_label = "VULNERABLE" if vr == "vulnerable" else "NON_VULNERABLE"
                 bm = _case_to_benchmark(c, expected_label)
                 cid = bm.get("case_id") or ""
@@ -787,6 +794,9 @@ class Orchestrator:
                     }
             if runtime_baseline:
                 log("INGEST", f"运行态基线(人工确认 finished 且非 non_fp): "
+                      f"{len(case_details)} 条")
+            else:
+                log("INGEST", f"开发态基线(人工确认漏洞): "
                       f"{len(case_details)} 条")
 
         elif bm_source == "vbench_zip":
@@ -851,14 +861,12 @@ class Orchestrator:
                 # raw_report 在下游根因分析等环节仍可用，匹配阶段用 summary 级别足够。
                 if bm_source == "vuln_center":
                     # 基线 case 用与 case_details 相同的过滤条件
-                    # （current_stage=finished + validation_result + 排除 non_fp）
+                    # （开发态：current_stage=finished 且人工确认为漏洞）
                     baseline_cases_for_match = [
                         _case_to_benchmark(c, expected_label="")
                         for c in baseline_cases
                         if c.get("current_stage") == "finished"
-                        and c.get("validation_result") in (
-                            "vulnerable", "not_vulnerable")
-                        and c.get("false_positive_group") != "non_fp"
+                        and c.get("validation_result") == "vulnerable"
                     ]
                 else:
                     baseline_cases_for_match = [

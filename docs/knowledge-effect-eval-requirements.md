@@ -391,9 +391,9 @@ L7（LLM）→ 正向 / 负向(G) / 中性(F) / NULL(无法确认)
 
 **新建文件**：`domain/lifecycle/case_filter.py`
 
-**职责**：从漏洞中心人工确认数据出发，筛选 FP/FN case 对应的 task_run，只对有效 case 内的知识访问做统计。
+**职责**：从漏洞中心人工确认数据出发，筛选 FP/FN case 对应的 task_run，只对有效 case 内的知识访问做统计。**开发态基线只取人工确认漏洞（`VULNERABLE`），人工确认误报不进入基线**；运行态基线包含漏洞与误报。
 
-**FP（误报）筛选流程**：
+**FP（误报）筛选流程**（仅运行态）：
 1. 基线标注 `expected_label=NON_VULNERABLE` 的 case
 2. 在 trace findings 中找对应 finding
 3. 找到且 `validation_result=CONFIRMED` → agent 误报了漏洞
@@ -405,7 +405,7 @@ L7（LLM）→ 正向 / 负向(G) / 中性(F) / NULL(无法确认)
 4. 告警中心无匹配 → agent 漏报了该漏洞
 5. 对漏报的 case，提取 sink 点（`source_file` / `source_function`），用 LLM 匹配在 trace 中找对应 session
 
-**FP 的匹配方式**取决于基线来源（`benchmark_source`）：
+**FP 的匹配方式**（仅运行态）取决于基线来源（`benchmark_source`）：
 
 | 基线来源 | 匹配方式 | 说明 |
 |----------|---------|------|
@@ -413,14 +413,14 @@ L7（LLM）→ 正向 / 负向(G) / 中性(F) / NULL(无法确认)
 | V-Bench 测评集（`vbench_zip`） | LLM 匹配 | 两阶段：Phase 1 标题预筛（每基线 1 次 LLM）→ Phase 2 1vs1 详细对比（三维度 + 程序校验 sink 路径），复用 v1 `fpr_analysis.py` / `ai_matcher.py` 的方法 |
 
 **FN 的匹配方式**：
-- 基线漏洞 vs 告警中心：与 FP 相同的匹配方式（vuln_center 纯代码，vbench_zip LLM）
+- 基线漏洞 vs 告警中心：与运行态 FP 相同的匹配方式（vuln_center 纯代码，vbench_zip LLM）
 - 漏报 case vs trace：始终用 LLM 匹配（因为漏报意味着 trace 里没有 finding，只能用 sink 点信息定位 session）
 
 **按 eval_mode 筛选**：
 
 | 触发时机 | 分析 case 类型 |
 |----------|--------------|
-| 开发态（`dev`） | FP + FN |
+| 开发态（`dev`） | 只 FN（基线只含人工确认漏洞） |
 | 运行态（`runtime`） | 只 FP |
 
 **跨 session case 处理**：一个 case 在 Agent 内部可能跨多个 session（入口识别→数据流追踪→漏洞模式识别→Sink 定位→判定上报，每步可能独立 session）。session 间的 parent-child 调用关系存储在各 Agent 自己的数据库中，评测引擎通过 `agent_datasource_config` 配置的 `relation_tables` 直连 Agent DB 查询，构建 session 调用链。按 `task_id` 分组，组级别聚合判定 FP/FN，组内保留有知识访问记录的 task_run。
@@ -430,6 +430,8 @@ L7（LLM）→ 正向 / 负向(G) / 中性(F) / NULL(无法确认)
 #### 4.3.1 误报类型提取（漏洞中心终审理由）
 
 漏洞中心的人工确认数据中包含结构化误报分类字段，直接提供 C1-C10 的映射来源，无需 L0-L7 推断。
+
+> 仅运行态使用：开发态基线只取人工确认漏洞，人工确认误报不参与分析。
 
 **数据来源**：`human_confirmation` 对象（case 详情 API 返回）
 
@@ -480,6 +482,8 @@ L7（LLM）→ 正向 / 负向(G) / 中性(F) / NULL(无法确认)
 |------|------|---------|
 | 召回率 | TP / (TP + FN) | TP = 基线 VULNERABLE 且 Agent 上报的 case 数；FN = 基线 VULNERABLE 且 Agent 未上报的 case 数。数据来自 benchmark_item + 有效 case 筛选结果 |
 | 准确率 | TP / (TP + FP) | TP 同上；FP = 基线 NON_VULNERABLE 且 Agent 上报 finding 且 CONFIRMED 的 case 数。数据来自 benchmark_item + 有效 case 筛选结果 |
+
+> 开发态基线只含人工确认漏洞，FP 样本数为 0，准确率退化为 TP/(TP+0)（TP>0 时恒为 100%）；准确率的区分度主要来自运行态。
 
 在 REPORTING 阶段计算，写入 lifecycle 报告段。现有 M5–M13 不受影响。
 
@@ -594,7 +598,7 @@ evaluation 表 status CHECK 新增 `LIFECYCLE_ANALYSIS` 和 `CAUSAL_CHAIN`。
 
 **职责**：从分析结果到改进动作到回归验证的完整闭环。回归验证 = 通过 case 重放判断该误报/漏报是否消除。
 
-**核心原则**：一个 case 在 Agent 级别做 L0–L7 判定，可能存在**多个断点**。L0 标记知识原始来源（provenance）不产生断链；L1–L7 的断点独立输出成因，由本系统提 DTS 单给对应责任方（Agent 或知识方），责任方自行定位具体根因与解决方案。**一个 case 的全部 DTS 单关闭后统一触发一次回归测试**，回归重放由产生误报/漏报的 Agent 执行（知识方不参与重放，只负责更新知识内容）。开发态 FP 和 FN 都有回归判定（FP→TN=消除，FN→TP=消除），运行态只判定 FP。
+**核心原则**：一个 case 在 Agent 级别做 L0–L7 判定，可能存在**多个断点**。L0 标记知识原始来源（provenance）不产生断链；L1–L7 的断点独立输出成因，由本系统提 DTS 单给对应责任方（Agent 或知识方），责任方自行定位具体根因与解决方案。**一个 case 的全部 DTS 单关闭后统一触发一次回归测试**，回归重放由产生误报/漏报的 Agent 执行（知识方不参与重放，只负责更新知识内容）。开发态只判定 FN（FN→TP=消除），运行态只判定 FP（FP→TN=消除）。
 
 | 环节 | 内容 | 实现方式 |
 |------|------|---------|
@@ -628,7 +632,7 @@ evaluation 表 status CHECK 新增 `LIFECYCLE_ANALYSIS` 和 `CAUSAL_CHAIN`。
 
 **新建文件**：`domain/dts/issue.py` + `persistence/dts_repo.py` + `api/routes/dts.py`
 
-**职责**：CAUSAL_CHAIN 阶段自动生成 DTS 问题单，责任方（Agent 或知识方）在系统中查看、定位、解决。本系统只负责提单和跟踪状态，不负责定位具体根因——具体根因由对应责任方自行排查。**一个 case 的全部 DTS 单关闭后统一触发一次回归测试**，产生误报/漏报的 Agent 重放该 case（知识方不参与重放，只负责更新知识内容），评测引擎给出"回归通过"或"回归不通过"结论。开发态 FP 和 FN 都有回归判定（FP→TN=消除，FN→TP=消除），运行态只判定 FP。
+**职责**：CAUSAL_CHAIN 阶段自动生成 DTS 问题单，责任方（Agent 或知识方）在系统中查看、定位、解决。本系统只负责提单和跟踪状态，不负责定位具体根因——具体根因由对应责任方自行排查。**一个 case 的全部 DTS 单关闭后统一触发一次回归测试**，产生误报/漏报的 Agent 重放该 case（知识方不参与重放，只负责更新知识内容），评测引擎给出"回归通过"或"回归不通过"结论。开发态只判定 FN（FN→TP=消除），运行态只判定 FP（FP→TN=消除）。
 
 **DTS 状态流转**：
 
@@ -800,7 +804,7 @@ FP/FN 未消除 → 全部 DTS 单状态设为 failed（退回 improving）
 
 ### 7.1 Case 重放协议（回归验证）
 
-**职责**：产生误报/漏报的 Agent 自行实现 Case 重放——人工在 Agent 管理界面操作，对原误报/漏报 case 在知识改进后重跑。评测引擎不参与重放执行，只从漏洞中心或 Trace 读取重放结果，判定该误报/漏报是否消除。知识方（C/D/G 成因）不参与重放，只负责更新知识内容——重放时 Agent 使用的知识库/记忆进化内容已包含知识方的改进。开发态 FP 和 FN 都有回归判定（FP→TN=消除，FN→TP=消除），运行态只判定 FP。
+**职责**：产生误报/漏报的 Agent 自行实现 Case 重放——人工在 Agent 管理界面操作，对原误报/漏报 case 在知识改进后重跑。评测引擎不参与重放执行，只从漏洞中心或 Trace 读取重放结果，判定该误报/漏报是否消除。知识方（C/D/G 成因）不参与重放，只负责更新知识内容——重放时 Agent 使用的知识库/记忆进化内容已包含知识方的改进。开发态只判定 FN（FN→TP=消除），运行态只判定 FP（FP→TN=消除）。
 
 **核心流程**：
 
@@ -877,7 +881,7 @@ Agent 需保证：
 | FN（漏报） | FN（仍漏报） | **FN 未消除** — 知识改进无效或不足 |
 | FN（漏报） | FP（误报） | **异常** — 知识改进引入了新问题（漏报变误报），需人工介入 |
 
-> FP 判定适用于开发态和运行态，FN 判定仅适用于开发态（运行态只分析 FP）。
+> FN 判定仅适用于开发态（基线只含人工确认漏洞），FP 判定仅适用于运行态。
 
 **涉及文件**：
 - 新建 `application/replay_verifier.py` — 从漏洞中心/Trace 读取重放结果 + FP/FN 消除判定
@@ -885,7 +889,7 @@ Agent 需保证：
 
 ### 7.2 DTS 单处理
 
-**职责**：Agent 接收 DTS 问题单后，自行定位具体根因与解决方案。**全部 DTS 单关闭后统一触发一次回归测试**，评测引擎重放该 case 并给出"回归通过"或"回归不通过"结论。开发态 FP 和 FN 都有回归判定（FP→TN=消除，FN→TP=消除），运行态只判定 FP。
+**职责**：Agent 接收 DTS 问题单后，自行定位具体根因与解决方案。**全部 DTS 单关闭后统一触发一次回归测试**，评测引擎重放该 case 并给出"回归通过"或"回归不通过"结论。开发态只判定 FN（FN→TP=消除），运行态只判定 FP（FP→TN=消除）。
 
 **流程**：
 
@@ -972,6 +976,8 @@ Agent 需保证：
 |------|------|------|------|---------|
 | 召回率 | TP / (TP + FN) | 基线 VULNERABLE 且 Agent 上报的 case 数 | 基线 VULNERABLE 的 case 总数 | benchmark_item + 有效 case 筛选结果 |
 | 准确率 | TP / (TP + FP) | 基线 VULNERABLE 且 Agent 上报的 case 数 | Agent 上报 finding 且漏洞中心确认的 case 总数 | benchmark_item + 有效 case 筛选结果 |
+
+> 开发态基线只含人工确认漏洞，FP 样本数为 0，准确率退化为 TP/(TP+0)（TP>0 时恒为 100%）；准确率的区分度主要来自运行态。
 
 在 REPORTING 阶段计算，写入 lifecycle 报告段。遵循现有 NA 契约：零分母返回 `calculation_status=NA`。
 

@@ -90,7 +90,7 @@ bash port-forward.sh   # 另一终端运行
 
 二选一（在 manifest 的 `benchmark_source` 字段配置）：
 - **vbench_zip** — 从 V-Bench benchmark.zip 读（测评集基线）。
-- **vuln_center** — 从漏洞中心 Chimera（`secflow-platform-vuln`）直接读人工确认 case，含漏洞（`confirmation_status=vulnerable`）与非漏洞（`confirmation_status=not_vulnerable`）两类。`vuln_center_client.py` 归一成与 V-Bench 同构结构。
+- **vuln_center** — 从漏洞中心 Chimera（`secflow-platform-vuln`）直接读人工确认 case，含漏洞（`confirmation_status=vulnerable`）与非漏洞（`confirmation_status=not_vulnerable`）两类。`vuln_center_client.py` 归一成与 V-Bench 同构结构。**开发态基线只取人工确认漏洞（`vulnerable`），人工确认误报不进入基线；运行态才把误报一并纳入分析。**
 
 ### NA 契约
 
