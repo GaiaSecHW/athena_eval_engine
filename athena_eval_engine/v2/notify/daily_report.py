@@ -10,7 +10,9 @@ Owner 两类：
   COMPLETED_WITH_WARNINGS / FAILED。一个评测涉及多个 agent 时，会出现在
   每个 agent 的日报里（按 agent 视角统计）。
 - 指标：读 ``{reports_dir}/{eid}.json`` 的 ``recall_precision``，
-  窗口内各评测的 TP/FP/FN/TN 求和后重新计算 FPR / 准确率。
+  窗口内各评测的 TP/FP/FN/TN 求和后展示计数。
+- 误报率：**只展示回归后误报率**（FP 问题单 ``failed/(passed+failed)``），
+  与首页看板同口径；评测报告里的单次 fpr/precision 不代表平台整体，不展示。
 - 新增问题单：``dts_issue.created_at`` 落在窗口内。
 - 未关闭问题单：``status NOT IN ('passed','not_issue')`` 的存量。
 - 责任方过滤：``responsibility`` 是逗号分隔多值，用 FIND_IN_SET 精确匹配；
@@ -287,6 +289,33 @@ def _issue_filter(owner_kind: str, owner_value: str) -> tuple[str, list]:
     return "FIND_IN_SET(%s, responsibility) > 0", [owner_value]
 
 
+def _load_regression_stats(owner_kind: str, owner_value: str) -> dict:
+    """回归验证后的误报率：FP 问题单中 failed / (passed + failed)。
+
+    与首页看板「回归后误报率」同一口径。评测报告里的 fpr/precision 只反映
+    单次评测的基线匹配结果，不代表平台整体，日报不再展示。
+    """
+    filter_sql, params = _issue_filter(owner_kind, owner_value)
+
+    def _do(cur):
+        cur.execute(
+            "SELECT status, COUNT(*) FROM dts_issue "
+            "WHERE case_type='FP' AND status IN ('passed','failed') "
+            f"AND {filter_sql} GROUP BY status",
+            tuple(params))
+        counts = {row[0]: int(row[1]) for row in cur.fetchall()}
+        passed = counts.get("passed", 0)
+        failed = counts.get("failed", 0)
+        denom = passed + failed
+        return {
+            "passed": passed,
+            "failed": failed,
+            "verified": denom,
+            "post_fpr": (failed / denom) if denom > 0 else None,
+        }
+    return _db_query(_do)
+
+
 def _load_new_issues(owner_kind: str, owner_value: str, since: datetime,
                      until: datetime) -> list[dict]:
     filter_sql, params = _issue_filter(owner_kind, owner_value)
@@ -437,6 +466,8 @@ def _build_agent_report(owner: dict, since: datetime, until: datetime,
             "items": agent_evals,
             "failed_items": failed_evals,
         },
+        # 回归后误报率（FP 问题单回归验证 failed/(passed+failed)）
+        "regression": _load_regression_stats("agent", agent_type),
         "new_issues": [_issue_item(i, public_url) for i in new_issues],
         "open_issues": {
             "total": open_total,
@@ -658,16 +689,18 @@ def render_agent_text(report: dict) -> str:
         if metric_parts:
             lines.append(" · ".join(metric_parts))
 
-        rate_parts = []
-        for key, label, icon, color in (
-                ("fpr", "误报率", "📉", "#d97706"),
-                ("precision", "准确率", "📈", "#16a34a")):
-            value = ev.get(key)
-            if value is not None and float(value) != 0:
-                rate_parts.append(
-                    f"{icon} {label} {_span(_pct(value), color=color, bold=True)}")
-        if rate_parts:
-            lines.append(" · ".join(rate_parts))
+        # 评测报告里的 fpr/precision 只反映单次基线匹配，不代表平台整体，
+        # 日报统一展示「回归后误报率」（FP 问题单回归验证口径）。
+        reg = report.get("regression") or {}
+        post_fpr = reg.get("post_fpr")
+        if post_fpr is not None:
+            lines.append(
+                f"📉 回归后误报率 {_span(_pct(post_fpr), color='#d97706', bold=True)}"
+                f"（已验证 {int(reg.get('verified') or 0)} 条："
+                f"通过 {int(reg.get('passed') or 0)} / "
+                f"不通过 {int(reg.get('failed') or 0)}）")
+        else:
+            lines.append("📉 回归后误报率 暂无（未回归验证）")
 
         tasks = [e.get("task_name") for e in (ev.get("items") or [])
                  if e.get("task_name")]

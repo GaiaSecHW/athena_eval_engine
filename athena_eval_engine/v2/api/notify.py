@@ -21,9 +21,11 @@ from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
 from ..notify import scheduler
 from ..notify.daily_report import (
+    build_reports,
     get_env_name,
     get_public_url,
     invalidate_public_url_cache,
+    render_text,
 )
 
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
@@ -314,6 +316,34 @@ def run_now(owner_key: str | None = None):
     if result.get("status") == "running":
         raise HTTPException(status_code=409, detail="日报发送正在运行")
     return result
+
+
+@router.get("/preview")
+def preview(owner_key: str | None = None):
+    """返回当前会发送的 WeLink 内容预览（只构建，不实际发送）。
+
+    统计窗口与真实发送一致：有发送记录从上次成功发送开始，从未发送过
+    从最早业务数据开始。空报告也会返回，但标记 empty=True（不会发送）。
+    """
+    try:
+        reports = build_reports(owner_key=owner_key, force=True).get("agents", [])
+        previews = []
+        for report in reports:
+            previews.append({
+                "owner_key": report.get("owner_key"),
+                "owner_kind": report.get("owner_kind"),
+                "display_name": report.get("display_name"),
+                "owner_name": report.get("owner_name"),
+                "target_id": report.get("target_id"),
+                "enabled": bool(report.get("enabled")),
+                "empty": scheduler._is_empty(report),
+                "window": report.get("window"),
+                "text": render_text(report),
+            })
+        return {"previews": previews}
+    except Exception as e:
+        log("NOTIFY", f"构建发送预览失败: {e}")
+        raise HTTPException(status_code=500, detail=f"构建发送预览失败: {e}")
 
 
 @router.get("/owners")
