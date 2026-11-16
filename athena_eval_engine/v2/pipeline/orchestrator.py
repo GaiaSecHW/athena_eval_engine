@@ -697,6 +697,8 @@ class Orchestrator:
         alert_center_data: dict = {}
         case_matches: list[dict] = []
         runtime_baseline = False
+        # 基线为空时，用于说明具体原因（区分服务故障 vs 数据未就绪）
+        baseline_hint = ""
 
         # ── 获取原始数据：从告警中心取挖掘 agent 上报的全部 case ──
         if kg_project_id and kg_task_id:
@@ -799,6 +801,38 @@ class Orchestrator:
                 log("INGEST", f"开发态基线(人工确认漏洞): "
                       f"{len(case_details)} 条")
 
+            if not case_details:
+                stages: dict[str, int] = {}
+                for c in baseline_cases:
+                    st = c.get("current_stage") or "unknown"
+                    stages[st] = stages.get(st, 0) + 1
+                finished = sum(
+                    1 for c in baseline_cases
+                    if c.get("current_stage") == "finished")
+                stage_desc = "、".join(
+                    f"{k} {v} 条" for k, v in sorted(
+                        stages.items(), key=lambda kv: -kv[1]))
+                if runtime_baseline:
+                    eligible = sum(
+                        1 for c in baseline_cases
+                        if c.get("current_stage") == "finished"
+                        and c.get("validation_result") in ("vulnerable", "not_vulnerable")
+                        and c.get("false_positive_group") != "non_fp")
+                    basis = "人工确认结论(vulnerable/not_vulnerable，排除 non_fp)"
+                else:
+                    eligible = sum(
+                        1 for c in baseline_cases
+                        if c.get("current_stage") == "finished"
+                        and c.get("validation_result") == "vulnerable")
+                    basis = "人工确认漏洞(vulnerable)"
+                baseline_hint = (
+                    f"告警中心返回 {len(baseline_cases)} 条 case，但没有任何可作基线的"
+                    f"{basis} case：已完成验证(finished) {finished} 条，"
+                    f"其中符合条件 {eligible} 条；"
+                    f"阶段分布：{stage_desc or '无'}。"
+                    "这不是服务连通性问题，请等 case 完成验证/人工确认后重试。"
+                )
+
         elif bm_source == "vbench_zip":
             from ..infra.vbench_client import get_benchmark
             log("INGEST", f"基线数据(V-Bench): set_id={benchmark_set_id}")
@@ -823,12 +857,16 @@ class Orchestrator:
                         "source_function": c.get("source_function") or "",
                         "source_line": c.get("source_line") or "",
                     }
+            if not case_details:
+                baseline_hint = (
+                    f"V-Bench 未返回任何 case（set_id={benchmark_set_id}），"
+                    "请检查 V-Bench 服务与 benchmark_set_id 是否正确。"
+                )
 
         if not case_details:
             raise ValueError(
-                "无法获取基线数据（case_details 为空），"
-                "没有基线的评测无意义。"
-                "请检查 benchmark_source 配置、V-Bench/告警中心服务连通性后重试。"
+                "无法生成基线（case_details 为空）："
+                + (baseline_hint or "未获取到任何基线 case。")
             )
 
         benchmark_items = list(case_details.keys())
