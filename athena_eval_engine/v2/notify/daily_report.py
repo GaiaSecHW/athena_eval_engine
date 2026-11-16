@@ -215,6 +215,24 @@ def last_sent_at(owner_key: str, channel: str = _CHANNEL) -> datetime | None:
     return _db_query(_do)
 
 
+def _earliest_data_time() -> datetime | None:
+    """库里最早的业务数据时间（UTC naive）。
+
+    用于「从未发送过」的 owner：第一次日报应覆盖全部历史，而不是只发 24h。
+    """
+    def _do(cur):
+        cur.execute(
+            "SELECT MIN(finished_at) FROM evaluation "
+            "WHERE evaluation_status IN "
+            "('COMPLETED','COMPLETED_WITH_WARNINGS','FAILED')")
+        ev = cur.fetchone()[0]
+        cur.execute("SELECT MIN(created_at) FROM dts_issue")
+        iss = cur.fetchone()[0]
+        candidates = [x for x in (ev, iss) if x is not None]
+        return min(candidates) if candidates else None
+    return _db_query(_do)
+
+
 def record_send(owner_key: str, recipient: str, window_start: str,
                 window_end: str, content_hash: str, status: str,
                 error: str | None = None, channel: str = _CHANNEL) -> None:
@@ -497,21 +515,30 @@ def build_reports(owner_key: str | None = None,
                   force: bool = False) -> dict:
     """构建一个或多个 owner 的日报。
 
-    ``since`` 不传时使用该 owner 上次成功发送的 ``window_end``；
-    没有发送记录时回退到 ``until - 24h``。``force=True`` 时忽略发送记录。
+    统计窗口 = **上轮未发送的数据**：
+    - 有成功发送记录 → 从上次成功发送的 ``window_end`` 开始（只发增量）；
+    - 从未发送过 → 所有历史数据都还没发过，从库里最早业务数据开始；
+    - 显式传 ``since`` 时以调用方为准。
+    ``force`` 仅影响发送去重（是否允许当天重发），不影响统计窗口。
     """
     until_dt = _parse_dt(until) or _now_utc()
     explicit_since = _parse_dt(since)
     owners = _load_owners(owner_key)
 
+    earliest: datetime | None = None
     windows: dict[str, datetime] = {}
     for owner in owners:
         key = owner["owner_key"]
         if explicit_since:
             windows[key] = explicit_since
-        else:
-            last = None if force else last_sent_at(key)
-            windows[key] = last or (until_dt - timedelta(hours=24))
+            continue
+        last = last_sent_at(key)
+        if last is not None:
+            windows[key] = last
+            continue
+        if earliest is None:
+            earliest = _earliest_data_time() or (until_dt - timedelta(hours=24))
+        windows[key] = earliest
 
     # 一次拉取覆盖所有 agent 的最早窗口；agent 报告构建时再按自己的窗口过滤
     agent_windows = [w for k, w in windows.items()
