@@ -675,11 +675,12 @@ class Orchestrator:
             (benchmark_items, case_details, alert_center_data, case_matches)
 
         采集策略：
-        - 运行态（prod）：原始数据与基线同项目，一次请求拉全量，
+        - 运行态（prod）：原始数据与基线是**同一个任务**，一次请求拉全量，
           基线从原始数据中按**人工确认结论**（validation_result）提取。
           不能用 engine_confirmed_vulnerable：未经过引擎研判的 case 该字段
           恒为 False，会把人工确认的 confirmed_fp 一起过滤掉，导致基线为空。
-        - 开发态（dev）：原始数据与基线不同项目，分别请求。
+        - 开发态（dev）：原始数据与基线是**不同任务**（回归评测通常同项目、
+          不同任务，如新版本任务对比老版本基线任务），分别请求。
           原始数据拉全量，基线用 final_result=vulnerable 拉引擎判定为漏洞的 case。
         """
         manifest = cfg.get("manifest", {})
@@ -694,6 +695,7 @@ class Orchestrator:
         case_details: dict[str, dict] = {}
         alert_center_data: dict = {}
         case_matches: list[dict] = []
+        runtime_baseline = False
 
         # ── 获取原始数据：从告警中心取挖掘 agent 上报的全部 case ──
         if kg_project_id and kg_task_id:
@@ -729,12 +731,14 @@ class Orchestrator:
                 _case_to_benchmark, get_alert_center_summary,
             )
 
-            # 判断运行态：原始数据与基线同项目 → 从原始数据提取基线
-            raw_project_ids = set(alert_center_data.get("project_ids", []))
-            same_project = benchmark_set_id in raw_project_ids
-
+            # 判断运行态：原始数据与基线是同一个任务 → 从原始数据提取基线。
+            # 不能按项目判断：回归评测的基线任务与被评测任务通常同项目、不同任务，
+            # 按项目会把 dev 误判为 runtime，从被评测任务（可能尚无人工确认）取基线导致为空。
+            same_task = bool(
+                vc_source_task_id and kg_task_id
+                and vc_source_task_id == kg_task_id)
             runtime_baseline = bool(
-                same_project and alert_center_data.get("cases"))
+                same_task and alert_center_data.get("cases"))
             if runtime_baseline:
                 # 运行态：基线从原始数据中提取，按人工确认结论（validation_result）
                 # 筛选（下面循环统一过滤 finished / vulnerable|not_vulnerable / non_fp）。
@@ -744,7 +748,7 @@ class Orchestrator:
                 log("INGEST", f"基线数据(运行态从原始数据提取): "
                       f"{len(baseline_cases)} 条（人工确认筛选前）")
             else:
-                # 开发态：基线不同项目，单独请求
+                # 开发态：基线是另一个任务（可能同项目），单独请求
                 log("INGEST", f"基线数据(告警中心): project={benchmark_set_id} "
                       f"task={vc_source_task_id or '(未指定)'}")
                 baseline_summary = get_alert_center_summary(
@@ -821,13 +825,13 @@ class Orchestrator:
 
         # ── 开发态 LLM 语义匹配 ──
         if eval_mode == "dev" and alert_center_data.get("cases"):
-            raw_project_ids = set(alert_center_data.get("project_ids", []))
             baseline_project = benchmark_set_id
-            needs_match = baseline_project and \
-                baseline_project not in raw_project_ids
+            # 基线来自不同任务（或不同来源）时才需要 LLM 匹配；
+            # 运行态基线就是被评测任务本身，case 一一对应，无需匹配。
+            needs_match = bool(baseline_project) and not runtime_baseline
             if needs_match:
-                log("ORCH", f"开发态：原始数据 project={raw_project_ids} "
-                      f"≠ 基线 project={baseline_project}，启动 LLM 匹配")
+                log("ORCH", f"开发态：原始数据任务={kg_task_id} "
+                      f"≠ 基线任务={vc_source_task_id or '(未指定)'}，启动 LLM 匹配")
                 _set_progress(evaluation_id, "LLM 语义匹配原始数据与基线...")
                 from ..lifecycle.case_matcher import match_cases
                 # 原始数据 case 归一化：和基线走同一个 _case_to_benchmark 路径，
@@ -909,7 +913,7 @@ class Orchestrator:
                 log("ORCH", f"LLM 匹配完成: {matched}/{len(case_matches)} "
                       f"条原始数据找到基线匹配")
             else:
-                log("ORCH", "开发态：原始数据与基线同项目，跳过 LLM 匹配")
+                log("ORCH", "开发态：原始数据与基线同任务，跳过 LLM 匹配")
 
         return benchmark_items, case_details, alert_center_data, case_matches
 
