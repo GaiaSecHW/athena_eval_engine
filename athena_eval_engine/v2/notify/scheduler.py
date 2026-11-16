@@ -224,7 +224,12 @@ def trigger_run(owner_key: str | None = None) -> dict:
 
 
 def schedule_loop(stop_event: threading.Event | None = None) -> None:
-    """后台线程：每天配置时间触发 run_daily。"""
+    """后台线程：每天配置时间触发 run_daily。
+
+    注意：必须声明 global _last_run_date。函数体内有赋值，缺 global 时
+    Python 会把它当局部变量，首次读取就抛 UnboundLocalError，定时线程直接退出。
+    """
+    global _last_run_date
     log("NOTIFY", f"日报定时线程启动，每天 {get_daily_time()}（Asia/Shanghai）")
     while True:
         if stop_event is not None and stop_event.is_set():
@@ -233,6 +238,7 @@ def schedule_loop(stop_event: threading.Event | None = None) -> None:
         now = _now_local()
         today = now.strftime("%Y-%m-%d")
         daily_time = get_daily_time()
+        # 只在配置的那一分钟触发；过时不自动补发（补发走系统页手工触发）。
         if now.strftime("%H:%M") == daily_time and _last_run_date != today:
             if not is_workday(now.date()):
                 log("NOTIFY", f"今天非工作日，跳过 {today} 日报发送")
@@ -243,6 +249,7 @@ def schedule_loop(stop_event: threading.Event | None = None) -> None:
                 run_daily()
             except Exception as e:
                 log("NOTIFY", f"日报发送异常: {e}")
-                # 避免同一分钟反复重试刷日志；下一个自然日再试
+            finally:
+                # 当天只尝试一次，避免每 30s 重复构建/刷日志
                 _last_run_date = today
         time.sleep(30)
