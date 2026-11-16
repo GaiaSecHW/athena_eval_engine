@@ -96,6 +96,74 @@ def get_error_log_path() -> str:
 # 平台 token
 PLATFORM_TOKEN = os.environ.get("PLATFORM_TOKEN", _cfg.get("platform_token", ""))
 
+
+def _env_bool(name: str, default: bool) -> bool:
+    """读取布尔环境变量；未设置时使用 default。"""
+    def _parse(value) -> bool:
+        if isinstance(value, bool):
+            return value
+        return str(value).strip().lower() in ("1", "true", "yes", "on")
+
+    raw = os.environ.get(name)
+    if raw is None:
+        return _parse(default)
+    return _parse(raw)
+
+
+# 根因分析（case analysis）插件化配置
+# local  = 保持原有 RootCauseAnalyzer 行为（默认）
+# remote = 调用远程进化引擎；失败时可按配置回退本地
+# shadow = 本地结果为准，同时调用远程做对比，不一致写告警
+CASE_ANALYSIS = _cfg.get("case_analysis", {}) or {}
+CASE_ANALYSIS_REMOTE = CASE_ANALYSIS.get("remote", {}) or {}
+CASE_ANALYSIS_FALLBACK = CASE_ANALYSIS_REMOTE.get("fallback", {}) or {}
+CASE_ANALYSIS_SHADOW = CASE_ANALYSIS.get("shadow", {}) or {}
+
+CASE_ANALYSIS_MODE = os.environ.get(
+    "EVAL_CASE_ANALYSIS_MODE", CASE_ANALYSIS.get("mode", "local")
+).strip().lower()
+CASE_ANALYSIS_BASE_URL = os.environ.get(
+    "EVAL_CASE_ANALYSIS_BASE_URL", CASE_ANALYSIS_REMOTE.get("base_url", "")
+).strip().rstrip("/")
+CASE_ANALYSIS_API_PREFIX = os.environ.get(
+    "EVAL_CASE_ANALYSIS_API_PREFIX", CASE_ANALYSIS_REMOTE.get("api_prefix", "/v1")
+).strip() or "/v1"
+CASE_ANALYSIS_TOKEN = os.environ.get(
+    "EVAL_CASE_ANALYSIS_TOKEN", CASE_ANALYSIS_REMOTE.get("token", "")
+)
+CASE_ANALYSIS_TIMEOUT_SECONDS = float(os.environ.get(
+    "EVAL_CASE_ANALYSIS_TIMEOUT",
+    CASE_ANALYSIS_REMOTE.get("timeout_seconds", 900),
+))
+CASE_ANALYSIS_POLL_INTERVAL_SECONDS = float(os.environ.get(
+    "EVAL_CASE_ANALYSIS_POLL_INTERVAL",
+    CASE_ANALYSIS_REMOTE.get("poll_interval_seconds", 2),
+))
+CASE_ANALYSIS_MAX_CONCURRENCY = int(os.environ.get(
+    "EVAL_CASE_ANALYSIS_MAX_CONCURRENCY",
+    CASE_ANALYSIS_REMOTE.get("max_concurrency", 10),
+))
+CASE_ANALYSIS_DETAIL_MODE = os.environ.get(
+    "EVAL_CASE_ANALYSIS_DETAIL_MODE",
+    CASE_ANALYSIS_REMOTE.get("detail_mode", "artifact"),
+).strip().lower()
+CASE_ANALYSIS_DETAIL_REQUIRED = _env_bool(
+    "EVAL_CASE_ANALYSIS_DETAIL_REQUIRED",
+    CASE_ANALYSIS_REMOTE.get("detail_required", True),
+)
+CASE_ANALYSIS_FALLBACK_ENABLED = _env_bool(
+    "EVAL_CASE_ANALYSIS_FALLBACK_ENABLED",
+    CASE_ANALYSIS_FALLBACK.get("enabled", True),
+)
+CASE_ANALYSIS_FALLBACK_MODE = os.environ.get(
+    "EVAL_CASE_ANALYSIS_FALLBACK_MODE",
+    CASE_ANALYSIS_FALLBACK.get("mode", "local"),
+).strip().lower()
+CASE_ANALYSIS_SHADOW_AUTHORITATIVE = os.environ.get(
+    "EVAL_CASE_ANALYSIS_SHADOW_AUTHORITATIVE",
+    CASE_ANALYSIS_SHADOW.get("authoritative", "local"),
+).strip().lower()
+
 # gaiasec-server（WebVulnVerify 权威 case↔session 关系源）
 GAISEC = _cfg.get("gaiasec", {})
 GAISEC_SERVER_URL = os.environ.get("EVAL_GAISEC_SERVER_URL", GAISEC.get("server_url", "http://gaiasec-server"))

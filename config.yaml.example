@@ -39,3 +39,34 @@ platform:
 
 # 平台全局 token
 platform_token: "REPLACE_WITH_PLATFORM_TOKEN"
+
+# Case 级根因分析（Hook 1）— 默认使用本地 RootCauseAnalyzer，行为不变。
+# mode:
+#   local  = 本地分析
+#   remote = 远程进化引擎；按 case 失败/超时可回退本地
+#   shadow = 本地结果为准，同时调用远程做差异对比并写数据质量告警
+case_analysis:
+  mode: "local"
+
+  remote:
+    # k8s 示例：http://remote-evolution-engine-mock.secflow-ns.svc:8080
+    base_url: ""
+    api_prefix: "/v1"
+    token: ""
+    # 单个 case 的 job 总超时（含排队、轮询、artifact 下载）。
+    # 生产建议不低于 600 秒；默认 900 秒（15 分钟）。
+    timeout_seconds: 900
+    poll_interval_seconds: 2
+    max_concurrency: 10
+    detail_mode: "artifact"        # artifact | inline
+    detail_required: true
+
+    fallback:
+      # true: 远程失败/超时/契约非法时按 case 回退本地，并写入
+      #       report.data_quality_warnings；false: 直接让评测失败。
+      enabled: true
+      mode: "local"
+
+  shadow:
+    # 目前只支持 local：本地结果是权威结果，远程结果仅用于对比。
+    authoritative: "local"

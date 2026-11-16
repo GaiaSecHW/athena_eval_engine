@@ -29,7 +29,8 @@ COPY scripts/ ./scripts/
 
 # TZ + 运行时设置（其余配置由 k8s ConfigMap/Secret 注入，dev 用本地 config.yaml）
 ENV TZ=Asia/Shanghai \
-    PYTHONUNBUFFERED=1
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app
 
 EXPOSE 8090
 

@@ -1,0 +1,1020 @@
+{
+ "schema_version": "1.0",
+ "source": {
+  "kind": "cluster_real_sample",
+  "cluster": "blue-test",
+  "host": "secflow-node-01",
+  "namespace": "secflow-ns",
+  "evaluation_id": "EV-20261109160155-5364",
+  "case_id": "case-20261023-043226-789bf56fd9",
+  "sampled_at": "2026-11-16",
+  "trace_sessions": [
+   "ses_22063dfd3c6641689a43f98caf85b24c",
+   "ses_280a8a47730443e4a5f832b046a67498"
+  ],
+  "sanitized": true,
+  "notes": "Derived from eval-engine DTS artifact + WebVerify JSONL; credentials and unrelated events removed; selected event texts kept complete."
+ },
+ "cases": {
+  "case-20261023-043226-789bf56fd9": {
+   "result": {
+    "schema_version": "1.0",
+    "case_id": "case-20261023-043226-789bf56fd9",
+    "outcome": "FP",
+    "provenance": {
+     "analyzer_version": "mock-cluster-sample-1.0",
+     "prompt_version": "cluster-sample",
+     "model": "fixture"
+    },
+    "mining": {
+     "session_chain": [],
+     "root_cause": {
+      "category": "no_session",
+      "description": "无 mining session"
+     },
+     "fix_suggestion": [],
+     "compressed_summaries": [],
+     "l0_l7_breakpoints": [],
+     "agent_type": "",
+     "status": "skipped"
+    },
+    "verification": {
+     "session_chain": [
+      "ses_22063dfd3c6641689a43f98caf85b24c",
+      "ses_280a8a47730443e4a5f832b046a67498"
+     ],
+     "root_cause": {
+      "category": "process_flaw",
+      "description": "验证阶段缺少漏洞定性与影响门槛判定：agent 已确认 getFileInfo 仅回显文件元数据（存在性/大小/读写位，不含内容），且自述影响有限，却未判断该元数据-only 泄露是否达到可上报真实漏洞门槛，仍将设计内/低影响文件信息回显上报为 MEDIUM 可利用漏洞。",
+      "human_confirmation_reason": "误报：判断错误",
+      "insufficient_evidence": false
+     },
+     "hypotheses": [
+      {
+       "hypothesis": "验证阶段缺少漏洞定性与影响门槛判定：agent 已确认 getFileInfo 仅回显文件元数据（存在性/大小/读写位，不含内容），且自述影响有限，却未判断该元数据-only 泄露是否达到可上报真实漏洞门槛，仍将设计内/低影响文件信息回显上报为 MEDIUM 可利用漏洞。",
+       "probability": 0.9,
+       "responsibility": "agent",
+       "cause_code": "H",
+       "confidence": 0.9,
+       "evidence_refs": [
+        "E-280a8a47-1",
+        "E-280a8a47-4",
+        "E-280a8a47-7",
+        "E-22063df-7",
+        "E-22063df-5"
+       ],
+       "counter_evidence": "技术行为本身已被复现：Session 2 单测 PASS=5（E-280a8a47-6），Session 1 动态请求也返回元数据（E-22063df-5）。但技术行为成立不等于达到可上报漏洞门槛；agent 自述“影响限于文件元数据（不含内容）”与最终 MEDIUM 结论矛盾。检查范围：两个 session 全部证据卡与断点。",
+       "evidence": "E-280a8a47-1 显示 getFileInfo 仅返回 File/Size/Readable/Writable 或 File not found；E-280a8a47-4 记录 agent 自述“影响限于文件元数据（不含内容），CVSS 中危（5.3，C:L）”；E-280a8a47-7 仍上报 UNIT_TEST_EXPLOITABLE、CVSS 5.3、MEDIUM；E-22063df-7 同样记录“影响限于文件元数据……故为中危”；E-22063df-5 动态结果仅含元数据回显。",
+       "session_id": "ses_280a8a47730443e4a5f832b046a67498",
+       "supporting_breakpoints": [
+        "VERIFICATION-BP-1",
+        "VERIFICATION-BP-2"
+       ],
+       "agent_can_resolve": true,
+       "blocked_by": "",
+       "needed_external_data": [],
+       "fix_suggestion": {
+        "target": "agent_prompt",
+        "agent_type": "webvuln_verify",
+        "knowledge_source": "",
+        "location": "验证阶段影响定性与上报门槛判定 prompt / 02_ai_analysis.md 结论模板",
+        "action": "在确认技术行为后增加强制判定步骤：区分“设计内文件信息接口/仅元数据回显”与“真实敏感信息泄露”，要求说明泄露内容是否含文件内容、是否可导致权限增量、是否达到可上报影响门槛；若仅为存在性/大小/读写位且无内容泄露，应判 NOT_VULNERABLE 或降级为 informational，不得直接报 MEDIUM。",
+        "expected_effect": "避免将低影响、设计内文件元数据回显误判为可利用漏洞，减少同类 FP。"
+       },
+       "hypothesis_id": "VERIFICATION-H1"
+      },
+      {
+       "hypothesis": "动态验证环境权限未区分：agent 在 root 容器/单测环境中运行，/etc/passwd 返回 Writable:true，未区分测试容器权限与真实部署权限，将该测试环境权限结果作为漏洞影响证据上报。",
+       "probability": 0.7,
+       "responsibility": "agent",
+       "cause_code": "H",
+       "confidence": 0.7,
+       "evidence_refs": [
+        "E-22063df-5",
+        "E-280a8a47-5",
+        "E-280a8a47-9"
+       ],
+       "counter_evidence": "Session 1 动态验证在 port 18080、root 身份容器中运行；Session 2 单测同样以 root 身份运行，故 /etc/passwd 的 Writable:true 是测试环境权限，不能直接代表生产部署权限。材料未提供真实部署运行身份与文件权限数据，无法确认生产环境同样可写；但将测试容器权限作为漏洞证据仍属验证环境混淆。检查范围：两个 session 的部署/运行事实与动态输出。",
+       "evidence": "E-22063df-5 显示 curl 动态测试返回“File: /etc/passwd Size: 888 bytes Readable: true Writable: true”，且摘要说明 agent 以 root 运行；E-280a8a47-5 显示单测输出“Size: 1153 bytes Readable: true Writable: true”，摘要说明单测以 root 身份运行；E-280a8a47-9 上报正文将“可读/可写权限位”作为影响描述。",
+       "session_id": "ses_22063dfd3c6641689a43f98caf85b24c",
+       "supporting_breakpoints": [
+        "VERIFICATION-BP-1"
+       ],
+       "agent_can_resolve": true,
+       "blocked_by": "",
+       "needed_external_data": [],
+       "fix_suggestion": {
+        "target": "agent_prompt",
+        "agent_type": "webvuln_verify",
+        "knowledge_source": "",
+        "location": "动态验证/单测环境说明与权限证据采集步骤",
+        "action": "在动态验证记录中强制标注运行身份（如 root）和测试容器权限边界；涉及 canRead/canWrite 等权限位结论时，不得直接使用 root 测试环境结果作为生产影响证据，需在非 root 环境复测或明确声明“仅测试环境权限，生产权限未知”。",
+        "expected_effect": "避免将测试容器 root 权限误当作真实部署权限，提升影响评估准确性。"
+       },
+       "hypothesis_id": "VERIFICATION-H2"
+      }
+     ],
+     "primary_cause": "H",
+     "primary_hypothesis": "验证阶段缺少漏洞定性与影响门槛判定：agent 已确认 getFileInfo 仅回显文件元数据（存在性/大小/读写位，不含内容），且自述影响有限，却未判断该元数据-only 泄露是否达到可上报真实漏洞门槛，仍将设计内/低影响文件信息回显上报为 MEDIUM 可利用漏洞。",
+     "audit": [
+      {
+       "rule": "每个线索均有 evidence_refs 和 counter_evidence",
+       "pass": true,
+       "note": "两条线索均引用输入中实际存在的证据卡，并写明反证或检查范围。"
+      },
+      {
+       "rule": "不重新判 L0-L8，不改断点级别/cause_code",
+       "pass": true,
+       "note": "仅引用 BP-1、BP-2 作为依据；BP-2 原为 L2/A，但按规则因已读到足以否定结论的事实而不产出 A 线索，改以 H 表述。"
+      },
+      {
+       "rule": "线索互斥，无包含/父子关系",
+       "pass": true,
+       "note": "线索一为影响门槛判定缺失，线索二为测试环境权限与真实部署权限混淆，定位点不同。"
+      },
+      {
+       "rule": "cause_code 与证据要求匹配",
+       "pass": true,
+       "note": "两条均给 H，依据为流程/验证维度问题：已读事实但结论矛盾、未区分测试环境权限。"
+      },
+      {
+       "rule": "置信度与证据强度一致",
+       "pass": true,
+       "note": "线索一有 agent 自述与最终定级直接矛盾，置信度 0.9；线索二有 root 测试输出与权限未区分事实，置信度 0.7。"
+      }
+     ],
+     "insufficient_evidence": false,
+     "label_quality": {
+      "precision": "precise",
+      "needs_label_confirmation": false,
+      "reason": "人工标注为 FP，原因“判断错误”，与材料一致：技术行为成立但 agent 将仅元数据回显、无内容泄露的低影响行为上报为 MEDIUM 可利用漏洞，且未区分 root 测试环境权限。",
+      "follow_up_questions": [
+       "该项目中 operation=info 返回文件元数据是否属于设计内文件工具功能？",
+       "元数据-only 泄露（存在性/大小/读写位，无内容）在本项目漏洞定级标准中是否达到可上报门槛？",
+       "真实部署运行身份是否为 root，/etc/passwd 的 Writable:true 是否在生产环境同样成立？"
+      ]
+     },
+     "fix_suggestion": [
+      {
+       "target": "agent_prompt",
+       "agent_type": "webvuln_verify",
+       "knowledge_source": "",
+       "location": "验证阶段影响定性与上报门槛判定 prompt / 02_ai_analysis.md 结论模板",
+       "action": "在确认技术行为后增加强制判定步骤：区分“设计内文件信息接口/仅元数据回显”与“真实敏感信息泄露”，要求说明泄露内容是否含文件内容、是否可导致权限增量、是否达到可上报影响门槛；若仅为存在性/大小/读写位且无内容泄露，应判 NOT_VULNERABLE 或降级为 informational，不得直接报 MEDIUM。",
+       "expected_effect": "避免将低影响、设计内文件元数据回显误判为可利用漏洞，减少同类 FP。"
+      },
+      {
+       "target": "agent_prompt",
+       "agent_type": "webvuln_verify",
+       "knowledge_source": "",
+       "location": "动态验证/单测环境说明与权限证据采集步骤",
+       "action": "在动态验证记录中强制标注运行身份（如 root）和测试容器权限边界；涉及 canRead/canWrite 等权限位结论时，不得直接使用 root 测试环境结果作为生产影响证据，需在非 root 环境复测或明确声明“仅测试环境权限，生产权限未知”。",
+       "expected_effect": "避免将测试容器 root 权限误当作真实部署权限，提升影响评估准确性。"
+      }
+     ],
+     "compressed_summaries": [
+      {
+       "session_id": "ses_22063dfd3c6641689a43f98caf85b24c",
+       "step": 1,
+       "summary": "【代码/配置事实】\n- FileController.java:15 → `@GetMapping(\"/operate\")` 的 `operateFile(@RequestParam String operation, @RequestParam(required=false) String filename)`，无认证注解。\n- FileController.java:23 → `processFileOperation(operation, filename)`。\n- FileController.java:44-48 → info 分支：`operation.equalsIgnoreCase(\"info\")` 且 filename 非空时执行 `result = getFileInfo(filename)`，仅校验非空。\n- FileController.java:83-91 → `getFileInfo`：:84 `File file = new File(filename)`；:85 `file.exists()`；:86-87 `String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\", filename, file.length(), file.canRead(), file.canWrite())`；:89 `\"File not found: \" + filename`。仅回显元数据，不读取文件内容。\n- FileController.java:25 → `result.put(\"message\", output)` 回显进 HTTP JSON。\n- pom.xml → 无 `spring-boot-starter-security`。\n- application.properties → `server.port=8080`，无 `server.address`，无鉴权配置。\n- 全源码检索 → 无 Filter/Interceptor/WebSecurityConfig/@PreAuthorize。\n\n【部署/运行事实】\n- Spring Boot 2.7.14，可执行 jar `target/simplest-web-1.0.0.jar`；默认端口 8080，未配 server.address（默认绑定 0.0.0.0）。\n- agent 以 port 18080 启动 jar 动态验证，运行身份为 root。\n- 动态结果：`filename=/etc/passwd` → `{\"success\":true,\"message\":\"File: /etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}`；`/no/such/file` → `File not found`；`../../../etc/passwd` → `Size: 888 bytes`；`/tmp` → `Size: 4096 bytes`。\n\n【agent 的判定与自述】\n- 最终结论 `VULNERABLE`，MEDIUM，CVSS `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`=5.3，置信度 0.92。\n- 自述：'影响限于文件元数据（不含内容），不泄露内容、不执行命令'；'任意路径文件元数据泄露探测 oracle'；'与 check 命令注入、list/stats 为同一端点下独立 sink'。\n\n【事实与结论的矛盾点】\n- 已读到 getFileInfo 仅返回存在性/大小/读写位、不返回文件内容（:86-87）→ agent 仍判为 MEDIUM 真实漏洞（人工标注为误报/判断错误）。\n- 已读到 `/etc/passwd` 返回 `Writable: true`，而该值来自 root 运行测试容器 → agent 未区分测试环境权限与真实部署权限，直接作为漏洞证据。\n- agent 自述 '影响限于元数据（不含内容）' 且 CVSS 给 C:L → 仍上报为 MEDIUM 漏洞，属影响定级与漏洞成立性判断错误。\n\n【影响边界】\n- 影响对象：匿名远端攻击者 → 服务器本机文件系统元数据（跨网络→进程文件系统边界）。\n- 生效前提：服务默认绑定 0.0.0.0:8080、无认证、filename 完全可控、getFileInfo 无路径规范化/白名单/沙箱。\n- 影响程度：泄露任意路径的存在性、大小、可读/可写位；不泄露文件内容、不执行命令、不修改数据。\n\n【知识/记忆访问】\n- 材料中未出现（无 [知识库访问]/[记忆访问] 标记）。\n\n【明确跳过的检查】\n- 材料中未出现明确跳过的检查；agent 检查了 pom.xml、application.properties、Filter/Interceptor/WebSecurityConfig，并做了动态复现。",
+       "key_findings": [
+        "getFileInfo 仅回显文件元数据（存在性/大小/读写位），不读取文件内容，agent 自述也承认此点，但仍判为 MEDIUM 真实漏洞。",
+        "动态验证在 root 容器内进行，/etc/passwd 返回 Writable:true 属测试环境权限，agent 未区分测试环境与真实部署。",
+        "全源码无认证/Filter/Interceptor，端点匿名可达，路径无规范化——行为事实成立，但人工判定为误报（判断错误）。",
+        "本 session 无任何知识库/记忆访问标记，属 L1=false、L2=false 的判断/验证维度问题。"
+       ],
+       "evidence_cards": [
+        {
+         "evidence_id": "E-22063df-2",
+         "event_idx": 10,
+         "source": "read FileController.java",
+         "quote": "@GetMapping(\"/operate\") public Map<String, Object> operateFile( @RequestParam String operation, @RequestParam(required = false) String filename) { ... String output = processFileOperation(operation, filename); result.put(\"success\", true); result.put(\"message\", output);",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-22063df-4",
+         "event_idx": 15,
+         "source": "grep security/Filter/Interceptor",
+         "quote": "---interceptors/filters---",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-22063df-5",
+         "event_idx": 66,
+         "source": "curl dynamic test",
+         "quote": "---passwd---\n{\"success\":true,\"message\":\"File: /etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}\n---nonexist---\n{\"success\":true,\"message\":\"File not found: /no/such/file\"}\n---traversal---\n{\"success\":true,\"message\":\"File: ../../../etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}\n---root dir /tmp---\n{\"success\":true,\"message\":\"File: /tmp\\nSize: 4096 bytes\\nReadable: true\\nWritable: true\"}",
+         "fact_type": "deployment_fact"
+        },
+        {
+         "evidence_id": "E-22063df-7",
+         "event_idx": 70,
+         "source": "vulnerability_analyze report",
+         "quote": "影响限于文件元数据（存在性/大小/可读可写位），不泄露内容、不执行命令，故为中危。",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-22063df-8",
+         "event_idx": 68,
+         "source": "02_ai_analysis.md",
+         "quote": "getFileInfo 内无权限/白名单/canonicalPath 校验；入口层无校验。唯一逻辑 file.exists() 恰为 oracle 核心。",
+         "fact_type": "counter_evidence"
+        }
+       ],
+       "retention_check": [
+        {
+         "item": "代码/配置事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-2",
+          "E-22063df-3",
+          "E-22063df-4"
+         ]
+        },
+        {
+         "item": "部署/运行事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-3",
+          "E-22063df-5"
+         ]
+        },
+        {
+         "item": "agent 判定与自述",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-6",
+          "E-22063df-7"
+         ]
+        },
+        {
+         "item": "事实与结论的矛盾点",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-6"
+         ]
+        },
+        {
+         "item": "影响边界",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-7"
+         ]
+        },
+        {
+         "item": "知识/记忆访问",
+         "status": "absent",
+         "evidence_ids": []
+        },
+        {
+         "item": "跳过的检查",
+         "status": "absent",
+         "evidence_ids": []
+        }
+       ],
+       "insufficient_evidence": false,
+       "insufficient_reason": "",
+       "l0_l7": [
+        {
+         "l0_source": "空",
+         "l1_need": false,
+         "l2_initiated": false,
+         "l3_accurate": null,
+         "l4_exists": null,
+         "l5_retrieved": null,
+         "l6_used": null,
+         "l7_influenced": null,
+         "breakpoint": "L8",
+         "cause_code": "H",
+         "confidence": 0.7,
+         "evidence_refs": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-6",
+          "E-22063df-7"
+         ],
+         "query_content": "误报：agent 将仅泄露文件元数据（存在性/大小/读写位，无内容）的 info 操作判定为 MEDIUM 真实漏洞；已读代码与动态结果均显示无内容泄露、无命令执行、无写入，属影响定级与漏洞成立性判断错误。",
+         "kb_search_query": "",
+         "returned_content": "",
+         "fix_suggestion": "对仅泄露文件元数据（无内容、无命令执行、无写入）的端点，应按影响边界评估是否为真实漏洞；若属文件工具类应用的预期功能或影响仅为低价值元数据，应判 NOT_VULNERABLE 或降级为 informational，不应报 MEDIUM。同时在动态验证中区分 root 测试容器权限与真实部署权限。"
+        }
+       ],
+       "truncated_evidence": 0
+      },
+      {
+       "session_id": "ses_280a8a47730443e4a5f832b046a67498",
+       "step": 2,
+       "summary": "本 session 是漏洞 16465（SimplestWeb FileController.getFileInfo 任意路径文件元数据泄露 oracle）的验证 session（2/2），outcome=FP，人工标注「误报：判断错误」。\n\n【代码/配置事实】\n- FileController.java:15 → `@GetMapping(\"/operate\")` 的 `operateFile` 为公开 Spring MVC 路由。\n- FileController.java:17-18 → `@RequestParam String operation` / `@RequestParam(required=false) String filename` 直接由 HTTP 查询串绑定。\n- FileController.java:44-48 → `operation.equalsIgnoreCase(\"info\")` 且 filename 非空时调用 `getFileInfo(filename)`。\n- FileController.java:83-91 → `getFileInfo` 执行 `File file = new File(filename)`（:84），`file.exists()` 为真时 `String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\", filename, file.length(), file.canRead(), file.canWrite())`（:85-87），否则返回 `\"File not found: \" + filename`（:89）。\n- pom.xml → 仅 spring-boot-starter-web、mybatis、h2、commons-text，无 spring-boot-starter-security。\n- 同文件 :97 `executeSystemCommand` 存在 OS 命令注入（check 分支），说明该应用为故意含漏洞的靶场。\n\n【部署/运行事实】\n- 报告声明 Spring Boot 2.7.14 可执行 jar、默认端口 8080、绑定 0.0.0.0；本 session 未启动实际 HTTP 服务核实，agent 在报告中明确写「当前 /app 环境未实际启动 Spring Boot 服务，故未在本环境重放实际 HTTP 请求」。\n- 单元测试以 root 身份运行，故 `/etc/passwd` 回显 `Writable: true`（root 可写），非普通部署权限。\n\n【agent 的判定与自述】\n- agent 通过反射调用编译产物 `FileController.class` 的 `getFileInfo`/`processFileOperation`/`operateFile`，运行 5 项断言 PASS=5 FAIL=0，退出码 0。\n- 测试输出：`/etc/passwd` → `File: /etc/passwd Size: 1153 bytes Readable: true Writable: true`；相对穿越 `../../../../../etc/passwd` → 同一文件；`/no/such/file` → `File not found`；`/tmp` → `Size: 4096 bytes`；`operateFile(\"info\",\"/etc/passwd\")` → `{success=true, message=...}`。\n- agent 在 02_ai_analysis.md 自述「影响限于文件元数据（不含内容），CVSS 中危（5.3，C:L）」。\n- 最终结论 `UNIT_TEST_EXPLOITABLE`，CVSS `AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` 5.3 MEDIUM，并调用 vulnerability_verify / vulnerability_cvss 上报。\n\n【事实与结论的矛盾点】\n- 已读到事实：`getFileInfo` 只回显 `exists/length/canRead/canWrite`，不读取文件内容（:83-91）→ agent 结论：这是可上报、可利用的漏洞（UNIT_TEST_EXPLOITABLE，MEDIUM）。\n- 已读到事实：`operation=info` 是设计用于「返回文件信息」的功能分支（:44-48）→ agent 结论：该行为构成安全漏洞。\n- 已读到事实：agent 自述「影响限于文件元数据（不含内容）」→ agent 仍给出 MEDIUM 可利用结论，未论证元数据-only 泄露为何达到可上报漏洞门槛。\n\n【影响边界】\n- 影响对象：服务器进程本机文件系统任意路径（绝对路径与 ../ 相对穿越），不跨用户、不跨服务端。\n- 生效前提：匿名可达 + `operation=info` + filename 非空；无需认证/会话。\n- 影响程度：泄露路径存在性、字节大小、可读/可写权限位；不泄露文件内容，无完整性/可用性影响。\n\n【知识/记忆访问】\n- 材料中未出现任何 [知识库访问]/[记忆访问] 标记；agent 仅读取了 skill 参考文件（classpath/unit_test playbook、exploitable 模板），不属于知识库/记忆访问。\n\n【跳过的检查】\n- 未启动实际 Spring Boot HTTP 服务发包（skill 禁止 HTTP 发包，要求本地单测，符合流程）。\n- 未核实实际部署绑定地址/端口（报告称 0.0.0.0:8080，session 内未验证）。\n- 未评估「元数据-only 泄露是否构成真实可上报漏洞」这一判定准则。",
+       "key_findings": [
+        "agent 正确复现了 getFileInfo 对任意路径返回 exists/size/canRead/canWrite 的技术行为（PASS=5）。",
+        "agent 自述影响限于文件元数据（不含内容），却仍判定为可利用漏洞（UNIT_TEST_EXPLOITABLE, MEDIUM）。",
+        "本 session 无任何知识库/记忆访问，agent 未查询「元数据-only 泄露是否达到可上报漏洞门槛」的判定准则。",
+        "人工标注为「误报：判断错误」，即 agent 把低影响/设计内行为误判为真实可利用漏洞。",
+        "agent 未实际启动 HTTP 服务，测试通过反射直调控制器方法；技术行为成立，但漏洞定性/严重度判断错误。"
+       ],
+       "evidence_cards": [
+        {
+         "evidence_id": "E-280a8a47-1",
+         "event_idx": 11,
+         "source": "bash cat FileController.java",
+         "quote": "private String getFileInfo(String filename) {\n        File file = new File(filename);\n        if (file.exists()) {\n            return String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\",\n                    filename, file.length(), file.canRead(), file.canWrite());\n        } else {\n            return \"File not found: \" + filename;\n        }\n    }",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-2",
+         "event_idx": 11,
+         "source": "bash cat FileController.java",
+         "quote": "} else if (operation.equalsIgnoreCase(\"info\")) {\n            if (filename == null || filename.isEmpty()) {\n                result = \"Filename is required for info operation\";\n            } else {\n                result = getFileInfo(filename);\n            }",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-3",
+         "event_idx": 15,
+         "source": "bash cat pom.xml",
+         "quote": "<dependency>\n            <groupId>org.springframework.boot</groupId>\n            <artifactId>spring-boot-starter-web</artifactId>\n        </dependency>",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-4",
+         "event_idx": 16,
+         "source": "bash cat 02_ai_analysis.md",
+         "quote": "影响限于文件元数据（不含内容），CVSS 中危（5.3，C:L）。",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-5",
+         "event_idx": 71,
+         "source": "java 运行 VerifyFileInfo16465 输出",
+         "quote": "== info(/etc/passwd) 输出 ==\nFile: /etc/passwd\nSize: 1153 bytes\nReadable: true\nWritable: true\n[PASS] 绝对路径可返回元数据 | exists=true size=1153 read=true write=true",
+         "fact_type": "counter_evidence"
+        },
+        {
+         "evidence_id": "E-280a8a47-6",
+         "event_idx": 71,
+         "source": "java 运行 VerifyFileInfo16465 输出",
+         "quote": "===== 汇总: PASS=5 FAIL=0 =====\nRESULT: 任意路径文件元数据泄露 oracle 验证成立（source 到 sink 全链路可达且无防护）",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-7",
+         "event_idx": 76,
+         "source": "vulnerability_verify 上报正文",
+         "quote": "| 验证结论 | UNIT_TEST_EXPLOITABLE |\n| CVSS v3.1 Vector | `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` |\n| CVSS v3.1 Base Score | 5.3 |\n| 严重程度 | MEDIUM |",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-9",
+         "event_idx": 79,
+         "source": "vulnerability_cvss 参数",
+         "quote": "泄露任意路径的存在性、文件大小与可读/可写权限位（文件元数据），不含文件内容。单测确认 /etc/passwd、/tmp 均回显 Size/Readable/Writable。",
+         "fact_type": "agent_conclusion"
+        }
+       ],
+       "retention_check": [
+        {
+         "item": "代码/配置事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-1",
+          "E-280a8a47-2",
+          "E-280a8a47-3"
+         ]
+        },
+        {
+         "item": "部署/运行事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-5",
+          "E-280a8a47-8"
+         ]
+        },
+        {
+         "item": "agent 判定与自述",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-4",
+          "E-280a8a47-6",
+          "E-280a8a47-7",
+          "E-280a8a47-9"
+         ]
+        },
+        {
+         "item": "事实与结论的矛盾点",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-1",
+          "E-280a8a47-4",
+          "E-280a8a47-7"
+         ]
+        },
+        {
+         "item": "影响边界",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-4",
+          "E-280a8a47-9"
+         ]
+        },
+        {
+         "item": "知识/记忆访问",
+         "status": "absent",
+         "evidence_ids": []
+        },
+        {
+         "item": "跳过的检查",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-8"
+         ]
+        }
+       ],
+       "insufficient_evidence": false,
+       "insufficient_reason": "",
+       "l0_l7": [
+        {
+         "l0_source": "空",
+         "l1_need": true,
+         "l2_initiated": false,
+         "l3_accurate": null,
+         "l4_exists": null,
+         "l5_retrieved": null,
+         "l6_used": null,
+         "l7_influenced": null,
+         "breakpoint": "L2",
+         "cause_code": "A",
+         "confidence": 0.7,
+         "evidence_refs": [
+          "E-280a8a47-1",
+          "E-280a8a47-4",
+          "E-280a8a47-7"
+         ],
+         "query_content": "agent 未发起任何知识/记忆访问；问题总结：agent 正确复现了 getFileInfo 返回任意路径元数据的技术行为，但未判断「仅泄露文件元数据（存在性/大小/权限位，不含内容）是否达到可上报真实漏洞的门槛」，将低影响/设计内行为误判为 UNIT_TEST_EXPLOITABLE（人工标注：误报-判断错误）。",
+         "kb_search_query": "如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+         "returned_content": "",
+         "fix_suggestion": "在验证阶段引入漏洞定性与影响门槛的判定准则（元数据-only 泄露、设计内文件信息接口 vs 真实敏感信息泄露的区分），在确认技术行为后必须进一步判断其是否达到可上报漏洞的影响门槛，避免把低影响信息回显误判为可利用漏洞。"
+        }
+       ],
+       "truncated_evidence": 0
+      }
+     ],
+     "merge_summary": "两个 session 均围绕 SimplestWeb FileController.getFileInfo 的 operation=info 分支。代码与动态/单测事实一致：端点匿名可达，filename 可控，getFileInfo 对任意路径返回存在性、大小、可读/可写位，不读取文件内容、不执行命令、不写入。Session 1 动态验证在 root 容器中运行，/etc/passwd 返回 Writable:true；Session 2 通过反射单测复现同样行为，PASS=5。agent 自述影响限于文件元数据（不含内容），CVSS 给 C:L，但仍上报为 MEDIUM 可利用漏洞。人工标注为 FP，原因“判断错误”。核心问题不是技术链路未复现，而是验证阶段缺少“元数据-only 泄露是否达到可上报漏洞门槛”的定性判断，并将 root 测试容器权限误当作真实部署权限证据。BP-2 虽标为 L2/A，但证据显示 agent 已读到足以否定其结论的事实（仅元数据、自述影响有限），按规则不产出 A 线索，归为 L8/H 流程与验证判断缺陷。",
+     "knowledge_memory_summary": {
+      "access_count": 0,
+      "accesses": [],
+      "overall_effect": "none",
+      "impact_on_conclusion": "两个 session 均无知识库/记忆访问标记，未查询“元数据-only 泄露是否达到可上报漏洞门槛”的判定准则；结论主要受 agent 自身影响定级判断影响。"
+     },
+     "l0_l7_breakpoints": [
+      {
+       "session_id": "ses_22063dfd3c6641689a43f98caf85b24c",
+       "_bp_ref": "VERIFICATION-BP-1",
+       "l0_source": "空",
+       "l1_need": false,
+       "l2_initiated": false,
+       "l3_accurate": null,
+       "l4_exists": null,
+       "l5_retrieved": null,
+       "l6_used": null,
+       "l7_influenced": null,
+       "breakpoint": "L8",
+       "cause_code": "H",
+       "confidence": 0.7,
+       "evidence_refs": [
+        "E-22063df-1",
+        "E-22063df-5",
+        "E-22063df-6",
+        "E-22063df-7"
+       ],
+       "query_content": "误报：agent 将仅泄露文件元数据（存在性/大小/读写位，无内容）的 info 操作判定为 MEDIUM 真实漏洞；已读代码与动态结果均显示无内容泄露、无命令执行、无写入，属影响定级与漏洞成立性判断错误。",
+       "kb_search_query": "",
+       "returned_content": "",
+       "fix_suggestion": "对仅泄露文件元数据（无内容、无命令执行、无写入）的端点，应按影响边界评估是否为真实漏洞；若属文件工具类应用的预期功能或影响仅为低价值元数据，应判 NOT_VULNERABLE 或降级为 informational，不应报 MEDIUM。同时在动态验证中区分 root 测试容器权限与真实部署权限。",
+       "ref": "VERIFICATION-BP-1"
+      },
+      {
+       "session_id": "ses_280a8a47730443e4a5f832b046a67498",
+       "_bp_ref": "VERIFICATION-BP-2",
+       "l0_source": "空",
+       "l1_need": true,
+       "l2_initiated": false,
+       "l3_accurate": null,
+       "l4_exists": null,
+       "l5_retrieved": null,
+       "l6_used": null,
+       "l7_influenced": null,
+       "breakpoint": "L2",
+       "cause_code": "A",
+       "confidence": 0.7,
+       "evidence_refs": [
+        "E-280a8a47-1",
+        "E-280a8a47-4",
+        "E-280a8a47-7"
+       ],
+       "query_content": "agent 未发起任何知识/记忆访问；问题总结：agent 正确复现了 getFileInfo 返回任意路径元数据的技术行为，但未判断「仅泄露文件元数据（存在性/大小/权限位，不含内容）是否达到可上报真实漏洞的门槛」，将低影响/设计内行为误判为 UNIT_TEST_EXPLOITABLE（人工标注：误报-判断错误）。",
+       "kb_search_query": "如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+       "returned_content": "",
+       "fix_suggestion": "在验证阶段引入漏洞定性与影响门槛的判定准则（元数据-only 泄露、设计内文件信息接口 vs 真实敏感信息泄露的区分），在确认技术行为后必须进一步判断其是否达到可上报漏洞的影响门槛，避免把低影响信息回显误判为可利用漏洞。",
+       "ref": "VERIFICATION-BP-2"
+      }
+     ],
+     "l4_independent_verification": {
+      "l4_knowledge_exists": true,
+      "matched_files": [
+       {
+        "path": "retrieve/73e03a63-ea17-462a-b47a-f723f357150c",
+        "title": "检索结果: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "relevance": "high",
+        "reason": "该文章直接给出仅泄露文件元数据（存在性、大小、权限位）的判定准则：应定性为低危信息泄露而非任意文件读取/下载，并说明需核实参数来源、路径校验、端到端 sink 及防护有效性。这正好对应误报原因“判断错误”，能帮助避免将元数据泄露误判为高危任意文件读取。"
+       }
+      ],
+      "summary": "知识库存在直接覆盖“仅文件元数据泄露如何判定”的方法论文章，可支撑消减该误报。",
+      "kb_searched": {
+       "athena_api": true,
+       "wiki_nfs": false
+      },
+      "failed_queries": 0,
+      "query_timeout": false,
+      "query_timeout_secs": 0,
+      "timed_out_queries": 0,
+      "candidate_files": 1,
+      "query_log": [
+       {
+        "step": "检索问题提取",
+        "action": "使用 LLM 从 session 分析产出的知识检索问题",
+        "detail": "检索问题: ['如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？']",
+        "result": "1 个检索问题: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "count": 1
+       },
+       {
+        "step": "Athena API 搜索",
+        "action": "POST http://10.110.134.165:8000/api/athena/projects/55ab4b963ed75af6/retrieve → GET http://10.110.134.165:8000/api/athena/projects/55ab4b963ed75af6/retrieve/tasks/73e03a63-ea17-462a-b47a-f723f357150c",
+        "detail": "关键词: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？, task_id=73e03a63-ea17-462a-b47a-f723f357150c",
+        "result": "检索完成，返回 1 个结果，命中 1 个文档: 检索结果: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "count": 1
+       },
+       {
+        "step": "Wiki/记忆 NFS 搜索",
+        "action": "跳过（检索方案暂停）",
+        "detail": "wiki 检索匹配方案尚不成熟，暂时停用",
+        "result": "未查询",
+        "count": 0
+       },
+       {
+        "step": "去重",
+        "action": "按 path 去重（上限 20）",
+        "detail": "去重前 2 个候选",
+        "result": "去重后 1 个候选",
+        "count": 1
+       },
+       {
+        "step": "读取候选文件",
+        "action": "读取 1 个候选文件内容摘要（前 40 行）",
+        "detail": "retrieve/73e03a63-ea17-462a-b47a-f723f357150c",
+        "result": "已读取 1 个文件",
+        "count": 1
+       },
+       {
+        "step": "LLM 判定",
+        "action": "用 LLM 判定 1 个候选文件是否含消减误报的知识",
+        "detail": "漏洞标题: SimplestWeb FileController getFileInfo 任意路径文件元数据泄露 oracle（operation=info）; 误报原因: 误报：判断错误",
+        "result": "等待 LLM 判定...",
+        "count": 1
+       }
+      ]
+     },
+     "input_fingerprint": {
+      "case_hash": "6bf8db4204ab6972ef1a51dd634ec1f85f5eb01e79db093c879622b9ef23e866",
+      "prompt_hash": "8587befd99048b34beff989bfcac5cf57263d4e8f9626b44b24e94705cb3baf4",
+      "sessions": [
+       {
+        "session_id": "ses_22063dfd3c6641689a43f98caf85b24c",
+        "chars": 72131,
+        "sha256": "b98bd36935dc8c44b8f48a0aa4eab5d07815f21a89fcf9dafa357f761f8ae8e3"
+       },
+       {
+        "session_id": "ses_280a8a47730443e4a5f832b046a67498",
+        "chars": 93410,
+        "sha256": "daa379b06fb0ca8405a07ed6572bf220ae849b06c42e1061bea89fd1d57504cd"
+       }
+      ],
+      "snapshot_written": true
+     },
+     "agent_type": "webvuln_verify",
+     "status": "ok",
+     "primary_hypothesis_id": "VERIFICATION-H1"
+    }
+   },
+   "detail": {
+    "schema_version": "1.0",
+    "case_id": "case-20261023-043226-789bf56fd9",
+    "compressed_summaries": {
+     "mining": [],
+     "verification": [
+      {
+       "session_id": "ses_22063dfd3c6641689a43f98caf85b24c",
+       "step": 1,
+       "summary": "【代码/配置事实】\n- FileController.java:15 → `@GetMapping(\"/operate\")` 的 `operateFile(@RequestParam String operation, @RequestParam(required=false) String filename)`，无认证注解。\n- FileController.java:23 → `processFileOperation(operation, filename)`。\n- FileController.java:44-48 → info 分支：`operation.equalsIgnoreCase(\"info\")` 且 filename 非空时执行 `result = getFileInfo(filename)`，仅校验非空。\n- FileController.java:83-91 → `getFileInfo`：:84 `File file = new File(filename)`；:85 `file.exists()`；:86-87 `String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\", filename, file.length(), file.canRead(), file.canWrite())`；:89 `\"File not found: \" + filename`。仅回显元数据，不读取文件内容。\n- FileController.java:25 → `result.put(\"message\", output)` 回显进 HTTP JSON。\n- pom.xml → 无 `spring-boot-starter-security`。\n- application.properties → `server.port=8080`，无 `server.address`，无鉴权配置。\n- 全源码检索 → 无 Filter/Interceptor/WebSecurityConfig/@PreAuthorize。\n\n【部署/运行事实】\n- Spring Boot 2.7.14，可执行 jar `target/simplest-web-1.0.0.jar`；默认端口 8080，未配 server.address（默认绑定 0.0.0.0）。\n- agent 以 port 18080 启动 jar 动态验证，运行身份为 root。\n- 动态结果：`filename=/etc/passwd` → `{\"success\":true,\"message\":\"File: /etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}`；`/no/such/file` → `File not found`；`../../../etc/passwd` → `Size: 888 bytes`；`/tmp` → `Size: 4096 bytes`。\n\n【agent 的判定与自述】\n- 最终结论 `VULNERABLE`，MEDIUM，CVSS `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N`=5.3，置信度 0.92。\n- 自述：'影响限于文件元数据（不含内容），不泄露内容、不执行命令'；'任意路径文件元数据泄露探测 oracle'；'与 check 命令注入、list/stats 为同一端点下独立 sink'。\n\n【事实与结论的矛盾点】\n- 已读到 getFileInfo 仅返回存在性/大小/读写位、不返回文件内容（:86-87）→ agent 仍判为 MEDIUM 真实漏洞（人工标注为误报/判断错误）。\n- 已读到 `/etc/passwd` 返回 `Writable: true`，而该值来自 root 运行测试容器 → agent 未区分测试环境权限与真实部署权限，直接作为漏洞证据。\n- agent 自述 '影响限于元数据（不含内容）' 且 CVSS 给 C:L → 仍上报为 MEDIUM 漏洞，属影响定级与漏洞成立性判断错误。\n\n【影响边界】\n- 影响对象：匿名远端攻击者 → 服务器本机文件系统元数据（跨网络→进程文件系统边界）。\n- 生效前提：服务默认绑定 0.0.0.0:8080、无认证、filename 完全可控、getFileInfo 无路径规范化/白名单/沙箱。\n- 影响程度：泄露任意路径的存在性、大小、可读/可写位；不泄露文件内容、不执行命令、不修改数据。\n\n【知识/记忆访问】\n- 材料中未出现（无 [知识库访问]/[记忆访问] 标记）。\n\n【明确跳过的检查】\n- 材料中未出现明确跳过的检查；agent 检查了 pom.xml、application.properties、Filter/Interceptor/WebSecurityConfig，并做了动态复现。",
+       "key_findings": [
+        "getFileInfo 仅回显文件元数据（存在性/大小/读写位），不读取文件内容，agent 自述也承认此点，但仍判为 MEDIUM 真实漏洞。",
+        "动态验证在 root 容器内进行，/etc/passwd 返回 Writable:true 属测试环境权限，agent 未区分测试环境与真实部署。",
+        "全源码无认证/Filter/Interceptor，端点匿名可达，路径无规范化——行为事实成立，但人工判定为误报（判断错误）。",
+        "本 session 无任何知识库/记忆访问标记，属 L1=false、L2=false 的判断/验证维度问题。"
+       ],
+       "evidence_cards": [
+        {
+         "evidence_id": "E-22063df-2",
+         "event_idx": 10,
+         "source": "read FileController.java",
+         "quote": "@GetMapping(\"/operate\") public Map<String, Object> operateFile( @RequestParam String operation, @RequestParam(required = false) String filename) { ... String output = processFileOperation(operation, filename); result.put(\"success\", true); result.put(\"message\", output);",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-22063df-4",
+         "event_idx": 15,
+         "source": "grep security/Filter/Interceptor",
+         "quote": "---interceptors/filters---",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-22063df-5",
+         "event_idx": 66,
+         "source": "curl dynamic test",
+         "quote": "---passwd---\n{\"success\":true,\"message\":\"File: /etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}\n---nonexist---\n{\"success\":true,\"message\":\"File not found: /no/such/file\"}\n---traversal---\n{\"success\":true,\"message\":\"File: ../../../etc/passwd\\nSize: 888 bytes\\nReadable: true\\nWritable: true\"}\n---root dir /tmp---\n{\"success\":true,\"message\":\"File: /tmp\\nSize: 4096 bytes\\nReadable: true\\nWritable: true\"}",
+         "fact_type": "deployment_fact"
+        },
+        {
+         "evidence_id": "E-22063df-7",
+         "event_idx": 70,
+         "source": "vulnerability_analyze report",
+         "quote": "影响限于文件元数据（存在性/大小/可读可写位），不泄露内容、不执行命令，故为中危。",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-22063df-8",
+         "event_idx": 68,
+         "source": "02_ai_analysis.md",
+         "quote": "getFileInfo 内无权限/白名单/canonicalPath 校验；入口层无校验。唯一逻辑 file.exists() 恰为 oracle 核心。",
+         "fact_type": "counter_evidence"
+        }
+       ],
+       "retention_check": [
+        {
+         "item": "代码/配置事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-2",
+          "E-22063df-3",
+          "E-22063df-4"
+         ]
+        },
+        {
+         "item": "部署/运行事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-3",
+          "E-22063df-5"
+         ]
+        },
+        {
+         "item": "agent 判定与自述",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-6",
+          "E-22063df-7"
+         ]
+        },
+        {
+         "item": "事实与结论的矛盾点",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-6"
+         ]
+        },
+        {
+         "item": "影响边界",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-7"
+         ]
+        },
+        {
+         "item": "知识/记忆访问",
+         "status": "absent",
+         "evidence_ids": []
+        },
+        {
+         "item": "跳过的检查",
+         "status": "absent",
+         "evidence_ids": []
+        }
+       ],
+       "insufficient_evidence": false,
+       "insufficient_reason": "",
+       "l0_l7": [
+        {
+         "l0_source": "空",
+         "l1_need": false,
+         "l2_initiated": false,
+         "l3_accurate": null,
+         "l4_exists": null,
+         "l5_retrieved": null,
+         "l6_used": null,
+         "l7_influenced": null,
+         "breakpoint": "L8",
+         "cause_code": "H",
+         "confidence": 0.7,
+         "evidence_refs": [
+          "E-22063df-1",
+          "E-22063df-5",
+          "E-22063df-6",
+          "E-22063df-7"
+         ],
+         "query_content": "误报：agent 将仅泄露文件元数据（存在性/大小/读写位，无内容）的 info 操作判定为 MEDIUM 真实漏洞；已读代码与动态结果均显示无内容泄露、无命令执行、无写入，属影响定级与漏洞成立性判断错误。",
+         "kb_search_query": "",
+         "returned_content": "",
+         "fix_suggestion": "对仅泄露文件元数据（无内容、无命令执行、无写入）的端点，应按影响边界评估是否为真实漏洞；若属文件工具类应用的预期功能或影响仅为低价值元数据，应判 NOT_VULNERABLE 或降级为 informational，不应报 MEDIUM。同时在动态验证中区分 root 测试容器权限与真实部署权限。"
+        }
+       ],
+       "truncated_evidence": 0
+      },
+      {
+       "session_id": "ses_280a8a47730443e4a5f832b046a67498",
+       "step": 2,
+       "summary": "本 session 是漏洞 16465（SimplestWeb FileController.getFileInfo 任意路径文件元数据泄露 oracle）的验证 session（2/2），outcome=FP，人工标注「误报：判断错误」。\n\n【代码/配置事实】\n- FileController.java:15 → `@GetMapping(\"/operate\")` 的 `operateFile` 为公开 Spring MVC 路由。\n- FileController.java:17-18 → `@RequestParam String operation` / `@RequestParam(required=false) String filename` 直接由 HTTP 查询串绑定。\n- FileController.java:44-48 → `operation.equalsIgnoreCase(\"info\")` 且 filename 非空时调用 `getFileInfo(filename)`。\n- FileController.java:83-91 → `getFileInfo` 执行 `File file = new File(filename)`（:84），`file.exists()` 为真时 `String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\", filename, file.length(), file.canRead(), file.canWrite())`（:85-87），否则返回 `\"File not found: \" + filename`（:89）。\n- pom.xml → 仅 spring-boot-starter-web、mybatis、h2、commons-text，无 spring-boot-starter-security。\n- 同文件 :97 `executeSystemCommand` 存在 OS 命令注入（check 分支），说明该应用为故意含漏洞的靶场。\n\n【部署/运行事实】\n- 报告声明 Spring Boot 2.7.14 可执行 jar、默认端口 8080、绑定 0.0.0.0；本 session 未启动实际 HTTP 服务核实，agent 在报告中明确写「当前 /app 环境未实际启动 Spring Boot 服务，故未在本环境重放实际 HTTP 请求」。\n- 单元测试以 root 身份运行，故 `/etc/passwd` 回显 `Writable: true`（root 可写），非普通部署权限。\n\n【agent 的判定与自述】\n- agent 通过反射调用编译产物 `FileController.class` 的 `getFileInfo`/`processFileOperation`/`operateFile`，运行 5 项断言 PASS=5 FAIL=0，退出码 0。\n- 测试输出：`/etc/passwd` → `File: /etc/passwd Size: 1153 bytes Readable: true Writable: true`；相对穿越 `../../../../../etc/passwd` → 同一文件；`/no/such/file` → `File not found`；`/tmp` → `Size: 4096 bytes`；`operateFile(\"info\",\"/etc/passwd\")` → `{success=true, message=...}`。\n- agent 在 02_ai_analysis.md 自述「影响限于文件元数据（不含内容），CVSS 中危（5.3，C:L）」。\n- 最终结论 `UNIT_TEST_EXPLOITABLE`，CVSS `AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` 5.3 MEDIUM，并调用 vulnerability_verify / vulnerability_cvss 上报。\n\n【事实与结论的矛盾点】\n- 已读到事实：`getFileInfo` 只回显 `exists/length/canRead/canWrite`，不读取文件内容（:83-91）→ agent 结论：这是可上报、可利用的漏洞（UNIT_TEST_EXPLOITABLE，MEDIUM）。\n- 已读到事实：`operation=info` 是设计用于「返回文件信息」的功能分支（:44-48）→ agent 结论：该行为构成安全漏洞。\n- 已读到事实：agent 自述「影响限于文件元数据（不含内容）」→ agent 仍给出 MEDIUM 可利用结论，未论证元数据-only 泄露为何达到可上报漏洞门槛。\n\n【影响边界】\n- 影响对象：服务器进程本机文件系统任意路径（绝对路径与 ../ 相对穿越），不跨用户、不跨服务端。\n- 生效前提：匿名可达 + `operation=info` + filename 非空；无需认证/会话。\n- 影响程度：泄露路径存在性、字节大小、可读/可写权限位；不泄露文件内容，无完整性/可用性影响。\n\n【知识/记忆访问】\n- 材料中未出现任何 [知识库访问]/[记忆访问] 标记；agent 仅读取了 skill 参考文件（classpath/unit_test playbook、exploitable 模板），不属于知识库/记忆访问。\n\n【跳过的检查】\n- 未启动实际 Spring Boot HTTP 服务发包（skill 禁止 HTTP 发包，要求本地单测，符合流程）。\n- 未核实实际部署绑定地址/端口（报告称 0.0.0.0:8080，session 内未验证）。\n- 未评估「元数据-only 泄露是否构成真实可上报漏洞」这一判定准则。",
+       "key_findings": [
+        "agent 正确复现了 getFileInfo 对任意路径返回 exists/size/canRead/canWrite 的技术行为（PASS=5）。",
+        "agent 自述影响限于文件元数据（不含内容），却仍判定为可利用漏洞（UNIT_TEST_EXPLOITABLE, MEDIUM）。",
+        "本 session 无任何知识库/记忆访问，agent 未查询「元数据-only 泄露是否达到可上报漏洞门槛」的判定准则。",
+        "人工标注为「误报：判断错误」，即 agent 把低影响/设计内行为误判为真实可利用漏洞。",
+        "agent 未实际启动 HTTP 服务，测试通过反射直调控制器方法；技术行为成立，但漏洞定性/严重度判断错误。"
+       ],
+       "evidence_cards": [
+        {
+         "evidence_id": "E-280a8a47-1",
+         "event_idx": 11,
+         "source": "bash cat FileController.java",
+         "quote": "private String getFileInfo(String filename) {\n        File file = new File(filename);\n        if (file.exists()) {\n            return String.format(\"File: %s\\nSize: %d bytes\\nReadable: %b\\nWritable: %b\",\n                    filename, file.length(), file.canRead(), file.canWrite());\n        } else {\n            return \"File not found: \" + filename;\n        }\n    }",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-2",
+         "event_idx": 11,
+         "source": "bash cat FileController.java",
+         "quote": "} else if (operation.equalsIgnoreCase(\"info\")) {\n            if (filename == null || filename.isEmpty()) {\n                result = \"Filename is required for info operation\";\n            } else {\n                result = getFileInfo(filename);\n            }",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-3",
+         "event_idx": 15,
+         "source": "bash cat pom.xml",
+         "quote": "<dependency>\n            <groupId>org.springframework.boot</groupId>\n            <artifactId>spring-boot-starter-web</artifactId>\n        </dependency>",
+         "fact_type": "repo_fact"
+        },
+        {
+         "evidence_id": "E-280a8a47-4",
+         "event_idx": 16,
+         "source": "bash cat 02_ai_analysis.md",
+         "quote": "影响限于文件元数据（不含内容），CVSS 中危（5.3，C:L）。",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-5",
+         "event_idx": 71,
+         "source": "java 运行 VerifyFileInfo16465 输出",
+         "quote": "== info(/etc/passwd) 输出 ==\nFile: /etc/passwd\nSize: 1153 bytes\nReadable: true\nWritable: true\n[PASS] 绝对路径可返回元数据 | exists=true size=1153 read=true write=true",
+         "fact_type": "counter_evidence"
+        },
+        {
+         "evidence_id": "E-280a8a47-6",
+         "event_idx": 71,
+         "source": "java 运行 VerifyFileInfo16465 输出",
+         "quote": "===== 汇总: PASS=5 FAIL=0 =====\nRESULT: 任意路径文件元数据泄露 oracle 验证成立（source 到 sink 全链路可达且无防护）",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-7",
+         "event_idx": 76,
+         "source": "vulnerability_verify 上报正文",
+         "quote": "| 验证结论 | UNIT_TEST_EXPLOITABLE |\n| CVSS v3.1 Vector | `CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:N/A:N` |\n| CVSS v3.1 Base Score | 5.3 |\n| 严重程度 | MEDIUM |",
+         "fact_type": "agent_conclusion"
+        },
+        {
+         "evidence_id": "E-280a8a47-9",
+         "event_idx": 79,
+         "source": "vulnerability_cvss 参数",
+         "quote": "泄露任意路径的存在性、文件大小与可读/可写权限位（文件元数据），不含文件内容。单测确认 /etc/passwd、/tmp 均回显 Size/Readable/Writable。",
+         "fact_type": "agent_conclusion"
+        }
+       ],
+       "retention_check": [
+        {
+         "item": "代码/配置事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-1",
+          "E-280a8a47-2",
+          "E-280a8a47-3"
+         ]
+        },
+        {
+         "item": "部署/运行事实",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-5",
+          "E-280a8a47-8"
+         ]
+        },
+        {
+         "item": "agent 判定与自述",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-4",
+          "E-280a8a47-6",
+          "E-280a8a47-7",
+          "E-280a8a47-9"
+         ]
+        },
+        {
+         "item": "事实与结论的矛盾点",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-1",
+          "E-280a8a47-4",
+          "E-280a8a47-7"
+         ]
+        },
+        {
+         "item": "影响边界",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-4",
+          "E-280a8a47-9"
+         ]
+        },
+        {
+         "item": "知识/记忆访问",
+         "status": "absent",
+         "evidence_ids": []
+        },
+        {
+         "item": "跳过的检查",
+         "status": "preserved",
+         "evidence_ids": [
+          "E-280a8a47-8"
+         ]
+        }
+       ],
+       "insufficient_evidence": false,
+       "insufficient_reason": "",
+       "l0_l7": [
+        {
+         "l0_source": "空",
+         "l1_need": true,
+         "l2_initiated": false,
+         "l3_accurate": null,
+         "l4_exists": null,
+         "l5_retrieved": null,
+         "l6_used": null,
+         "l7_influenced": null,
+         "breakpoint": "L2",
+         "cause_code": "A",
+         "confidence": 0.7,
+         "evidence_refs": [
+          "E-280a8a47-1",
+          "E-280a8a47-4",
+          "E-280a8a47-7"
+         ],
+         "query_content": "agent 未发起任何知识/记忆访问；问题总结：agent 正确复现了 getFileInfo 返回任意路径元数据的技术行为，但未判断「仅泄露文件元数据（存在性/大小/权限位，不含内容）是否达到可上报真实漏洞的门槛」，将低影响/设计内行为误判为 UNIT_TEST_EXPLOITABLE（人工标注：误报-判断错误）。",
+         "kb_search_query": "如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+         "returned_content": "",
+         "fix_suggestion": "在验证阶段引入漏洞定性与影响门槛的判定准则（元数据-only 泄露、设计内文件信息接口 vs 真实敏感信息泄露的区分），在确认技术行为后必须进一步判断其是否达到可上报漏洞的影响门槛，避免把低影响信息回显误判为可利用漏洞。"
+        }
+       ],
+       "truncated_evidence": 0
+      }
+     ]
+    },
+    "merge_summary": {
+     "mining": "",
+     "verification": "两个 session 均围绕 SimplestWeb FileController.getFileInfo 的 operation=info 分支。代码与动态/单测事实一致：端点匿名可达，filename 可控，getFileInfo 对任意路径返回存在性、大小、可读/可写位，不读取文件内容、不执行命令、不写入。Session 1 动态验证在 root 容器中运行，/etc/passwd 返回 Writable:true；Session 2 通过反射单测复现同样行为，PASS=5。agent 自述影响限于文件元数据（不含内容），CVSS 给 C:L，但仍上报为 MEDIUM 可利用漏洞。人工标注为 FP，原因“判断错误”。核心问题不是技术链路未复现，而是验证阶段缺少“元数据-only 泄露是否达到可上报漏洞门槛”的定性判断，并将 root 测试容器权限误当作真实部署权限证据。BP-2 虽标为 L2/A，但证据显示 agent 已读到足以否定其结论的事实（仅元数据、自述影响有限），按规则不产出 A 线索，归为 L8/H 流程与验证判断缺陷。"
+    },
+    "knowledge_memory_summary": {
+     "mining": {},
+     "verification": {
+      "access_count": 0,
+      "accesses": [],
+      "overall_effect": "none",
+      "impact_on_conclusion": "两个 session 均无知识库/记忆访问标记，未查询“元数据-only 泄露是否达到可上报漏洞门槛”的判定准则；结论主要受 agent 自身影响定级判断影响。"
+     }
+    },
+    "l4_independent_verification": {
+     "mining": {},
+     "verification": {
+      "l4_knowledge_exists": true,
+      "matched_files": [
+       {
+        "path": "retrieve/73e03a63-ea17-462a-b47a-f723f357150c",
+        "title": "检索结果: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "relevance": "high",
+        "reason": "该文章直接给出仅泄露文件元数据（存在性、大小、权限位）的判定准则：应定性为低危信息泄露而非任意文件读取/下载，并说明需核实参数来源、路径校验、端到端 sink 及防护有效性。这正好对应误报原因“判断错误”，能帮助避免将元数据泄露误判为高危任意文件读取。"
+       }
+      ],
+      "summary": "知识库存在直接覆盖“仅文件元数据泄露如何判定”的方法论文章，可支撑消减该误报。",
+      "kb_searched": {
+       "athena_api": true,
+       "wiki_nfs": false
+      },
+      "failed_queries": 0,
+      "query_timeout": false,
+      "query_timeout_secs": 0,
+      "timed_out_queries": 0,
+      "candidate_files": 1,
+      "query_log": [
+       {
+        "step": "检索问题提取",
+        "action": "使用 LLM 从 session 分析产出的知识检索问题",
+        "detail": "检索问题: ['如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？']",
+        "result": "1 个检索问题: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "count": 1
+       },
+       {
+        "step": "Athena API 搜索",
+        "action": "POST http://10.110.134.165:8000/api/athena/projects/55ab4b963ed75af6/retrieve → GET http://10.110.134.165:8000/api/athena/projects/55ab4b963ed75af6/retrieve/tasks/73e03a63-ea17-462a-b47a-f723f357150c",
+        "detail": "关键词: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？, task_id=73e03a63-ea17-462a-b47a-f723f357150c",
+        "result": "检索完成，返回 1 个结果，命中 1 个文档: 检索结果: 如何判定仅泄露文件元数据（存在性、大小、读写权限位，不含文件内容）是否构成可上报的真实漏洞？",
+        "count": 1
+       },
+       {
+        "step": "Wiki/记忆 NFS 搜索",
+        "action": "跳过（检索方案暂停）",
+        "detail": "wiki 检索匹配方案尚不成熟，暂时停用",
+        "result": "未查询",
+        "count": 0
+       },
+       {
+        "step": "去重",
+        "action": "按 path 去重（上限 20）",
+        "detail": "去重前 2 个候选",
+        "result": "去重后 1 个候选",
+        "count": 1
+       },
+       {
+        "step": "读取候选文件",
+        "action": "读取 1 个候选文件内容摘要（前 40 行）",
+        "detail": "retrieve/73e03a63-ea17-462a-b47a-f723f357150c",
+        "result": "已读取 1 个文件",
+        "count": 1
+       },
+       {
+        "step": "LLM 判定",
+        "action": "用 LLM 判定 1 个候选文件是否含消减误报的知识",
+        "detail": "漏洞标题: SimplestWeb FileController getFileInfo 任意路径文件元数据泄露 oracle（operation=info）; 误报原因: 误报：判断错误",
+        "result": "等待 LLM 判定...",
+        "count": 1
+       }
+      ]
+     }
+    },
+    "audit": {
+     "mining": [],
+     "verification": [
+      {
+       "rule": "每个线索均有 evidence_refs 和 counter_evidence",
+       "pass": true,
+       "note": "两条线索均引用输入中实际存在的证据卡，并写明反证或检查范围。"
+      },
+      {
+       "rule": "不重新判 L0-L8，不改断点级别/cause_code",
+       "pass": true,
+       "note": "仅引用 BP-1、BP-2 作为依据；BP-2 原为 L2/A，但按规则因已读到足以否定结论的事实而不产出 A 线索，改以 H 表述。"
+      },
+      {
+       "rule": "线索互斥，无包含/父子关系",
+       "pass": true,
+       "note": "线索一为影响门槛判定缺失，线索二为测试环境权限与真实部署权限混淆，定位点不同。"
+      },
+      {
+       "rule": "cause_code 与证据要求匹配",
+       "pass": true,
+       "note": "两条均给 H，依据为流程/验证维度问题：已读事实但结论矛盾、未区分测试环境权限。"
+      },
+      {
+       "rule": "置信度与证据强度一致",
+       "pass": true,
+       "note": "线索一有 agent 自述与最终定级直接矛盾，置信度 0.9；线索二有 root 测试输出与权限未区分事实，置信度 0.7。"
+      }
+     ]
+    }
+   }
+  }
+ }
+}

@@ -592,14 +592,16 @@ class Orchestrator:
                           f"{len(fn_cases)} FN case"
                           + (f" + {len(fn_miss_results)} 漏报原因分析"
                              if fn_miss_results else ""))
-            from ..lifecycle.root_cause_analyzer import RootCauseAnalyzer
-            rca = RootCauseAnalyzer()
+            from ..lifecycle.case_analysis_port import (
+                build_case_analysis_adapter,
+            )
+            case_analysis = build_case_analysis_adapter()
             project_ids = [
                 e.get("project_id") for e in entries
                 if e.get("project_id")
             ]
             root_cause_project_id = project_ids[0] if project_ids else ""
-            root_cause_results = rca.analyze(
+            root_cause_results = case_analysis.analyze(
                 evaluation_id, root_cause_cases, data_packs,
                 cancel_cb=_cancel_cb,
                 project_id=root_cause_project_id,
