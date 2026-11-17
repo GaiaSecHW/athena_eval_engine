@@ -167,6 +167,33 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 "created_at": created_str,
             }
 
+    # 未评测但曾启动失败的任务：create() 在写 evaluation 行之前失败（如未发现
+    # trace）时评测表没有记录，页面只能显示「未评测」，操作者会反复启动。
+    # 失败信息单独记录在 evaluation_start_failure，按 (project, task) 挂到行上。
+    start_failures: dict[tuple[str, str], dict] = {}
+    try:
+        _pids = sorted({r.get("project_id") for r in rows if r.get("project_id")})
+        if _pids:
+            _ph = ",".join(["%s"] * len(_pids))
+
+            def _do_fail(cur):
+                cur.execute(
+                    "SELECT project_id, task_id, attempt_count, "
+                    "last_evaluation_id, last_error, last_failed_at "
+                    f"FROM evaluation_start_failure WHERE project_id IN ({_ph})",
+                    tuple(_pids))
+                return cur.fetchall()
+
+            for pid, tid, cnt, eid, err, at in _db_query(_do_fail):
+                start_failures[(pid, tid)] = {
+                    "attempt_count": cnt,
+                    "evaluation_id": eid or "",
+                    "last_error": err or "",
+                    "last_failed_at": str(at) if at else "",
+                }
+    except Exception as e:
+        log("REPORT", f"读启动失败信息失败: {e}")
+
     # 任务是否已从平台删除（与评测列表/漏洞中心同一口径：schedule batch-alive）
     # alive=False 时跳过（逐项目网络调用很慢），由前端异步补全 task_deleted。
     alive_by_proj: dict[str, set[str]] = {}
@@ -200,6 +227,10 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         ev = eval_map.get(r.get("task_id", "")) or {}
         r["evaluation_id"] = ev.get("evaluation_id", "")
         r["evaluation_status"] = ev.get("evaluation_status", "")
+        # 只对「未评测」行返回启动失败信息；已有评测记录的行以评测状态为准
+        r["start_failure"] = (
+            None if r["evaluation_status"]
+            else start_failures.get((_pid, _tid)))
         # 误报率 = FP/(TP+FP)
         tp = r.get("confirmed_vulnerable") or 0
         fp = r.get("confirmed_fp") or 0

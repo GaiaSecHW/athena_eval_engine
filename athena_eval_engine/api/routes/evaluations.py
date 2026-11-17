@@ -474,6 +474,52 @@ async def get_running():
     return {"running_count": len(ids), "evaluation_ids": ids}
 
 
+def _record_start_failure(project_id: str, task_id: str, evaluation_id: str,
+                          error: Exception) -> None:
+    """记录 create() 失败的启动尝试。
+
+    create() 在写 evaluation 行之前就可能失败（如未发现 trace），失败后 DB
+    没有任何评测记录，平台任务详情页只能显示「未评测」，操作者会反复启动。
+    这里按 (project_id, task_id) 持久化最近一次失败信息。
+    """
+    if not project_id or not task_id:
+        return
+
+    def _do(cur):
+        cur.execute(
+            "INSERT INTO evaluation_start_failure "
+            "(project_id, task_id, attempt_count, last_evaluation_id, "
+            " last_error, last_failed_at) "
+            "VALUES (%s,%s,1,%s,%s,NOW(3)) "
+            "ON DUPLICATE KEY UPDATE attempt_count=attempt_count+1, "
+            "last_evaluation_id=VALUES(last_evaluation_id), "
+            "last_error=VALUES(last_error), last_failed_at=NOW(3)",
+            (project_id, task_id, evaluation_id or "", str(error)))
+
+    try:
+        # 失败响应不能因 DB 重试而长时间挂起：最多重试 1 次
+        es._db_query(_do, _retries=2)
+    except Exception as e:
+        log("EVAL", f"记录启动失败信息失败: {e}")
+
+
+def _clear_start_failure(project_id: str, task_id: str) -> None:
+    """启动成功后清除该任务的失败标记。"""
+    if not project_id or not task_id:
+        return
+
+    def _do(cur):
+        cur.execute(
+            "DELETE FROM evaluation_start_failure "
+            "WHERE project_id=%s AND task_id=%s",
+            (project_id, task_id))
+
+    try:
+        es._db_query(_do)
+    except Exception as e:
+        log("EVAL", f"清除启动失败信息失败: {e}")
+
+
 @app.post("/api/v1/evaluations")
 def create_evaluation(req: CreateRequest):
     try:
@@ -485,14 +531,18 @@ def create_evaluation(req: CreateRequest):
                                    benchmark_set_id=req.benchmark_set_id,
                                    vc_source_task_id=req.vc_source_task_id,
                                    eval_mode=req.eval_mode))
-        # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
-        # 提交到线程池排队运行（最多 3 并发，超出自动排队）
-        def _run_bg():
-            _run_eval(req.evaluation_id, "EVAL FAILED")
-        _submit_eval(req.evaluation_id, _run_bg)
-        return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
     except Exception as e:
+        _record_start_failure(req.kg_project_id, req.kg_task_id,
+                              req.evaluation_id, e)
         raise HTTPException(status_code=400, detail=str(e))
+
+    _clear_start_failure(req.kg_project_id, req.kg_task_id)
+    # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
+    # 提交到线程池排队运行（最多 3 并发，超出自动排队）
+    def _run_bg():
+        _run_eval(req.evaluation_id, "EVAL FAILED")
+    _submit_eval(req.evaluation_id, _run_bg)
+    return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
 
 
 @app.delete("/api/v1/evaluations/{evaluation_id}")

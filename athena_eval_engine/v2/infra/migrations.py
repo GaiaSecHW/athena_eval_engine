@@ -687,6 +687,24 @@ MIGRATIONS = [
             "('resp:knowledge','resp:external_data_source','resp:eval_process')",
         ],
     },
+    {
+        "id": "046_evaluation_start_failure",
+        "desc": "创建 evaluation_start_failure 表——记录 create() 失败的启动尝试，"
+                "供平台任务详情页在「未评测」行展示失败信息",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS evaluation_start_failure ("
+            "  project_id VARCHAR(64) NOT NULL,"
+            "  task_id VARCHAR(64) NOT NULL,"
+            "  attempt_count INT NOT NULL DEFAULT 0,"
+            "  last_evaluation_id VARCHAR(64) NOT NULL DEFAULT '',"
+            "  last_error TEXT NOT NULL,"
+            "  last_failed_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3),"
+            "  updated_at DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3)"
+            "    ON UPDATE CURRENT_TIMESTAMP(3),"
+            "  PRIMARY KEY (project_id, task_id)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
