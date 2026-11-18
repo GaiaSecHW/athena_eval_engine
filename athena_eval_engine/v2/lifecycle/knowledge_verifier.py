@@ -101,21 +101,22 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 
 # 判定标准
 
-"能消减误报"的标准：知识内容直接涉及误报原因中提到的**验证方法或判定准则**。
-知识库存的是方法论与漏洞模式，不是某个客户的具体部署现状。
+"能消减误报"的标准：知识内容直接涉及误报原因中提到的**验证方法、判定准则或环境事实**。
+知识库的供给范围包括方法论、漏洞模式，以及项目级业务/环境知识（部署架构约定、
+网关暴露面语义、内部 API 标记等）。
 
-能消减误报的例子（知识给出"怎么判断"的方法）：
-- 误报原因是"网络不可达" → 知识应包含**如何验证**网络可达性的方法
-- 误报原因是"输入已校验" → 知识应包含**如何评估**输入校验是否有效
-- 误报原因是"接口非对外暴露" → 知识应包含**如何判断**接口暴露面的方法
-- 误报原因是"已有防护机制" → 知识应包含**如何验证**防护机制是否生效
+能消减误报的例子：
+- 误报原因是"网络不可达" → 知识包含**如何验证**网络可达性的方法，
+  或直接给出该环境的网络暴露面事实
+- 误报原因是"输入已校验" → 知识包含**如何评估**输入校验是否有效
+- 误报原因是"接口非对外暴露" → 知识包含**如何判断**接口暴露面的方法，
+  或直接给出该项目网关对接口的内部/外部标记事实
+- 误报原因是"已有防护机制" → 知识包含**如何验证**防护机制是否生效
 
 不能消减误报的情况：
 - 文章只讲漏洞挖掘方法（怎么挖），不讲误报判别（怎么排除）
 - 文章涉及漏洞类型但与误报原因无关
 - 文章是通用安全知识，没有针对误报场景的具体指导
-- **文章只描述了某个具体环境的部署现状**（如"某服务部署在 X 网段"），
-  而没有给出通用的判断方法——这类内容对本项目无参考价值
 
 # 边界（强制）
 
@@ -142,53 +143,12 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 
 只返回 JSON，不要任何额外文字。"""
 
-# ── 环境事实类问题判定 ──
-# 知识库存的是方法论与漏洞模式，不是某个客户的部署现状。像"8888 端口是否
-# 对外暴露""file_name 是否已被上游过滤"这类问题，知识库永远答不了，查了
-# 只会让 Athena 后端做无效深度检索 → 慢 → 查询失败（实测 1200s 仍无结果）。
-#
-# 判定顺序很重要：先认强信号（具体 IP / 部署现状措辞），再排除方法论问句
-# （"如何判断路径参数是否已被校验"虽然含"是否…校验"，问的却是方法）。
-_IP_RE = re.compile(r"\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}")
-# "在实际部署中是否…" / "网关层面是否存在…" —— 问客户环境现状
-_DEPLOY_STATE_RE = re.compile(
-    r"(在实际部署中|部署环境|部署现状|网关层面|安全组|防火墙|网段)"
-    r"[^，。？?]{0,20}(是否|有无|有没有)")
-# 方法论问句开头
-_METHOD_QUESTION_RE = re.compile(
-    r"^(如何|怎么|怎样|如何判断|如何验证|如何识别|如何评估|能否|是否足以)")
-# 具体端口 + 对外状态
-_PORT_EXPOSURE_RE = re.compile(
-    r"(端口|port|\b\d{2,5}\b)[^，。？?]{0,25}(对外暴露|暴露|可达|对外开放|对外开放访问)")
-# 是否 + 部署状态词
-_STATE_WORD_RE = re.compile(
-    r"(是否|有无|有没有)[^，。？?]{0,20}"
-    r"(对外暴露|暴露|部署|开放|可达|隔离|上线|启用)")
-
-
-def _is_environment_fact_query(query: str) -> bool:
-    """判断检索问题是否属于「环境事实类」——知识库无法回答的部署现状问题。
-
-    这类问题问的是某个具体环境里端口/接口/网关的实际状态，不是方法论。
-    知识库存方法论与漏洞模式，答不了这类问题，应跳过 Athena 检索。
-    """
-    q = (query or "").strip()
-    if not q:
-        return False
-    # 强信号 1：含具体 IP —— 一定在问某个具体环境
-    if _IP_RE.search(q):
-        return True
-    # 强信号 2：明确的部署现状措辞
-    if _DEPLOY_STATE_RE.search(q):
-        return True
-    # 方法论问句（"如何判断…"）问的是方法，知识库能答，不算环境事实
-    if _METHOD_QUESTION_RE.match(q):
-        return False
-    # 具体端口 + 对外状态
-    if _PORT_EXPOSURE_RE.search(q):
-        return True
-    # 是否 + 部署状态词
-    return bool(_STATE_WORD_RE.search(q))
+# ── 环境事实类问题不再跳过 ──
+# 业务知识与环境知识（网关暴露面约定、部署架构、内部 API 标记等）属于知识库
+# 供给范围：知识库不只是方法论库，项目级环境知识沉淀后同样可被检索。
+# 此前把"环境事实类问题"整体排除在 Athena 检索外，会让环境知识即使入库也
+# 永远检索不到，L4 验证只能命中方法论——归因时无法区分"agent 该查没查"
+# 与"知识库该供未供"。因此移除过滤，环境事实问题一律照查。
 
 
 class KnowledgeVerifier:
@@ -266,20 +226,9 @@ class KnowledgeVerifier:
         candidates: list[dict] = []
 
         # 2. 查 Athena API /retrieve（与 agent 同款端点）
-        # 环境事实类问题（"某端口是否暴露"等）知识库答不了，跳过 Athena 避免
-        # 无效深度检索导致查询失败，只保留 wiki 检索。
-        env_fact_queries = [q for q in keywords if _is_environment_fact_query(q)]
-        athena_queries = [q for q in keywords if not _is_environment_fact_query(q)]
-        if env_fact_queries:
-            query_log.append({
-                "step": "Athena API 搜索",
-                "action": "跳过环境事实类问题",
-                "detail": f"以下问题问的是具体部署现状，知识库无法回答: {env_fact_queries}",
-                "result": f"{len(env_fact_queries)} 个问题跳过 Athena 检索",
-                "count": 0,
-            })
-            log("KB_VERIFY",
-                f"跳过 Athena（环境事实类问题，知识库无法回答）: {env_fact_queries}")
+        # 环境事实类问题（"该项目某接口是否网关内部"等）不再跳过——环境/业务
+        # 知识属于知识库供给范围，与方法论问题一并检索。
+        athena_queries = list(keywords)
 
         athena_failed = 0
         athena_timed_out = 0
@@ -339,23 +288,16 @@ class KnowledgeVerifier:
         })
 
         if not candidates:
-            # Athena 是否真的查过：有 project_id 且存在可查的方法类问题
+            # Athena 是否真的查过：有 project_id 且有检索问题
             _searched_api = bool(project_id) and bool(athena_queries)
             # wiki 检索已暂停，未查过就不能计入"已搜索"
             _searched_wiki = _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT)
-            # 全部问题都是环境事实类 → 知识库根本没法回答，未判定（None），
-            # 不能返回 False 误报「知识缺失」。
-            _all_env_fact = bool(keywords) and not athena_queries
             # 超时 → 按「知识库没有该知识」处理（l4=False），并带 query_timeout
             # 标记，让读者知道这是查询没拿到结果，不是知识库确认过没有。
             # 其他失败（提交失败/检索失败）仍返回 None（未判定）并计入告警。
             _some_timeout = athena_timed_out > 0
             _some_failed = athena_failed > 0
-            if _all_env_fact:
-                _l4 = None
-                _summary = ("检索问题均属环境事实类（部署现状），知识库无法回答，"
-                            "未做知识存在性判定")
-            elif _some_timeout:
+            if _some_timeout:
                 # 超时结论 = 知识库没有这个知识（+ 标明是访问超时，不是确认没有）
                 _l4 = False
                 _secs = int(round(athena_timeout_secs))

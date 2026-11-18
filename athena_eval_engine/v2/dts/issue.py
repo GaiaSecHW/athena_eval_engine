@@ -134,6 +134,7 @@ def generate_dts_issues(
     case_root_cause: dict[str, dict] = {}
     case_fix: dict[str, str] = {}
     case_hypotheses: dict[str, list] = {}
+    case_mining_hypotheses: dict[str, list] = {}
     case_label_quality: dict[str, dict] = {}
     insufficient_cases: set[str] = set()
     for case in root_cause_results:
@@ -156,6 +157,7 @@ def generate_dts_issues(
 
         # ── 从多线索提取根因和修复建议 ──
         all_hypotheses = []
+        mining_hypotheses = []
         root_causes = {}
         fix_parts = []
         label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
@@ -164,6 +166,8 @@ def generate_dts_issues(
             chain_hypotheses = chain_data.get("hypotheses") or []
             if chain_hypotheses:
                 all_hypotheses.extend(chain_hypotheses)
+                if chain_type == "挖掘":
+                    mining_hypotheses.extend(chain_hypotheses)
                 # 从线索提取 fix_suggestion
                 for h in chain_hypotheses:
                     fs = h.get("fix_suggestion")
@@ -297,13 +301,21 @@ def generate_dts_issues(
                 })
 
         case_hypotheses[cid] = all_hypotheses
+        case_mining_hypotheses[cid] = mining_hypotheses
         case_label_quality[cid] = label_quality
         # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
             # 顶层摘要按置信度最高的一条线索选取，不看 probability；
             # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
-            # 跨链取置信度最高的线索，不能按链顺序取第一个。
-            top = _pick_primary_hypothesis(all_hypotheses)
+            # FP 单顶层要回答「误报为什么产生」——候选池只取挖掘链线索
+            # （验证链线索回答「为什么没拦住」，属另一问题，不顶替 FP 根因）；
+            # 挖掘链无线索时回退全池。FN 保持混池：挖掘（没找到）与
+            # 验证（K 否定真漏洞）都解释漏报。
+            top_pool = all_hypotheses
+            if (str(case.get("outcome") or "FP").upper() != "FN"
+                    and mining_hypotheses):
+                top_pool = mining_hypotheses
+            top = _pick_primary_hypothesis(top_pool)
             if top:
                 root_causes = {
                     "hypothesis": top.get("hypothesis", ""),
@@ -383,8 +395,14 @@ def generate_dts_issues(
         hypotheses = case_hypotheses.get(case_id, [])
         label_quality = case_label_quality.get(case_id, {})
         if hypotheses:
-            # 跨链摘要：同上，取置信度最高的线索。
-            top_hyp = _pick_primary_hypothesis(hypotheses)
+            # 跨链摘要：同上，取置信度最高的线索；FP 单候选池只取挖掘链
+            # （与上方 case_root_cause 的顶层选取同一规则，两处必须一致）。
+            top_pool = hypotheses
+            mining_hypotheses = case_mining_hypotheses.get(case_id) or []
+            if (case_outcomes.get(case_id, "FP") != "FN"
+                    and mining_hypotheses):
+                top_pool = mining_hypotheses
+            top_hyp = _pick_primary_hypothesis(top_pool)
             cause_code = (top_hyp or {}).get("cause_code", "") or primary_cause_code
             break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
         else:

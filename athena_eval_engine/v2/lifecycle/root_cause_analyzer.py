@@ -331,7 +331,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
   - confidence：证据支撑度（0.1-0.9）
   - evidence_refs：支撑本判定的证据卡 ID
   - query_content：知识访问填实际查询命令；非知识断点填问题总结
-  - kb_search_query：L2/L4 时填一个方法论检索问题
+  - kb_search_query：L2/L4 时填一个检索问题（方法论或环境事实均可）
   - returned_content：知识/记忆返回内容；无则空
   - fix_suggestion：本 session 的修复建议
 - insufficient_evidence / insufficient_reason：整个 session 无法给出有证据的判定时使用。
@@ -340,7 +340,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
 - 没有证据卡的结论不输出。
 - 禁止推测；材料里没有的写"材料中未出现"。
 - 每个 session 必须输出 l0_l7，且每条的 breakpoint 必须显式给出：有缺陷填 L2-L8，无缺陷填 none，禁止省略或填 null。
-- kb_search_query 只问方法论，不问环境事实，禁止复合问题。
+- kb_search_query 问方法论或环境事实均可（环境事实=该项目的业务/环境知识，如网关暴露面约定、部署架构、内部 API 标记——知识库供给范围包含这类知识），禁止复合问题。
 - 只返回 JSON，不要额外文字。
 
 # 示例
@@ -451,9 +451,13 @@ outcome：FP=误报；FN=漏报。
 
 responsibility 取值：
 - agent：改 prompt/code 可解决
-- knowledge：补充/修正知识库内容
-- external_data_source：需要外部数据源（网关配置/部署架构等）
+- knowledge：补充/修正知识库内容。**业务知识与环境知识（网关暴露面约定、部署架构、内部 API 标记等）属于知识库供给范围**——缺这类知识归 knowledge，不归 external_data_source
+- external_data_source：仅当所需事实连知识库都无法承载（需实时部署数据/运行时状态）时使用
 - eval_process：评测流程改进
+
+responsibility 一致性（强制）：
+- responsibility=agent 的线索必须 agent_can_resolve=true 且 blocked_by 为空；写不出可落地的 agent 侧修复动作时不得给 agent。
+- blocked_by 非空或 agent_can_resolve=false 时，responsibility 必须是 knowledge/external_data_source/eval_process 之一。
 
 重复上报：标注含"重复上报/已上报/已报过" → 所有知识链路线索改 H/agent，禁止 A/C/E/G。
 
@@ -612,6 +616,8 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
 - 每条线索的 confidence 是否与证据强度一致？
 - 是否有 L2/A 线索却只输出了 H？
 - 证据不足时是否没有硬给结论？
+- blocked_by 非空或 agent_can_resolve=false 的线索，responsibility 是否不为 agent？
+- 线索叙述中的事实断言（如「X 仍指向 Y」「不存在 Z」）是否都被 evidence_refs 引用的证据卡原文支持？与自己的证据卡矛盾的断言必须删除或改写。
 """
 
 
@@ -1314,6 +1320,25 @@ class RootCauseAnalyzer:
             evaluation_id=evaluation_id,
         )
 
+        # ── L4 闭环应用 ──
+        # 验证结果不再只记录不使用：agent 没查的那个来源里到底有没有知识，
+        # 直接决定 A/C 归因方向——有知识（l4=true）→ 责任在 agent（该查没查，
+        # 保持 A）；无知识（l4=false）→ 责任在知识库（改 C/knowledge）。
+        # 幂等性：l4 结果随 case 快照固化（l4_independent_verification 字段），
+        # 下游消费的是本次运行的固化值，不因外部检索波动而漂移。
+        self._apply_l4_closed_loop(
+            merge_hypotheses, l4_verification,
+            case_id=case_id, chain_type=chain_type,
+            evaluation_id=evaluation_id)
+
+        # ── 线索一致性守卫 ──
+        # LLM 常产出自相矛盾的线索（responsibility=agent + agent_can_resolve=false
+        # + blocked_by 非空）：既要求 agent 修，又承认 agent 修不了。代码级兜底，
+        # 防止矛盾线索带着高 confidence 进入顶层排序。
+        self._enforce_hypothesis_consistency(
+            merge_hypotheses, case_id=case_id, chain_type=chain_type,
+            evaluation_id=evaluation_id)
+
         # ── 线索筛选：只保留有证据卡的线索 ──
         # probability 不再参与筛选；无证据的线索已在上面丢弃。
         # 证据不足的 case 不保留任何线索，避免下游误生成问题单。
@@ -1904,13 +1929,14 @@ class RootCauseAnalyzer:
                 f"l4={result.get('l4_knowledge_exists')}, "
                 f"candidates={result.get('candidate_files', 0)}")
 
-            # L4 只记录知识库覆盖度，不修改断点或线索。
-            # 外部知识库的检索/判定每次都可能不同；若允许它改判 A↔C，
-            # 同一份 trace 重复分析会得到不同结论。
+            # L4 结果在本链内立即闭环应用（_apply_l4_closed_loop），
+            # 并随 case 快照固化（l4_independent_verification 字段）——
+            # 下游消费固化值，不因外部检索波动导致重复分析漂移。
+            # 断点（session 级 L0-L7）不改：断点是事实记录，
+            # 归因修正是 hypotheses 层的职责（与重复上报守卫同模式）。
             log("ROOT_CAUSE",
-                f"case {case_id}: {chain_type} L4 仅记录 "
-                f"(l4={result.get('l4_knowledge_exists')})，"
-                f"不修改断点/线索")
+                f"case {case_id}: {chain_type} L4 结果将闭环应用到线索 "
+                f"(l4={result.get('l4_knowledge_exists')})")
 
             return result
         except Exception as e:
@@ -1918,6 +1944,134 @@ class RootCauseAnalyzer:
                 f"case {case_id}: {chain_type} L4 独立验证失败")
             log_error(evaluation_id, "ROOT_CAUSE", e)
             raise
+
+    def _apply_l4_closed_loop(
+        self,
+        hypotheses: list[dict],
+        l4_verification: dict | None,
+        case_id: str = "",
+        chain_type: str = "",
+        evaluation_id: str = "",
+    ) -> None:
+        """L4 闭环：用独立验证结果修正 A 类线索的归因方向。
+
+        闭环逻辑（与 _verify_l4_independently 的设计意图一致）：
+        - l4_knowledge_exists=true → agent 没查的那个来源里**有**知识 →
+          责任在 agent（该查没查），cause_code 保持 A，且归 agent 责任的
+          A 线索必须 agent_can_resolve=true、无 blocked_by——查了就能拿到，
+          属于 agent 可解决。
+        - l4_knowledge_exists=false → 来源里**没有**知识 → 查了也没用，
+          责任在知识库（覆盖缺口），cause_code 改 C/knowledge，并把 L4
+          检索证据（同源查询 + 返回为空）附到线索上，满足 C 的证据要求。
+        - l4_knowledge_exists=None（未查/跳过/查询失败）→ 不修改。
+
+        只修正 hypotheses 层，不改 session 级 L0-L7 断点（断点是事实记录，
+        与重复上报守卫同模式）。
+        """
+        if not hypotheses or not isinstance(l4_verification, dict):
+            return
+        l4 = l4_verification.get("l4_knowledge_exists")
+        if l4 is None:
+            return
+
+        for h in hypotheses:
+            if str(h.get("cause_code") or "") != "A":
+                continue
+            if l4:
+                # 知识库有知识 → A 保持 agent 责任，且 agent 可解决
+                h["responsibility"] = "agent"
+                h["agent_can_resolve"] = True
+                h["blocked_by"] = ""
+                h["needed_external_data"] = []
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 闭环：知识库有知识，"
+                    f"A 线索保持 agent 责任（agent_can_resolve=true）: "
+                    f"{str(h.get('hypothesis', ''))[:60]}",
+                    eval_id=evaluation_id)
+            else:
+                # 知识库无知识 → 查了也没用，责任转知识库（C）
+                h["cause_code"] = "C"
+                h["responsibility"] = "knowledge"
+                h["agent_can_resolve"] = False
+                h["blocked_by"] = "知识库缺少对应业务/环境知识（L4 独立检索未命中）"
+                l4_queries = l4_verification.get("query_log") or []
+                query_desc = ""
+                for entry in l4_queries:
+                    if "检索问题" in str(entry.get("step") or ""):
+                        query_desc = str(entry.get("detail") or "")[:200]
+                        break
+                h["evidence"] = (
+                    (h.get("evidence") or "")
+                    + ("；" if h.get("evidence") else "")
+                    + "L4 独立验证：知识库主动检索未找到对应知识"
+                    + (f"（{query_desc}）" if query_desc else "")
+                )
+                fs = h.get("fix_suggestion")
+                if isinstance(fs, dict) and fs.get("target") in (
+                        "agent_prompt", "agent_code"):
+                    fs["target"] = "knowledge"
+                    fs["knowledge_source"] = "knowledge_base"
+                    fs["action"] = (
+                        "补充知识库内容：沉淀该误报场景所需的业务/环境知识"
+                        "（如项目部署架构约定、暴露面语义），"
+                        + str(fs.get("action") or "补充知识库内容")
+                    )
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 闭环：知识库无对应知识，"
+                    f"A 线索修正为 C/knowledge: "
+                    f"{str(h.get('hypothesis', ''))[:60]}",
+                    eval_id=evaluation_id)
+
+    def _enforce_hypothesis_consistency(
+        self,
+        hypotheses: list[dict],
+        case_id: str = "",
+        chain_type: str = "",
+        evaluation_id: str = "",
+    ) -> None:
+        """线索一致性守卫：responsibility 与 blocked_by/agent_can_resolve 一致。
+
+        LLM 常产出自相矛盾的线索——responsibility=agent 却
+        agent_can_resolve=false / blocked_by 非空（既要求 agent 修，又承认
+        agent 修不了）。守卫规则：
+
+        - responsibility=agent → agent_can_resolve 必须为 true；
+          blocked_by 必须为空。违反时以 agent_can_resolve/blocked_by 为准
+          （它们反映"能否解决"的事实），按 fix_suggestion.target 重写责任方：
+          target=eval_process → eval_process；target=knowledge/memory →
+          knowledge；其余 → external_data_source。
+        - responsibility≠agent（knowledge/eval_process/external_data_source）
+          不动——这些责任方允许 agent_can_resolve=false。
+        """
+        target_to_resp = {
+            "eval_process": "eval_process",
+            "knowledge": "knowledge",
+            "memory": "knowledge",
+        }
+        for h in hypotheses:
+            if str(h.get("responsibility") or "") != "agent":
+                continue
+            blocked = bool(str(h.get("blocked_by") or "").strip())
+            can_resolve = h.get("agent_can_resolve")
+            if not blocked and can_resolve is not False:
+                continue
+            fs = h.get("fix_suggestion")
+            target = str((fs or {}).get("target") or "")
+            new_resp = target_to_resp.get(target, "external_data_source")
+            old_resp = h.get("responsibility")
+            h["responsibility"] = new_resp
+            if can_resolve is not False:
+                h["agent_can_resolve"] = False
+            if isinstance(fs, dict) and fs.get("target") in (
+                    "agent_prompt", "agent_code"):
+                fs["target"] = new_resp
+                fs["agent_type"] = ""
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 一致性守卫：线索"
+                f" responsibility {old_resp}→{new_resp}"
+                f"（blocked_by 非空/agent_can_resolve=false 与 agent 责任矛盾）: "
+                f"{str(h.get('hypothesis', ''))[:60]}",
+                eval_id=evaluation_id)
 
     def _compress_session_chunked(
         self, evaluation_id: str, case_id: str, chain_type: str,
