@@ -371,22 +371,13 @@ async function renderDtsDetailPage(dtsId){
           +'</div></div>'
           +'<div style="font-size:12px;color:var(--sub);margin:8px 0 12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
           +'每条线索是一个独立的根因猜测，各自带置信度，按置信度降序排列；同置信度时按最早断裂 L、证据数、cause_code 排序。'
+          +'置信度=证据对该条线索的支撑度，不代表它是误报的成因；挖掘链线索回答「误报为什么产生」，验证链线索回答「为什么没拦住」——看每条线索的链标注。'
           +'仅展示置信度 ≥ 0.6 的线索；若没有一条达到 0.6，只展示置信度最高的那条。'
           +'线索之间互不否定，请结合证据逐条判断。默认折叠，点击标题行展开。'
           +'</div>';
-        // 人工判定（对照基准）：FP 的人工标注原文，与根因线索对照展示——
-        // 读者第一眼看到「正确判定」，再对照各线索解释 agent 判定与它的差距。
-        var _humanJudgment='';
-        chainsForRC.some(function(ch){
-          var hj=(((ch||{}).data||{}).root_cause||{}).human_confirmation_reason;
-          if(hj){_humanJudgment=hj;return true;}
-          return false;
-        });
-        if(_humanJudgment){
-          html+='<div style="margin:0 0 12px;padding:10px 12px;background:rgba(37,99,235,.06);border:1px solid rgba(37,99,235,.25);border-radius:8px">'
-            +'<div style="font-size:13px;color:var(--sub);margin-bottom:4px">人工判定（对照基准）——误报的真实成因；各线索应解释 agent 判定与它的差距</div>'
-            +'<div style="font-size:14px;white-space:pre-wrap">'+esc(_humanJudgment)+'</div></div>';
-        }
+        // 人工标注原文由页面顶部「人工确认信息」卡（human_confirmation_summary）
+        // 统一展示，此处不再重复；各线索叙述「agent 判定 → 差距」，
+        // 与人工判定的对照在顶部卡与线索的对照阅读中完成。
         // 与后端一致：置信度降序 → 最早 L → 证据数 → cause_code
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
         allHypotheses.sort(function(a,b){
@@ -407,6 +398,12 @@ async function renderDtsDetailPage(dtsId){
           return Number((h.data||{}).confidence||0)>=DTS_CLUE_MIN_CONFIDENCE;
         });
         if(!visibleHyps.length&&allHypotheses.length){visibleHyps=[allHypotheses[0]];}
+        // 真实最高置信度（徽章据此标注；isPrimary 是"各链 primary"，
+        // 挖掘/验证各一个，用它标「置信度最高」会在 0.85<0.9 时错标）
+        var _maxConf=0;
+        visibleHyps.forEach(function(h){
+          _maxConf=Math.max(_maxConf,Number((h.data||{}).confidence||0));
+        });
         visibleHyps.forEach(function(h,vidx){
           var idx=allHypotheses.indexOf(h);
           var hdata=h.data||{};
@@ -433,7 +430,7 @@ async function renderDtsDetailPage(dtsId){
             +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">线索 '+(vidx+1)+'</span>';
           if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
-          if(h.isPrimary){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">置信度最高</span>';}
+          if(conf===_maxConf){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">置信度最高</span>';}
           html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">置信度 '+conf.toFixed(2)+'</span>'
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';

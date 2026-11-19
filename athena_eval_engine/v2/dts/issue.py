@@ -429,15 +429,6 @@ def generate_dts_issues(
                     "responsibility": top.get("responsibility", ""),
                     "evidence": top.get("evidence", ""),
                     "cause_code": top.get("cause_code", ""),
-                    # 人工判定（对照基准）：FP 的人工标注原文，详情页与
-                    # 根因线索对照展示，让读者第一眼看到「正确判定 vs
-                    # agent 判定 vs 差距」。FN 无人工标注，不填。
-                    "human_judgment": (
-                        (mining.get("root_cause") or {}).get(
-                            "human_confirmation_reason")
-                        or (verify.get("root_cause") or {}).get(
-                            "human_confirmation_reason")
-                        or ""),
                 }
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
