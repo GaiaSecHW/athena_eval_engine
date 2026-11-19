@@ -374,6 +374,19 @@ async function renderDtsDetailPage(dtsId){
           +'仅展示置信度 ≥ 0.6 的线索；若没有一条达到 0.6，只展示置信度最高的那条。'
           +'线索之间互不否定，请结合证据逐条判断。默认折叠，点击标题行展开。'
           +'</div>';
+        // 人工判定（对照基准）：FP 的人工标注原文，与根因线索对照展示——
+        // 读者第一眼看到「正确判定」，再对照各线索解释 agent 判定与它的差距。
+        var _humanJudgment='';
+        chainsForRC.some(function(ch){
+          var hj=(((ch||{}).data||{}).root_cause||{}).human_confirmation_reason;
+          if(hj){_humanJudgment=hj;return true;}
+          return false;
+        });
+        if(_humanJudgment){
+          html+='<div style="margin:0 0 12px;padding:10px 12px;background:rgba(37,99,235,.06);border:1px solid rgba(37,99,235,.25);border-radius:8px">'
+            +'<div style="font-size:13px;color:var(--sub);margin-bottom:4px">人工判定（对照基准）——误报的真实成因；各线索应解释 agent 判定与它的差距</div>'
+            +'<div style="font-size:14px;white-space:pre-wrap">'+esc(_humanJudgment)+'</div></div>';
+        }
         // 与后端一致：置信度降序 → 最早 L → 证据数 → cause_code
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
         allHypotheses.sort(function(a,b){

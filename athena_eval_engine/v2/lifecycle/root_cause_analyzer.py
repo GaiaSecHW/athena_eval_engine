@@ -424,8 +424,9 @@ outcome：FP=误报；FN=漏报。
 # Step 3 线索要求
 - 2-5 个，互斥，不能有包含/父子关系。
 - 每个线索一个独立缺陷，能定位到唯一修复点。
+- 「未查询知识库」「未核实暴露面」等**同一缺失只保留一条线索**——换措辞重复描述同一缺陷算违反互斥，不得输出多条。
 - cause_code / responsibility 必须符合下表。
-- 人工标注只适用于误报（FP），用于复核背景，不作为归因证据；漏报（FN）没有人工标注，以基线漏洞描述为分析依据。
+- 人工标注（FP 才有）是**对照基准**：它定义正确判定（误报的真实成因）。归因证据仍必须来自证据卡/session 材料本身，不得把标注结论直接当作线索结论；但每条线索必须按「人工判定 → agent 判定 → 差距」对照展开：人工判定引标注原文关键事实，agent 判定引证据卡（agent 读了什么、据此判了什么），差距=agent 缺了什么（知识/数据/步骤）导致没走到人工判定。漏报（FN）没有人工标注，以基线漏洞描述为对照基准，同样按对照展开。
 
 # Step 4 展示顺序（程序执行，LLM 不需要选）
 - 线索按置信度降序展示：confidence 高的在前。
@@ -599,6 +600,13 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
   - reason：评估理由
   - follow_up_questions：需要确认的问题
 
+# label_quality 判定标准（强制）
+
+precision 评估的是**标注文本本身**的质量，不是分析方能否验证它：
+- imprecise：标注文本自身有缺陷——空泛无机制、自相矛盾、下拉标签与补充说明不符、无法复现判定。reason 必须引用标注原文并指出具体缺陷；follow_up_questions 必须非空；needs_label_confirmation 必须为 true。
+- precise：标注把误报/漏报机制说清楚了——即使其前提是材料外事实、无法从 session 材料验证。
+- 「标注前提无法从材料验证」（如部署事实不在工作区）→ precision=precise 且 needs_label_confirmation=true，并在 follow_up_questions 列出待确认问题。**禁止把"无法验证"判为 imprecise**。
+
 # 硬约束
 - 只使用输入中已有的证据卡和断点，不重新判 L0-L8。
 - 没有 evidence_refs 的线索不输出。
@@ -618,6 +626,9 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
 - 证据不足时是否没有硬给结论？
 - blocked_by 非空或 agent_can_resolve=false 的线索，responsibility 是否不为 agent？
 - 线索叙述中的事实断言（如「X 仍指向 Y」「不存在 Z」）是否都被 evidence_refs 引用的证据卡原文支持？与自己的证据卡矛盾的断言必须删除或改写。
+- 是否有两条线索描述同一缺失（如都是"未查询知识库"）？只保留一条。
+- 每条线索是否都按「人工判定 → agent 判定 → 差距」对照展开？
+- label_quality.precision=imprecise 的理由是否引用了标注原文并指出文本自身缺陷？"无法从材料验证标注前提"是否已改记 needs_label_confirmation=true 而非 imprecise？
 """
 
 
@@ -1131,6 +1142,15 @@ class RootCauseAnalyzer:
             "reason": "",
             "follow_up_questions": [],
         }) if str(outcome).upper() != "FN" else {})
+
+        # ── label_quality 矛盾守卫 ──
+        # imprecise 必须有文本缺陷论证 + 待确认问题 + 需人工确认；
+        # LLM 常把「标注前提在材料外无法验证」误判成 imprecise（本应是
+        # precise + needs_label_confirmation=true）。矛盾形态一律降级
+        # 回 precise+待确认，防止无依据 imprecise 污染问题单与统计。
+        merge_label_quality = self._enforce_label_quality(
+            merge_label_quality, case_id=case_id, chain_type=chain_type,
+            evaluation_id=evaluation_id)
         merge_km_summary = merge_result.get("knowledge_memory_summary") or {
             "access_count": 0,
             "accesses": [],
@@ -1201,6 +1221,13 @@ class RootCauseAnalyzer:
                     f"已丢弃: {str(h.get('hypothesis', ''))[:60]} "
                     f"(refs={len(kept)}, confidence={conf})")
         merge_hypotheses = grounded
+
+        # ── 近重复线索去重 ──
+        # merge prompt 要求线索互斥，但 LLM 常把同一缺失换措辞输出多条。
+        merge_hypotheses = self._dedup_near_duplicate_hypotheses(
+            merge_hypotheses, case_id=case_id, chain_type=chain_type,
+            evaluation_id=evaluation_id)
+
         # 只有置信度 >=0.7 的线索参与顶层展示摘要的选取
         primary_pool = [h for h in merge_hypotheses
                         if h.get("confidence", 0.7) >= 0.7]
@@ -2072,6 +2099,90 @@ class RootCauseAnalyzer:
                 f"（blocked_by 非空/agent_can_resolve=false 与 agent 责任矛盾）: "
                 f"{str(h.get('hypothesis', ''))[:60]}",
                 eval_id=evaluation_id)
+
+    @staticmethod
+    def _enforce_label_quality(
+        lq: dict | None,
+        case_id: str = "",
+        chain_type: str = "",
+        evaluation_id: str = "",
+    ) -> dict | None:
+        """label_quality 矛盾守卫：imprecise 必须有论证。
+
+        imprecise = 标注文本自身缺陷，必须有 follow_up_questions 非空 +
+        needs_label_confirmation=true。LLM 常把「标注前提在材料外无法验证」
+        误判成 imprecise（本应是 precise + needs_label_confirmation=true），
+        且 reason 填成误报成因复述、follow_up 留空。矛盾形态一律降级回
+        precise+待确认，防止无依据 imprecise 污染问题单与 label_quality
+        统计。
+        """
+        if not isinstance(lq, dict) or lq.get("precision") != "imprecise":
+            return lq
+        fus = lq.get("follow_up_questions") or []
+        needs = lq.get("needs_label_confirmation")
+        if fus and needs is True:
+            return lq  # 形态完整，保留 imprecise
+        fixed = dict(lq)
+        fixed["precision"] = "precise"
+        fixed["needs_label_confirmation"] = True
+        log("ROOT_CAUSE",
+            f"case {case_id}: {chain_type} label_quality 矛盾守卫："
+            f"imprecise 缺论证（follow_up={len(fus)}, "
+            f"needs_confirmation={needs}），降级回 precise+待确认: "
+            f"{str(lq.get('reason', ''))[:80]}",
+            eval_id=evaluation_id)
+        return fixed
+
+    @staticmethod
+    def _dedup_near_duplicate_hypotheses(
+        hypotheses: list[dict],
+        case_id: str = "",
+        chain_type: str = "",
+        evaluation_id: str = "",
+    ) -> list[dict]:
+        """近重复线索去重：同一证据基础上的同一缺陷只保留置信度最高者。
+
+        merge prompt 要求线索互斥，但 LLM 常把同一缺失换措辞输出多条
+        （如 A「未查询知识库确认注解语义」+ H「未查询网关暴露面知识」）。
+        判定标准：同一 session + 同一组断点 + 同一责任方 = 同一证据基础。
+        无 session/断点定位的线索不参与去重（无证据基础可比）。
+        丢弃均打日志留痕，可审计。
+        """
+        keep: dict[tuple, dict] = {}
+        out: list[dict] = []
+        for h in hypotheses:
+            sid = str(h.get("session_id") or "")
+            bps = tuple(sorted(str(b) for b in
+                               (h.get("supporting_breakpoints") or [])))
+            resp = str(h.get("responsibility") or "")
+            if not sid or not bps:
+                out.append(h)
+                continue
+            key = (sid, bps, resp)
+            prev = keep.get(key)
+            if prev is None:
+                keep[key] = h
+                out.append(h)
+                continue
+            if float(h.get("confidence", 0) or 0) > \
+                    float(prev.get("confidence", 0) or 0):
+                # 新线索置信度更高：替换已保留者
+                drop, keep_val = prev, h
+                out.remove(prev)
+                keep[key] = h
+                out.append(h)
+            else:
+                # 已保留者置信度更高：丢弃当前线索（尚未入列表，无需移除）
+                drop, keep_val = h, prev
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 近重复线索去重：丢弃"
+                f"[{drop.get('cause_code')}] "
+                f"{str(drop.get('hypothesis', ''))[:60]}，保留"
+                f"[{keep_val.get('cause_code')}] "
+                f"{str(keep_val.get('hypothesis', ''))[:60]}"
+                f"（session={sid}, BP={list(bps)}, resp={resp}）",
+                eval_id=evaluation_id)
+        return out
 
     def _compress_session_chunked(
         self, evaluation_id: str, case_id: str, chain_type: str,
