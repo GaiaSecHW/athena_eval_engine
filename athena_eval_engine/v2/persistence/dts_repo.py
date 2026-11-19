@@ -526,8 +526,9 @@ def list_dts_issues(
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
     def _do_query(cur):
-        # 查总数
-        cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", tuple(params))
+        # 查总数：where_clause 可能引用 e.evaluation_name，必须同样 JOIN evaluation
+        cur.execute(
+            f"SELECT COUNT(*) FROM{_FROM_JOIN}{where_clause}", tuple(params))
         total = cur.fetchone()[0]
         # 查当前页（精简列，避免拉取大字段）
         sql = (
