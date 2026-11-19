@@ -63,7 +63,7 @@ async function renderDtsList(){
     <div class="card" style="margin-bottom:16px">
       <h3>问题单</h3>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;align-items:center">
-        <input id="dts-search" placeholder="搜索问题单 ID / Case ID / 漏洞名称…" oninput="_dtsFilter.q=this.value.toLowerCase();renderDtsTable()" style="max-width:280px">
+        <input id="dts-search" placeholder="搜索问题单 ID / Case ID / 漏洞名称…" oninput="dtsSearchChanged(this.value)" style="max-width:280px">
         <select id="dts-f-status" onchange="_dtsFilter.status=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部状态</option>
           <option value="open">未关闭</option>
@@ -108,6 +108,7 @@ async function renderDtsList(){
 
 async function loadDtsPage(){
   var params=['limit='+_dtsPageSize,'offset='+((_dtsPage-1)*_dtsPageSize)];
+  if(_dtsFilter.q)params.push('q='+encodeURIComponent(_dtsFilter.q));
   if(_dtsFilter.status)params.push('status='+encodeURIComponent(_dtsFilter.status));
   if(_dtsFilter.agent_type)params.push('agent_type='+encodeURIComponent(_dtsFilter.agent_type));
   if(_dtsFilter.case_type)params.push('case_type='+encodeURIComponent(_dtsFilter.case_type));
@@ -142,11 +143,20 @@ function renderDtsPager(){
   el.innerHTML=html;
 }
 
+// 搜索走后端查询（防抖 300ms）：后端模糊匹配全量数据并返回正确分页 total，
+// 不再在当前页 20 条内做前端过滤。
+var _dtsSearchTimer=null;
+function dtsSearchChanged(v){
+  _dtsFilter.q=v;
+  _dtsPage=1;
+  if(_dtsSearchTimer)clearTimeout(_dtsSearchTimer);
+  _dtsSearchTimer=setTimeout(loadDtsPage,300);
+}
+
 function renderDtsTable(){
   if(!_dtsData){return;}
   var filtered=_dtsData.filter(function(i){
     if(_dtsFilter.responsibility&&!dtsRespMatches(i.responsibility,_dtsFilter.responsibility))return false;
-    if(_dtsFilter.q){var s=((i.dts_id||'')+' '+(i.vuln_title||'')+' '+(i.evaluation_name||'')+' '+(i.evaluation_id||'')+' '+(i.case_id||'')).toLowerCase();if(s.indexOf(_dtsFilter.q)<0)return false;}
     return true;
   });
   if(!filtered.length){

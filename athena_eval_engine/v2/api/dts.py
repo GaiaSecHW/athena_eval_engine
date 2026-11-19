@@ -113,10 +113,15 @@ def list_issues(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    q: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ):
-    """列出问题单（支持过滤、分页）。"""
+    """列出问题单（支持过滤、搜索、分页）。
+
+    q：搜索关键词，模糊匹配 dts_id / vuln_title / case_id /
+    evaluation_name / evaluation_id / task_id（后端查询，非前端过滤）。
+    """
     try:
         issues, total = list_dts_issues(
             evaluation_id=evaluation_id,
@@ -125,6 +130,7 @@ def list_issues(
             cause_code=cause_code,
             case_type=case_type,
             responsibility=responsibility,
+            q=q,
             limit=limit,
             offset=offset,
         )

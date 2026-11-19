@@ -471,10 +471,15 @@ def list_dts_issues(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    q: str | None = None,
     limit: int = 100,
     offset: int = 0,
 ) -> tuple[list[dict], int]:
     """列出问题单（支持过滤 + 分页）。
+
+    Args:
+        q: 搜索关键词（模糊匹配 dts_id / vuln_title / case_id /
+           evaluation_name / evaluation_id / task_id）。
 
     Returns:
         (问题单 dict 列表, 匹配总数)
@@ -482,6 +487,13 @@ def list_dts_issues(
     where_parts: list[str] = []
     params: list = []
 
+    if q:
+        where_parts.append(
+            "(d.dts_id LIKE %s OR d.vuln_title LIKE %s OR d.case_id LIKE %s "
+            "OR d.evaluation_name LIKE %s OR d.evaluation_id LIKE %s "
+            "OR d.task_id LIKE %s)")
+        like = f"%{q}%"
+        params.extend([like] * 6)
     if evaluation_id:
         where_parts.append("d.evaluation_id = %s")
         params.append(evaluation_id)
