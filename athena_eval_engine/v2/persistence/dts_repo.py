@@ -488,9 +488,10 @@ def list_dts_issues(
     params: list = []
 
     if q:
+        # evaluation_name 来自 JOIN evaluation e（非 dts_issue 本表），别名必须是 e
         where_parts.append(
             "(d.dts_id LIKE %s OR d.vuln_title LIKE %s OR d.case_id LIKE %s "
-            "OR d.evaluation_name LIKE %s OR d.evaluation_id LIKE %s "
+            "OR e.evaluation_name LIKE %s OR d.evaluation_id LIKE %s "
             "OR d.task_id LIKE %s)")
         like = f"%{q}%"
         params.extend([like] * 6)
