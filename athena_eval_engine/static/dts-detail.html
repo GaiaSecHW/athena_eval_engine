@@ -371,17 +371,22 @@ async function renderDtsDetailPage(dtsId){
           +'<button class="btn" style="font-size:12px;padding:4px 12px" onclick="toggleAllClues(false)">折叠全部</button>'
           +'</div></div>'
           +'<div style="font-size:12px;color:var(--sub);margin:8px 0 12px;padding:6px 10px;background:var(--p2);border-radius:6px">'
-          +'每条线索是一个独立的根因猜测，各自带置信度，按置信度降序排列；同置信度时按最早断裂 L、证据数、cause_code 排序。'
-          +'置信度=证据对该条线索的支撑度，不代表它是误报的成因；挖掘链线索回答「误报为什么产生」，验证链线索回答「为什么没拦住」——看每条线索的链标注。'
-          +'仅展示置信度 ≥ 0.6 的线索；若没有一条达到 0.6，只展示置信度最高的那条。'
+          +'每条线索是一个独立的根因猜测，带两个分：标注匹配（该线索解释人工标注的程度，排序用）与证据支撑（证据卡对该线索的支撑度，展示门槛用）。'
+          +'按标注匹配降序排列；同分按证据支撑、最早断裂 L、证据数、cause_code。'
+          +'双门槛各 0.6：证据支撑 <0.6 或标注匹配 <0.6 的线索不展示；全部低于门槛时各自保底展示最高的一条。'
+          +'挖掘链线索回答「误报为什么产生」，验证链线索回答「为什么没拦住」——看每条线索的链标注。'
           +'线索之间互不否定，请结合证据逐条判断。默认折叠，点击标题行展开。'
           +'</div>';
         // 人工标注原文由页面顶部「人工确认信息」卡（human_confirmation_summary）
         // 统一展示，此处不再重复；各线索叙述「agent 判定 → 差距」，
         // 与人工判定的对照在顶部卡与线索的对照阅读中完成。
-        // 与后端一致：置信度降序 → 最早 L → 证据数 → cause_code
+        // 与后端一致：标注匹配度降序 → 证据支撑度降序 → 最早 L → 证据数 → cause_code
+        // 标注匹配度（annotation_fit）旧数据缺省回退证据支撑度（confidence）
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
+        function hypFit(h){var d=h.data||{};var v=d.annotation_fit;return Number(v!==undefined&&v!==null?v:d.confidence)||0;}
         allHypotheses.sort(function(a,b){
+          var fa=hypFit(a), fb=hypFit(b);
+          if(fa!==fb) return fb-fa;
           var cfa=Number(a.data.confidence||0), cfb=Number(b.data.confidence||0);
           if(cfa!==cfb) return cfb-cfa;
           var la=DTS_LEVEL_RANK[a.data.cause_code]||99, lb=DTS_LEVEL_RANK[b.data.cause_code]||99;
@@ -399,12 +404,19 @@ async function renderDtsDetailPage(dtsId){
           return Number((h.data||{}).confidence||0)>=DTS_CLUE_MIN_CONFIDENCE;
         });
         if(!visibleHyps.length&&allHypotheses.length){visibleHyps=[allHypotheses[0]];}
-        // 真实最高置信度（徽章据此标注；isPrimary 是"各链 primary"，
-        // 挖掘/验证各一个，用它标「置信度最高」会在 0.85<0.9 时错标）
-        var _maxConf=0;
+        // 真实最高标注匹配度（徽章据此标注；isPrimary 是"各链 primary"，
+        // 挖掘/验证各一个，不能用它标「最高」）
+        var _maxFit=0;
         visibleHyps.forEach(function(h){
-          _maxConf=Math.max(_maxConf,Number((h.data||{}).confidence||0));
+          _maxFit=Math.max(_maxFit,hypFit(h));
         });
+        // 标注匹配 <0.6 的线索直接不展示（与证据支撑门槛同值，不折叠不隐藏）；
+        // 全部低于门槛时保底展示匹配最高的一条（排序后第一条），页面至少有根因可看。
+        var _fitVisible=visibleHyps.filter(function(h){
+          return hypFit(h)>=DTS_CLUE_MIN_CONFIDENCE;
+        });
+        if(_fitVisible.length){visibleHyps=_fitVisible;}
+        else if(visibleHyps.length){visibleHyps=[visibleHyps[0]];}
         visibleHyps.forEach(function(h,vidx){
           var idx=allHypotheses.indexOf(h);
           var hdata=h.data||{};
@@ -425,14 +437,16 @@ async function renderDtsDetailPage(dtsId){
           var expected=fs.expected_effect||'';
           var causeLabel=DTS_CAUSE_DESCRIPTIONS[causeCode]||DTS_CAUSE_LABELS[causeCode]||causeCode||'-';
           var respLabel=DTS_RESP_LABELS[resp]||resp||'-';
-          var probColor=conf>=0.85?'var(--green)':conf>=0.7?'var(--amber)':'var(--gray)';
           var hypSid=hdata.session_id||'';
           html+='<details class="clue-item" style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
             +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">线索 '+(vidx+1)+'</span>';
           if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
-          if(conf===_maxConf){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">置信度最高</span>';}
-          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+probColor+'">置信度 '+conf.toFixed(2)+'</span>'
+          var fit=hypFit(h);
+          var fitColor=fit>=0.85?'var(--green)':fit>=0.7?'var(--amber)':'var(--gray)';
+          if(fit===_maxFit){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">标注匹配最高</span>';}
+          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+fitColor+'">标注匹配 '+fit.toFixed(2)+'</span>'
+            +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">证据支撑 '+conf.toFixed(2)+'</span>'
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';
           if(hypSid){

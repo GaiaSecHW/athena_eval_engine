@@ -77,10 +77,19 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
     eligible = [h for h in valid
                 if float(h.get("confidence", 0.7) or 0) >= 0.7]
     pool = eligible or valid
-    # 置信度降序；同级时按最早断裂 L、证据数、cause_code 做确定性 tie-break。
+    # 排序：标注匹配度（annotation_fit）降序优先，缺省回退证据支撑度
+    # （旧数据兼容）；同级按证据支撑度、最早断裂 L、证据数、cause_code
+    # 做确定性 tie-break。展示/过滤门槛仍在证据支撑度（confidence）。
+    def _fit(h):
+        try:
+            return float(h.get("annotation_fit",
+                                h.get("confidence", 0.5)) or 0.5)
+        except (TypeError, ValueError):
+            return 0.5
     return sorted(
         pool,
         key=lambda h: (
+            -_fit(h),
             -float(h.get("confidence", 0) or 0),
             _LEVEL_RANK.get(
                 CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),

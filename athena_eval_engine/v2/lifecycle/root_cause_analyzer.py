@@ -362,6 +362,19 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
 只返回 JSON。"""
 
 
+def _hypothesis_fit(h: dict) -> float:
+    """线索排序分：标注匹配度（annotation_fit）优先，缺省回退证据支撑度。
+
+    旧数据/LLM 未输出 annotation_fit 时回退 confidence，排序行为与
+    旧版一致（证据支撑度降序）。
+    """
+    try:
+        return float(h.get("annotation_fit",
+                            h.get("confidence", 0.5)) or 0.5)
+    except (TypeError, ValueError):
+        return 0.5
+
+
 def _annotation_line(fp_reason: str, outcome: str) -> str:
     """人工标注提示行。
 
@@ -431,8 +444,9 @@ outcome：FP=误报；FN=漏报。
 - 人工标注（FP 才有）是**对照基准**：它定义正确判定（误报的真实成因），由问题单页面顶部统一展示，**线索叙述不得整段复述标注原文**（页面已展示，复述即重复）。每条线索只写两段：**agent 判定**（引证据卡：读了什么、据此判了什么）→ **差距**（agent 缺了什么知识/数据/步骤，导致判定偏离人工判定）。差距中可用短语引用人工判定的关键结论（如「与人工判定的『终端不可达』相反」），不整段抄。漏报（FN）没有人工标注，以基线漏洞描述为对照基准，同样按此格式。
 
 # Step 4 展示顺序（程序执行，LLM 不需要选）
-- 线索按置信度降序展示：confidence 高的在前。
-- 置信度相同时按最早断裂的 L 级别：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
+- 线索按**标注匹配度（annotation_fit）降序**展示：最能解释人工标注的在前。
+- 标注匹配度相同时按**证据支撑度（confidence）降序**。
+- 再相同时按最早断裂的 L 级别：L2/L3(A/B) < L4(C) < L5(D) < L6(E) < L7(F/G) < L8(H/I/J/K)。
 - 再按证据卡数量降序；最后按 cause_code 字母序。
 - probability 只展示，不参与排序。
 - LLM 不需要输出 primary_cause / primary_hypothesis / secondary_causes，这些字段由程序填写。
@@ -524,6 +538,7 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
       "responsibility": "agent/knowledge/external_data_source/eval_process",
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
       "confidence": 0.9,
+      "annotation_fit": 0.8,
       "evidence_refs": ["E-..."],
       "counter_evidence": "反证，或检查范围",
       "evidence": "逐条对应 evidence_refs 的原文依据",
@@ -586,7 +601,8 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
   - probability：根因可能性，仅展示
   - responsibility：agent/knowledge/external_data_source/eval_process
   - cause_code：A-K
-  - confidence：证据支撑度（>=0.6 展示）
+  - confidence：**证据支撑度**（引用的证据卡对该线索的支撑程度；<0.6 不展示、<0.5 丢弃——过滤用）
+  - annotation_fit：**标注匹配度**（该线索解释人工标注的程度：FP=解释误报的真实成因，FN=解释漏报的真实缺口；**排序用**。复述标注原文不算匹配——要解释成因；与标注无关的过程线索（如验证侧事故）匹配度应低）
   - evidence_refs：引用的证据卡 ID
   - counter_evidence：反证或检查范围
   - evidence：逐条对应 evidence_refs 的依据
@@ -624,6 +640,7 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 # 自检
 - 每个线索都有 evidence_refs 和 counter_evidence？
 - 每条线索的 confidence 是否与证据强度一致？
+- annotation_fit 是否按「解释人工标注的程度」打分？与标注成因无关的过程线索（如验证侧事故）匹配度应低；只复述标注原文不算匹配。
 - 是否有 L2/A 线索却只输出了 H？
 - 证据不足时是否没有硬给结论？
 - blocked_by 非空或 agent_can_resolve=false 的线索，responsibility 是否不为 agent？
@@ -1241,13 +1258,15 @@ class RootCauseAnalyzer:
                         or not primary_pool)
         top_hypothesis = None
         if not insufficient and primary_pool:
-            # 链级展示取置信度最高的一条假定线索；线索并列时按最早断裂 L、
-            # 证据卡数量、cause_code 做确定性 tie-break。
+            # 链级展示取标注匹配度最高的一条假定线索（缺省回退证据支撑度）；
+            # 并列时按证据支撑度、最早断裂 L、证据卡数量、cause_code 做确定性
+            # tie-break。
             # 不使用 LLM 自由选择的 primary_hypothesis——它会在 A/H 之间漂移。
             # 最终重算（下方）会在 L4/重复上报修正后再次排序，此处仅作初步选择。
             top_hypothesis = sorted(
                 primary_pool,
                 key=lambda h: (
+                    -_hypothesis_fit(h),
                     -float(h.get("confidence", 0) or 0),
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -1385,6 +1404,7 @@ class RootCauseAnalyzer:
             final_top = sorted(
                 primary_pool,
                 key=lambda h: (
+                    -_hypothesis_fit(h),
                     -float(h.get("confidence", 0) or 0),
                     _CAUSE_LEVEL_RANK.get(
                         str(h.get("cause_code") or ""), 99),
@@ -2166,15 +2186,16 @@ class RootCauseAnalyzer:
                 keep[key] = h
                 out.append(h)
                 continue
-            if float(h.get("confidence", 0) or 0) > \
-                    float(prev.get("confidence", 0) or 0):
-                # 新线索置信度更高：替换已保留者
+            if (_hypothesis_fit(h), float(h.get("confidence", 0) or 0)) > \
+                    (_hypothesis_fit(prev),
+                     float(prev.get("confidence", 0) or 0)):
+                # 新线索排序分更高：替换已保留者
                 drop, keep_val = prev, h
                 out.remove(prev)
                 keep[key] = h
                 out.append(h)
             else:
-                # 已保留者置信度更高：丢弃当前线索（尚未入列表，无需移除）
+                # 已保留者排序分更高：丢弃当前线索（尚未入列表，无需移除）
                 drop, keep_val = h, prev
             log("ROOT_CAUSE",
                 f"case {case_id}: {chain_type} 近重复线索去重：丢弃"
