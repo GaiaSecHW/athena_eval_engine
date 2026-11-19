@@ -90,6 +90,84 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
     )[0]
 
 
+# ── 人工标注分类（FP 误报原因下拉值，完整清单）──
+# 问题单的作用是把修复路由到平台方可落地的修复点（agent prompt/code、
+# 知识库、数据供给、评测流程）。责任不在平台侧的分类不生成问题单，
+# 仍计入报告统计。
+
+# 人工分类 → 是否无条件跳过问题单生成
+# 模型幻觉：修复方是基础模型本身，平台无可落地修复点——不生成单
+# （幻觉聚集时由看板统计趋势触发流程级改进，不是逐 case 单）；
+# 但分类是现象级粗标签，分析发现可修根因（如缺知识导致的"编造"）时
+# 照常生成，故不放这里、按分析结果条件跳过（见 _has_actionable_fix）。
+_NON_ISSUE_CATEGORIES = {"其他非平台工具原因"}
+
+# 平台可落地的修复通道（fix_suggestion.target 合法值）
+_ACTIONABLE_FIX_TARGETS = {
+    "agent_prompt", "agent_code", "knowledge", "memory",
+    "external_data_source", "eval_process",
+}
+
+# 人工标注分类全量集合（解析校验用）
+# 注意：「输入实际不可控或已过滤校验」与「输入实际可控或已过滤校验」是
+# 平台下拉中同时存在的两个变体（存量数据中前者 175 条），均照常生成单。
+_FP_CATEGORIES = {
+    "模型幻觉", "重复上报", "判断错误", "测试/示例代码",
+    "输入实际可控或已过滤校验", "输入实际不可控或已过滤校验",
+    "上下文不足导致", "业务场景需要",
+    "有框架防御但未提供", "其他误报原因", "其他非平台工具原因",
+}
+
+
+def _annotation_category(fp_reason: str) -> str:
+    """从人工标注解析 FP 分类（下拉值）。
+
+    标注格式「误报：<分类>：<说明>」（冒号可能半角/全角），
+    返回分类名；无法识别（不在下拉清单内）返回空串。
+    """
+    text = str(fp_reason or "").strip()
+    # 前缀「误报：/误报:」可能半角/全角
+    for prefix in ("误报：", "误报:"):
+        if text.startswith(prefix):
+            text = text[len(prefix):]
+            break
+    # 分类在首个分隔符之前；无分隔符时整段即候选
+    for sep in ("：", ":"):
+        if sep in text:
+            cat = text.split(sep, 1)[0].strip()
+            return cat if cat in _FP_CATEGORIES else ""
+    return text if text in _FP_CATEGORIES else ""
+
+
+def _case_annotation(case: dict) -> str:
+    """取 case 的人工标注原文（挖掘链优先，FP 才有）。"""
+    for chain_key in ("mining", "verification"):
+        rc = (case.get(chain_key) or {}).get("root_cause") or {}
+        reason = rc.get("human_confirmation_reason") or ""
+        if reason:
+            return reason
+    return ""
+
+
+def _has_actionable_fix(hypotheses: list) -> bool:
+    """线索中是否存在平台可落地的修复点。
+
+    可落地 = agent 可解决（agent_can_resolve）、或需外部数据
+    （needed_external_data）、或 fix_suggestion 指向平台修复通道。
+    """
+    for h in hypotheses:
+        if not isinstance(h, dict):
+            continue
+        if h.get("agent_can_resolve") is True:
+            return True
+        if h.get("needed_external_data"):
+            return True
+        if str((h.get("fix_suggestion") or {}).get("target")
+               or "") in _ACTIONABLE_FIX_TARGETS:
+            return True
+    return False
+
+
 def generate_dts_issues(
     evaluation_id: str,
     causal_chain_result: dict,
@@ -124,6 +202,12 @@ def generate_dts_issues(
         agent_type（逗号分隔多值）、case_type、cause_code、breakpoint_level、
         breakpoint_desc、evidence_uri、root_cause、fix_suggestion、
         analysis_data_path、status、responsibility。
+
+    跳过问题单生成的 case（仍计入报告统计，不落 dts_issue 表）：
+    - 证据不足（有 session 的链全部 insufficient_evidence）；
+    - 人工分类「其他非平台工具原因」（无条件：责任在平台之外，无修复方）；
+    - 人工分类「模型幻觉」且线索全部无平台可落地修复方（条件：分类是
+      现象级粗标签，分析发现可修根因时照常生成）。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
@@ -137,6 +221,8 @@ def generate_dts_issues(
     case_mining_hypotheses: dict[str, list] = {}
     case_label_quality: dict[str, dict] = {}
     insufficient_cases: set[str] = set()
+    # 按人工分类跳过问题单生成的 case（无平台侧可落地修复方）
+    skip_issue_cases: set[str] = set()
     for case in root_cause_results:
         cid = case.get("case_id", "")
         if not cid:
@@ -145,6 +231,15 @@ def generate_dts_issues(
         case_full_data[cid] = case
         mining = case.get("mining", {}) or {}
         verify = case.get("verification", {}) or {}
+
+        # ── 按人工分类跳过（无条件类）──
+        # 责任在平台工具之外（上游数据/外部系统）→ 平台无修复点，不开单。
+        annotation_category = _annotation_category(_case_annotation(case))
+        if annotation_category in _NON_ISSUE_CATEGORIES:
+            skip_issue_cases.add(cid)
+            log("DTS", f"case {cid}: 人工分类「{annotation_category}」"
+                      f"无平台侧修复方，跳过问题单生成")
+            continue
 
         # 证据不足的 case 不生成问题单，只在报告里列出原因。
         # 两条链独立：只有「有 session 的链全部证据不足」才完全不生成单；
@@ -303,6 +398,17 @@ def generate_dts_issues(
         case_hypotheses[cid] = all_hypotheses
         case_mining_hypotheses[cid] = mining_hypotheses
         case_label_quality[cid] = label_quality
+
+        # ── 按人工分类跳过（条件类）──
+        # 模型幻觉：修复方是基础模型本身，平台无可落地修复点。分类是
+        # 现象级粗标签——分析发现可修根因（如缺知识导致的"编造"）时
+        # 照常生成，仅在线索全部无平台修复方时跳过。
+        if (annotation_category == "模型幻觉"
+                and not _has_actionable_fix(all_hypotheses)):
+            skip_issue_cases.add(cid)
+            log("DTS", f"case {cid}: 人工分类「模型幻觉」且无线索含平台"
+                      f"可落地修复方，跳过问题单生成")
+            continue
         # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
             # 顶层摘要按置信度最高的一条线索选取，不看 probability；
@@ -347,6 +453,9 @@ def generate_dts_issues(
             continue
         # 证据不足的 case 不生成问题单
         if case_id in insufficient_cases:
+            continue
+        # 人工分类无平台侧修复方的 case 不生成问题单（仅计统计）
+        if case_id in skip_issue_cases:
             continue
         if vuln_title and case_id not in case_vuln_titles:
             case_vuln_titles[case_id] = vuln_title

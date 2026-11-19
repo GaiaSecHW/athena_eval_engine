@@ -21,6 +21,12 @@ from ..infra.json_utils import json_default as _json_default
 from ..core.causal_levels import ALL_CAUSES as _ALL_CAUSES
 from ..core.causal_levels import ALL_LEVELS as _ALL_LEVELS
 from ..core.agents import ALL_AGENT_TYPES as _ALL_AGENT_TYPES
+from ..dts.issue import (
+    _annotation_category,
+    _case_annotation,
+    _has_actionable_fix,
+    _NON_ISSUE_CATEGORIES,
+)
 
 # ── 常量 ──────────────────────────────────────────────
 
@@ -175,7 +181,24 @@ class ReportAssembler:
             insufficient = bool(
                 mining.get("insufficient_evidence")
                 or verify.get("insufficient_evidence"))
-            if no_session:
+
+            # 人工分类跳过（dts/issue.generate_dts_issues 同规则）：
+            # 无平台侧修复方的分类不生成问题单，报告须说明原因，
+            # 不能落进「有假定线索但未生成问题单」这种疑似管道缺陷的桶。
+            category = _annotation_category(_case_annotation(case))
+            if category in _NON_ISSUE_CATEGORIES:
+                reason = "人工分类无平台侧修复方，未生成问题单"
+                detail = (f"人工分类「{category}」：责任在平台工具之外，"
+                          f"仅计入统计")
+            elif (category == "模型幻觉"
+                  and not _has_actionable_fix(
+                      (mining.get("hypotheses") or [])
+                      + (verify.get("hypotheses") or []))):
+                reason = "模型幻觉且无可落地修复方，未生成问题单"
+                detail = ("人工分类「模型幻觉」，且全部线索无平台可落地"
+                          "修复点（agent prompt/code、知识库、数据供给、"
+                          "评测流程），仅计入统计")
+            elif no_session:
                 # 最可执行的原因：trace 里没有这个 case 的 session，
                 # 后面所有分析都无从谈起。
                 reason = "未匹配到 trace session，无法分析"

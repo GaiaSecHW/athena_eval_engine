@@ -118,6 +118,53 @@ def _row_to_list_dict(row) -> dict:
 # 公开 API
 # ---------------------------------------------------------------------------
 
+def delete_dts_issues_by_ids(dts_ids: list[str],
+                             evaluation_id: str = "") -> dict:
+    """按 dts_id 批量删除问题单及关联回归记录。
+
+    用于重生成问题单后清理「按新规则不再生成」的旧行：UPSERT 只更新
+    存活行，消失的旧行不会自动删除，需要显式清理。
+
+    删除范围：
+    - dts_issue：主表行；
+    - dts_regression_result：按 dts_id 关联的回归验证历史（防孤儿行）。
+
+    Args:
+        dts_ids: 待删除的问题单 ID 列表。
+        evaluation_id: 评测 ID（仅用于日志）。
+
+    Returns:
+        {"deleted_issues": int, "deleted_regression_results": int,
+         "dts_ids": [...]}
+    """
+    ids = [str(d) for d in (dts_ids or []) if d]
+    if not ids:
+        return {"deleted_issues": 0, "deleted_regression_results": 0,
+                "dts_ids": []}
+
+    def _do_delete(cur):
+        placeholders = ",".join(["%s"] * len(ids))
+        cur.execute(
+            f"DELETE FROM dts_regression_result "
+            f"WHERE dts_id IN ({placeholders})", ids)
+        regression_deleted = cur.rowcount
+        cur.execute(
+            f"DELETE FROM dts_issue WHERE dts_id IN ({placeholders})", ids)
+        issue_deleted = cur.rowcount
+        return {
+            "deleted_issues": issue_deleted,
+            "deleted_regression_results": regression_deleted,
+            "dts_ids": ids,
+        }
+
+    result = _db_query(_do_delete)
+    log("DTS_REPO",
+        f"delete_dts_issues_by_ids: deleted {result['deleted_issues']} "
+        f"issues ({result['deleted_regression_results']} regression rows) "
+        f"for eval={evaluation_id or '(n/a)'}")
+    return result
+
+
 def upsert_dts_issues(issues: list[dict], evaluation_id: str,
                       reports_dir: str) -> int:
     """批量写入问题单（UPSERT：按 (evaluation_id, case_id) 去重）。
