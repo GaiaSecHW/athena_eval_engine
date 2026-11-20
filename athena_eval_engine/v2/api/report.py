@@ -125,13 +125,14 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         )
         if where:
             sql += " AND " + " AND ".join(where)
-        # 排序：fpr=误报率 FP/(TP+FP)（SQL 表达式）、created_at/updated_at=任务时间
+        # 排序：fpr=误报率 FP/(TP+FP)（SQL 表达式）、任务时间列（创建/更新/开始/结束）
         order_dir = "DESC" if sort_dir == "desc" else "ASC"
         if sort_by == "fpr":
             sql += (" ORDER BY (CASE WHEN (confirmed_vulnerable + confirmed_fp) > 0 "
                     "THEN confirmed_fp / (confirmed_vulnerable + confirmed_fp) ELSE NULL END) "
                     + order_dir + ", project_name, task_name")
-        elif sort_by in ("created_at", "updated_at"):
+        elif sort_by in ("created_at", "updated_at", "started_at",
+                         "finished_at"):
             sql += f" ORDER BY task_{sort_by} {order_dir}, project_name, task_name"
         else:
             sql += " ORDER BY project_name, task_name"
