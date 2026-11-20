@@ -213,7 +213,7 @@ def _render_confirmation_section() -> list[str]:
         return []
     lines = [
         "",
-        f"📊 一个月内结束任务的人工确认率："
+        f"📊 一个月内结束任务 {len(tasks)} 个，人工确认率："
         f"{_span(_pct(confirmed / total), color='#16a34a', bold=True)}"
         f"（已确认 {confirmed} / 漏洞总数 {total}）",
     ]
@@ -722,21 +722,11 @@ def render_agent_text(report: dict, period_label: str = "日报",
         ]
 
     total = int(ev.get("total") or 0)
-    completed = int(ev.get("completed") or 0)
-    failed = int(ev.get("failed") or 0)
-    failed_items = ev.get("failed_items") or []
     if total > 0:
         lines += ["", _span(f"📊 评测（{total} 个）", bold=True)]
-        status_parts = []
-        if completed > 0:
-            status_parts.append(
-                f"✅ 完成 {_span(completed, color='#16a34a', bold=True)}")
-        if failed > 0:
-            status_parts.append(
-                f"❌ 失败 {_span(failed, color='#dc2626', bold=True)}")
-        if status_parts:
-            lines.append(" · ".join(status_parts))
-
+        # 不显示「完成/进行中/失败」状态：完成/进行中是过期信息
+        # （评测约 1 小时内到达终态）；失败只有平台维护者本人关注，
+        # 在评测列表页看，x 报读者不关心——只展示结果指标
         metric_parts = []
         for key, label, icon, color in (
                 ("tp", "真阳性", "🎯", "#16a34a"),
@@ -767,13 +757,6 @@ def render_agent_text(report: dict, period_label: str = "日报",
                  if e.get("task_name")]
         if tasks:
             lines.append("📁 任务：" + "、".join(dict.fromkeys(tasks)))
-
-        if failed_items:
-            ids = "、".join(
-                f"{i.get('evaluation_id')}({i.get('task_name') or '-'})"
-                for i in failed_items[:5])
-            more = f" 等 {len(failed_items)} 个" if len(failed_items) > 5 else ""
-            lines.append(f"❌ 失败评测：{ids}{more}")
 
     if new_issues:
         lines += ["", _span(f"🆕 新增问题单（{len(new_issues)}）", bold=True),
