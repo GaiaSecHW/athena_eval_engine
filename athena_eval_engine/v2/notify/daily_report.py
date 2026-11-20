@@ -34,7 +34,6 @@ from ..core.agents import (
     AGENT_DISPLAY_NAMES,
     AGENT_SHORT_LABELS,
     ALL_AGENT_SET,
-    ALL_AGENT_TYPES,
 )
 from ..core.causal_levels import ALL_LEVELS
 from ..infra.db_utils import db_query as _db_query
@@ -154,90 +153,80 @@ def _pct(value) -> str:
     return f"{float(value) * 100:.1f}%"
 
 
-# 项目"关闭"口径：项目最近一个任务结束（project_task_summary 的
-# task_finished_at 最大值）在最近 N 天内。与 /eval/report 列表的
-# project_last_finished_at 同口径。
-_PROJECT_CLOSED_WINDOW_DAYS = 30
+# 「任务」= 奇美拉平台的扫描任务（project_task_summary 的任务行），
+# 不是本引擎的评测任务。窗口口径：task_finished_at 在近 N 天内，
+# 与 /eval/report 列表的任务结束时间同源。
+_TASK_FINISHED_WINDOW_DAYS = 30
 
 
-def _project_confirmation_stats(days: int = _PROJECT_CLOSED_WINDOW_DAYS) -> dict:
-    """近 N 天结束的项目：整体人工确认率 + 确认率最低的项目。
+def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dict]:
+    """近 N 天结束的平台任务：确认率统计，按从低到高排序。
 
-    确认率 = 人工已确认（确认漏洞 + 确认非漏洞 + 确认误报）/ 漏洞总数
-    （按项目聚合，只统计 vuln_total > 0 的项目）。
+    确认率 = 人工已确认（确认漏洞 + 确认非漏洞 + 确认误报）/ 漏洞总数；
+    只统计 vuln_total > 0、task_finished_at 在窗口内的任务。
     """
     cutoff = _now_utc() - timedelta(days=days)
 
     def _do(cur):
         cur.execute(
-            "SELECT project_id, project_name, "
-            "SUM(vuln_total), SUM(confirmed_vulnerable), "
-            "SUM(confirmed_not_vulnerable), SUM(confirmed_fp), "
-            "MAX(task_finished_at) "
+            "SELECT task_name, task_id, vuln_total, "
+            "confirmed_vulnerable, confirmed_not_vulnerable, "
+            "confirmed_fp, task_finished_at "
             "FROM project_task_summary "
-            "WHERE task_id != '' "
-            "GROUP BY project_id, project_name"
+            "WHERE task_id != ''"
         )
         return cur.fetchall()
 
     try:
         rows = _db_query(_do)
     except Exception:
-        return {"rate": None, "total": 0, "confirmed": 0, "projects": []}
+        return []
 
-    projects: list[dict] = []
-    total = confirmed = 0
-    for pid, name, tot, vuln, nonvuln, fp, last_finished in rows:
+    tasks: list[dict] = []
+    for tname, tid, tot, vuln, nonvuln, fp, finished in rows:
         tot = int(tot or 0)
         if tot <= 0:
             continue
         try:
-            last = _parse_dt(last_finished)
+            fin = _parse_dt(finished)
         except (TypeError, ValueError):
-            last = None
-        if last is None or last < cutoff:
+            fin = None
+        if fin is None or fin < cutoff:
             continue
         confirmed_cnt = int(vuln or 0) + int(nonvuln or 0) + int(fp or 0)
-        projects.append({
-            "project_id": pid,
-            "project_name": name or pid,
+        tasks.append({
+            "task_name": tname or tid,
             "total": tot,
             "confirmed": confirmed_cnt,
             "rate": confirmed_cnt / tot,
         })
-        total += tot
-        confirmed += confirmed_cnt
-
-    projects.sort(key=lambda p: (p["rate"], p["project_name"]))
-    return {
-        "rate": (confirmed / total) if total > 0 else None,
-        "total": total,
-        "confirmed": confirmed,
-        "projects": projects,
-    }
+    tasks.sort(key=lambda t: (t["rate"], t["task_name"]))
+    return tasks
 
 
-def _render_project_confirmation_section() -> list[str]:
-    """近一个月结束项目的人工确认率（含最低三个项目）。无数据时返回空。"""
-    stats = _project_confirmation_stats()
-    if stats.get("rate") is None:
+def _render_confirmation_section() -> list[str]:
+    """近一个月结束任务的人工确认率（含确认率最低的三个任务）。无数据时返回空。"""
+    tasks = _task_confirmation_stats()
+    total = sum(t["total"] for t in tasks)
+    confirmed = sum(t["confirmed"] for t in tasks)
+    if total <= 0:
         return []
     lines = [
         "",
-        f"📊 一个月内关闭项目的人工确认率："
-        f"{_span(_pct(stats['rate']), color='#16a34a', bold=True)}"
-        f"（已确认 {stats['confirmed']} / 漏洞总数 {stats['total']}）",
+        f"📊 一个月内结束任务的人工确认率："
+        f"{_span(_pct(confirmed / total), color='#16a34a', bold=True)}"
+        f"（已确认 {confirmed} / 漏洞总数 {total}）",
     ]
-    lowest = (stats.get("projects") or [])[:3]
+    lowest = tasks[:3]
     if lowest:
         parts = [
-            f"{p['project_name']} "
-            f"{_span(_pct(p['rate']), color='#dc2626', bold=True)}"
-            for p in lowest
+            f"{t['task_name']} "
+            f"{_span(_pct(t['rate']), color='#dc2626', bold=True)}"
+            for t in lowest
         ]
-        lines.append("最低三个项目确认率：" + "、".join(parts))
+        lines.append("最低三个任务确认率：" + "、".join(parts))
     lines.append(
-        f"🔗 查看全部项目（按确认率升序）："
+        f"🔗 查看全部任务（按确认率升序）："
         f"{get_public_url()}/report?sort=confirm_rate_asc")
     return lines
 
@@ -452,31 +441,6 @@ def _load_open_issues(owner_kind: str, owner_value: str,
     return _db_query(_do)
 
 
-def _load_open_issue_counts_by_agent(owner_kind: str,
-                                     owner_value: str) -> dict[str, int]:
-    """按 agent 统计未关闭问题单的**真实总数**（一条 SQL 逐 agent 聚合）。
-
-    agent_type 是逗号分隔多值，逐 agent 用 FIND_IN_SET 聚合（与
-    列表页 /dts?agent_type=X 的口径一致）。此前分组计数在 Python 里
-    数 _load_open_issues 的 200 行样本——样本截断导致日报分组数字
-    失真（日报 200 vs 实际 539）。
-    """
-    filter_sql, params = _issue_filter(owner_kind, owner_value)
-    placeholders = ",".join(["%s"] * len(_OPEN_ISSUE_EXCLUDED))
-    agents = list(ALL_AGENT_TYPES)
-    selects = ", ".join(
-        f"SUM(FIND_IN_SET('{a}', agent_type) > 0)" for a in agents)
-
-    def _do(cur):
-        cur.execute(
-            f"SELECT {selects} FROM dts_issue "
-            f"WHERE status NOT IN ({placeholders}) AND {filter_sql}",
-            (*_OPEN_ISSUE_EXCLUDED, *params))
-        row = cur.fetchone()
-        return {a: int(v or 0) for a, v in zip(agents, row)}
-    return _db_query(_do)
-
-
 def _issue_item(item: dict, public_url: str) -> dict:
     return {
         "dts_id": item["dts_id"],
@@ -595,11 +559,6 @@ def _build_agent_report(owner: dict, since: datetime, until: datetime,
     }
 
 
-def _split_agent_types(agent_type: str) -> list[str]:
-    parts = [p.strip() for p in str(agent_type or "").split(",") if p.strip()]
-    return parts or ["unknown"]
-
-
 def _build_responsibility_report(owner: dict, since: datetime,
                                  until: datetime, public_url: str) -> dict:
     responsibility = _split_owner_key(owner["owner_key"])[1]
@@ -607,40 +566,10 @@ def _build_responsibility_report(owner: dict, since: datetime,
                     or _RESPONSIBILITY_LABELS.get(responsibility, responsibility))
 
     new_issues = _load_new_issues("responsibility", responsibility, since, until)
-    open_total, open_issues = _load_open_issues("responsibility", responsibility)
-    # 分组 total 用真实 SQL 聚合——open_issues 列表只是 200 行样本
-    # （供展示条目），在 Python 里数样本会因截断失真（200 vs 实际 539）
-    open_counts = _load_open_issue_counts_by_agent(
-        "responsibility", responsibility)
+    open_total, _ = _load_open_issues("responsibility", responsibility)
 
-    order = {agent: idx for idx, agent in enumerate(ALL_AGENT_TYPES)}
-    groups: dict[str, dict] = {}
-
-    def _group(agent: str) -> dict:
-        if agent not in groups:
-            groups[agent] = {
-                "agent_type": agent,
-                "display_name": AGENT_DISPLAY_NAMES.get(agent, agent),
-                "new_issues": [],
-                "open_issues": {"total": 0, "items": []},
-                "url": (f"{public_url}/dts?responsibility={responsibility}"
-                        f"&agent_type={agent}&status=open"),
-            }
-        return groups[agent]
-
-    for item in new_issues:
-        for agent in _split_agent_types(item.get("agent_type")):
-            _group(agent)["new_issues"].append(_issue_item(item, public_url))
-    for item in open_issues:
-        for agent in _split_agent_types(item.get("agent_type")):
-            _group(agent)["open_issues"]["items"].append(
-                _issue_item(item, public_url))
-    for agent, g in groups.items():
-        g["open_issues"]["total"] = open_counts.get(agent, 0)
-
-    ordered = sorted(groups.values(),
-                     key=lambda g: order.get(g["agent_type"], 99))
-
+    # 不再按 agent 细分组：责任方段只有一个负责人，按 agent 分组没有
+    # 对应读者（各 agent 的视角由各 agent 段承载）——只呈现汇总 + 链接
     return {
         "owner_key": owner["owner_key"],
         "owner_kind": "responsibility",
@@ -651,7 +580,8 @@ def _build_responsibility_report(owner: dict, since: datetime,
         "target_id": owner.get("target_id") or "",
         "enabled": bool(owner.get("enabled")),
         "window": {"start": _iso(since), "end": _iso(until)},
-        "groups": ordered,
+        "new_issues": [_issue_item(i, public_url) for i in new_issues],
+        "open_issues": {"total": open_total},
         "totals": {"new": len(new_issues), "open": open_total},
         "urls": {
             "issue_list": (f"{public_url}/dts?"
@@ -890,25 +820,14 @@ def render_responsibility_text(report: dict,
     if summary_parts:
         lines.append("📌 汇总：" + " · ".join(summary_parts))
 
-    for group in report.get("groups") or []:
-        new_items = group.get("new_issues") or []
-        open_issues = group.get("open_issues") or {}
-        open_total = int(open_issues.get("total") or 0)
-        if not new_items and open_total == 0:
-            continue
-        header_parts = []
-        if new_items:
-            header_parts.append(f"新增 {len(new_items)}")
-        if open_total > 0:
-            header_parts.append(f"未关闭 {open_total}")
-        lines += ["", _span(
-            f"🤖 {group.get('display_name', group.get('agent_type'))}"
-            f"（{' / '.join(header_parts)}）", bold=True)]
-        if new_items:
-            lines.append(f"🧩 {_compact_levels(new_items)}")
-        group_url = group.get("url") or (report.get("urls") or {}).get("issue_list", "")
-        if group_url:
-            lines.append(f"🔗 查看全部：{group_url}")
+    # 不按 agent 细分组（责任方段只有一个负责人，agent 视角由各
+    # agent 段承载）——只呈现新增问题单的级别汇总 + 查看链接
+    new_items = report.get("new_issues") or []
+    if new_items:
+        lines += ["", f"🧩 {_compact_levels(new_items)}"]
+    url = (report.get("urls") or {}).get("issue_list", "")
+    if url:
+        lines += ["", f"🔗 查看全部：{url}"]
 
     return "\n".join(lines)
 
@@ -943,7 +862,7 @@ def render_combined_text(reports: list[dict],
               color="#2563eb", bold=True, size=16),
         f"🕒 统计窗口：{start} ~ {end}",
     ]
-    lines += _render_project_confirmation_section()
+    lines += _render_confirmation_section()
     for report in reports:
         section = render_text(report, period_label=period_label,
                               header=False)

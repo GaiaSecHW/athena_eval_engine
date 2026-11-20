@@ -296,13 +296,26 @@ def run_report(force: bool = False, owner_key: str | None = None,
         since=period_start.isoformat(),
         channel=_CHANNEL_REPORT).get("agents", [])
     enabled_reports = [r for r in reports if r.get("enabled")]
-    if not enabled_reports or all(_is_empty(r) for r in enabled_reports):
+    # 没数据的 owner 不进汇总消息——判空口径：本周期无评测、无新增
+    # 问题单、无指标，**且未关闭问题单为 0**（未关闭数也算数据：
+    # 有存量待办就显示，只有彻底没有任何数据才整节省略）
+    def _no_data_at_all(r: dict) -> bool:
+        if not _is_empty(r):
+            return False
+        open_map = r.get("open_issues") or {}
+        open_count = int(open_map.get("count",
+                                      open_map.get("total", 0)) or 0)
+        return open_count <= 0
+
+    non_empty_reports = [r for r in enabled_reports
+                         if not _no_data_at_all(r)]
+    if not non_empty_reports:
         log("NOTIFY", f"{label}全部 owner 空报告，跳过发送")
         return {"sent": 0, "skipped": 1, "failed": 0, "error": "empty"}
 
-    text = render_combined_text(enabled_reports, period_label=label)
+    text = render_combined_text(non_empty_reports, period_label=label)
     ok, detail = xiaoluban.send_message(receiver, text, token=token)
-    window = enabled_reports[0].get("window") or {}
+    window = non_empty_reports[0].get("window") or {}
     record_send(
         _REPORT_OWNER_KEY, receiver,
         window.get("start", ""), window.get("end", ""),
@@ -312,7 +325,7 @@ def run_report(force: bool = False, owner_key: str | None = None,
         channel=_CHANNEL_REPORT,
     )
     if ok:
-        log("NOTIFY", f"{label}发送成功（汇总 {len(enabled_reports)} 个 owner）"
+        log("NOTIFY", f"{label}发送成功（汇总 {len(non_empty_reports)} 个 owner）"
                       f" -> {receiver}")
         return {"sent": 1, "skipped": 0, "failed": 0}
     log("NOTIFY", f"{label}发送失败 -> {receiver}: {detail}")
