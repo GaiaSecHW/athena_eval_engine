@@ -705,6 +705,27 @@ MIGRATIONS = [
             ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci",
         ],
     },
+    {
+        "id": "047_project_task_summary_confirm_rate",
+        "desc": "project_task_summary 增加 confirm_rate 生成列"
+                "（确认漏洞 / 漏洞总数），供报表展示与排序",
+        "sql": [
+            "ALTER TABLE project_task_summary "
+            "ADD COLUMN confirm_rate DECIMAL(8,4) GENERATED ALWAYS AS ("
+            "CASE WHEN vuln_total > 0 "
+            "THEN confirmed_vulnerable / vuln_total ELSE NULL END) STORED",
+        ],
+    },
+    {
+        "id": "048_project_task_summary_confirm_rate_all",
+        "desc": "confirm_rate 口径改为人工已确认（漏洞+非漏洞+误报）/ 漏洞总数",
+        "sql": [
+            "ALTER TABLE project_task_summary MODIFY COLUMN confirm_rate "
+            "DECIMAL(8,4) GENERATED ALWAYS AS (CASE WHEN vuln_total > 0 "
+            "THEN (confirmed_vulnerable + confirmed_not_vulnerable + confirmed_fp)"
+            " / vuln_total ELSE NULL END) STORED",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

@@ -17,7 +17,7 @@ import os
 import re
 import sys
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, Future
 from fastapi import FastAPI, HTTPException, Request
@@ -523,18 +523,27 @@ def _clear_start_failure(project_id: str, task_id: str) -> None:
         log("EVAL", f"清除启动失败信息失败: {e}")
 
 
-_MAX_TASK_AGE_MONTHS = 2
+_MAX_TASK_AGE_MONTHS = 3.5
 
 
-def _months_ago(dt: datetime, months: int) -> datetime:
-    """同一天往前推 N 个自然月（月末自动收敛到目标月最后一天）。"""
-    month = dt.month - months
+def _months_ago(dt: datetime, months: float) -> datetime:
+    """同一天往前推 N 个自然月（月末自动收敛到目标月最后一天）。
+
+    N 支持小数：整数部分按自然月回退，小数部分按 1 月≈30 天折算
+    （例如 3.5 个月 = 3 个自然月 + 15 天）。
+    """
+    whole = int(months)
+    month = dt.month - whole
     year = dt.year
     while month <= 0:
         month += 12
         year -= 1
     day = min(dt.day, calendar.monthrange(year, month)[1])
-    return dt.replace(year=year, month=month, day=day)
+    result = dt.replace(year=year, month=month, day=day)
+    frac = months - whole
+    if frac > 0:
+        result -= timedelta(days=round(frac * 30))
+    return result
 
 
 def _parse_task_time(value) -> datetime | None:
@@ -542,7 +551,7 @@ def _parse_task_time(value) -> datetime | None:
     text = str(value or "").strip()
     if not text:
         return None
-    # 纯日期按当天 23:59:59 处理，避免“刚好满 2 个月”被误判为过期
+    # 纯日期按当天 23:59:59 处理，避免“刚好满 3.5 个月”被误判为过期
     if len(text) == 10:
         try:
             return datetime.strptime(text, "%Y-%m-%d").replace(
@@ -596,7 +605,7 @@ def _task_finished_at(project_id: str, task_id: str) -> str:
 
 
 def _assert_task_not_expired(project_id: str, task_id: str) -> None:
-    """任务结束超过 2 个月时禁止创建测评。"""
+    """任务结束超过 3.5 个月时禁止创建测评。"""
     finished = _task_finished_at(project_id, task_id)
     dt = _parse_task_time(finished)
     if dt is None:
@@ -619,8 +628,19 @@ def _dir_has_files(path: str) -> bool:
     return False
 
 
+def _resolve_source_dir(root: str, project_id: str, path: str) -> str:
+    """平台 input 路径 → 本地目录：绝对路径直接用，相对路径按项目根拼接。"""
+    if os.path.isabs(path):
+        return path
+    return os.path.join(root, str(project_id), path.lstrip("/"))
+
+
 def _assert_source_exists(project_id: str, task_id: str) -> None:
-    """任务上传的源代码目录不存在或为空时禁止创建测评。"""
+    """任务源码目录不存在或为空时禁止创建测评。
+
+    源码目录以平台任务 inputs 为准（input_type=code/software 的 target_path），
+    并兼容旧版 user_input/software/<task_id> 上传布局。
+    """
     if not project_id or not task_id:
         return
     if not _SAFE_ID_RE.match(str(project_id)) or \
@@ -633,12 +653,29 @@ def _assert_source_exists(project_id: str, task_id: str) -> None:
         log("EVAL", f"DATA_ROOT 不可用，跳过源代码存在性校验: {root}")
         return
 
-    source_dir = os.path.join(root, str(project_id),
+    from ...application import platform_service as ps
+    checked: list[str] = []
+    try:
+        source_paths = ps.get_task_source_paths(project_id, task_id)
+    except Exception as e:
+        log("EVAL", f"解析任务源码目录失败 {project_id}/{task_id}: {e}")
+        source_paths = []
+    for p in source_paths:
+        source_dir = _resolve_source_dir(root, project_id, p)
+        checked.append(source_dir)
+        if os.path.isdir(source_dir) and _dir_has_files(source_dir):
+            return
+
+    # 兼容旧布局：user_input/software/<task_id>
+    legacy_dir = os.path.join(root, str(project_id),
                               "user_input", "software", str(task_id))
-    if not os.path.isdir(source_dir) or not _dir_has_files(source_dir):
-        raise ValueError(
-            f"任务 {task_id} 的源代码目录不存在或为空（{source_dir}），"
-            f"不能创建测评任务")
+    checked.append(legacy_dir)
+    if os.path.isdir(legacy_dir) and _dir_has_files(legacy_dir):
+        return
+
+    raise ValueError(
+        f"任务 {task_id} 的源代码目录不存在或为空"
+        f"（{', '.join(checked)}），不能创建测评任务")
 
 
 @app.post("/api/v1/evaluations")

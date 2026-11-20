@@ -141,6 +141,54 @@ def get_tasks(project_id: str | None = None, page_size: int = 200, status_filter
     return out
 
 
+def _task_source_paths(task: dict | None, project_id: str) -> list[str]:
+    """从平台任务 inputs 提取源码/软件目录的本地绝对路径。
+
+    target_path 以 / 开头但相对项目根（如 /user_input/code/<hash>），
+    按 DATA_ROOT/<project_id> 拼接；没有 target_path 时用 resolved_path。
+    只取 code/software 两类输入。
+    """
+    if not isinstance(task, dict):
+        return []
+    root = os.path.abspath(DATA_ROOT)
+    paths: list[str] = []
+    for item in (task.get("inputs") or []):
+        if not isinstance(item, dict):
+            continue
+        input_type = str(item.get("input_type") or "").strip().lower()
+        if input_type not in ("code", "software"):
+            continue
+        target = str(item.get("target_path") or "").strip()
+        if target:
+            path = os.path.join(root, str(project_id), target.lstrip("/"))
+        else:
+            path = str(item.get("resolved_path") or "").strip()
+        if path and path not in paths:
+            paths.append(path)
+    return paths
+
+
+def get_task_detail(project_id: str, task_id: str) -> dict | None:
+    """单个平台任务详情（含 inputs）；失败返回 None，不阻断调用方。"""
+    if not project_id or not task_id:
+        return None
+    url = (f"{SCHEDULE_API}/api/chirmera-platform-schedule/projects/"
+           f"{project_id}/user-tasks/{task_id}")
+    try:
+        from ..infrastructure.http_client import http_get
+        d = http_get(url, retries=2, retry_delay=1.0, timeout=5,
+                     log_tag="PLATFORM")
+        return d if isinstance(d, dict) else None
+    except Exception as e:
+        _logger.warning("获取任务详情失败 %s/%s: %s", project_id, task_id, e)
+        return None
+
+
+def get_task_source_paths(project_id: str, task_id: str) -> list[str]:
+    """任务源码目录的本地绝对路径（平台 inputs 里登记的 code/software 目录）。"""
+    return _task_source_paths(get_task_detail(project_id, task_id), project_id)
+
+
 def filter_alive_tasks(project_id: str, task_ids, *,
                        timeout: float = 5.0, retries: int = 2) -> set[str]:
     """返回 task_ids 中在 schedule 服务里存在且未删除的子集（60s 缓存）。

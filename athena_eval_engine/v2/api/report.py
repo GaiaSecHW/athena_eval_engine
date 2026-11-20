@@ -30,18 +30,34 @@ def _dir_has_files(path: str) -> bool:
     return False
 
 
-def _source_exists(project_id: str, task_id: str) -> bool | None:
-    """源代码目录是否存在且有文件；DATA_ROOT 不可用时返回 None（未知）。"""
+def _source_exists(project_id: str, task_id: str,
+                   source_paths: list[str] | None = None) -> bool | None:
+    """源码目录是否存在且有文件；DATA_ROOT 不可用时返回 None（未知）。
+
+    源码目录以平台任务 inputs 为准（code/software 的 target_path），
+    兼容旧版 user_input/software/<task_id> 上传布局。
+    """
     if not project_id or not task_id:
         return None
     root = os.path.abspath(DATA_ROOT)
     if not os.path.isdir(root):
         return None
-    source_dir = os.path.join(
-        root, str(project_id), "user_input", "software", str(task_id))
-    if not os.path.isdir(source_dir):
-        return False
-    return _dir_has_files(source_dir)
+    checked = source_paths
+    if checked is None:
+        try:
+            checked = ps.get_task_source_paths(project_id, task_id)
+        except Exception:
+            checked = []
+    for p in checked:
+        d = p if os.path.isabs(p) else os.path.join(
+            root, str(project_id), p.lstrip("/"))
+        if os.path.isdir(d) and _dir_has_files(d):
+            return True
+    legacy_dir = os.path.join(root, str(project_id),
+                              "user_input", "software", str(task_id))
+    if os.path.isdir(legacy_dir):
+        return _dir_has_files(legacy_dir)
+    return False
 
 
 @router.get("/summary")
@@ -118,6 +134,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             "s.task_started_at, s.task_finished_at, "
             "s.vuln_total, s.unconfirmed_count, s.confirmed_vulnerable, "
             "s.confirmed_not_vulnerable, s.confirmed_fp, s.analyzing_count, "
+            "s.confirm_rate, "
             "(SELECT MAX(p2.task_finished_at) FROM project_task_summary p2 "
             " WHERE p2.project_id = s.project_id AND p2.task_id != '' "
             " AND p2.task_finished_at != '') AS project_last_finished_at "
@@ -131,6 +148,12 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             sql += (" ORDER BY (CASE WHEN (confirmed_vulnerable + confirmed_fp) > 0 "
                     "THEN confirmed_fp / (confirmed_vulnerable + confirmed_fp) ELSE NULL END) "
                     + order_dir + ", project_name, task_name")
+        elif sort_by == "confirm_rate":
+            # confirm_rate 是 project_task_summary 的生成列。
+            # 分母为 0 的行为 NULL，无论升降序都排在有值行之后；
+            # 次级排序键跟随主方向，保证升降序是同一批数据的严格镜像。
+            sql += (f" ORDER BY (confirm_rate IS NULL) ASC, confirm_rate {order_dir}"
+                    f", project_name {order_dir}, task_name {order_dir}")
         elif sort_by in ("created_at", "updated_at", "started_at",
                          "finished_at"):
             sql += f" ORDER BY task_{sort_by} {order_dir}, project_name, task_name"
@@ -143,7 +166,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 "task_started_at", "task_finished_at",
                 "vuln_total", "unconfirmed_count", "confirmed_vulnerable",
                 "confirmed_not_vulnerable", "confirmed_fp", "analyzing_count",
-                "project_last_finished_at"]
+                "confirm_rate", "project_last_finished_at"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         return updated_at, total, rows, kpi
 
@@ -250,6 +273,25 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 for _pid, _alive in pool.map(_check_alive, list(by_proj.items())):
                     alive_by_proj[_pid] = _alive
 
+    # 源码存在性：平台任务 inputs 是权威来源（code/software 目录）。
+    # 当前页任务并行拉详情；失败时 _source_exists 回退旧 upload 路径。
+    source_paths_map: dict[tuple[str, str], list[str]] = {}
+    _pairs = [(r.get("project_id") or "", r.get("task_id") or "")
+              for r in rows]
+    _pairs = [(p, t) for p, t in _pairs if p and t]
+    if _pairs:
+        from concurrent.futures import ThreadPoolExecutor
+
+        def _fetch_source_paths(pair):
+            try:
+                return pair, ps.get_task_source_paths(pair[0], pair[1])
+            except Exception:
+                return pair, []
+
+        with ThreadPoolExecutor(max_workers=min(8, len(_pairs))) as pool:
+            for pair, paths in pool.map(_fetch_source_paths, _pairs):
+                source_paths_map[pair] = paths
+
     # 给每行补评测关联 + 误报率（运行态只有误报率，无漏报）
     for r in rows:
         _pid, _tid = r.get("project_id"), r.get("task_id")
@@ -267,7 +309,13 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         fp = r.get("confirmed_fp") or 0
         fpr = (fp / (tp + fp)) if (tp + fp) > 0 else None
         r["fpr"] = round(fpr, 4) if fpr is not None else None
-        r["source_exists"] = _source_exists(_pid, _tid)
+        # 人工确认率 = 人工已确认（漏洞+非漏洞+误报）/ 漏洞总数：
+        # 由 project_task_summary 的 confirm_rate 生成列直接提供；
+        # Decimal 转 float 便于 JSON 输出。
+        if r.get("confirm_rate") is not None:
+            r["confirm_rate"] = float(r["confirm_rate"])
+        r["source_exists"] = _source_exists(
+            _pid, _tid, source_paths_map.get((_pid, _tid)))
 
     # 全量 agent 列表（供前端筛选下拉）
     all_agents: list[str] = []

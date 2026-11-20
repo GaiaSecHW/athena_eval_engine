@@ -154,6 +154,94 @@ def _pct(value) -> str:
     return f"{float(value) * 100:.1f}%"
 
 
+# 项目"关闭"口径：项目最近一个任务结束（project_task_summary 的
+# task_finished_at 最大值）在最近 N 天内。与 /eval/report 列表的
+# project_last_finished_at 同口径。
+_PROJECT_CLOSED_WINDOW_DAYS = 30
+
+
+def _project_confirmation_stats(days: int = _PROJECT_CLOSED_WINDOW_DAYS) -> dict:
+    """近 N 天结束的项目：整体人工确认率 + 确认率最低的项目。
+
+    确认率 = 人工已确认（确认漏洞 + 确认非漏洞 + 确认误报）/ 漏洞总数
+    （按项目聚合，只统计 vuln_total > 0 的项目）。
+    """
+    cutoff = _now_utc() - timedelta(days=days)
+
+    def _do(cur):
+        cur.execute(
+            "SELECT project_id, project_name, "
+            "SUM(vuln_total), SUM(confirmed_vulnerable), "
+            "SUM(confirmed_not_vulnerable), SUM(confirmed_fp), "
+            "MAX(task_finished_at) "
+            "FROM project_task_summary "
+            "WHERE task_id != '' "
+            "GROUP BY project_id, project_name"
+        )
+        return cur.fetchall()
+
+    try:
+        rows = _db_query(_do)
+    except Exception:
+        return {"rate": None, "total": 0, "confirmed": 0, "projects": []}
+
+    projects: list[dict] = []
+    total = confirmed = 0
+    for pid, name, tot, vuln, nonvuln, fp, last_finished in rows:
+        tot = int(tot or 0)
+        if tot <= 0:
+            continue
+        try:
+            last = _parse_dt(last_finished)
+        except (TypeError, ValueError):
+            last = None
+        if last is None or last < cutoff:
+            continue
+        confirmed_cnt = int(vuln or 0) + int(nonvuln or 0) + int(fp or 0)
+        projects.append({
+            "project_id": pid,
+            "project_name": name or pid,
+            "total": tot,
+            "confirmed": confirmed_cnt,
+            "rate": confirmed_cnt / tot,
+        })
+        total += tot
+        confirmed += confirmed_cnt
+
+    projects.sort(key=lambda p: (p["rate"], p["project_name"]))
+    return {
+        "rate": (confirmed / total) if total > 0 else None,
+        "total": total,
+        "confirmed": confirmed,
+        "projects": projects,
+    }
+
+
+def _render_project_confirmation_section() -> list[str]:
+    """近一个月结束项目的人工确认率（含最低三个项目）。无数据时返回空。"""
+    stats = _project_confirmation_stats()
+    if stats.get("rate") is None:
+        return []
+    lines = [
+        "",
+        f"📊 一个月内关闭项目的人工确认率："
+        f"{_span(_pct(stats['rate']), color='#16a34a', bold=True)}"
+        f"（已确认 {stats['confirmed']} / 漏洞总数 {stats['total']}）",
+    ]
+    lowest = (stats.get("projects") or [])[:3]
+    if lowest:
+        parts = [
+            f"{p['project_name']} "
+            f"{_span(_pct(p['rate']), color='#dc2626', bold=True)}"
+            for p in lowest
+        ]
+        lines.append("最低三个项目确认率：" + "、".join(parts))
+    lines.append(
+        f"🔗 查看全部项目（按确认率升序）："
+        f"{get_public_url()}/report?sort=confirm_rate_asc")
+    return lines
+
+
 def _split_owner_key(owner_key: str) -> tuple[str, str]:
     kind, _, key = str(owner_key or "").partition(":")
     return kind, key
@@ -825,6 +913,7 @@ def render_combined_text(reports: list[dict],
               color="#2563eb", bold=True, size=16),
         f"🕒 统计窗口：{start} ~ {end}",
     ]
+    lines += _render_project_confirmation_section()
     for report in reports:
         section = render_text(report, period_label=period_label,
                               header=False)
