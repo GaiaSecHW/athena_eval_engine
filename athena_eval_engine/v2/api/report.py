@@ -9,14 +9,39 @@
 """
 from __future__ import annotations
 
+import os
+
 from fastapi import APIRouter, HTTPException
 
 from ...application import platform_service as ps
+from ...config_loader import DATA_ROOT
 from ..infra import vuln_center_client as vc
 from ..infra.log_util import log
 from ..infra.db_utils import db_query as _db_query
 
 router = APIRouter(prefix="/api/v2/report", tags=["report"])
+
+
+def _dir_has_files(path: str) -> bool:
+    """目录（含子目录）下是否至少有一个文件。"""
+    for _, _, files in os.walk(path):
+        if files:
+            return True
+    return False
+
+
+def _source_exists(project_id: str, task_id: str) -> bool | None:
+    """源代码目录是否存在且有文件；DATA_ROOT 不可用时返回 None（未知）。"""
+    if not project_id or not task_id:
+        return None
+    root = os.path.abspath(DATA_ROOT)
+    if not os.path.isdir(root):
+        return None
+    source_dir = os.path.join(
+        root, str(project_id), "user_input", "software", str(task_id))
+    if not os.path.isdir(source_dir):
+        return False
+    return _dir_has_files(source_dir)
 
 
 @router.get("/summary")
@@ -41,7 +66,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             "items": [
                 {project_id, task_id, project_name, task_name, project_owner,
                  task_type, agent_type, task_created_at, task_updated_at,
-                 task_started_at, task_finished_at,
+                 task_started_at, task_finished_at, project_last_finished_at,
+                 source_exists,
                  vuln_total, unconfirmed_count, confirmed_vulnerable,
                  confirmed_not_vulnerable, confirmed_fp}, ...
             ]
@@ -87,12 +113,15 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         total = cur.fetchone()[0]
         # 分页数据
         sql = (
-            "SELECT project_id, task_id, project_name, task_name, project_owner, "
-            "task_type, agent_type, task_created_at, task_updated_at, "
-            "task_started_at, task_finished_at, "
-            "vuln_total, unconfirmed_count, confirmed_vulnerable, "
-            "confirmed_not_vulnerable, confirmed_fp, analyzing_count "
-            "FROM project_task_summary WHERE task_id != ''"
+            "SELECT s.project_id, s.task_id, s.project_name, s.task_name, s.project_owner, "
+            "s.task_type, s.agent_type, s.task_created_at, s.task_updated_at, "
+            "s.task_started_at, s.task_finished_at, "
+            "s.vuln_total, s.unconfirmed_count, s.confirmed_vulnerable, "
+            "s.confirmed_not_vulnerable, s.confirmed_fp, s.analyzing_count, "
+            "(SELECT MAX(p2.task_finished_at) FROM project_task_summary p2 "
+            " WHERE p2.project_id = s.project_id AND p2.task_id != '' "
+            " AND p2.task_finished_at != '') AS project_last_finished_at "
+            "FROM project_task_summary s WHERE s.task_id != ''"
         )
         if where:
             sql += " AND " + " AND ".join(where)
@@ -112,7 +141,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
                 "task_type", "agent_type", "task_created_at", "task_updated_at",
                 "task_started_at", "task_finished_at",
                 "vuln_total", "unconfirmed_count", "confirmed_vulnerable",
-                "confirmed_not_vulnerable", "confirmed_fp", "analyzing_count"]
+                "confirmed_not_vulnerable", "confirmed_fp", "analyzing_count",
+                "project_last_finished_at"]
         rows = [dict(zip(cols, r)) for r in cur.fetchall()]
         return updated_at, total, rows, kpi
 
@@ -236,6 +266,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         fp = r.get("confirmed_fp") or 0
         fpr = (fp / (tp + fp)) if (tp + fp) > 0 else None
         r["fpr"] = round(fpr, 4) if fpr is not None else None
+        r["source_exists"] = _source_exists(_pid, _tid)
 
     # 全量 agent 列表（供前端筛选下拉）
     all_agents: list[str] = []

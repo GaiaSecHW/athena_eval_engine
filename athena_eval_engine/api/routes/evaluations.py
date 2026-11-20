@@ -12,9 +12,12 @@ v2 报告端点在 v2/api/routes.py（/api/v2/evaluations/{id}/report 等）。
 """
 from __future__ import annotations
 import asyncio
+import calendar
 import os
+import re
 import sys
 import threading
+from datetime import datetime
 from collections import deque
 from concurrent.futures import ThreadPoolExecutor, Future
 from fastapi import FastAPI, HTTPException, Request
@@ -32,7 +35,7 @@ from .platform import router as platform_router
 from .benchmark_system import vb as vbench_router, sys_r as sys_router
 
 # 报告目录（统一从 config_loader 读取）
-from ...config_loader import get_reports_dir
+from ...config_loader import get_reports_dir, DATA_ROOT
 REPORTS_DIR = get_reports_dir()
 
 # 最多 N 个评测同时运行，其余排队等待
@@ -520,8 +523,131 @@ def _clear_start_failure(project_id: str, task_id: str) -> None:
         log("EVAL", f"清除启动失败信息失败: {e}")
 
 
+_MAX_TASK_AGE_MONTHS = 2
+
+
+def _months_ago(dt: datetime, months: int) -> datetime:
+    """同一天往前推 N 个自然月（月末自动收敛到目标月最后一天）。"""
+    month = dt.month - months
+    year = dt.year
+    while month <= 0:
+        month += 12
+        year -= 1
+    day = min(dt.day, calendar.monthrange(year, month)[1])
+    return dt.replace(year=year, month=month, day=day)
+
+
+def _parse_task_time(value) -> datetime | None:
+    """解析平台返回的任务时间：兼容 ISO、空格分隔和纯日期三种格式。"""
+    text = str(value or "").strip()
+    if not text:
+        return None
+    # 纯日期按当天 23:59:59 处理，避免“刚好满 2 个月”被误判为过期
+    if len(text) == 10:
+        try:
+            return datetime.strptime(text, "%Y-%m-%d").replace(
+                hour=23, minute=59, second=59)
+        except ValueError:
+            pass
+    text = text.replace("Z", "+00:00")
+    try:
+        return datetime.fromisoformat(text)
+    except ValueError:
+        pass
+    for fmt, cut in (("%Y-%m-%d %H:%M:%S", 19),
+                     ("%Y-%m-%dT%H:%M:%S", 19),
+                     ("%Y-%m-%d", 10)):
+        try:
+            return datetime.strptime(text[:cut], fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _task_finished_at(project_id: str, task_id: str) -> str:
+    """读取任务结束时间：先查同步汇总表，缺失时回退平台实时任务列表。"""
+    if not project_id or not task_id:
+        return ""
+
+    def _do(cur):
+        cur.execute(
+            "SELECT task_finished_at FROM project_task_summary "
+            "WHERE project_id=%s AND task_id=%s",
+            (project_id, task_id))
+        row = cur.fetchone()
+        return row[0] if row else ""
+
+    try:
+        finished = es._db_query(_do)
+    except Exception as e:
+        log("EVAL", f"读取任务结束时间失败 {project_id}/{task_id}: {e}")
+        finished = ""
+    if finished:
+        return str(finished)
+
+    try:
+        from ...application import platform_service as ps
+        for task in ps.get_tasks(project_id):
+            if str(task.get("id") or "") == str(task_id):
+                return str(task.get("finished_at") or "")
+    except Exception as e:
+        log("EVAL", f"平台查询任务结束时间失败 {project_id}/{task_id}: {e}")
+    return ""
+
+
+def _assert_task_not_expired(project_id: str, task_id: str) -> None:
+    """任务结束超过 2 个月时禁止创建测评。"""
+    finished = _task_finished_at(project_id, task_id)
+    dt = _parse_task_time(finished)
+    if dt is None:
+        return
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    if dt < _months_ago(now, _MAX_TASK_AGE_MONTHS):
+        raise ValueError(
+            f"任务 {task_id} 结束时间为 {finished}，"
+            f"已超过 {_MAX_TASK_AGE_MONTHS} 个月，不能创建测评任务")
+
+
+_SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
+
+
+def _dir_has_files(path: str) -> bool:
+    """目录（含子目录）下是否至少有一个文件。"""
+    for _, _, files in os.walk(path):
+        if files:
+            return True
+    return False
+
+
+def _assert_source_exists(project_id: str, task_id: str) -> None:
+    """任务上传的源代码目录不存在或为空时禁止创建测评。"""
+    if not project_id or not task_id:
+        return
+    if not _SAFE_ID_RE.match(str(project_id)) or \
+            not _SAFE_ID_RE.match(str(task_id)):
+        raise ValueError("项目/任务 ID 含非法字符，不能创建测评任务")
+
+    root = os.path.abspath(DATA_ROOT)
+    # dev 环境 DATA_ROOT 未挂载（走 kubectl exec），无法做本地路径校验
+    if not os.path.isdir(root):
+        log("EVAL", f"DATA_ROOT 不可用，跳过源代码存在性校验: {root}")
+        return
+
+    source_dir = os.path.join(root, str(project_id),
+                              "user_input", "software", str(task_id))
+    if not os.path.isdir(source_dir) or not _dir_has_files(source_dir):
+        raise ValueError(
+            f"任务 {task_id} 的源代码目录不存在或为空（{source_dir}），"
+            f"不能创建测评任务")
+
+
 @app.post("/api/v1/evaluations")
 def create_evaluation(req: CreateRequest):
+    try:
+        _assert_task_not_expired(req.kg_project_id, req.kg_task_id)
+        _assert_source_exists(req.kg_project_id, req.kg_task_id)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     try:
         es.create(es.CreateRequest(evaluation_id=req.evaluation_id,
                                    evaluation_name=req.evaluation_name,
