@@ -160,9 +160,10 @@ _TASK_FINISHED_WINDOW_DAYS = 30
 
 
 def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dict]:
-    """近 N 天结束的平台任务：确认率统计，按从低到高排序。
+    """近 N 天结束的平台任务：确认率/误报率统计，按确认率从低到高排序。
 
     确认率 = 人工已确认（确认漏洞 + 确认非漏洞 + 确认误报）/ 漏洞总数；
+    误报率 = 确认误报 /（确认漏洞 + 确认误报）（与 /eval/report 同口径）；
     只统计 vuln_total > 0、task_finished_at 在窗口内的任务。
     """
     cutoff = _now_utc() - timedelta(days=days)
@@ -193,19 +194,29 @@ def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dic
             fin = None
         if fin is None or fin < cutoff:
             continue
-        confirmed_cnt = int(vuln or 0) + int(nonvuln or 0) + int(fp or 0)
+        vuln = int(vuln or 0)
+        fp = int(fp or 0)
+        confirmed_cnt = vuln + int(nonvuln or 0) + fp
+        fpr_denom = vuln + fp
         tasks.append({
             "task_name": tname or tid,
             "total": tot,
             "confirmed": confirmed_cnt,
             "rate": confirmed_cnt / tot,
+            "fpr": (fp / fpr_denom) if fpr_denom > 0 else None,
         })
     tasks.sort(key=lambda t: (t["rate"], t["task_name"]))
     return tasks
 
 
+# 低确认率阈值（低于此值的任务计入"确认率偏低"计数）与
+# 高误报率阈值（高于此值的任务列入重点关注清单）
+_LOW_CONFIRM_RATE = 0.2
+_HIGH_FPR_RATE = 0.7
+
+
 def _render_confirmation_section() -> list[str]:
-    """近一个月结束任务的人工确认率（含确认率最低的三个任务）。无数据时返回空。"""
+    """近一个月结束任务的人工确认率 + 低确认率计数 + 高误报率清单。"""
     tasks = _task_confirmation_stats()
     total = sum(t["total"] for t in tasks)
     confirmed = sum(t["confirmed"] for t in tasks)
@@ -217,14 +228,25 @@ def _render_confirmation_section() -> list[str]:
         f"{_span(_pct(confirmed / total), color='#16a34a', bold=True)}"
         f"（已确认 {confirmed} / 漏洞总数 {total}）",
     ]
-    lowest = tasks[:3]
-    if lowest:
+    low_confirm = [t for t in tasks if t["rate"] < _LOW_CONFIRM_RATE]
+    if low_confirm:
+        lines.append(
+            f"🟡 确认率低于 {_pct(_LOW_CONFIRM_RATE)} 的任务："
+            f"{_span(len(low_confirm), color='#d97706', bold=True)} 个")
+    high_fpr = [t for t in tasks
+                if t.get("fpr") is not None and t["fpr"] > _HIGH_FPR_RATE]
+    if high_fpr:
+        high_fpr.sort(key=lambda t: -(t["fpr"] or 0))
+        shown = high_fpr[:5]
         parts = [
             f"{t['task_name']} "
-            f"{_span(_pct(t['rate']), color='#dc2626', bold=True)}"
-            for t in lowest
+            f"{_span(_pct(t['fpr']), color='#dc2626', bold=True)}"
+            for t in shown
         ]
-        lines.append("最低三个任务确认率：" + "、".join(parts))
+        more = (f" 等 {len(high_fpr)} 个" if len(high_fpr) > 5 else "")
+        lines.append(
+            f"🚨 误报率高于 {_pct(_HIGH_FPR_RATE)} 的任务（需重点关注）："
+            + "、".join(parts) + more)
     lines.append(
         f"🔗 查看全部任务（按确认率升序）："
         f"{get_public_url()}/report?sort=confirm_rate_asc")
@@ -851,9 +873,8 @@ def render_combined_text(reports: list[dict],
                               header=False)
         if section:
             lines += ["", section]
-    public_url = get_public_url()
-    if public_url:
-        lines += ["", f"🔗 查看问题单：{public_url}/dts"]
+    # 不追加全局「查看问题单」链接：各分节已带「查看全部」
+    # （含该分节的过滤参数，直达更有用），全局裸链与之重复
     return "\n".join(lines)
 
 
