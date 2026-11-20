@@ -118,9 +118,21 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 - 文章涉及漏洞类型但与误报原因无关
 - 文章是通用安全知识，没有针对误报场景的具体指导
 
+# 方向判定（强制，逐篇）
+
+每篇命中还须判定**方向**——若 agent 查到并遵循该知识，会把判定引向正确还是错误：
+- `positive`：引导正确判定（如"不能仅凭注解静态断定，需核对网关路由清单"）
+- `negative`：助长误报/把判定引向错误（如宣称"internal=false 即对外可访问，
+  无需核实可直接上报"的过时或错误条目）——**这类命中不得静默判 not_found**：
+  它存在本身就是知识库缺陷（需修正/下架），与"知识缺失"（需补充）是两种不同问题
+- `neutral`：与该误报的判定方向无关
+
+整体 knowledge_direction：有 positive 无 negative → positive；有 negative 无
+positive → negative；两者皆有 → mixed；无命中 → none。
+
 # 边界（强制）
 
-- 本验证只回答"**所查来源里有没有对应知识**"，不判断 agent 的推理对错，也不评价 agent 已引用的具体内容是否正确。
+- 本验证回答"**所查来源里有没有对应知识、知识是正向还是负向**"，不判断 agent 的推理对错，也不评价 agent 已引用的具体内容是否正确。
 - 候选只是通用方法论、与本次误报原因不直接相关 → 判 `not_found`。
 - **不得**把"存在一篇泛化方法论文章"当作"agent 已访问的具体知识/记忆内容是正确的"。
 - 候选为空或没有相关内容时，输出 `not_found`，不要猜测。
@@ -130,11 +142,13 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 {
   "status": "found/not_found",
   "knowledge_exists": true/false,
+  "knowledge_direction": "positive/negative/mixed/none",
   "matched_files": [
     {
       "path": "文件路径",
       "title": "文件标题",
       "relevance": "high/medium/low",
+      "direction": "positive/negative/neutral",
       "reason": "为什么这个文件能或不能消减误报（结合误报原因具体说明）"
     }
   ],
@@ -317,6 +331,7 @@ class KnowledgeVerifier:
                 _summary = "无可用知识源（未提供 project_id 且 wiki 目录不存在），未查询"
             result = {
                 "l4_knowledge_exists": _l4,
+                "l4_knowledge_direction": "none" if _l4 is False else None,
                 "matched_files": [],
                 "summary": _summary,
                 "kb_searched": {
@@ -1009,6 +1024,8 @@ class KnowledgeVerifier:
                 raise
             return {
                 "l4_knowledge_exists": result.get("knowledge_exists", False),
+                "l4_knowledge_direction": result.get(
+                    "knowledge_direction", "none"),
                 "matched_files": result.get("matched_files") or [],
                 "summary": result.get("summary", ""),
             }
@@ -1030,6 +1047,7 @@ class KnowledgeVerifier:
 
         all_matched = []
         any_knowledge_exists = False
+        directions = set()
         summaries = []
         for bi, batch in enumerate(batches):
             if cancel_cb:
@@ -1046,11 +1064,23 @@ class KnowledgeVerifier:
                 raise
             if r.get("knowledge_exists", False):
                 any_knowledge_exists = True
+            d = str(r.get("knowledge_direction") or "none")
+            if d != "none":
+                directions.add(d)
             all_matched.extend(r.get("matched_files") or [])
             summaries.append(r.get("summary", ""))
 
+        if not directions:
+            direction = "none"
+        elif directions == {"positive"}:
+            direction = "positive"
+        elif directions == {"negative"}:
+            direction = "negative"
+        else:
+            direction = "mixed"
         return {
             "l4_knowledge_exists": any_knowledge_exists,
+            "l4_knowledge_direction": direction,
             "matched_files": all_matched,
             "summary": f"分批判定（{len(batches)} 批）: " + "; ".join(summaries),
         }
@@ -1065,6 +1095,7 @@ class KnowledgeVerifier:
         """
         return {
             "l4_knowledge_exists": None,
+            "l4_knowledge_direction": None,
             "matched_files": [],
             "summary": "未查询知识库",
             "kb_searched": {"athena_api": False, "wiki_nfs": False},

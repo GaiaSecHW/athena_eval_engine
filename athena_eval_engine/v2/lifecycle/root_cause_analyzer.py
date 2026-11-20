@@ -2024,16 +2024,24 @@ class RootCauseAnalyzer:
         l4 = l4_verification.get("l4_knowledge_exists")
         if l4 is None:
             return {}
+        # 方向：旧数据无 direction 时，命中默认正向（与既有闭环行为一致）
+        direction = str(l4_verification.get("l4_knowledge_direction")
+                        or ("positive" if l4 else "none"))
         hit_titles = [
             str(m.get("title") or "").strip()
             for m in (l4_verification.get("matched_files") or [])
             if isinstance(m, dict) and m.get("title")]
-        exists = l4 is True
+        dir_label = {
+            "positive": "命中正向知识（能引导正确判定）",
+            "negative": "命中负向知识（会把判定引向错误——知识库需修正/下架该内容）",
+            "mixed": "正负向知识并存（既有引导正确判定的内容，也有误导内容）",
+            "none": "未找到相关知识",
+        }.get(direction, "方向未判定")
         quote = (
             f"L4 独立验证（{chain_type}链，评测系统代为检索知识库）："
-            + ("命中相关知识" if exists else "未找到相关知识")
+            + dir_label
         )
-        if exists and hit_titles:
+        if l4 and hit_titles:
             quote += "——" + "；".join(hit_titles[:3])
         summary = str(l4_verification.get("summary") or "").strip()
         if summary:
@@ -2058,16 +2066,20 @@ class RootCauseAnalyzer:
     ) -> None:
         """L4 闭环：用独立验证结果修正 A 类线索的归因方向。
 
-        闭环逻辑（与 _verify_l4_independently 的设计意图一致）：
-        - l4_knowledge_exists=true → agent 没查的那个来源里**有**知识 →
-          责任在 agent（该查没查），cause_code 保持 A，且归 agent 责任的
-          A 线索必须 agent_can_resolve=true、无 blocked_by——查了就能拿到，
-          属于 agent 可解决。
-        - l4_knowledge_exists=false → 来源里**没有**知识 → 查了也没用，
-          责任在知识库（覆盖缺口），cause_code 改 C/knowledge。
+        闭环逻辑（与 _verify_l4_independently 的设计意图一致），三态：
+        - 命中正向知识（l4=true，direction=positive/None）→ 查了就对了 →
+          责任在 agent（该查没查），cause_code 保持 A，且必须
+          agent_can_resolve=true、无 blocked_by。
+        - 命中负向知识（l4=true，direction=negative）→ agent 即使查了也会
+          被误导 → 首要修复是知识库**修正/下架**该内容（与"缺失→补充"
+          是两种不同的知识问题）→ 责任在 knowledge。
+        - 没有知识（l4=false）→ 查了也没用 → 知识**供给缺口**（补充），
+          cause_code 改 C/knowledge。
         - l4_knowledge_exists=None（未查/跳过/查询失败）→ 不修改。
+        mixed（正负并存）按正向处理（查了有机会拿到正确知识），
+        卡内容如实标注并存。
 
-        两种结论都以「系统验证」证据卡（card_id）引用进线索的
+        各结论都以「系统验证」证据卡（card_id）引用进线索的
         evidence_refs——与普通证据卡同一体系，不拼文本。
 
         只修正 hypotheses 层，不改 session 级 L0-L7 断点（断点是事实记录，
@@ -2078,13 +2090,45 @@ class RootCauseAnalyzer:
         l4 = l4_verification.get("l4_knowledge_exists")
         if l4 is None:
             return
+        # 方向：旧数据无 direction 时，命中默认正向（与既有行为一致）
+        direction = str(l4_verification.get("l4_knowledge_direction")
+                        or ("positive" if l4 else "none"))
+        negative = l4 is True and direction == "negative"
 
         for h in hypotheses:
             if str(h.get("cause_code") or "") != "A":
                 continue
             if card_id and card_id not in (h.get("evidence_refs") or []):
                 h.setdefault("evidence_refs", []).append(card_id)
-            if l4:
+            if negative:
+                # 命中的是负向知识：agent 查了会被误导——首要修复是
+                # 知识库修正/下架，而非补充（与"缺失"区分）
+                h["cause_code"] = "C"
+                h["responsibility"] = "knowledge"
+                h["agent_can_resolve"] = False
+                h["blocked_by"] = ("知识库存在误导性知识（L4 命中会把判定"
+                                   "引向错误的内容），需修正/下架")
+                h["evidence"] = (
+                    (h.get("evidence") or "")
+                    + ("；" if h.get("evidence") else "")
+                    + f"{card_id}：L4 命中负向知识——agent 即使查询也会被"
+                      f"误导，首要修复是修正/下架知识内容"
+                )
+                fs = h.get("fix_suggestion")
+                if isinstance(fs, dict) and fs.get("target") in (
+                        "agent_prompt", "agent_code"):
+                    fs["target"] = "knowledge"
+                    fs["knowledge_source"] = "knowledge_base"
+                    fs["action"] = (
+                        "修正/下架知识库中的误导性内容（L4 命中会把判定"
+                        "引向错误的知识），" + str(fs.get("action") or "")
+                    ).rstrip("，")
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} L4 闭环：命中负向知识，"
+                    f"A 线索修正为 C/knowledge（修正而非补充）: "
+                    f"{str(h.get('hypothesis', ''))[:60]}",
+                    eval_id=evaluation_id)
+            elif l4:
                 # 知识库有知识 → A 保持 agent 责任，且 agent 可解决
                 h["responsibility"] = "agent"
                 h["agent_can_resolve"] = True
