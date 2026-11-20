@@ -243,7 +243,15 @@ def generate_dts_issues(
 
         # ── 按人工分类跳过（无条件类）──
         # 责任在平台工具之外（上游数据/外部系统）→ 平台无修复点，不开单。
-        annotation_category = _annotation_category(_case_annotation(case))
+        # 分类文案有变体风险（如「输入实际不可控」与「可控」并存时曾
+        # 静默漏识别）：解析不到分类时打日志暴露，避免新文案悄无声息
+        # 失效跳过规则。
+        _annotation_raw = _case_annotation(case)
+        annotation_category = _annotation_category(_annotation_raw)
+        if _annotation_raw and not annotation_category:
+            log("DTS", f"case {cid}: 人工标注分类未识别"
+                      f"（跳过规则不适用，照常生成）。标注开头: "
+                      f"{_annotation_raw[:40]}")
         if annotation_category in _NON_ISSUE_CATEGORIES:
             skip_issue_cases.add(cid)
             log("DTS", f"case {cid}: 人工分类「{annotation_category}」"

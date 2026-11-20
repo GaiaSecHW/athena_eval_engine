@@ -1368,6 +1368,21 @@ class RootCauseAnalyzer:
             evaluation_id=evaluation_id,
         )
 
+        # ── 系统验证结论 → 证据卡 ──
+        # 类机制：评测系统代为执行的验证结论（L4 检索，及未来任何程序化
+        # 核查）统一落成「系统验证」证据卡，进入 compressed_summaries
+        # 证据卡池——线索用 evidence_refs 正常引用，页面与其他证据卡
+        # 统一渲染；不再各自往 evidence 字段拼文本（点补丁）。
+        l4_card = self._build_system_verification_card(
+            l4_verification or {}, chain_type)
+        if l4_card:
+            compressed_summaries.append({
+                "session_id": "system-verification",
+                "summary": f"L4 独立验证结论（{chain_type}链，"
+                           f"评测系统代为检索知识库）",
+                "evidence_cards": [l4_card],
+            })
+
         # ── L4 闭环应用 ──
         # 验证结果不再只记录不使用：agent 没查的那个来源里到底有没有知识，
         # 直接决定 A/C 归因方向——有知识（l4=true）→ 责任在 agent（该查没查，
@@ -1377,7 +1392,8 @@ class RootCauseAnalyzer:
         self._apply_l4_closed_loop(
             merge_hypotheses, l4_verification,
             case_id=case_id, chain_type=chain_type,
-            evaluation_id=evaluation_id)
+            evaluation_id=evaluation_id,
+            card_id=l4_card.get("evidence_id", ""))
 
         # ── 线索一致性守卫 ──
         # LLM 常产出自相矛盾的线索（responsibility=agent + agent_can_resolve=false
@@ -1994,6 +2010,43 @@ class RootCauseAnalyzer:
             log_error(evaluation_id, "ROOT_CAUSE", e)
             raise
 
+    @staticmethod
+    def _build_system_verification_card(
+        l4_verification: dict, chain_type: str,
+    ) -> dict:
+        """把系统验证结论建成「系统验证」证据卡。
+
+        类机制：评测系统代为执行的验证结论（L4 独立检索，及未来任何
+        程序化核查）统一落成 fact_type=系统验证 的证据卡，进入
+        compressed_summaries 证据卡池——线索用 evidence_refs 正常引用，
+        页面与其他证据卡统一渲染，不再各自往 evidence 字段拼文本。
+        """
+        l4 = l4_verification.get("l4_knowledge_exists")
+        if l4 is None:
+            return {}
+        hit_titles = [
+            str(m.get("title") or "").strip()
+            for m in (l4_verification.get("matched_files") or [])
+            if isinstance(m, dict) and m.get("title")]
+        exists = l4 is True
+        quote = (
+            f"L4 独立验证（{chain_type}链，评测系统代为检索知识库）："
+            + ("命中相关知识" if exists else "未找到相关知识")
+        )
+        if exists and hit_titles:
+            quote += "——" + "；".join(hit_titles[:3])
+        summary = str(l4_verification.get("summary") or "").strip()
+        if summary:
+            quote += f"（{summary}）"
+        return {
+            "evidence_id": f"E-L4-VERIFY-{chain_type}",
+            "fact_type": "系统验证",
+            "source": "L4 独立检索",
+            "event_idx": None,
+            "quote": quote,
+            "session_id": "",
+        }
+
     def _apply_l4_closed_loop(
         self,
         hypotheses: list[dict],
@@ -2001,6 +2054,7 @@ class RootCauseAnalyzer:
         case_id: str = "",
         chain_type: str = "",
         evaluation_id: str = "",
+        card_id: str = "",
     ) -> None:
         """L4 闭环：用独立验证结果修正 A 类线索的归因方向。
 
@@ -2010,9 +2064,11 @@ class RootCauseAnalyzer:
           A 线索必须 agent_can_resolve=true、无 blocked_by——查了就能拿到，
           属于 agent 可解决。
         - l4_knowledge_exists=false → 来源里**没有**知识 → 查了也没用，
-          责任在知识库（覆盖缺口），cause_code 改 C/knowledge，并把 L4
-          检索证据（同源查询 + 返回为空）附到线索上，满足 C 的证据要求。
+          责任在知识库（覆盖缺口），cause_code 改 C/knowledge。
         - l4_knowledge_exists=None（未查/跳过/查询失败）→ 不修改。
+
+        两种结论都以「系统验证」证据卡（card_id）引用进线索的
+        evidence_refs——与普通证据卡同一体系，不拼文本。
 
         只修正 hypotheses 层，不改 session 级 L0-L7 断点（断点是事实记录，
         与重复上报守卫同模式）。
@@ -2026,15 +2082,24 @@ class RootCauseAnalyzer:
         for h in hypotheses:
             if str(h.get("cause_code") or "") != "A":
                 continue
+            if card_id and card_id not in (h.get("evidence_refs") or []):
+                h.setdefault("evidence_refs", []).append(card_id)
             if l4:
                 # 知识库有知识 → A 保持 agent 责任，且 agent 可解决
                 h["responsibility"] = "agent"
                 h["agent_can_resolve"] = True
                 h["blocked_by"] = ""
                 h["needed_external_data"] = []
+                h["evidence"] = (
+                    (h.get("evidence") or "")
+                    + ("；" if h.get("evidence") else "")
+                    + f"{card_id}：该查的知识存在（L4 独立检索命中），"
+                      f"agent 未发起查询"
+                )
                 log("ROOT_CAUSE",
                     f"case {case_id}: {chain_type} L4 闭环：知识库有知识，"
-                    f"A 线索保持 agent 责任（agent_can_resolve=true）: "
+                    f"A 线索保持 agent 责任（agent_can_resolve=true），"
+                    f"L4 证据卡已引用: "
                     f"{str(h.get('hypothesis', ''))[:60]}",
                     eval_id=evaluation_id)
             else:
@@ -2043,17 +2108,11 @@ class RootCauseAnalyzer:
                 h["responsibility"] = "knowledge"
                 h["agent_can_resolve"] = False
                 h["blocked_by"] = "知识库缺少对应业务/环境知识（L4 独立检索未命中）"
-                l4_queries = l4_verification.get("query_log") or []
-                query_desc = ""
-                for entry in l4_queries:
-                    if "检索问题" in str(entry.get("step") or ""):
-                        query_desc = str(entry.get("detail") or "")[:200]
-                        break
                 h["evidence"] = (
                     (h.get("evidence") or "")
                     + ("；" if h.get("evidence") else "")
-                    + "L4 独立验证：知识库主动检索未找到对应知识"
-                    + (f"（{query_desc}）" if query_desc else "")
+                    + f"{card_id}：知识库主动检索未找到对应知识，"
+                      f"查了也没用，责任在知识供给"
                 )
                 fs = h.get("fix_suggestion")
                 if isinstance(fs, dict) and fs.get("target") in (
