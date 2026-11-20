@@ -239,7 +239,8 @@ def is_running() -> bool:
     return _running
 
 
-def run_report(force: bool = False, owner_key: str | None = None) -> dict:
+def run_report(force: bool = False, owner_key: str | None = None,
+               period: str | None = None) -> dict:
     """构建并发送定期报告（日报/周报/月报），返回统计。
 
     单消息模式：全 owner（enabled）汇总成一条消息，发送到**当前周期
@@ -247,7 +248,7 @@ def run_report(force: bool = False, owner_key: str | None = None) -> dict:
     不是每个 owner 各发一条。
 
     - 周期可配置（notify_report_period：daily/weekly/monthly），
-      标题按周期（日报/周报/月报）；
+      标题按周期（日报/周报/月报）；传 ``period`` 可临时覆盖（手动触发某一期）；
     - 内容=该周期的全量汇总（日报=当天全部、周报=本周全部、
       月报=本月全部），显式窗口=周期起点 → 现在，不是增量；
     - 通道/窗口跟踪独立（xiaoluban-report），周期级去重
@@ -255,7 +256,9 @@ def run_report(force: bool = False, owner_key: str | None = None) -> dict:
     - 全部 owner 空报告时不发送；接收群未配置时不发送。
     """
     config = get_report_config()
-    period = config["period"]
+    period = str(period or config["period"]).lower()
+    if period not in ("daily", "weekly", "monthly"):
+        period = config["period"]
     label = _period_label(period)
     token = xiaoluban.get_token()
     if not token:
@@ -306,7 +309,8 @@ def run_report(force: bool = False, owner_key: str | None = None) -> dict:
     return {"sent": 0, "skipped": 0, "failed": 1, "error": detail}
 
 
-def trigger_report(owner_key: str | None = None) -> dict:
+def trigger_report(owner_key: str | None = None,
+                   period: str | None = None) -> dict:
     """手动触发一次定期报告发送（异步），返回启动状态。"""
     global _running
     with _run_guard:
@@ -317,7 +321,7 @@ def trigger_report(owner_key: str | None = None) -> dict:
     def _worker():
         global _running
         try:
-            run_report(force=True, owner_key=owner_key)
+            run_report(force=True, owner_key=owner_key, period=period)
         except Exception as e:
             log("NOTIFY", f"手动定期报告发送异常: {e}")
         finally:

@@ -128,6 +128,13 @@ async function renderSystem(){
         <div><label style="font-size:12px;color:var(--sub)">周报接收群</label><input id="notify_receiver_weekly" placeholder="群号/工号（空=不发送）" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></div>
         <div><label style="font-size:12px;color:var(--sub)">月报接收群</label><input id="notify_receiver_monthly" placeholder="群号/工号（空=不发送）" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></div>
       </div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px">
+        <span style="font-size:12px;color:var(--sub)">手动触发：</span>
+        <button class="btn g" style="font-size:13px;padding:6px 14px" onclick="runReportPeriod('daily')">立即发日报</button>
+        <button class="btn g" style="font-size:13px;padding:6px 14px" onclick="runReportPeriod('weekly')">立即发周报</button>
+        <button class="btn g" style="font-size:13px;padding:6px 14px" onclick="runReportPeriod('monthly')">立即发月报</button>
+        <span style="font-size:12px;color:var(--sub)">不受本周期已发送去重限制；对应接收群未配置时不会发送。</span>
+      </div>
       <div style="margin-top:8px"><button class="btn" style="font-size:13px;padding:6px 14px" onclick="saveReportConfig()">保存</button></div>
       <div id="notify_report_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
@@ -432,6 +439,20 @@ function renderNotifyStatus(d){
   html+='</tbody></table></div>';
   c.innerHTML=html;
 }
+// 手动触发某一期定期报告（日报/周报/月报）：只临时覆盖本次周期，不改配置
+async function runReportPeriod(period){
+  var label={daily:'日报',weekly:'周报',monthly:'月报'}[period]||period;
+  var msg=$("notify_report_msg");
+  if(!confirm("确认立即发送"+label+"？"))return;
+  if(msg)msg.innerHTML='<span style="color:var(--sub)">触发中…</span>';
+  try{
+    await jpost("/api/v2/notify/run?period="+encodeURIComponent(period),{});
+    if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已触发'+label+'发送，完成后可在下方「发送状态」查看</span>';
+  }catch(e){
+    if(msg)msg.innerHTML='<span style="color:var(--red)">'+esc(String(e))+'</span>';
+  }
+}
+
 async function runNotifyNow(ownerKey){
   var c=$("notify_status");if(c)c.innerHTML='<span style="color:var(--sub)">发送中…</span>';
   try{
