@@ -264,9 +264,22 @@ def set_report_config(update: ReportConfigUpdate):
 
 
 @router.post("/run-report")
-def run_report_now(owner_key: str | None = None):
-    """手动触发一次定期报告发送（异步）。不传 owner_key 则发送全部。"""
-    result = scheduler.trigger_report(owner_key)
+def run_report_now(owner_key: str | None = None,
+                   period: str | None = None):
+    """手动触发一次定期报告发送（异步）。不传 owner_key 则发送全部。
+
+    period 可选 daily/weekly/monthly，用于手动发某一期；不传用当前配置周期。
+    """
+    if period:
+        period = period.strip().lower()
+        if period not in ("daily", "weekly", "monthly"):
+            raise HTTPException(status_code=400,
+                                detail="period 必须是 daily/weekly/monthly")
+        cfg = scheduler.get_report_config()
+        if not (cfg.get("receivers") or {}).get(period):
+            raise HTTPException(status_code=400,
+                                detail=f"{period} 接收群未配置")
+    result = scheduler.trigger_report(owner_key, period=period)
     if result.get("status") == "running":
         raise HTTPException(status_code=409, detail="发送正在运行")
     return result
@@ -365,9 +378,21 @@ def get_status():
 
 
 @router.post("/run")
-def run_now(owner_key: str | None = None):
-    """手动触发一次定期报告发送（异步，单消息汇总模式）。"""
-    result = scheduler.trigger_report(None)
+def run_now(owner_key: str | None = None, period: str | None = None):
+    """手动触发一次定期报告发送（异步，单消息汇总模式）。
+
+    period 可选 daily/weekly/monthly，用于手动补发某一期。
+    """
+    if period:
+        period = period.strip().lower()
+        if period not in ("daily", "weekly", "monthly"):
+            raise HTTPException(status_code=400,
+                                detail="period 必须是 daily/weekly/monthly")
+        cfg = scheduler.get_report_config()
+        if not (cfg.get("receivers") or {}).get(period):
+            raise HTTPException(status_code=400,
+                                detail=f"{period} 接收群未配置")
+    result = scheduler.trigger_report(None, period=period)
     if result.get("status") == "running":
         raise HTTPException(status_code=409, detail="报告发送正在运行")
     return result
