@@ -76,6 +76,31 @@ def _task_type_to_agent(task_type: str) -> str:
     return TASK_TYPE_TO_AGENT.get(tt, tt)
 
 
+# 采集白名单：只有这些 agent 的任务同步（其余任务跳过——不拉漏洞统计，
+# 大幅减小采集压力）。写库是全量重建（先 DELETE 再插入），库内旧的非
+# 白名单行随下一轮采集自动清除，无需单独清理。
+# 命名均为固定 agent 名，精准匹配（归一化：小写、- 与 _ 等价）：
+# task_type 原值或映射后的 agent 名任一命中即同步。
+SYNC_AGENT_ALLOWLIST = (
+    "turing", "argo", "argo-flash", "secmate",
+    "kg_source_vuln_scan_e2e", "ai4web_third", "ai4apk",
+)
+_ALLOWED_AGENTS = {a.strip().lower().replace("-", "_")
+                   for a in SYNC_AGENT_ALLOWLIST}
+
+
+def _norm_agent_name(name: str) -> str:
+    return str(name or "").strip().lower().replace("-", "_")
+
+
+def _task_agent_allowed(task_type: str) -> bool:
+    """任务是否在采集白名单内（task_type 或映射后 agent 名精准命中）。"""
+    if _norm_agent_name(task_type) in _ALLOWED_AGENTS:
+        return True
+    return _norm_agent_name(
+        _task_type_to_agent(task_type)) in _ALLOWED_AGENTS
+
+
 def _is_sync_hour(now_local: datetime) -> bool:
     """判断当前时间是否落在触发时刻（±90 秒窗口，避免重复）。"""
     hm = now_local.strftime("%H:%M")
@@ -154,6 +179,17 @@ def sync_all() -> dict:
                             f"耗时 {time.time()-t0:.0f}s")
 
     log("SYNC", f"拉取任务: {len(tasks_all)} 个")
+
+    # 2b. 白名单过滤：非白名单 agent 的任务不同步（每任务 4 次漏洞中心
+    #     查询是采集压力大头，过滤即省）；写库为全量重建，旧的非白名单
+    #     行随本轮回写自动清除。
+    _before_filter = len(tasks_all)
+    tasks_all = [t for t in tasks_all
+                 if _task_agent_allowed(t.get("task_type"))]
+    _skipped = _before_filter - len(tasks_all)
+    if _skipped:
+        log("SYNC", f"白名单过滤: 跳过 {_skipped} 个非白名单 agent 任务, "
+                    f"同步 {len(tasks_all)} 个")
 
     # 3. 每个任务拉漏洞中心汇总统计（list-stats，不拉全量 case）
     def _fetch_task(item: dict) -> dict | None:

@@ -452,6 +452,31 @@ def _load_open_issues(owner_kind: str, owner_value: str,
     return _db_query(_do)
 
 
+def _load_open_issue_counts_by_agent(owner_kind: str,
+                                     owner_value: str) -> dict[str, int]:
+    """按 agent 统计未关闭问题单的**真实总数**（一条 SQL 逐 agent 聚合）。
+
+    agent_type 是逗号分隔多值，逐 agent 用 FIND_IN_SET 聚合（与
+    列表页 /dts?agent_type=X 的口径一致）。此前分组计数在 Python 里
+    数 _load_open_issues 的 200 行样本——样本截断导致日报分组数字
+    失真（日报 200 vs 实际 539）。
+    """
+    filter_sql, params = _issue_filter(owner_kind, owner_value)
+    placeholders = ",".join(["%s"] * len(_OPEN_ISSUE_EXCLUDED))
+    agents = list(ALL_AGENT_TYPES)
+    selects = ", ".join(
+        f"SUM(FIND_IN_SET('{a}', agent_type) > 0)" for a in agents)
+
+    def _do(cur):
+        cur.execute(
+            f"SELECT {selects} FROM dts_issue "
+            f"WHERE status NOT IN ({placeholders}) AND {filter_sql}",
+            (*_OPEN_ISSUE_EXCLUDED, *params))
+        row = cur.fetchone()
+        return {a: int(v or 0) for a, v in zip(agents, row)}
+    return _db_query(_do)
+
+
 def _issue_item(item: dict, public_url: str) -> dict:
     return {
         "dts_id": item["dts_id"],
@@ -583,6 +608,10 @@ def _build_responsibility_report(owner: dict, since: datetime,
 
     new_issues = _load_new_issues("responsibility", responsibility, since, until)
     open_total, open_issues = _load_open_issues("responsibility", responsibility)
+    # 分组 total 用真实 SQL 聚合——open_issues 列表只是 200 行样本
+    # （供展示条目），在 Python 里数样本会因截断失真（200 vs 实际 539）
+    open_counts = _load_open_issue_counts_by_agent(
+        "responsibility", responsibility)
 
     order = {agent: idx for idx, agent in enumerate(ALL_AGENT_TYPES)}
     groups: dict[str, dict] = {}
@@ -604,9 +633,10 @@ def _build_responsibility_report(owner: dict, since: datetime,
             _group(agent)["new_issues"].append(_issue_item(item, public_url))
     for item in open_issues:
         for agent in _split_agent_types(item.get("agent_type")):
-            g = _group(agent)
-            g["open_issues"]["items"].append(_issue_item(item, public_url))
-            g["open_issues"]["total"] += 1
+            _group(agent)["open_issues"]["items"].append(
+                _issue_item(item, public_url))
+    for agent, g in groups.items():
+        g["open_issues"]["total"] = open_counts.get(agent, 0)
 
     ordered = sorted(groups.values(),
                      key=lambda g: order.get(g["agent_type"], 99))
