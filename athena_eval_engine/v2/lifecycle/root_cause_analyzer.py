@@ -541,7 +541,7 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
       "annotation_fit": 0.8,
       "evidence_refs": ["E-..."],
       "counter_evidence": "反证，或检查范围",
-      "evidence": "逐条对应 evidence_refs 的原文依据",
+      "evidence": "逐条对应 evidence_refs 的原文依据（单个字符串；多条依据用分号分隔，禁止输出数组）",
       "session_id": "主要依据的 session_id",
       "supporting_breakpoints": ["BP-1"],
       "agent_can_resolve": true,
@@ -2055,6 +2055,14 @@ class RootCauseAnalyzer:
             "session_id": "",
         }
 
+    @staticmethod
+    def _evidence_text(value) -> str:
+        """线索 evidence 归一成字符串：LLM 偶尔把 evidence 输出成数组。"""
+        if isinstance(value, list):
+            return "；".join(
+                str(v).strip() for v in value if str(v or "").strip())
+        return str(value or "").strip()
+
     def _apply_l4_closed_loop(
         self,
         hypotheses: list[dict],
@@ -2108,9 +2116,9 @@ class RootCauseAnalyzer:
                 h["agent_can_resolve"] = False
                 h["blocked_by"] = ("知识库存在误导性知识（L4 命中会把判定"
                                    "引向错误的内容），需修正/下架")
+                ev = self._evidence_text(h.get("evidence"))
                 h["evidence"] = (
-                    (h.get("evidence") or "")
-                    + ("；" if h.get("evidence") else "")
+                    ev + ("；" if ev else "")
                     + f"{card_id}：L4 命中负向知识——agent 即使查询也会被"
                       f"误导，首要修复是修正/下架知识内容"
                 )
@@ -2134,9 +2142,9 @@ class RootCauseAnalyzer:
                 h["agent_can_resolve"] = True
                 h["blocked_by"] = ""
                 h["needed_external_data"] = []
+                ev = self._evidence_text(h.get("evidence"))
                 h["evidence"] = (
-                    (h.get("evidence") or "")
-                    + ("；" if h.get("evidence") else "")
+                    ev + ("；" if ev else "")
                     + f"{card_id}：该查的知识存在（L4 独立检索命中），"
                       f"agent 未发起查询"
                 )
@@ -2152,9 +2160,9 @@ class RootCauseAnalyzer:
                 h["responsibility"] = "knowledge"
                 h["agent_can_resolve"] = False
                 h["blocked_by"] = "知识库缺少对应业务/环境知识（L4 独立检索未命中）"
+                ev = self._evidence_text(h.get("evidence"))
                 h["evidence"] = (
-                    (h.get("evidence") or "")
-                    + ("；" if h.get("evidence") else "")
+                    ev + ("；" if ev else "")
                     + f"{card_id}：知识库主动检索未找到对应知识，"
                       f"查了也没用，责任在知识供给"
                 )
