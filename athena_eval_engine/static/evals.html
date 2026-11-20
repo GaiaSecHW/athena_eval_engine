@@ -88,6 +88,13 @@ async function renderEvals(){
 function setEvFilter(f,btn){_evFilter=f;_evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
 function filterEvals(){_evQ=$("ev-search").value.toLowerCase();_evPage=1;renderEvList();}
 function evPage(p){_evPage=p;renderEvList();}
+// 跳页：输入页码（或回车）直达，避免一页一页翻
+function evJumpPage(){
+  var el=$("ev-page-jump");if(!el)return;
+  var p=parseInt(el.value,10);
+  if(!p||p<1)return;
+  evPage(p);
+}
 // 只刷新数据，不重建页面、不重置页码/筛选/搜索（重跑、取消、删除后使用）
 async function refreshEvalsData(){
   try{
@@ -147,6 +154,8 @@ function renderEvList(){
       else if(i===page-2||i===page+2)pgHtml+='<span style="color:var(--sub)">…</span>';
     }
     pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:6px 12px">下一页 ›</button>`;
+    pgHtml+=`<input id="ev-page-jump" type="number" min="1" placeholder="页码" style="width:64px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace" onkeydown="if(event.key==='Enter')evJumpPage()">`;
+    pgHtml+=`<button class="ef-btn" onclick="evJumpPage()" style="padding:6px 10px">跳转</button>`;
     pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:8px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span></div>`;
     html+=pgHtml;
   }

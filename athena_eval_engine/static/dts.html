@@ -136,12 +136,22 @@ function renderDtsPager(){
   var totalPages=Math.ceil(_dtsTotal/_dtsPageSize);
   var el=$("dts-pager");if(!el)return;
   if(totalPages<=1){el.innerHTML='<div style="color:var(--sub);font-size:14px;text-align:center">共 '+_dtsTotal+' 条</div>';return;}
-  var html='<div style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px">';
+  var html='<div style="display:flex;align-items:center;justify-content:center;gap:8px;font-size:14px;flex-wrap:wrap">';
   html+='<button class="btn g" style="font-size:13px;padding:4px 12px"'+(_dtsPage<=1?' disabled':'')+' onclick="_dtsPage--;loadDtsPage()">上一页</button>';
   html+='<span style="color:var(--sub)">第 '+_dtsPage+' / '+totalPages+' 页（共 '+_dtsTotal+' 条）</span>';
   html+='<button class="btn g" style="font-size:13px;padding:4px 12px"'+(_dtsPage>=totalPages?' disabled':'')+' onclick="_dtsPage++;loadDtsPage()">下一页</button>';
+  html+='<input id="dts-page-jump" type="number" min="1" placeholder="页码" style="width:64px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace" onkeydown="if(event.key===\'Enter\')dtsJumpPage()">';
+  html+='<button class="btn g" style="font-size:13px;padding:4px 12px" onclick="dtsJumpPage()">跳转</button>';
   html+='</div>';
   el.innerHTML=html;
+}
+
+// 跳页：输入页码（或回车）直达，避免一页一页翻
+function dtsJumpPage(){
+  var el=$("dts-page-jump");if(!el)return;
+  var p=parseInt(el.value,10);
+  if(!p||p<1)return;
+  _dtsPage=p;loadDtsPage();
 }
 
 // 搜索走后端查询（防抖 300ms）：后端模糊匹配全量数据并返回正确分页 total，
