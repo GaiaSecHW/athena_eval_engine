@@ -524,6 +524,8 @@ def _clear_start_failure(project_id: str, task_id: str) -> None:
 
 
 _MAX_TASK_AGE_MONTHS = 3.5
+# 任务结束需满 2 天才可创建测评——结束初期漏洞统计/人工确认仍在变化
+_MIN_TASK_AGE_DAYS = 2
 
 
 def _months_ago(dt: datetime, months: float) -> datetime:
@@ -617,6 +619,68 @@ def _assert_task_not_expired(project_id: str, task_id: str) -> None:
             f"已超过 {_MAX_TASK_AGE_MONTHS} 个月，不能创建测评任务")
 
 
+def _assert_task_finished(project_id: str, task_id: str) -> None:
+    """任务未结束（无结束时间）时禁止创建测评。
+
+    漏洞数据随任务结束才定稿——任务运行中统计会持续变化，
+    未结束就开测会测到中间态数据。
+    """
+    finished = _task_finished_at(project_id, task_id)
+    if not _parse_task_time(finished):
+        raise ValueError(
+            f"任务 {task_id} 尚未结束（无结束时间），不能创建测评任务")
+
+
+def _task_confirmation_complete(project_id: str, task_id: str) -> bool:
+    """任务漏洞是否已全部人工确认（确认率 100%）。
+
+    全部确认 = 漏洞数据已定稿，无需等待 2 天定稿窗口。
+    """
+    def _do(cur):
+        cur.execute(
+            "SELECT vuln_total, confirmed_vulnerable, "
+            "       confirmed_not_vulnerable, confirmed_fp "
+            "FROM project_task_summary "
+            "WHERE project_id=%s AND task_id=%s",
+            (project_id, task_id))
+        return cur.fetchone()
+
+    try:
+        row = es._db_query(_do)
+    except Exception as e:
+        log("EVAL", f"读取任务确认统计失败 {project_id}/{task_id}: {e}")
+        return False
+    if not row:
+        return False
+    total = int(row[0] or 0)
+    confirmed = int(row[1] or 0) + int(row[2] or 0) + int(row[3] or 0)
+    return total > 0 and confirmed >= total
+
+
+def _assert_task_finished_long_enough(project_id: str,
+                                      task_id: str) -> None:
+    """任务结束未满 2 天时禁止创建测评（确认率 100% 除外）。
+
+    任务结束后初期，漏洞统计与人工确认仍在变化——需满
+    ``_MIN_TASK_AGE_DAYS`` 天（数据定稿窗口）才可创建测评；
+    确认率 100%（全部人工确认）= 数据已定稿，豁免等待。
+    """
+    finished = _task_finished_at(project_id, task_id)
+    dt = _parse_task_time(finished)
+    if dt is None:
+        return
+    now = datetime.now(dt.tzinfo) if dt.tzinfo else datetime.now()
+    if (now - dt) < timedelta(days=_MIN_TASK_AGE_DAYS):
+        if _task_confirmation_complete(project_id, task_id):
+            log("EVAL", f"任务 {task_id} 确认率 100%，豁免 "
+                        f"{_MIN_TASK_AGE_DAYS} 天定稿窗口")
+            return
+        raise ValueError(
+            f"任务 {task_id} 结束时间为 {finished}，结束未满 "
+            f"{_MIN_TASK_AGE_DAYS} 天（数据定稿窗口；确认率 100% 除外），"
+            f"不能创建测评任务")
+
+
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
 
@@ -681,6 +745,8 @@ def _assert_source_exists(project_id: str, task_id: str) -> None:
 @app.post("/api/v1/evaluations")
 def create_evaluation(req: CreateRequest):
     try:
+        _assert_task_finished(req.kg_project_id, req.kg_task_id)
+        _assert_task_finished_long_enough(req.kg_project_id, req.kg_task_id)
         _assert_task_not_expired(req.kg_project_id, req.kg_task_id)
         _assert_source_exists(req.kg_project_id, req.kg_task_id)
     except ValueError as e:

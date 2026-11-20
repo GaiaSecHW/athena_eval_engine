@@ -160,16 +160,31 @@ function renderReport(){
       <div class="pt-empty" id="empty">暂无数据，点击「立即采集」或等待定时任务</div>
     </div>
 
-    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px">
+    <div style="display:flex;align-items:center;justify-content:flex-end;gap:10px;margin-top:14px;flex-wrap:wrap">
       <span id="page-info" style="font-size:12px;color:var(--sub)"></span>
       <button class="btn g" id="prev-btn" onclick="load(curPage-1)">上一页</button>
       <button class="btn g" id="next-btn" onclick="load(curPage+1)">下一页</button>
+      <span style="display:flex;align-items:center;gap:6px">
+        <input id="page-jump" type="number" min="1" placeholder="页码"
+               style="width:70px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"
+               onkeydown="if(event.key==='Enter')jumpPage()">
+        <button class="btn" onclick="jumpPage()">跳转</button>
+      </span>
     </div>
   </div>`;
   $("view").innerHTML=body;
 }
 
 function errMsg(e){return (e&&e.message)?e.message:String(e);}
+
+// 跳页：输入页码（或回车）直达，避免一页一页翻
+function jumpPage(){
+  var el=$("page-jump");
+  if(!el)return;
+  var p=parseInt(el.value,10);
+  if(!p||p<1){el.focus();return;}
+  load(p);
+}
 // 失败必须弹框；顶部内联文字保留作为关闭弹框后的记录
 function showErr(m,title){
   m=String(m||"未知错误");
@@ -259,11 +274,17 @@ function render(d){
     const ev=deleted?'<span style="color:var(--gray)">任务在平台已删除</span>':(i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>');
     const fpr=i.fpr!=null?(i.fpr*100).toFixed(1)+'%':'NA';
     const cr=i.confirm_rate!=null?(i.confirm_rate*100).toFixed(1)+'%':'NA';
-    const canStart=!deleted && !expired && !noSource && !i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
+    const taskEnded=!!i.task_finished_at;
+    const finishedMs=Date.parse(String(i.task_finished_at||'').replace(' ','T'));
+    const cr100=(i.confirm_rate!=null&&i.confirm_rate>=1);
+    const ended2d=cr100||(!!finishedMs&&(Date.now()-finishedMs>=2*24*3600*1000));
+    const canStart=!deleted && !expired && !noSource && taskEnded && ended2d && !i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
     // 有启动失败记录时按钮明确标为「重试启动」，避免误当作首次启动反复触发
     const op=deleted?'-'
       :expired?'<span style="color:var(--red);font-size:12px;font-weight:600" title="任务结束超过3.5个月，不能创建测评">已过期</span>'
       :noSource?'<span style="color:var(--red);font-size:12px;font-weight:600" title="源代码目录不存在或为空，不能创建测评">源代码缺失</span>'
+      :!taskEnded?'<span style="color:var(--amber);font-size:12px;font-weight:600" title="任务尚未结束，漏洞统计未定稿，不能创建测评">未结束</span>'
+      :!ended2d?'<span style="color:var(--amber);font-size:12px;font-weight:600" title="任务结束需满2天才可创建测评——结束后漏洞统计与人工确认仍在定稿；确认率100%除外（数据已定稿）">结束未满2天</span>'
       :canStart?'<button class="btn" style="padding:5px 12px;font-size:12px"'+(sf?' title="上次启动失败：'+esc(sfErr)+'"':'')+' onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">'+(sf?'重试启动':'启动测评')+'</button>'
       :(i.evaluation_status?'':'-');
     // 未确认 = 总数 - 确认漏洞 - 误报 - 非误报（用户定义口径）

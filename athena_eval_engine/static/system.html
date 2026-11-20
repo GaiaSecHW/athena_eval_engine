@@ -344,6 +344,28 @@ function toggleReportDayInputs(){
   var w=$("notify_report_weekday_wrap"),m=$("notify_report_mday_wrap");
   if(w)w.style.display=(period==='weekly')?'inline-flex':'none';
   if(m)m.style.display=(period==='monthly')?'inline-flex':'none';
+  updateReportReceiverState();
+}
+// 三周期互斥：只发当前选中周期的一条报告；另外两个周期的接收群
+// 输入框置灰禁用（仅作预配置，切换周期后生效）
+function updateReportReceiverState(){
+  var p=$("notify_report_period");
+  var period=p?p.value:'weekly';
+  var labels={daily:'日报',weekly:'周报',monthly:'月报'};
+  var map={daily:"notify_receiver_daily",weekly:"notify_receiver_weekly",monthly:"notify_receiver_monthly"};
+  Object.keys(map).forEach(function(k){
+    var el=$(map[k]);
+    if(!el)return;
+    var active=(k===period);
+    el.disabled=!active;
+    el.style.opacity=active?'1':'0.45';
+    el.title=active?'':'未启用——当前周期为「'+labels[period]+'」，此接收群在切换到该周期后生效';
+    var label=el.previousElementSibling;
+    if(label&&label.tagName==='LABEL'){
+      label.textContent=labels[k]+'接收群'+(active?'':'（未启用）');
+      label.style.color=active?'var(--sub)':'var(--gray)';
+    }
+  });
 }
 async function loadReportConfig(){
   try{
@@ -357,6 +379,7 @@ async function loadReportConfig(){
     var rw=$("notify_receiver_weekly");if(rw)rw.value=r.weekly||'';
     var rm=$("notify_receiver_monthly");if(rm)rm.value=r.monthly||'';
     toggleReportDayInputs();
+    updateReportReceiverState();
   }catch(e){var msg=$("notify_report_msg");if(msg)msg.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
 }
 async function saveReportConfig(){

@@ -172,13 +172,23 @@ def _week_start_utc() -> datetime:
 
 
 def _period_start_utc(period: str) -> datetime:
-    """当前周期起点（Asia/Shanghai 当天/本周一/本月 1 号 00:00 → UTC）。
+    """当前周期起点（Asia/Shanghai → UTC）。
 
-    定期报告的去重窗口：本周期已发送过则跳过。
+    定期报告的去重窗口与统计窗口：本周期已发送过则跳过。
+
+    日报（daily）窗口=当天 00:00，**向前跨越连续非工作日**——周末/
+    节假日不发日报，其数据在下一个工作日的日报中体现（周一窗口=
+    周六 00:00 起，覆盖整个周末），不丢通知也不依赖增量窗口。
     """
     local = _now_local()
     if period == "daily":
-        start_local = datetime.combine(local.date(), dt_time(0, 0))
+        d = local.date()
+        # 向前跨过连续非工作日（含周末/节假日），最多回看 60 天防死循环
+        for _ in range(60):
+            if is_workday(d - timedelta(days=1)):
+                break
+            d = d - timedelta(days=1)
+        start_local = datetime.combine(d, dt_time(0, 0))
     elif period == "monthly":
         start_local = datetime.combine(local.date().replace(day=1), dt_time(0, 0))
     else:
