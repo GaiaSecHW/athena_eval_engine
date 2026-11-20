@@ -121,6 +121,7 @@ def list_issues(
 
     q：搜索关键词，模糊匹配 dts_id / vuln_title / case_id /
     evaluation_name / evaluation_id / task_id（后端查询，非前端过滤）。
+    stats 与 issues 使用同一套过滤条件。
     """
     try:
         issues, total = list_dts_issues(
@@ -134,7 +135,15 @@ def list_issues(
             limit=limit,
             offset=offset,
         )
-        stats = get_dts_stats(evaluation_id)
+        stats = get_dts_stats(
+            evaluation_id=evaluation_id,
+            agent_type=agent_type,
+            status=status,
+            cause_code=cause_code,
+            case_type=case_type,
+            responsibility=responsibility,
+            q=q,
+        )
     except Exception as e:
 
         log("DTS_API", f"list_issues 查询失败: {e}")
@@ -143,10 +152,26 @@ def list_issues(
 
 
 @router.get("/stats")
-def get_stats(evaluation_id: str | None = None):
-    """获取问题单统计。"""
+def get_stats(
+    evaluation_id: str | None = None,
+    agent_type: str | None = None,
+    status: str | None = None,
+    cause_code: str | None = None,
+    case_type: str | None = None,
+    responsibility: str | None = None,
+    q: str | None = None,
+):
+    """获取问题单统计（过滤口径与列表一致）。"""
     try:
-        stats = get_dts_stats(evaluation_id)
+        stats = get_dts_stats(
+            evaluation_id=evaluation_id,
+            agent_type=agent_type,
+            status=status,
+            cause_code=cause_code,
+            case_type=case_type,
+            responsibility=responsibility,
+            q=q,
+        )
     except Exception as e:
 
         log("DTS_API", f"get_stats 查询失败: {e}")

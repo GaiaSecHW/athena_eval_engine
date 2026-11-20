@@ -464,7 +464,7 @@ def _query_session_chains(issue: dict) -> dict:
     }
 
 
-def list_dts_issues(
+def _build_issue_where(
     evaluation_id: str | None = None,
     agent_type: str | None = None,
     status: str | None = None,
@@ -472,18 +472,8 @@ def list_dts_issues(
     case_type: str | None = None,
     responsibility: str | None = None,
     q: str | None = None,
-    limit: int = 100,
-    offset: int = 0,
-) -> tuple[list[dict], int]:
-    """列出问题单（支持过滤 + 分页）。
-
-    Args:
-        q: 搜索关键词（模糊匹配 dts_id / vuln_title / case_id /
-           evaluation_name / evaluation_id / task_id）。
-
-    Returns:
-        (问题单 dict 列表, 匹配总数)
-    """
+) -> tuple[str, list]:
+    """构造问题单查询的 WHERE 子句；列表和统计共用同一套过滤口径。"""
     where_parts: list[str] = []
     params: list = []
 
@@ -524,6 +514,38 @@ def list_dts_issues(
         params.append(case_type)
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
+    return where_clause, params
+
+
+def list_dts_issues(
+    evaluation_id: str | None = None,
+    agent_type: str | None = None,
+    status: str | None = None,
+    cause_code: str | None = None,
+    case_type: str | None = None,
+    responsibility: str | None = None,
+    q: str | None = None,
+    limit: int = 100,
+    offset: int = 0,
+) -> tuple[list[dict], int]:
+    """列出问题单（支持过滤 + 分页）。
+
+    Args:
+        q: 搜索关键词（模糊匹配 dts_id / vuln_title / case_id /
+           evaluation_name / evaluation_id / task_id）。
+
+    Returns:
+        (问题单 dict 列表, 匹配总数)
+    """
+    where_clause, params = _build_issue_where(
+        evaluation_id=evaluation_id,
+        agent_type=agent_type,
+        status=status,
+        cause_code=cause_code,
+        case_type=case_type,
+        responsibility=responsibility,
+        q=q,
+    )
 
     def _do_query(cur):
         # 查总数：where_clause 可能引用 e.evaluation_name，必须同样 JOIN evaluation
@@ -741,11 +763,20 @@ def list_regression_results(dts_id: str) -> list[dict]:
     return out
 
 
-def get_dts_stats(evaluation_id: str | None = None) -> dict:
-    """聚合统计问题单（按 status 和 agent_type 分组）。
+def get_dts_stats(
+    evaluation_id: str | None = None,
+    agent_type: str | None = None,
+    status: str | None = None,
+    cause_code: str | None = None,
+    case_type: str | None = None,
+    responsibility: str | None = None,
+    q: str | None = None,
+) -> dict:
+    """聚合统计问题单（口径与列表过滤一致）。
 
     Args:
         evaluation_id: 评测 ID 过滤（None 表示全部）。
+        其余参数与 list_dts_issues 相同；搜索/筛选变化时统计同步变化。
 
     Returns:
         {
@@ -755,13 +786,21 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
             "total": N,
         }
     """
-    where_clause = " WHERE d.evaluation_id = %s" if evaluation_id else ""
-    params = (evaluation_id,) if evaluation_id else ()
+    where_clause, params = _build_issue_where(
+        evaluation_id=evaluation_id,
+        agent_type=agent_type,
+        status=status,
+        cause_code=cause_code,
+        case_type=case_type,
+        responsibility=responsibility,
+        q=q,
+    )
+    params = tuple(params)
 
     def _do_query(cur):
         # 按 status 分组
         cur.execute(
-            f"SELECT d.status, COUNT(*) FROM dts_issue d{where_clause}"
+            f"SELECT d.status, COUNT(*) FROM{_FROM_JOIN}{where_clause}"
             f" GROUP BY d.status",
             params,
         )
@@ -769,7 +808,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
 
         # 按 agent_type 分组
         cur.execute(
-            f"SELECT d.agent_type, COUNT(*) FROM dts_issue d{where_clause}"
+            f"SELECT d.agent_type, COUNT(*) FROM{_FROM_JOIN}{where_clause}"
             f" GROUP BY d.agent_type",
             params,
         )
@@ -777,7 +816,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
 
         # 按 cause_code 分组
         cur.execute(
-            f"SELECT d.cause_code, COUNT(*) FROM dts_issue d{where_clause}"
+            f"SELECT d.cause_code, COUNT(*) FROM{_FROM_JOIN}{where_clause}"
             f" GROUP BY d.cause_code",
             params,
         )
@@ -785,7 +824,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
 
         # 按 case_type（FP/FN）分组
         cur.execute(
-            f"SELECT d.case_type, COUNT(*) FROM dts_issue d{where_clause}"
+            f"SELECT d.case_type, COUNT(*) FROM{_FROM_JOIN}{where_clause}"
             f" GROUP BY d.case_type",
             params,
         )
@@ -796,7 +835,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
         resp_where = (where_clause + " AND " if where_clause
                       else " WHERE ")
         cur.execute(
-            f"SELECT d.responsibility, COUNT(*) FROM dts_issue d"
+            f"SELECT d.responsibility, COUNT(*) FROM{_FROM_JOIN}"
             f"{resp_where}d.responsibility IS NOT NULL AND d.responsibility != ''"
             f" GROUP BY d.responsibility",
             params,
@@ -813,7 +852,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
         hc_where = (where_clause + " AND " if where_clause
                     else " WHERE ")
         cur.execute(
-            f"SELECT d.hypothesis_confirmations FROM dts_issue d"
+            f"SELECT d.hypothesis_confirmations FROM{_FROM_JOIN}"
             f"{hc_where}d.hypothesis_confirmations IS NOT NULL"
             f" AND d.hypothesis_confirmations != ''",
             params,
@@ -848,7 +887,7 @@ def get_dts_stats(evaluation_id: str | None = None) -> dict:
                     confirmed_not_root += 1
 
         # 总数
-        cur.execute(f"SELECT COUNT(*) FROM dts_issue d{where_clause}", params)
+        cur.execute(f"SELECT COUNT(*) FROM{_FROM_JOIN}{where_clause}", params)
         total = cur.fetchone()[0]
 
         return {
@@ -961,7 +1000,7 @@ def get_post_regression_fpr(evaluation_id: str) -> dict:
     def _do_query(cur):
         # 按 (case_type, status) 分组统计
         cur.execute(
-            f"SELECT d.case_type, d.status, COUNT(*) FROM dts_issue d{where_clause}"
+            f"SELECT d.case_type, d.status, COUNT(*) FROM{_FROM_JOIN}{where_clause}"
             f" GROUP BY d.case_type, d.status",
             params,
         )
