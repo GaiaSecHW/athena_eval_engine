@@ -66,6 +66,8 @@ from ..core.causal_levels import LEVEL_LABELS as _LEVEL_LABELS
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 _OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")
 _CHANNEL = "xiaoluban"
+# 定期报告通道：独立于日报的发送记录（窗口/去重按周期，标题=日报/周报/月报）
+_CHANNEL_REPORT = "xiaoluban-report"
 
 
 def _now_utc() -> datetime:
@@ -543,14 +545,16 @@ def _build_responsibility_report(owner: dict, since: datetime,
 def build_reports(owner_key: str | None = None,
                   since: str | None = None,
                   until: str | None = None,
-                  force: bool = False) -> dict:
-    """构建一个或多个 owner 的日报。
+                  force: bool = False,
+                  channel: str = _CHANNEL) -> dict:
+    """构建一个或多个 owner 的日报/周报。
 
-    统计窗口 = **上轮未发送的数据**：
+    统计窗口 = **上轮未发送的数据**（按 channel 分离跟踪）：
     - 有成功发送记录 → 从上次成功发送的 ``window_end`` 开始（只发增量）；
     - 从未发送过 → 所有历史数据都还没发过，从库里最早业务数据开始；
     - 显式传 ``since`` 时以调用方为准。
     ``force`` 仅影响发送去重（是否允许当天重发），不影响统计窗口。
+    周报传 ``channel=_CHANNEL_WEEKLY``——窗口跟踪/发送记录与日报独立。
     """
     until_dt = _parse_dt(until) or _now_utc()
     explicit_since = _parse_dt(since)
@@ -563,7 +567,7 @@ def build_reports(owner_key: str | None = None,
         if explicit_since:
             windows[key] = explicit_since
             continue
-        last = last_sent_at(key)
+        last = last_sent_at(key, channel)
         if last is not None:
             windows[key] = last
             continue
@@ -641,7 +645,8 @@ def _compact_levels(items: list[dict]) -> str:
     return "  ".join(parts)
 
 
-def render_agent_text(report: dict) -> str:
+def render_agent_text(report: dict, period_label: str = "日报",
+                     header: bool = True) -> str:
     ev = report.get("evaluations") or {}
     new_issues = report.get("new_issues") or []
     open_issues = report.get("open_issues") or {}
@@ -653,12 +658,20 @@ def render_agent_text(report: dict) -> str:
     end = _fmt_local(_parse_dt(window.get("end")))
     urls = report.get("urls") or {}
 
-    lines = [
-        _span(f"🧪 {_env_prefix(report)}奇美拉测评日报 · {short}",
-              color="#2563eb", bold=True, size=16),
-        f"👤 负责人：{owner}",
-        f"🕒 统计窗口：{start} ~ {end}",
-    ]
+    lines = []
+    if header:
+        lines += [
+            _span(f"🧪 {_env_prefix(report)}奇美拉测评{period_label} · {short}",
+                  color="#2563eb", bold=True, size=16),
+            f"👤 负责人：{owner}",
+            f"🕒 统计窗口：{start} ~ {end}",
+        ]
+    else:
+        # 汇总消息分节：无全局标题/窗口（由汇总头统一展示），保留负责人
+        lines += [
+            _span(f"🧩 {short}", bold=True),
+            f"👤 负责人：{owner}",
+        ]
 
     total = int(ev.get("total") or 0)
     completed = int(ev.get("completed") or 0)
@@ -728,20 +741,29 @@ def render_agent_text(report: dict) -> str:
     return "\n".join(lines)
 
 
-def render_responsibility_text(report: dict) -> str:
+def render_responsibility_text(report: dict,
+                               period_label: str = "日报",
+                               header: bool = True) -> str:
     window = report.get("window") or {}
     owner = report.get("owner_name") or "未配置负责人"
     start = _fmt_local(_parse_dt(window.get("start")))
     end = _fmt_local(_parse_dt(window.get("end")))
     totals = report.get("totals") or {}
 
-    lines = [
-        _span(f"🧪 {_env_prefix(report)}奇美拉测评日报 · "
-              f"{report.get('display_name', '')}",
-              color="#2563eb", bold=True, size=16),
-        f"👤 负责人：{owner}",
-        f"🕒 统计窗口：{start} ~ {end}",
-    ]
+    if header:
+        lines = [
+            _span(f"🧪 {_env_prefix(report)}奇美拉测评{period_label} · "
+                  f"{report.get('display_name', '')}",
+                  color="#2563eb", bold=True, size=16),
+            f"👤 负责人：{owner}",
+            f"🕒 统计窗口：{start} ~ {end}",
+        ]
+    else:
+        # 汇总消息分节：无全局标题/窗口（由汇总头统一展示），保留负责人
+        lines = [
+            _span(f"🧩 {report.get('display_name', '')}", bold=True),
+            f"👤 负责人：{owner}",
+        ]
     summary_parts = []
     if int(totals.get("new") or 0) > 0:
         summary_parts.append(f"新增 {totals['new']}")
@@ -773,10 +795,45 @@ def render_responsibility_text(report: dict) -> str:
     return "\n".join(lines)
 
 
-def render_text(report: dict) -> str:
+def render_text(report: dict, period_label: str = "日报",
+                header: bool = True) -> str:
     if report.get("owner_kind") == "agent":
-        return render_agent_text(report)
-    return render_responsibility_text(report)
+        return render_agent_text(report, period_label=period_label,
+                                 header=header)
+    return render_responsibility_text(report, period_label=period_label,
+                                       header=header)
+
+
+def render_combined_text(reports: list[dict],
+                         period_label: str = "周报") -> str:
+    """全 owner 汇总成一条消息（x 报单消息模式）。
+
+    结构：全局标题（周期/环境/窗口）→ 各 owner 分节（无各自的
+    标题/窗口行，保留负责人）→ 查看链接。发送到该周期单独配置的
+    接收群，替代 per-owner 各发一条的模式。
+    """
+    reports = [r for r in (reports or []) if r]
+    if not reports:
+        return ""
+    first = reports[0]
+    window = first.get("window") or {}
+    start = _fmt_local(_parse_dt(window.get("start")))
+    end = _fmt_local(_parse_dt(window.get("end")))
+    env_prefix = _env_prefix(first)
+    lines = [
+        _span(f"🧪 {env_prefix}奇美拉测评{period_label} · 汇总",
+              color="#2563eb", bold=True, size=16),
+        f"🕒 统计窗口：{start} ~ {end}",
+    ]
+    for report in reports:
+        section = render_text(report, period_label=period_label,
+                              header=False)
+        if section:
+            lines += ["", section]
+    public_url = get_public_url()
+    if public_url:
+        lines += ["", f"🔗 查看问题单：{public_url}/dts"]
+    return "\n".join(lines)
 
 
 def content_hash(text: str) -> str:

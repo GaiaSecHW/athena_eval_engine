@@ -25,6 +25,7 @@ from ..notify.daily_report import (
     get_env_name,
     get_public_url,
     invalidate_public_url_cache,
+    render_combined_text,
     render_text,
 )
 
@@ -102,8 +103,20 @@ class XiaolubanTokenUpdate(BaseModel):
     token: str
 
 
-class DailyTimeUpdate(BaseModel):
-    daily_time: str
+class ReportConfigUpdate(BaseModel):
+    """定期报告配置：周期（daily/weekly/monthly）+ 时间 + 触发日 + 接收群。
+
+    - period=daily：每天；
+    - period=weekly：weekday（ISO 1=周一…7=周日）触发；
+    - period=monthly：mday（1-31，超过当月天数按当月最后一天）触发。
+    - receivers：每种周期单独的接收群（群号/工号）——x 报为单消息模式，
+      全 owner 汇总一条发到当前周期的接收群；未配置的周期不发送。
+    """
+    period: str
+    time: str
+    weekday: int = 1
+    mday: int = 1
+    receivers: dict[str, str] = {}
 
 
 class WorkdayUpdate(BaseModel):
@@ -194,27 +207,69 @@ def set_xiaoluban_token(update: XiaolubanTokenUpdate):
             "token": _mask_token(value)}
 
 
-@router.get("/daily-time")
-def get_daily_time():
-    return {"daily_time": scheduler.get_daily_time()}
+@router.get("/report-config")
+def get_report_config():
+    return scheduler.get_report_config()
 
 
-@router.put("/daily-time")
-def set_daily_time(update: DailyTimeUpdate):
-    value = (update.daily_time or "").strip()
-    if not _TIME_RE.match(value):
-        raise HTTPException(status_code=400, detail="daily_time must be HH:MM")
+@router.put("/report-config")
+def set_report_config(update: ReportConfigUpdate):
+    period = (update.period or "").strip().lower()
+    if period not in ("daily", "weekly", "monthly"):
+        raise HTTPException(status_code=400,
+                            detail="period must be daily/weekly/monthly")
+    if not _TIME_RE.match((update.time or "").strip()):
+        raise HTTPException(status_code=400, detail="time must be HH:MM")
+    if not 1 <= int(update.weekday) <= 7:
+        raise HTTPException(status_code=400,
+                            detail="weekday must be 1-7 (ISO, 1=周一)")
+    if not 1 <= int(update.mday) <= 31:
+        raise HTTPException(status_code=400,
+                            detail="mday must be 1-31")
+
+    receivers = update.receivers or {}
+    bad_keys = set(receivers) - {"daily", "weekly", "monthly"}
+    if bad_keys:
+        raise HTTPException(
+            status_code=400,
+            detail=f"receivers 仅支持 daily/weekly/monthly 键: {sorted(bad_keys)}")
 
     def _do(cur):
-        cur.execute(
-            "INSERT INTO system_config (config_key, config_value) "
-            "VALUES ('notify_daily_time', %s) "
-            "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
-            (value,))
+        rows = [
+            ("notify_report_period", period),
+            ("notify_report_time", update.time.strip()),
+            ("notify_report_weekday", str(int(update.weekday))),
+            ("notify_report_mday", str(int(update.mday))),
+        ]
+        for p in ("daily", "weekly", "monthly"):
+            if p in receivers:
+                rows.append((f"notify_report_receiver_{p}",
+                             str(receivers.get(p) or "").strip()))
+        for key, value in rows:
+            cur.execute(
+                "INSERT INTO system_config (config_key, config_value) "
+                "VALUES (%s, %s) "
+                "ON DUPLICATE KEY UPDATE config_value=VALUES(config_value)",
+                (key, value))
     _db_query(_do)
     scheduler.invalidate_caches()
-    log("NOTIFY", f"更新日报发送时间: {value}")
-    return {"status": "ok", "daily_time": value}
+    log("NOTIFY", f"更新定期报告配置: {period} {update.time.strip()} "
+                  f"(weekday={update.weekday}, mday={update.mday}, "
+                  f"receivers={receivers})")
+    return {"status": "ok",
+            "period": period, "time": update.time.strip(),
+            "weekday": int(update.weekday), "mday": int(update.mday),
+            "receivers": {k: str(v or "").strip()
+                          for k, v in receivers.items()}}
+
+
+@router.post("/run-report")
+def run_report_now(owner_key: str | None = None):
+    """手动触发一次定期报告发送（异步）。不传 owner_key 则发送全部。"""
+    result = scheduler.trigger_report(owner_key)
+    if result.get("status") == "running":
+        raise HTTPException(status_code=409, detail="发送正在运行")
+    return result
 
 
 def _calendar_range(holidays: list[str], workdays: list[str]) -> dict:
@@ -301,7 +356,7 @@ def get_status():
         return owners, recent
     owners, recent = _db_query(_do)
     return {
-        "daily_time": scheduler.get_daily_time(),
+        "report": scheduler.get_report_config(),
         "workday_today": scheduler.is_workday(),
         "running": scheduler.is_running(),
         "owners": owners,
@@ -311,10 +366,10 @@ def get_status():
 
 @router.post("/run")
 def run_now(owner_key: str | None = None):
-    """手动触发一次发送（异步）。不传 owner_key 则发送全部。"""
-    result = scheduler.trigger_run(owner_key)
+    """手动触发一次定期报告发送（异步，单消息汇总模式）。"""
+    result = scheduler.trigger_report(None)
     if result.get("status") == "running":
-        raise HTTPException(status_code=409, detail="日报发送正在运行")
+        raise HTTPException(status_code=409, detail="报告发送正在运行")
     return result
 
 
@@ -322,10 +377,31 @@ def run_now(owner_key: str | None = None):
 def preview(owner_key: str | None = None):
     """返回当前会发送的 WeLink 内容预览（只构建，不实际发送）。
 
-    统计窗口与真实发送一致：有发送记录从上次成功发送开始，从未发送过
-    从最早业务数据开始。空报告也会返回，但标记 empty=True（不会发送）。
+    不传 owner_key：返回真实发送形态——全 owner（enabled）汇总的
+    单条消息（render_combined_text，窗口=当前周期全量）。
+    传 owner_key：返回该 owner 的分节形态。
+    空报告也会返回，但标记 empty=True（不会发送）。
     """
     try:
+        config = scheduler.get_report_config()
+        period_start = scheduler._period_start_utc(config["period"])
+        label = scheduler._period_label(config["period"])
+        if not owner_key:
+            reports = build_reports(
+                force=True, since=period_start.isoformat(),
+                channel="xiaoluban-report").get("agents", [])
+            enabled = [r for r in reports if r.get("enabled")]
+            empty = (not enabled
+                     or all(scheduler._is_empty(r) for r in enabled))
+            return {
+                "mode": "combined",
+                "period": config["period"],
+                "receiver": (config.get("receivers") or {}).get(
+                    config["period"], ""),
+                "empty": empty,
+                "window": (enabled[0].get("window") if enabled else None),
+                "text": render_combined_text(enabled, period_label=label),
+            }
         reports = build_reports(owner_key=owner_key, force=True).get("agents", [])
         previews = []
         for report in reports:
@@ -338,7 +414,7 @@ def preview(owner_key: str | None = None):
                 "enabled": bool(report.get("enabled")),
                 "empty": scheduler._is_empty(report),
                 "window": report.get("window"),
-                "text": render_text(report),
+                "text": render_text(report, period_label=label),
             })
         return {"previews": previews}
     except Exception as e:

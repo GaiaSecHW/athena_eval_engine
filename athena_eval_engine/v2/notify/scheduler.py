@@ -1,10 +1,12 @@
-"""日报定时发送（eval 服务端）。
+"""定期报告定时发送（eval 服务端）。
 
-每天按配置时间（默认 09:00，Asia/Shanghai）构建日报，通过小鲁班发送。
-发送成功后写 notification_log；窗口从该 owner 上次成功发送时间开始。
+x 报 = 日报/周报/月报（周期可配置，notify_report_period），按配置时间
+（默认 09:00，Asia/Shanghai，回退旧 notify_daily_time）构建全 owner 汇总
+的单条消息，通过小鲁班发到该周期单独配置的接收群。
+发送成功后写 notification_log（通道 xiaoluban-report，owner=__combined__）。
 
-单 worker 部署（Dockerfile --workers 1），进程内 _last_run_date 防重复；
-run_daily 里再按 last_sent_at 做一次跨重启去重。
+单 worker 部署（Dockerfile --workers 1），进程内 _report_try_date 防重复
+（每天只尝试一次）；周期级去重按 last_sent_at 跨重启兜底。
 """
 from __future__ import annotations
 
@@ -16,10 +18,12 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 
 from . import xiaoluban
 from .daily_report import (
+    _CHANNEL_REPORT,
     build_reports,
     content_hash,
     last_sent_at,
     record_send,
+    render_combined_text,
     render_text,
 )
 from ..infra.db_utils import db_query as _db_query
@@ -28,12 +32,12 @@ from ..infra.log_util import log
 _DAILY_TIME_DEFAULT = "09:00"
 _TIME_RE = re.compile(r"^([01]\d|2[0-3]):[0-5]\d$")
 
-_last_run_date: str | None = None
+_last_run_date: str | None = None   # 兼容保留（旧日报机制已并入 x 报）
+_report_try_date: str | None = None
 _lock = threading.Lock()
 _running = False
 _run_guard = threading.Lock()
 
-_daily_time_cache: tuple[float, str] | None = None
 _DAILY_TIME_CACHE_SECONDS = 60.0
 
 
@@ -41,25 +45,72 @@ def _now_local() -> datetime:
     return datetime.now(timezone(timedelta(hours=8)))
 
 
-def get_daily_time() -> str:
-    """读取 system_config.notify_daily_time（默认 09:00），60s 缓存。"""
-    global _daily_time_cache
+# ── 定期报告配置（notify_report_period / time / weekday / mday / receiver_*）──
+# 周期可配置：daily（每天）/ weekly（每周）/ monthly（每月）。
+# weekday 用 ISO 星期（1=周一…7=周日）；mday 用月中日期（1-31，
+# 超过当月天数按当月最后一天算）。
+# 每种周期单独配置接收群（notify_report_receiver_daily/weekly/monthly）：
+# x 报为单消息模式——全 owner 汇总一条，发到当前周期的接收群。
+_REPORT_PERIODS = ("daily", "weekly", "monthly")
+_REPORT_DEFAULTS = {"period": "weekly", "time": _DAILY_TIME_DEFAULT,
+                    "weekday": 1, "mday": 1}
+_REPORT_OWNER_KEY = "__combined__"
+_report_config_cache: tuple[float, dict] | None = None
+
+
+def get_report_config() -> dict:
+    """读取定期报告配置，60s 缓存。
+
+    返回 {"period": daily/weekly/monthly, "time": "HH:MM",
+          "weekday": 1-7, "mday": 1-31,
+          "receivers": {"daily": "", "weekly": "", "monthly": ""}}；
+    默认每周一 09:00，接收群默认未配置（未配置则不发送）。
+    """
+    global _report_config_cache
     now = time.monotonic()
-    if (_daily_time_cache
-            and now - _daily_time_cache[0] < _DAILY_TIME_CACHE_SECONDS):
-        return _daily_time_cache[1]
+    if (_report_config_cache
+            and now - _report_config_cache[0] < _DAILY_TIME_CACHE_SECONDS):
+        return dict(_report_config_cache[1])
 
     def _do(cur):
         cur.execute(
-            "SELECT config_value FROM system_config "
-            "WHERE config_key='notify_daily_time'")
-        row = cur.fetchone()
-        return (row[0] or "") if row else ""
-    value = _db_query(_do) or _DAILY_TIME_DEFAULT
-    if not _TIME_RE.match(value):
-        value = _DAILY_TIME_DEFAULT
-    _daily_time_cache = (now, value)
-    return value
+            "SELECT config_key, config_value FROM system_config "
+            "WHERE config_key IN ('notify_report_period', "
+            "'notify_report_time', 'notify_daily_time', "
+            "'notify_report_weekday', "
+            "'notify_report_mday', 'notify_report_receiver_daily', "
+            "'notify_report_receiver_weekly', "
+            "'notify_report_receiver_monthly')")
+        return {k: v for k, v in cur.fetchall()}
+
+    cfg = _db_query(_do) or {}
+    period = str(cfg.get("notify_report_period")
+                 or _REPORT_DEFAULTS["period"]).strip().lower()
+    if period not in _REPORT_PERIODS:
+        period = _REPORT_DEFAULTS["period"]
+    # 时间回退链：notify_report_time → notify_daily_time（旧日报配置兼容
+    # 迁移——日报就是 period=daily 的 x 报，旧的发送时间继续生效）
+    time_value = str(cfg.get("notify_report_time")
+                     or cfg.get("notify_daily_time")
+                     or _REPORT_DEFAULTS["time"]).strip()
+    if not _TIME_RE.match(time_value):
+        time_value = _REPORT_DEFAULTS["time"]
+
+    def _int_or(key: str, default: int, lo: int, hi: int) -> int:
+        try:
+            v = int(cfg.get(key) or default)
+        except (TypeError, ValueError):
+            v = default
+        return v if lo <= v <= hi else default
+
+    weekday = _int_or("notify_report_weekday", 1, 1, 7)
+    mday = _int_or("notify_report_mday", 1, 1, 31)
+    receivers = {p: str(cfg.get(f"notify_report_receiver_{p}") or "").strip()
+                 for p in _REPORT_PERIODS}
+    result = {"period": period, "time": time_value,
+              "weekday": weekday, "mday": mday, "receivers": receivers}
+    _report_config_cache = (now, dict(result))
+    return result
 
 
 _workday_cache: tuple[float, set[str], set[str]] | None = None
@@ -94,8 +145,9 @@ def get_workday_config() -> tuple[set[str], set[str]]:
 
 def invalidate_caches() -> None:
     """配置修改后立即失效，下一次循环生效。"""
-    global _daily_time_cache, _workday_cache
-    _daily_time_cache = None
+    global _workday_cache, _report_config_cache
+    _workday_cache = None
+    _report_config_cache = None
     _workday_cache = None
 
 
@@ -111,11 +163,53 @@ def is_workday(d: date | None = None) -> bool:
     return d.weekday() < 5
 
 
-def _today_start_utc() -> datetime:
-    """今天配置时间（北京时间）对应的 UTC naive 时间。"""
-    hh, mm = get_daily_time().split(":")
-    local = datetime.combine(_now_local().date(), dt_time(int(hh), int(mm)))
-    return local - timedelta(hours=8)
+def _week_start_utc() -> datetime:
+    """本周一 00:00（Asia/Shanghai）对应的 UTC naive 时间。"""
+    local = _now_local()
+    monday = local.date() - timedelta(days=local.date().weekday())
+    week_start_local = datetime.combine(monday, dt_time(0, 0))
+    return week_start_local - timedelta(hours=8)
+
+
+def _period_start_utc(period: str) -> datetime:
+    """当前周期起点（Asia/Shanghai 当天/本周一/本月 1 号 00:00 → UTC）。
+
+    定期报告的去重窗口：本周期已发送过则跳过。
+    """
+    local = _now_local()
+    if period == "daily":
+        start_local = datetime.combine(local.date(), dt_time(0, 0))
+    elif period == "monthly":
+        start_local = datetime.combine(local.date().replace(day=1), dt_time(0, 0))
+    else:
+        monday = local.date() - timedelta(days=local.date().weekday())
+        start_local = datetime.combine(monday, dt_time(0, 0))
+    return start_local - timedelta(hours=8)
+
+
+def _period_label(period: str) -> str:
+    return {"daily": "日报", "weekly": "周报", "monthly": "月报"}.get(
+        period, "周报")
+
+
+def _report_due_today(now: datetime, config: dict) -> bool:
+    """今天是否到达定期报告的触发日（含）。
+
+    - daily：每天；
+    - weekly：ISO 星期 >= 配置 weekday；
+    - monthly：日期 >= 配置 mday（mday 超过当月天数时按当月最后一天）。
+    """
+    period = config.get("period", "weekly")
+    if period == "daily":
+        return True
+    if period == "weekly":
+        return now.isoweekday() >= int(config.get("weekday", 1))
+    # monthly
+    mday = int(config.get("mday", 1))
+    import calendar
+    _, days_in_month = calendar.monthrange(now.year, now.month)
+    effective = min(mday, days_in_month)
+    return now.day >= effective
 
 
 def _is_empty(report: dict) -> bool:
@@ -145,64 +239,75 @@ def is_running() -> bool:
     return _running
 
 
-def run_daily(force: bool = False, owner_key: str | None = None,
-              scheduled: bool = True) -> dict:
-    """构建并发送日报，返回统计。"""
-    global _last_run_date
-    with _lock:
-        if scheduled and not is_workday():
-            log("NOTIFY", "今天非工作日，跳过日报发送")
-            return {"sent": 0, "skipped": 0, "failed": 0, "error": "holiday"}
+def run_report(force: bool = False, owner_key: str | None = None) -> dict:
+    """构建并发送定期报告（日报/周报/月报），返回统计。
 
-        token = xiaoluban.get_token()
-        if not token:
-            log("NOTIFY", "小鲁班 token 未配置，跳过日报发送")
-            return {"sent": 0, "skipped": 0, "failed": 0, "error": "no_token"}
+    单消息模式：全 owner（enabled）汇总成一条消息，发送到**当前周期
+    单独配置的接收群**（notify_report_receiver_daily/weekly/monthly）——
+    不是每个 owner 各发一条。
 
-        today_start = _today_start_utc()
-        sent = skipped = failed = 0
-        reports = build_reports(
-            owner_key=owner_key, force=force).get("agents", [])
-        for report in reports:
-            owner = report.get("owner_key", "")
-            receiver = report.get("target_id") or ""
-            if not report.get("enabled") or not receiver:
-                skipped += 1
-                continue
-            if not force:
-                last = last_sent_at(owner)
-                if last is not None and last >= today_start:
-                    skipped += 1
-                    continue
-            if _is_empty(report):
-                skipped += 1
-                continue
+    - 周期可配置（notify_report_period：daily/weekly/monthly），
+      标题按周期（日报/周报/月报）；
+    - 内容=该周期的全量汇总（日报=当天全部、周报=本周全部、
+      月报=本月全部），显式窗口=周期起点 → 现在，不是增量；
+    - 通道/窗口跟踪独立（xiaoluban-report），周期级去重
+      （owner_key=__combined__）：本周期已发送过则跳过（force 可重发）；
+    - 全部 owner 空报告时不发送；接收群未配置时不发送。
+    """
+    config = get_report_config()
+    period = config["period"]
+    label = _period_label(period)
+    token = xiaoluban.get_token()
+    if not token:
+        log("NOTIFY", "小鲁班 token 未配置，跳过定期报告发送")
+        return {"sent": 0, "skipped": 0, "failed": 0, "error": "no_token"}
 
-            text = render_text(report)
-            ok, detail = xiaoluban.send_message(receiver, text, token=token)
-            window = report.get("window") or {}
-            record_send(
-                owner, receiver,
-                window.get("start", ""), window.get("end", ""),
-                content_hash(text),
-                "sent" if ok else "failed",
-                None if ok else detail,
-            )
-            if ok:
-                sent += 1
-                log("NOTIFY", f"日报发送成功: {owner} -> {receiver}")
-            else:
-                failed += 1
-                log("NOTIFY", f"日报发送失败: {owner} -> {receiver}: {detail}")
+    receiver = (config.get("receivers") or {}).get(period, "")
+    if not receiver:
+        log("NOTIFY", f"{label}接收群未配置"
+                      f"（notify_report_receiver_{period}），跳过发送")
+        return {"sent": 0, "skipped": 0, "failed": 0, "error": "no_receiver"}
 
-        if scheduled:
-            _last_run_date = _now_local().strftime("%Y-%m-%d")
-        log("NOTIFY", f"日报发送完成: sent={sent} skipped={skipped} failed={failed}")
-        return {"sent": sent, "skipped": skipped, "failed": failed}
+    period_start = _period_start_utc(period)
+    if not force:
+        last = last_sent_at(_REPORT_OWNER_KEY, _CHANNEL_REPORT)
+        if last is not None and last >= period_start:
+            log("NOTIFY", f"{label}本周期已发送过，跳过")
+            return {"sent": 0, "skipped": 1, "failed": 0, "error": "dedup"}
+
+    # 内容=该周期的全量汇总（日报=当天全部、周报=本周全部、月报=本月全部），
+    # 不是「上次发送以来的增量」——显式 since 覆盖 build_reports 的
+    # per-owner 增量窗口。
+    reports = build_reports(
+        owner_key=None, force=force,
+        since=period_start.isoformat(),
+        channel=_CHANNEL_REPORT).get("agents", [])
+    enabled_reports = [r for r in reports if r.get("enabled")]
+    if not enabled_reports or all(_is_empty(r) for r in enabled_reports):
+        log("NOTIFY", f"{label}全部 owner 空报告，跳过发送")
+        return {"sent": 0, "skipped": 1, "failed": 0, "error": "empty"}
+
+    text = render_combined_text(enabled_reports, period_label=label)
+    ok, detail = xiaoluban.send_message(receiver, text, token=token)
+    window = enabled_reports[0].get("window") or {}
+    record_send(
+        _REPORT_OWNER_KEY, receiver,
+        window.get("start", ""), window.get("end", ""),
+        content_hash(text),
+        "sent" if ok else "failed",
+        None if ok else detail,
+        channel=_CHANNEL_REPORT,
+    )
+    if ok:
+        log("NOTIFY", f"{label}发送成功（汇总 {len(enabled_reports)} 个 owner）"
+                      f" -> {receiver}")
+        return {"sent": 1, "skipped": 0, "failed": 0}
+    log("NOTIFY", f"{label}发送失败 -> {receiver}: {detail}")
+    return {"sent": 0, "skipped": 0, "failed": 1, "error": detail}
 
 
-def trigger_run(owner_key: str | None = None) -> dict:
-    """手动触发一次发送（异步），返回启动状态。"""
+def trigger_report(owner_key: str | None = None) -> dict:
+    """手动触发一次定期报告发送（异步），返回启动状态。"""
     global _running
     with _run_guard:
         if _running or _lock.locked():
@@ -212,44 +317,46 @@ def trigger_run(owner_key: str | None = None) -> dict:
     def _worker():
         global _running
         try:
-            run_daily(force=True, owner_key=owner_key, scheduled=False)
+            run_report(force=True, owner_key=owner_key)
         except Exception as e:
-            log("NOTIFY", f"手动日报发送异常: {e}")
+            log("NOTIFY", f"手动定期报告发送异常: {e}")
         finally:
             with _run_guard:
                 _running = False
 
-    threading.Thread(target=_worker, name="notify-manual", daemon=True).start()
+    threading.Thread(target=_worker, name="notify-report-manual",
+                     daemon=True).start()
     return {"status": "started", "owner_key": owner_key}
 
 
 def schedule_loop(stop_event: threading.Event | None = None) -> None:
-    """后台线程：每天配置时间触发 run_daily。
+    """后台线程：定期报告（x 报=日报/周报/月报，周期可配置）触发 run_report。
 
-    注意：必须声明 global _last_run_date。函数体内有赋值，缺 global 时
-    Python 会把它当局部变量，首次读取就抛 UnboundLocalError，定时线程直接退出。
+    注意：必须声明 global _report_try_date。函数体内有赋值，缺 global 时
+    Python 会把它当局部变量，首次读取就抛 UnboundLocalError，定时线程
+    直接退出。
     """
-    global _last_run_date
-    log("NOTIFY", f"日报定时线程启动，每天 {get_daily_time()}（Asia/Shanghai）")
+    global _report_try_date
+    log("NOTIFY", "定期报告定时线程启动（x 报=日报/周报/月报，周期可配置）")
     while True:
         if stop_event is not None and stop_event.is_set():
-            log("NOTIFY", "日报定时线程停止")
+            log("NOTIFY", "定期报告定时线程停止")
             return
         now = _now_local()
         today = now.strftime("%Y-%m-%d")
-        daily_time = get_daily_time()
-        # 只在配置的那一分钟触发；过时不自动补发（补发走系统页手工触发）。
-        if now.strftime("%H:%M") == daily_time and _last_run_date != today:
+        # 到达配置周期触发日（含）之后的每个工作日、且本周期尚未发送过
+        # （周期级去重兜底），在配置时间那一分钟触发一次；配置日遇节假日
+        # 自然顺延到下一个工作日补发。_report_try_date 保证每天只尝试一次。
+        report_config = get_report_config()
+        if (now.strftime("%H:%M") == report_config["time"]
+                and _report_due_today(now, report_config)
+                and _report_try_date != today):
+            _report_try_date = today
             if not is_workday(now.date()):
-                log("NOTIFY", f"今天非工作日，跳过 {today} 日报发送")
-                _last_run_date = today
-                time.sleep(30)
-                continue
-            try:
-                run_daily()
-            except Exception as e:
-                log("NOTIFY", f"日报发送异常: {e}")
-            finally:
-                # 当天只尝试一次，避免每 30s 重复构建/刷日志
-                _last_run_date = today
+                log("NOTIFY", f"今天非工作日，跳过 {today} 定期报告发送（顺延）")
+            else:
+                try:
+                    run_report()
+                except Exception as e:
+                    log("NOTIFY", f"定期报告发送异常: {e}")
         time.sleep(30)

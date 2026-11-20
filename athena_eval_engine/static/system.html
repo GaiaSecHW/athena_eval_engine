@@ -106,13 +106,30 @@ async function renderSystem(){
       <div id="notify_public_url_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
-      <label style="font-weight:600;font-size:14px">发送时间</label>
-      <div style="font-size:12px;color:var(--sub);margin:4px 0">每天几点发送（Asia/Shanghai），修改后 60 秒内生效。</div>
-      <div style="display:flex;gap:8px;align-items:center">
-        <input id="notify_daily_time" type="time" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
-        <button class="btn" style="font-size:13px;padding:6px 14px;white-space:nowrap" onclick="saveNotifyTime()">保存</button>
+      <label style="font-weight:600;font-size:14px">定期报告（x 报 = 日报 / 周报 / 月报）</label>
+      <div style="font-size:12px;color:var(--sub);margin:4px 0">全 owner 汇总成一条消息，发到当前周期单独配置的接收群；内容=该周期全量汇总（不是增量）。未配置接收群的周期不发送；节假日自动顺延到下一工作日。</div>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:8px">
+        <select id="notify_report_period" onchange="toggleReportDayInputs()" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt)">
+          <option value="daily">日报（每天）</option>
+          <option value="weekly">周报（每周）</option>
+          <option value="monthly">月报（每月）</option>
+        </select>
+        <label style="font-size:12px;color:var(--sub)">发送时间</label>
+        <input id="notify_report_time" type="time" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        <span id="notify_report_weekday_wrap" style="display:none;align-items:center;gap:6px"><label style="font-size:12px;color:var(--sub)">周几发送</label>
+          <select id="notify_report_weekday" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt)">
+            <option value="1">周一</option><option value="2">周二</option><option value="3">周三</option><option value="4">周四</option><option value="5">周五</option><option value="6">周六</option><option value="7">周日</option>
+          </select></span>
+        <span id="notify_report_mday_wrap" style="display:none;align-items:center;gap:6px"><label style="font-size:12px;color:var(--sub)">几号发送(1-31)</label>
+          <input id="notify_report_mday" type="number" min="1" max="31" value="1" style="width:70px;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></span>
       </div>
-      <div id="notify_time_msg" style="margin-top:8px;font-size:13px"></div>
+      <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px">
+        <div><label style="font-size:12px;color:var(--sub)">日报接收群</label><input id="notify_receiver_daily" placeholder="群号/工号（空=不发送）" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></div>
+        <div><label style="font-size:12px;color:var(--sub)">周报接收群</label><input id="notify_receiver_weekly" placeholder="群号/工号（空=不发送）" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></div>
+        <div><label style="font-size:12px;color:var(--sub)">月报接收群</label><input id="notify_receiver_monthly" placeholder="群号/工号（空=不发送）" style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"></div>
+      </div>
+      <div style="margin-top:8px"><button class="btn" style="font-size:13px;padding:6px 14px" onclick="saveReportConfig()">保存</button></div>
+      <div id="notify_report_msg" style="margin-top:8px;font-size:13px"></div>
     </div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
       <label style="font-weight:600;font-size:14px">工作日日历</label>
@@ -154,7 +171,7 @@ async function renderSystem(){
   loadLlmStatus();
   loadXiaolubanToken();
   loadNotifyEnv();
-  loadNotifyTime();
+  loadReportConfig();
   loadNotifyWorkdays();
   loadNotifyOwners();
   loadNotifyStatus();
@@ -321,14 +338,41 @@ async function saveNotifyPublicUrl(){
   }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 
-async function loadNotifyTime(){
-  try{const d=await jget("/api/v2/notify/daily-time");var el=$("notify_daily_time");if(el)el.value=d.daily_time||'09:00';}
-  catch(e){var m=$("notify_time_msg");if(m)m.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+function toggleReportDayInputs(){
+  var p=$("notify_report_period");
+  var period=p?p.value:'weekly';
+  var w=$("notify_report_weekday_wrap"),m=$("notify_report_mday_wrap");
+  if(w)w.style.display=(period==='weekly')?'inline-flex':'none';
+  if(m)m.style.display=(period==='monthly')?'inline-flex':'none';
 }
-async function saveNotifyTime(){
-  var el=$("notify_daily_time");if(!el)return;
-  var msg=$("notify_time_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
-  try{await jput("/api/v2/notify/daily-time",{daily_time:el.value});if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存</span>';}
+async function loadReportConfig(){
+  try{
+    const d=await jget("/api/v2/notify/report-config");
+    var p=$("notify_report_period");if(p)p.value=d.period||'weekly';
+    var t=$("notify_report_time");if(t)t.value=d.time||'09:00';
+    var w=$("notify_report_weekday");if(w)w.value=String(d.weekday||1);
+    var m=$("notify_report_mday");if(m)m.value=String(d.mday||1);
+    var r=d.receivers||{};
+    var rd=$("notify_receiver_daily");if(rd)rd.value=r.daily||'';
+    var rw=$("notify_receiver_weekly");if(rw)rw.value=r.weekly||'';
+    var rm=$("notify_receiver_monthly");if(rm)rm.value=r.monthly||'';
+    toggleReportDayInputs();
+  }catch(e){var msg=$("notify_report_msg");if(msg)msg.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+async function saveReportConfig(){
+  var msg=$("notify_report_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  var body={
+    period:$("notify_report_period")?$("notify_report_period").value:'weekly',
+    time:$("notify_report_time")?$("notify_report_time").value:'09:00',
+    weekday:parseInt($("notify_report_weekday")?$("notify_report_weekday").value:'1')||1,
+    mday:parseInt($("notify_report_mday")?$("notify_report_mday").value:'1')||1,
+    receivers:{
+      daily:($("notify_receiver_daily")?$("notify_receiver_daily").value:'').trim(),
+      weekly:($("notify_receiver_weekly")?$("notify_receiver_weekly").value:'').trim(),
+      monthly:($("notify_receiver_monthly")?$("notify_receiver_monthly").value:'').trim()
+    }
+  };
+  try{await jput("/api/v2/notify/report-config",body);if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存（60 秒内生效）</span>';}
   catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
 }
 function _setWorkdaysRange(d){
@@ -428,6 +472,24 @@ async function loadNotifyPreview(){
   try{
     var url="/api/v2/notify/preview"+(owner?("?owner_key="+encodeURIComponent(owner)):"");
     var d=await jget(url);
+    if(d.mode==='combined'){
+      // 单消息模式预览：全 owner 汇总一条（真实发送形态）
+      var win=d.window||{};
+      var badges='';
+      if(d.empty)badges+='<span class="bdg" style="background:rgba(217,119,6,.15);color:var(--amber)">空报告，不会发送</span>';
+      if(!d.receiver)badges+='<span class="bdg" style="background:rgba(220,38,38,.12);color:var(--red)">当前周期接收群未配置，不会发送</span>';
+      c.innerHTML='<div style="margin-bottom:16px">'
+        +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px">'
+        +'<b style="font-size:14px">发送形态：单条汇总消息</b>'
+        +'<span class="knd">'+esc(d.period||'-')+'</span>'
+        +'<span class="knd">接收群：'+esc(d.receiver||'未配置')+'</span>'
+        +badges+'</div>'
+        +'<div style="font-size:12px;color:var(--sub);margin-bottom:6px">统计窗口：'
+        +esc(win.start?fmtDate(win.start):'-')+' ~ '+esc(win.end?fmtDate(win.end):'-')+'</div>'
+        +'<div style="background:var(--panel);border:1px solid var(--bd);border-radius:8px;padding:12px;font-size:13px;line-height:1.7;max-height:420px;overflow:auto">'+(d.text||'')+'</div>'
+        +'</div>';
+      return;
+    }
     var ps=d.previews||[];
     if(!ps.length){c.innerHTML='<div style="color:var(--sub)">无预览</div>';return;}
     c.innerHTML=ps.map(function(p){

@@ -362,16 +362,42 @@ class KnowledgeVerifier:
         })
 
         # 5. LLM 判定
-        query_log.append({
+        # 占位条目先行（判定耗时可达分钟级），判定完成后回填结果——
+        # 不回填页面会一直显示「等待 LLM 判定...」，造成"未判定"假象
+        llm_judge_entry = {
             "step": "LLM 判定",
             "action": f"用 LLM 判定 {len(candidates)} 个候选文件是否含消减误报的知识",
             "detail": f"漏洞标题: {vuln_title}; 误报原因: {fp_reason}",
             "result": "等待 LLM 判定...",
             "count": len(candidates),
-        })
+        }
+        query_log.append(llm_judge_entry)
 
         result = self._llm_verify(vuln_title, fp_reason, candidates, cancel_cb,
                                   evaluation_id=evaluation_id)
+
+        # 回填判定结果（含方向与命中标题）
+        matched = result.get("matched_files") or []
+        l4 = result.get("l4_knowledge_exists")
+        direction = result.get("l4_knowledge_direction")
+        if l4 is True:
+            verdict = f"命中 {len(matched)} 篇相关知识"
+            if direction:
+                verdict += f"（方向: {direction}）"
+            hit_titles = [
+                str(m.get("title") or "").strip()
+                for m in matched
+                if isinstance(m, dict) and m.get("title")]
+            if hit_titles:
+                llm_judge_entry["detail"] += (
+                    " 命中标题: " + "；".join(hit_titles[:3]))
+        elif l4 is False:
+            verdict = "未找到相关知识"
+        else:
+            verdict = "未判定（查询失败/未执行）"
+        llm_judge_entry["result"] = verdict
+        llm_judge_entry["count"] = len(matched)
+
         result["kb_searched"] = {
             "athena_api": bool(project_id) and bool(athena_queries),
             "wiki_nfs": _WIKI_SEARCH_ENABLED and os.path.isdir(_WIKI_ROOT),
