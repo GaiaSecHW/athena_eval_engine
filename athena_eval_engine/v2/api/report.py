@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 
 from fastapi import APIRouter, HTTPException
+from pydantic import BaseModel
 
 from ...application import platform_service as ps
 from ...config_loader import DATA_ROOT
@@ -577,3 +578,55 @@ def fpr(project_id: str, task_id: str):
         "fnr": fnr,
         "cases": detail,
     }
+
+
+# ── 自动创建测评（system 页「自动化」tab）──
+
+
+class AutoEvalUpdate(BaseModel):
+    """自动创建测评配置：开关 + 确认率阈值 + 误报率阈值 + 结束窗口（可选更新）。"""
+    enabled: bool | None = None
+    min_confirm_rate: float | None = None
+    min_fpr: float | None = None
+    max_finished_days: int | None = None
+
+
+@router.get("/auto-eval")
+def get_auto_eval():
+    """自动创建测评状态：配置 + 上次运行结果。"""
+    from ..sync.auto_eval import get_config, get_last_run
+    cfg = get_config()
+    return {**cfg, "last_run": get_last_run()}
+
+
+@router.put("/auto-eval")
+def set_auto_eval(update: AutoEvalUpdate):
+    """更新自动创建测评配置（只更新传入项，立即生效）。"""
+    from ..sync.auto_eval import set_config
+    if update.min_confirm_rate is not None and not (
+            0.0 <= update.min_confirm_rate <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail="min_confirm_rate 须在 0-1 之间")
+    if update.min_fpr is not None and not (
+            0.0 <= update.min_fpr <= 1.0):
+        raise HTTPException(status_code=400,
+                            detail="min_fpr 须在 0-1 之间")
+    if update.max_finished_days is not None and not (
+            1 <= update.max_finished_days <= 365):
+        raise HTTPException(status_code=400,
+                            detail="max_finished_days 须在 1-365 之间")
+    cfg = set_config(enabled=update.enabled,
+                     min_confirm_rate=update.min_confirm_rate,
+                     min_fpr=update.min_fpr,
+                     max_finished_days=update.max_finished_days)
+    return {"status": "ok", **cfg}
+
+
+@router.post("/auto-eval/run")
+def run_auto_eval():
+    """手动触发一次自动创建（异步；不受开关限制，结果看「上次运行」）。"""
+    from ..sync.auto_eval import trigger_async
+    result = trigger_async()
+    if result.get("status") == "running":
+        raise HTTPException(status_code=409, detail="自动创建正在运行")
+    return result

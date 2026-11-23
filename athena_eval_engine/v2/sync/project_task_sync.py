@@ -318,4 +318,11 @@ def schedule_loop(stop_event: threading.Event | None = None) -> None:
                         sync_all()
                     except Exception as e:
                         log("SYNC", f"定时采集失败: {e}")
+                    # 采集完成后触发自动创建测评（开关 auto_eval_enabled 可控，
+                    # 内部自带幂等门禁——不会重复创建）
+                    try:
+                        from .auto_eval import run_after_sync
+                        run_after_sync()
+                    except Exception as e:
+                        log("AUTO_EVAL", f"采集后自动创建触发失败: {e}")
         time.sleep(_SCHEDULE_CHECK_SECONDS)

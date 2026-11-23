@@ -48,7 +48,14 @@ async function renderSystem(){
   var llmPct=Math.round(llmActive/llmMax*100);
   var llmColor=llmPct>80?'var(--red)':llmPct>50?'var(--amber)':'var(--green)';
   var h=`<div class="page-body">
-    <div class="card"><h3>系统参数设置</h3>
+    <div id="sys-tabs" style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:16px">
+      <button class="btn g" onclick="switchSysTab('run',this)">运行参数</button>
+      <button class="btn" onclick="switchSysTab('llm',this)">LLM</button>
+      <button class="btn" onclick="switchSysTab('ds',this)">数据源</button>
+      <button class="btn" onclick="switchSysTab('notify',this)">通知</button>
+      <button class="btn" onclick="switchSysTab('auto',this)">自动化</button>
+    </div>
+    <div class="card" data-sys-tab="run"><h3>系统参数设置</h3>
     <div style="font-size:13px;color:var(--sub);margin-bottom:16px">修改后立即生效并持久化到数据库，Pod 重启后保留配置。</div>
     <div style="display:flex;gap:12px;flex-wrap:wrap;margin-bottom:20px;padding:14px;border:1px solid var(--bd);border-radius:8px;background:var(--p2)">
       <div style="text-align:center;min-width:100px"><div style="font-size:28px;font-weight:700;color:var(--acc)">${rt}<span style="font-size:16px;color:var(--sub)">/${evalMax}</span></div><div style="font-size:12px;color:var(--sub);margin-top:2px">运行中任务${queued?`（${queued} 排队${paused?`，${paused} 暂停`:''}）`:(paused?`（${paused} 暂停）`:'')}</div></div>
@@ -70,15 +77,39 @@ async function renderSystem(){
     <div style="margin-top:20px;display:flex;gap:12px"><button id="cfg_save_btn" onclick="saveSystemConfig()" style="padding:8px 24px;border:none;border-radius:6px;background:var(--acc);color:#fff;cursor:pointer;font-size:14px">保存</button><button onclick="renderSystem()" style="padding:8px 24px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt);cursor:pointer;font-size:14px">刷新</button></div>
     <div id="cfg_msg" style="margin-top:12px;font-size:13px"></div>
     </div>
-    <div class="card" style="margin-top:20px"><h3>LLM 网关配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">LLM 网关地址、模型配置与连通性测试。模型修改后立即生效，Pod 重启后保留。</div>
+    <div class="card" style="margin-top:20px" data-sys-tab="llm"><h3>LLM 网关配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">LLM 网关地址、模型配置与连通性测试。模型修改后立即生效，Pod 重启后保留。</div>
     <div style="display:flex;flex-direction:column;gap:18px">
       <div><label style="font-weight:600;font-size:14px">网关地址</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 网关 Base URL（只读，通过环境变量 EVAL_LLM_BASE_URL 配置）</div><input id="cfg_llm_base_url" value="加载中..." readonly style="width:100%;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--sub);font-family:monospace;font-size:13px"></div>
       <div><label style="font-weight:600;font-size:14px">模型</label><div style="font-size:12px;color:var(--sub);margin:4px 0">LLM 模型名（如 pro、glm-5.2 等，修改后立即生效）</div><div style="display:flex;gap:8px;align-items:center"><input id="cfg_llm_model" value="${c.llm_model||''}" placeholder="如 pro" style="flex:1;padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--p2);color:var(--txt)"><button class="btn" style="font-size:13px;padding:6px 16px;white-space:nowrap" onclick="saveLlmModel()">切换模型</button></div></div>
       <div style="border-top:1px solid var(--bd);padding-top:16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button class="btn g" style="font-size:13px;padding:8px 20px" onclick="testLlmConnection()">测试连通性</button><span id="llm_test_status" style="font-size:13px;color:var(--sub)"></span></div><div id="llm_test_result" style="font-size:13px"></div></div>
     </div>
     </div>
-    <div class="card" style="margin-top:20px"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
-    <div class="card" style="margin-top:20px"><h3>日报通知配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">配置每个 agent / 责任方的 WeLink 负责人。未配置或未启用的 owner 不会发送日报。工号格式：拼音首字母+工号（如 w0012345）。</div>
+    <div class="card" style="margin-top:20px" data-sys-tab="ds"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
+    <div class="card" style="margin-top:20px" data-sys-tab="auto"><h3>自动创建测评</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">满足全部条件的任务自动发起运行态测评：<b>人工确认率 100%</b> + <b>误报率 ≥30%</b>（与手动启动门槛一致）+ <b>任务结束 1.5 个月内</b> + 源码存在。随每轮数据采集（6:00/12:00/17:00）后触发；走与手动启动完全相同的门禁（每任务每模式一条等），不会重复创建。</div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
+        <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--txt);cursor:pointer"><input id="auto_eval_enabled" type="checkbox" style="width:auto"> 开启自动创建</label>
+        <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)">确认率 ≥
+          <input id="auto_eval_rate" type="number" min="0" max="100" step="1" style="width:70px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"> %
+        </span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)">任务结束
+          <input id="auto_eval_days" type="number" min="1" max="365" step="1" style="width:70px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"> 天内
+        </span>
+        <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)">误报率 ≥
+          <select id="auto_eval_fpr" style="padding:6px 10px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt)">
+            <option value="0.3">30%</option>
+            <option value="0.4">40%</option>
+            <option value="0.5">50%</option>
+            <option value="0.6">60%</option>
+          </select>
+        </span>
+        <button class="btn g" style="font-size:13px;padding:6px 14px" onclick="saveAutoEval()">保存</button>
+        <button class="btn" style="font-size:13px;padding:6px 14px" onclick="runAutoEvalNow()">立即执行一轮</button>
+        <span style="font-size:12px;color:var(--sub)">立即执行不受开关限制（强制跑一轮）</span>
+      </div>
+      <div id="auto_eval_msg" style="font-size:13px;margin-bottom:8px"></div>
+      <div id="auto_eval_last" style="padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2);font-size:13px">加载中...</div>
+    </div>
+    <div class="card" style="margin-top:20px" data-sys-tab="notify"><h3>日报通知配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">配置每个 agent / 责任方的 WeLink 负责人。未配置或未启用的 owner 不会发送日报。工号格式：拼音首字母+工号（如 w0012345）。</div>
     <div style="margin-bottom:18px;padding:14px;border:1px solid var(--bd);border-radius:10px;background:var(--p2)">
       <label style="font-weight:600;font-size:14px">小鲁班 Token</label>
       <div style="font-size:12px;color:var(--sub);margin:4px 0">在 WeLink 里找「小鲁班」，发送“获取发送token”，把返回的 token 粘贴到这里。token 过期时重新获取并更新。保存后只显示前 3 位和后 3 位。</div>
@@ -174,6 +205,7 @@ async function renderSystem(){
       <div id="notify_preview"><div style="color:var(--sub)">加载中...</div></div>
     </div></div>`;
   $("view").innerHTML=h;
+  switchSysTab("run");
   loadDatasources();
   loadLlmStatus();
   loadXiaolubanToken();
@@ -183,6 +215,76 @@ async function renderSystem(){
   loadNotifyOwners();
   loadNotifyStatus();
   loadNotifyPreview();
+  loadAutoEval();
+}
+
+// 分 tab 展示：只显示当前类别的卡片（data-sys-tab），按钮高亮跟随
+function switchSysTab(tab,btn){
+  document.querySelectorAll("[data-sys-tab]").forEach(function(el){
+    el.style.display=(el.getAttribute("data-sys-tab")===tab)?"":"none";
+  });
+  var bar=$("sys-tabs");
+  if(bar){bar.querySelectorAll("button").forEach(function(b){b.classList.remove("g");});}
+  if(btn)btn.classList.add("g");
+}
+
+// ── 自动创建测评 ──
+async function loadAutoEval(){
+  var el=$("auto_eval_last");if(!el)return;
+  try{
+    const d=await jget("/api/v2/report/auto-eval");
+    var cb=$("auto_eval_enabled");if(cb)cb.checked=!!d.enabled;
+    var rate=$("auto_eval_rate");if(rate)rate.value=Math.round((d.min_confirm_rate??1)*100);
+    var days=$("auto_eval_days");if(days)days.value=d.max_finished_days??45;
+    var fpr=$("auto_eval_fpr");
+    if(fpr){
+      var v=String(d.min_fpr??0.3);
+      var has=[...fpr.options].some(o=>o.value===v);
+      fpr.value=has?v:"0.3";
+    }
+    el.innerHTML=renderAutoEvalLast(d.last_run||{});
+  }catch(e){el.innerHTML='<span style="color:var(--red)">加载失败: '+esc(String(e))+'</span>';}
+}
+function renderAutoEvalLast(r){
+  if(!r||!r.at)return '<span style="color:var(--sub)">尚未运行过</span>';
+  var lines=['<b>上次运行：</b>'+esc(r.at)];
+  if(r.config){lines.push('<span style="color:var(--sub);font-size:12px">参数：确认率 ≥'+Math.round((r.config.min_confirm_rate??1)*100)+'% · 误报率 ≥'+Math.round((r.config.min_fpr??0.3)*100)+'% · 结束 '+esc(r.config.max_finished_days??45)+' 天内</span>');}
+  if(r.skipped_run){lines.push('<span style="color:var(--amber)">开关关闭，未运行</span>');}
+  else{lines.push('候选 <b>'+esc(r.candidates??0)+'</b> 个 · 创建 <b style="color:var(--green)">'+esc(r.created??0)+'</b> 个 · 跳过 <b style="color:var(--amber)">'+esc(r.skipped??0)+'</b> 个');
+    if(r.created_ids&&r.created_ids.length){lines.push('创建评测：'+r.created_ids.map(esc).join('、'));}
+    if(r.skip_reasons){for(var k in r.skip_reasons){lines.push('<div style="color:var(--sub);font-size:12px">跳过 '+esc(k)+'：'+esc(r.skip_reasons[k])+'</div>');}}}
+  return lines.join('<br>');
+}
+async function saveAutoEval(){
+  var msg=$("auto_eval_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">保存中…</span>';
+  var rate=parseFloat($("auto_eval_rate")?$("auto_eval_rate").value:"100");
+  var days=parseInt($("auto_eval_days")?$("auto_eval_days").value:"45");
+  var body={
+    enabled:!!($("auto_eval_enabled")&&$("auto_eval_enabled").checked),
+    min_confirm_rate:(isNaN(rate)?100:rate)/100,
+    min_fpr:parseFloat($("auto_eval_fpr")?$("auto_eval_fpr").value:"0.3")||0.3,
+    max_finished_days:isNaN(days)?45:days
+  };
+  try{
+    await jput("/api/v2/report/auto-eval",body);
+    if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 已保存（随下轮采集生效）</span>';
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">✗ '+esc(String(e))+'</span>';}
+}
+async function runAutoEvalNow(){
+  var msg=$("auto_eval_msg");if(msg)msg.innerHTML='<span style="color:var(--sub)">已触发，执行中（完成后下方更新）…</span>';
+  try{
+    await jpost("/api/v2/report/auto-eval/run",{});
+    var tries=0;
+    var timer=setInterval(async function(){
+      tries++;
+      try{
+        const d=await jget("/api/v2/report/auto-eval");
+        var el=$("auto_eval_last");
+        if(el){el.innerHTML=renderAutoEvalLast(d.last_run||{});if(d.last_run&&d.last_run.at){clearInterval(timer);if(msg)msg.innerHTML='<span style="color:var(--green)">✓ 执行完成</span>';}}
+      }catch(e){}
+      if(tries>60)clearInterval(timer);
+    },3000);
+  }catch(e){if(msg)msg.innerHTML='<span style="color:var(--red)">'+esc(String(e))+'</span>';}
 }
 function toggleReasoning(cb){var sel=$("cfg_reasoning_effort");if(sel){sel.style.display=cb.checked?'':'none';}}
 async function saveSystemConfig(){
