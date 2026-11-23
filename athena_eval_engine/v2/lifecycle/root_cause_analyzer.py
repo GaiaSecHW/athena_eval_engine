@@ -651,6 +651,71 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 """
 
 
+# ── per-case 根因缓存 ──
+# 场景：任务已结束、trace 冻结，人工标注只增不改——重跑（如标注变化后
+# 重新发起测评）时老 case 直接复用既有根因（断点/责任方/L4 判定原样
+# 保留，不翻案——已按旧根因修复误报的人不会看到根因变化），只对新增
+# 确认（缓存未命中）的 case 跑 LLM 分析。
+# key = case 标注输入指纹（case_id/outcome/标题/描述/摘要/人工确认
+# 摘要/验证否定标记/agent 类型）+ 分析器版本号。
+# prompt 或判定逻辑变化时必须递增版本号，否则缓存仍是旧逻辑结果。
+_RCA_CACHE_VERSION = 1
+
+
+def _rca_cache_dir() -> str:
+    from ...config_loader import get_reports_dir
+    return os.path.join(get_reports_dir(), "_root_cause_cache")
+
+
+def _rca_cache_path(case: dict) -> str:
+    """缓存文件路径：{safe_case_id}_{outcome}_v{版本}_{指纹16}.json"""
+    case_id = str(case.get("case_id") or "")
+    outcome = str(case.get("outcome") or "")
+    digest_input = "\x1f".join([
+        case_id, outcome,
+        str(case.get("vuln_title") or ""),
+        str(case.get("description") or ""),
+        str(case.get("summary") or ""),
+        str(case.get("human_confirmation_summary") or ""),
+        str(case.get("verify_verdict") or ""),
+        str(case.get("agent_type") or ""),
+    ])
+    digest = hashlib.md5(digest_input.encode("utf-8")).hexdigest()[:16]
+    safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", case_id)[:120] or "nocase"
+    return os.path.join(
+        _rca_cache_dir(),
+        f"{safe_id}_{outcome}_v{_RCA_CACHE_VERSION}_{digest}.json")
+
+
+def _rca_cache_load(case: dict) -> dict | None:
+    """命中返回缓存的分析结果；未命中/损坏返回 None（回退新分析）。"""
+    path = _rca_cache_path(case)
+    if not os.path.isfile(path):
+        return None
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict) and \
+                data.get("case_id") == str(case.get("case_id") or ""):
+            return data
+    except Exception:
+        pass
+    return None
+
+
+def _rca_cache_save(case: dict, result: dict) -> None:
+    """写入 per-case 分析结果（临时文件 + 原子替换；失败不阻断）。"""
+    path = _rca_cache_path(case)
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(result, f, ensure_ascii=False)
+        os.replace(tmp, path)
+    except Exception as e:
+        log("ROOT_CAUSE", f"根因缓存写入失败（不阻断）: {e}")
+
+
 class RootCauseAnalyzer:
     """误报根因分析器 — 挖掘链 + 验证链各自独立压缩，最后合并输出。"""
 
@@ -710,7 +775,6 @@ class RootCauseAnalyzer:
         # 多 case 并发分析（最多 10 个 case 同时处理）
         # 每个 case 内挖掘链和验证链串行执行，
         # 链内 session 压缩通过 submit_llm_batch 并发（受 LLM gate 控制）
-        max_workers = min(len(fp_cases), 10)
 
         def _run_case(idx_case):
             """分析单个 FP case，返回 (idx, result_dict)。"""
@@ -827,17 +891,42 @@ class RootCauseAnalyzer:
 
         results: list[dict | None] = [None] * len(fp_cases)
 
-        if max_workers <= 1:
-            for i, case in enumerate(fp_cases):
-                idx, result = _run_case((i, case))
-                results[idx] = result
-        else:
-            with ThreadPoolExecutor(max_workers=max_workers) as pool:
-                futures = {pool.submit(_run_case, (i, c)): i
-                           for i, c in enumerate(fp_cases)}
-                for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
-                    idx, result = fut.result()
+        # per-case 根因缓存：trace 冻结 + 标注输入未变的 case 直接复用
+        # 既有分析（根因/断点/责任方/L4 判定原样保留，重跑不翻案），
+        # 只对新增确认（缓存未命中）的 case 跑 LLM。
+        to_analyze: list[tuple[int, dict]] = []
+        for i, case in enumerate(fp_cases):
+            hit = _rca_cache_load(case)
+            if hit is not None:
+                results[i] = hit
+            else:
+                to_analyze.append((i, case))
+        reused = len(fp_cases) - len(to_analyze)
+        if fp_cases and reused:
+            log("ROOT_CAUSE",
+                f"根因缓存命中 {reused}/{len(fp_cases)} 个 case"
+                f"（标注输入未变，复用既有根因），新分析 {len(to_analyze)} 个",
+                eval_id=evaluation_id)
+
+        def _run_and_save(idx_case):
+            idx, result = _run_case(idx_case)
+            _rca_cache_save(fp_cases[idx], result)
+            return idx, result
+
+        max_workers = min(len(to_analyze), 10)
+        if to_analyze:
+            if max_workers <= 1:
+                for i, case in to_analyze:
+                    idx, result = _run_case((i, case))
+                    _rca_cache_save(fp_cases[idx], result)
                     results[idx] = result
+            else:
+                with ThreadPoolExecutor(max_workers=max_workers) as pool:
+                    futures = {pool.submit(_run_and_save, (i, c)): i
+                               for i, c in to_analyze}
+                    for fut, _ in iter_completed(futures, cancel_cb=cancel_cb):
+                        idx, result = fut.result()
+                        results[idx] = result
 
         return [r for r in results if r is not None]
 

@@ -275,6 +275,45 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     except Exception as e:
         log("REPORT", f"读启动失败信息失败: {e}")
 
+    # 标注变化检测：任务最新已完成评测落库的基线标注计数 vs 当前计数。
+    # 不一致 → 评测完成后人工又改了标注，建议重新发起测评（新评测、新基线）。
+    baseline_map: dict[str, dict] = {}
+    try:
+        _tids = sorted({str(r.get("task_id") or "") for r in rows
+                        if r.get("task_id")})
+        if _tids:
+            _ph = ",".join(["%s"] * len(_tids))
+
+            def _do_baseline(cur):
+                cur.execute(
+                    "SELECT s.task_id, s.baseline_vuln_total, "
+                    "s.baseline_confirmed_vulnerable, "
+                    "s.baseline_confirmed_fp, "
+                    "s.baseline_confirmed_not_vulnerable, e.created_at "
+                    f"FROM evaluation_summary s JOIN evaluation e "
+                    f"ON e.evaluation_id = s.evaluation_id "
+                    f"WHERE s.task_id != '' AND s.task_id IN ({_ph}) "
+                    f"AND e.evaluation_status IN "
+                    f"('COMPLETED','COMPLETED_WITH_WARNINGS') "
+                    f"ORDER BY e.created_at",
+                    tuple(_tids))
+                return cur.fetchall()
+
+            for (tid, b_total, b_vuln, b_fp, b_nonvuln, _created
+                 ) in _db_query(_do_baseline):
+                # 基线计数全 NULL（评测时任务未同步到）→ 未知，不参与判定
+                if None in (b_total, b_vuln, b_fp, b_nonvuln):
+                    continue
+                # ORDER BY created_at 升序 → 后写覆盖 = 取最新已完成评测
+                baseline_map[str(tid)] = {
+                    "vuln_total": b_total,
+                    "confirmed_vulnerable": b_vuln,
+                    "confirmed_fp": b_fp,
+                    "confirmed_not_vulnerable": b_nonvuln,
+                }
+    except Exception as e:
+        log("REPORT", f"读评测基线标注失败: {e}")
+
     # 任务是否已从平台删除（与评测列表/漏洞中心同一口径：schedule batch-alive）
     # alive=False 时跳过（逐项目网络调用很慢），由前端异步补全 task_deleted。
     alive_by_proj: dict[str, set[str]] = {}
@@ -343,6 +382,21 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             r["confirm_rate"] = float(r["confirm_rate"])
         r["source_exists"] = _source_exists(
             _pid, _tid, source_paths_map.get((_pid, _tid)))
+        # 标注变化：任一计数与基线不一致即视为变化；无基线（老评测/
+        # 未同步到）= None（未知），不算变化
+        base = baseline_map.get(str(_tid or ""))
+        if not base:
+            r["annotation_changed"] = None
+        else:
+            r["annotation_changed"] = any(
+                int(cur or 0) != int(base.get(key) or 0)
+                for cur, key in (
+                    (r.get("vuln_total"), "vuln_total"),
+                    (r.get("confirmed_vulnerable"), "confirmed_vulnerable"),
+                    (r.get("confirmed_fp"), "confirmed_fp"),
+                    (r.get("confirmed_not_vulnerable"),
+                     "confirmed_not_vulnerable"),
+                ))
 
     # 全量 agent 列表（供前端筛选下拉）
     all_agents: list[str] = []

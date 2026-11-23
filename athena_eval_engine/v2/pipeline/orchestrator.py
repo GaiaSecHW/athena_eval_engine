@@ -247,6 +247,10 @@ class Orchestrator:
                 eval_mode=eval_mode,
                 agent_outcomes=_calc_agent_outcomes(
                     case_session_matches, data_packs),
+                project_id=(cfg.get("manifest", {}) or {}).get(
+                    "kg_project_id", ""),
+                task_id=(cfg.get("manifest", {}) or {}).get(
+                    "kg_task_id", ""),
             )
             # 有数据质量告警时标记为 COMPLETED_WITH_WARNINGS
             if data_quality_warnings:
@@ -1465,6 +1469,8 @@ class Orchestrator:
         recall_precision: dict | None = None,
         eval_mode: str = "dev",
         agent_outcomes: dict | None = None,
+        project_id: str = "",
+        task_id: str = "",
     ):
         """写入 evaluation_report 表，状态设为 COMPLETED。
 
@@ -1473,6 +1479,9 @@ class Orchestrator:
 
         同时写入 evaluation_summary 小索引表：首页看板只需一次 SQL 聚合，
         不再逐个读取 {eid}.json / _debug_case_matching.json / _lifecycle.json。
+
+        基线标注计数（project_task_summary 评测完成时的人工确认计数）
+        一并落库：之后与当前计数对比，即可检测「评测后人工标注又变了」。
         """
         # 检查 lifecycle report 是否存在
         lifecycle_path = os.path.join(
@@ -1529,15 +1538,37 @@ class Orchestrator:
                     _json_dumps(report_data),
                 ),
             )
+            # 基线标注计数：评测完成时该任务的人工确认计数（来自
+            # project_task_summary 同一来源，后续对比口径一致）。
+            # 行不存在（未同步到）→ NULL = 未知，不参与变化判定。
+            baseline = None
+            if project_id and task_id:
+                cur.execute(
+                    "SELECT vuln_total, confirmed_vulnerable, "
+                    "confirmed_fp, confirmed_not_vulnerable "
+                    "FROM project_task_summary "
+                    "WHERE project_id=%s AND task_id=%s",
+                    (project_id, task_id))
+                _b = cur.fetchone()
+                if _b:
+                    baseline = tuple(int(x or 0) for x in _b)
             # 小索引：看板聚合只读此表，不碰大报告文件
             cur.execute(
                 "INSERT INTO evaluation_summary "
-                "(evaluation_id, eval_mode, tp_count, fp_count, fn_count, tn_count, "
+                "(evaluation_id, eval_mode, project_id, task_id, "
+                " baseline_vuln_total, baseline_confirmed_vulnerable, "
+                " baseline_confirmed_fp, baseline_confirmed_not_vulnerable, "
+                " tp_count, fp_count, fn_count, tn_count, "
                 " recall_rate, precision_rate, fpr_rate, agent_outcomes, "
                 " breakpoint_distribution) "
-                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s) "
                 "ON DUPLICATE KEY UPDATE "
                 "eval_mode=VALUES(eval_mode), "
+                "project_id=VALUES(project_id), task_id=VALUES(task_id), "
+                "baseline_vuln_total=VALUES(baseline_vuln_total), "
+                "baseline_confirmed_vulnerable=VALUES(baseline_confirmed_vulnerable), "
+                "baseline_confirmed_fp=VALUES(baseline_confirmed_fp), "
+                "baseline_confirmed_not_vulnerable=VALUES(baseline_confirmed_not_vulnerable), "
                 "tp_count=VALUES(tp_count), fp_count=VALUES(fp_count), "
                 "fn_count=VALUES(fn_count), tn_count=VALUES(tn_count), "
                 "recall_rate=VALUES(recall_rate), "
@@ -1548,6 +1579,9 @@ class Orchestrator:
                 (
                     evaluation_id,
                     eval_mode or "",
+                    project_id or "",
+                    task_id or "",
+                    *(baseline if baseline else (None, None, None, None)),
                     int(rp.get("tp_count") or 0),
                     int(rp.get("fp_count") or 0),
                     int(rp.get("fn_count") or 0),

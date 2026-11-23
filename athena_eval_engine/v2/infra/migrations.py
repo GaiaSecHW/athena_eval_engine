@@ -726,6 +726,29 @@ MIGRATIONS = [
             " / vuln_total ELSE NULL END) STORED",
         ],
     },
+    {
+        "id": "049_evaluation_summary_annotation_baseline",
+        "desc": "evaluation_summary 增加 project_id/task_id 与基线标注计数"
+                "（评测完成时该任务的人工确认计数），供「评测后标注变化」检测",
+        "sql": [
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN project_id VARCHAR(64) NOT NULL DEFAULT '' AFTER eval_mode",
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN task_id VARCHAR(64) NOT NULL DEFAULT '' AFTER project_id",
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN baseline_vuln_total INT NULL AFTER task_id",
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN baseline_confirmed_vulnerable INT NULL "
+            "AFTER baseline_vuln_total",
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN baseline_confirmed_fp INT NULL "
+            "AFTER baseline_confirmed_vulnerable",
+            "ALTER TABLE evaluation_summary "
+            "ADD COLUMN baseline_confirmed_not_vulnerable INT NULL "
+            "AFTER baseline_confirmed_fp",
+            "ALTER TABLE evaluation_summary ADD INDEX idx_es_task (task_id)",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

@@ -129,7 +129,8 @@ function renderEvList(){
     if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
     var safeName=(e.name||e.evaluation_id).replace(/'/g,'');
     var deleted=!!e.task_deleted;
-    var statusHtml=deleted?'<span class="bdg" style="background:rgba(120,120,120,.18);color:var(--gray)">任务在平台已删除</span>':_statusBadge(e.status);
+    var statusHtml=(deleted?'<span class="bdg" style="background:rgba(120,120,120,.18);color:var(--gray)">任务在平台已删除</span>':_statusBadge(e.status))+
+      (e.annotation_changed?' <span style="background:rgba(217,119,6,.12);color:var(--amber);border:1px solid rgba(217,119,6,.3);border-radius:8px;padding:1px 6px;font-size:11px;font-weight:600;cursor:help" title="评测完成后人工标注已变化，报告已过期；到「平台任务详情」页重新发起测评">标注已变化</span>':'');
     var btns=DEBUG?'<span class="ev-actions" onclick="event.stopPropagation()">'+
       (deleted?'':'<button class="btn g" style="font-size:12px;padding:2px 8px" onclick="retryEval(\''+e.evaluation_id+'\')">重跑</button>')+
       '<button class="btn" style="font-size:12px;padding:2px 8px;background:var(--acc)" onclick="window.open(U(\'/api/v2/evaluations/'+e.evaluation_id+'/debug\'))">调试</button>'+

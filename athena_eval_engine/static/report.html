@@ -283,21 +283,23 @@ function render(d){
     const sfErr=sf?(sf.last_error||''):'';
     const sfTitle=sf?[sf.last_failed_at?('失败时间：'+(sf.last_failed_at||'').replace('T',' ').slice(0,19)):'','原因：'+sfErr].filter(Boolean).join('\n'):'';
     const sfHtml=sf?'<div style="margin-top:4px"><span title="'+esc(sfTitle)+'" style="display:inline-block;background:rgba(220,38,38,.1);color:var(--red);border:1px solid rgba(220,38,38,.25);border-radius:8px;padding:1px 6px;font-size:11px;font-weight:600;cursor:help">启动失败'+(sf.attempt_count>1?' ×'+sf.attempt_count:'')+'</span><div title="'+esc(sfErr)+'" style="color:var(--red);font-size:11px;margin-top:2px;max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+esc(sfErr)+'</div></div>':'';
-    const ev=deleted?'<span style="color:var(--gray)">任务在平台已删除</span>':(i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>');
+    const changed=i.annotation_changed===true;
+    const ev=(deleted?'<span style="color:var(--gray)">任务在平台已删除</span>':(i.evaluation_status?'<a href="'+_INGRESS+'/evals/'+i.evaluation_id+'" target="_blank" style="color:'+(STATUS_COLOR[i.evaluation_status]||'inherit')+';font-weight:600;text-decoration:none;border-bottom:1px dashed currentColor">'+(STATUS_LABEL[i.evaluation_status]||i.evaluation_status)+'</a>':'<span style="color:var(--sub)">未评测</span>'))+(changed?' <span style="background:rgba(217,119,6,.12);color:var(--amber);border:1px solid rgba(217,119,6,.3);border-radius:8px;padding:1px 6px;font-size:11px;font-weight:600;cursor:help" title="评测完成后人工标注已变化，建议重新发起测评">标注已变化</span>':'');
     const fpr=i.fpr!=null?(i.fpr*100).toFixed(1)+'%':'NA';
     const cr=i.confirm_rate!=null?(i.confirm_rate*100).toFixed(1)+'%':'NA';
     const taskEnded=!!i.task_finished_at;
     const finishedMs=Date.parse(String(i.task_finished_at||'').replace(' ','T'));
     const cr100=(i.confirm_rate!=null&&i.confirm_rate>=1);
     const ended2d=cr100||(!!finishedMs&&(Date.now()-finishedMs>=2*24*3600*1000));
-    const canStart=!deleted && !expired && !noSource && taskEnded && ended2d && !i.evaluation_status && i.fpr!=null && i.fpr>=0.3;
+    // 标注已变化 → 允许对已评测任务重新发起测评（新评测、新基线）
+    const canStart=!deleted && !expired && !noSource && taskEnded && ended2d && (!i.evaluation_status || changed) && i.fpr!=null && i.fpr>=0.3;
     // 有启动失败记录时按钮明确标为「重试启动」，避免误当作首次启动反复触发
     const op=deleted?'-'
       :expired?'<span style="color:var(--red);font-size:12px;font-weight:600" title="任务结束超过3.5个月，不能创建测评">已过期</span>'
       :noSource?'<span style="color:var(--red);font-size:12px;font-weight:600" title="源代码目录不存在或为空，不能创建测评">源代码缺失</span>'
       :!taskEnded?'<span style="color:var(--amber);font-size:12px;font-weight:600" title="任务尚未结束，漏洞统计未定稿，不能创建测评">未结束</span>'
       :!ended2d?'<span style="color:var(--amber);font-size:12px;font-weight:600" title="任务结束需满2天才可创建测评——结束后漏洞统计与人工确认仍在定稿；确认率100%除外（数据已定稿）">结束未满2天</span>'
-      :canStart?'<button class="btn" style="padding:5px 12px;font-size:12px"'+(sf?' title="上次启动失败：'+esc(sfErr)+'"':'')+' onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">'+(sf?'重试启动':'启动测评')+'</button>'
+      :canStart?'<button class="btn" style="padding:5px 12px;font-size:12px"'+(sf?' title="上次启动失败：'+esc(sfErr)+'"':'')+' onclick="startEval(\''+i.project_id+'\',\''+i.task_id+'\',\''+(i.task_name||'').replace(/'/g,"")+'\')">'+(i.evaluation_status?'重新测评':(sf?'重试启动':'启动测评'))+'</button>'
       :(i.evaluation_status?'':'-');
     // 未确认 = 总数 - 确认漏洞 - 误报 - 非误报（用户定义口径）
     const unconf=Math.max(0,(i.vuln_total||0)-(i.confirmed_vulnerable||0)-(i.confirmed_fp||0)-(i.confirmed_not_vulnerable||0));

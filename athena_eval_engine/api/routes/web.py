@@ -164,6 +164,52 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
             for ev in evals:
                 ev["task_deleted"] = False
 
+        # 标注变化：该评测落库的基线标注计数（FINALIZE 时写入
+        # evaluation_summary）vs 当前 project_task_summary 计数。
+        # 不一致 → 评测完成后人工又改了标注，报告已过期
+        # （重新测评入口在平台任务详情页）。
+        try:
+            _eids = [ev["evaluation_id"] for ev in evals]
+            _tids = sorted({tid for _, tid in task_pairs if tid})
+            # 基线计数（vuln_total, confirmed_vulnerable, confirmed_fp,
+            # confirmed_not_vulnerable）——NULL 任一为空 = 未知，不参与判定
+            baseline_by_eid: dict[str, tuple] = {}
+            current_by_tid: dict[str, tuple] = {}
+            if _eids:
+                _ph_e = ",".join(["%s"] * len(_eids))
+                cur.execute(
+                    "SELECT evaluation_id, baseline_vuln_total, "
+                    "baseline_confirmed_vulnerable, "
+                    "baseline_confirmed_fp, "
+                    "baseline_confirmed_not_vulnerable "
+                    f"FROM evaluation_summary "
+                    f"WHERE evaluation_id IN ({_ph_e})",
+                    tuple(_eids))
+                for eid, b1, b2, b3, b4 in cur.fetchall():
+                    if None not in (b1, b2, b3, b4):
+                        baseline_by_eid[eid] = (
+                            int(b1), int(b2), int(b3), int(b4))
+            if _tids:
+                _ph_t = ",".join(["%s"] * len(_tids))
+                cur.execute(
+                    "SELECT task_id, vuln_total, confirmed_vulnerable, "
+                    "confirmed_fp, confirmed_not_vulnerable "
+                    f"FROM project_task_summary WHERE task_id IN ({_ph_t})",
+                    tuple(_tids))
+                for tid, c1, c2, c3, c4 in cur.fetchall():
+                    current_by_tid[tid] = (
+                        int(c1 or 0), int(c2 or 0),
+                        int(c3 or 0), int(c4 or 0))
+            for ev, (_pid, tid) in zip(evals, task_pairs):
+                base = baseline_by_eid.get(ev["evaluation_id"])
+                cur_counts = current_by_tid.get(tid)
+                ev["annotation_changed"] = bool(
+                    base is not None and cur_counts is not None
+                    and base != cur_counts)
+        except Exception:
+            for ev in evals:
+                ev.setdefault("annotation_changed", False)
+
         return {
             "evaluations": evals,
             "total": total,
