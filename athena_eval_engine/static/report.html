@@ -364,11 +364,15 @@ async function syncNow(){
 }
 
 async function startEval(projectId, taskId, taskName){
+  var submitted=false;
   showConfirm({
     icon:'▶️',iconBg:'rgba(37,99,235,.12)',iconColor:'var(--acc)',
     title:'启动运行态测评',desc:`确认对任务「${taskName}」启动运行态测评？`,
     confirmText:'启动',confirmColor:'var(--acc)',
     onConfirm:function(){
+      // 双击防抖：确认按钮快速点两次只提交一次（闭包级标志，不串台；
+      // 后端另有槽位锁兜底）
+      if(submitted)return; submitted=true;
       var eid=genId();
       jpost("/api/v1/evaluations",{
         evaluation_id:eid,

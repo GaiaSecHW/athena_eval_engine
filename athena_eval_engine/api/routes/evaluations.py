@@ -683,6 +683,63 @@ def _assert_task_finished_long_enough(project_id: str,
 
 _SAFE_ID_RE = re.compile(r"^[A-Za-z0-9_-]+$")
 
+_EVAL_MODE_LABELS = {"dev": "开发态", "runtime": "运行态"}
+
+
+def _existing_eval_mode(evaluation_id: str) -> str:
+    """读既有评测的 eval_mode（evaluation_snapshot.config_json.manifest）。"""
+    def _do(cur):
+        cur.execute(
+            "SELECT config_json FROM evaluation_snapshot "
+            "WHERE evaluation_id=%s ORDER BY snapshot_id DESC LIMIT 1",
+            (evaluation_id,))
+        r = cur.fetchone()
+        return r[0] if r else None
+
+    try:
+        cfg = es._db_query(_do)
+    except Exception as e:
+        log("EVAL", f"读取评测快照失败 {evaluation_id}: {e}")
+        return ""
+    if not cfg:
+        return ""
+    try:
+        import json as _json
+        return str((_json.loads(cfg).get("manifest") or {})
+                    .get("eval_mode") or "")
+    except Exception:
+        return ""
+
+
+def _assert_evaluation_slot_free(task_id: str, eval_mode: str) -> None:
+    """一个奇美拉任务最多两条评测：开发态一条 + 运行态一条。
+
+    同一任务已存在同 eval_mode 的评测 → 拒绝（消息带既有评测 ID，
+    需先在评测列表删除旧评测再重建——重新测评/标注变化的重建走同流程）。
+    """
+    mode = str(eval_mode or "").strip().lower()
+
+    def _do(cur):
+        cur.execute(
+            "SELECT evaluation_id, evaluation_status FROM evaluation "
+            "WHERE task_id=%s",
+            (task_id,))
+        return cur.fetchall()
+
+    try:
+        rows = es._db_query(_do)
+    except Exception as e:
+        log("EVAL", f"查询任务既有评测失败 {task_id}: {e}")
+        return
+
+    for eid, status in rows or []:
+        if _existing_eval_mode(eid) == mode:
+            label = _EVAL_MODE_LABELS.get(mode, mode or "未知")
+            raise ValueError(
+                f"任务 {task_id} 已有{label}评测 {eid}（状态 {status}）；"
+                f"同一任务每种模式（开发态/运行态）最多一条，"
+                f"如需重建请先在评测列表删除旧评测")
+
 
 def _dir_has_files(path: str) -> bool:
     """目录（含子目录）下是否至少有一个文件。"""
@@ -742,36 +799,56 @@ def _assert_source_exists(project_id: str, task_id: str) -> None:
         f"（{', '.join(checked)}），不能创建测评任务")
 
 
+_SLOT_LOCK_GUARD = threading.Lock()
+_SLOT_LOCKS: dict[tuple, threading.Lock] = {}
+
+
+def _slot_lock(task_id: str, eval_mode: str) -> threading.Lock:
+    """同（任务,模式）创建槽位的串行锁。
+
+    快速双击/并发创建同一任务同模式的两条评测时，「先查后插」
+    门禁存在竞态窗口（校验含秒级平台 API 回退查询，窗口很宽）。
+    串行化后第二个请求等第一个完成，门禁必命中 → 同模式重复被拒。
+    """
+    key = (str(task_id), str(eval_mode or "").strip().lower())
+    with _SLOT_LOCK_GUARD:
+        return _SLOT_LOCKS.setdefault(key, threading.Lock())
+
+
 @app.post("/api/v1/evaluations")
 def create_evaluation(req: CreateRequest):
-    try:
-        _assert_task_finished(req.kg_project_id, req.kg_task_id)
-        _assert_task_finished_long_enough(req.kg_project_id, req.kg_task_id)
-        _assert_task_not_expired(req.kg_project_id, req.kg_task_id)
-        _assert_source_exists(req.kg_project_id, req.kg_task_id)
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    try:
-        es.create(es.CreateRequest(evaluation_id=req.evaluation_id,
-                                   evaluation_name=req.evaluation_name,
-                                   kg_project_id=req.kg_project_id,
-                                   kg_task_id=req.kg_task_id,
-                                   benchmark_source=req.benchmark_source,
-                                   benchmark_set_id=req.benchmark_set_id,
-                                   vc_source_task_id=req.vc_source_task_id,
-                                   eval_mode=req.eval_mode))
-    except Exception as e:
-        _record_start_failure(req.kg_project_id, req.kg_task_id,
-                              req.evaluation_id, e)
-        raise HTTPException(status_code=400, detail=str(e))
+    # 槽位锁内完成「校验 + 写库 + 提交」：快速双击/并发重复创建
+    # 在锁上排队，第二个的槽位门禁必命中第一个的写入
+    with _slot_lock(req.kg_task_id, req.eval_mode):
+        try:
+            _assert_task_finished(req.kg_project_id, req.kg_task_id)
+            _assert_task_finished_long_enough(req.kg_project_id, req.kg_task_id)
+            _assert_task_not_expired(req.kg_project_id, req.kg_task_id)
+            _assert_evaluation_slot_free(req.kg_task_id, req.eval_mode)
+            _assert_source_exists(req.kg_project_id, req.kg_task_id)
+        except ValueError as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        try:
+            es.create(es.CreateRequest(evaluation_id=req.evaluation_id,
+                                       evaluation_name=req.evaluation_name,
+                                       kg_project_id=req.kg_project_id,
+                                       kg_task_id=req.kg_task_id,
+                                       benchmark_source=req.benchmark_source,
+                                       benchmark_set_id=req.benchmark_set_id,
+                                       vc_source_task_id=req.vc_source_task_id,
+                                       eval_mode=req.eval_mode))
+        except Exception as e:
+            _record_start_failure(req.kg_project_id, req.kg_task_id,
+                                  req.evaluation_id, e)
+            raise HTTPException(status_code=400, detail=str(e))
 
-    _clear_start_failure(req.kg_project_id, req.kg_task_id)
-    # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
-    # 提交到线程池排队运行（最多 3 并发，超出自动排队）
-    def _run_bg():
-        _run_eval(req.evaluation_id, "EVAL FAILED")
-    _submit_eval(req.evaluation_id, _run_bg)
-    return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
+        _clear_start_failure(req.kg_project_id, req.kg_task_id)
+        # 不再同步设 RUNNING——由 _run_eval 的原子 UPDATE 处理（跨 worker 同步）
+        # 提交到线程池排队运行（最多 3 并发，超出自动排队）
+        def _run_bg():
+            _run_eval(req.evaluation_id, "EVAL FAILED")
+        _submit_eval(req.evaluation_id, _run_bg)
+        return {"evaluation_id": req.evaluation_id, "status": "QUEUED"}
 
 
 @app.delete("/api/v1/evaluations/{evaluation_id}")
