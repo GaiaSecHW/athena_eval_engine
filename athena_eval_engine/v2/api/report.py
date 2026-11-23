@@ -63,6 +63,9 @@ def _source_exists(project_id: str, task_id: str,
 @router.get("/summary")
 def summary(project_id: str | None = None, task_id: str | None = None,
             keyword: str | None = None, agent: str | None = None,
+            vuln_nonzero: bool = False,
+            finished_from: str | None = None,
+            finished_to: str | None = None,
             sort_by: str = "created_at", sort_dir: str = "desc",
             page: int = 1, page_size: int = 20, alive: bool = True):
     """从数据库读取项目/任务漏洞统计汇总（定时采集写入）。
@@ -71,6 +74,9 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     - project_id: 按项目 ID 精确过滤
     - task_id: 按任务 ID 精确过滤
     - keyword: 按项目名/任务名模糊搜索
+    - vuln_nonzero: 只列出漏洞总数 > 0 的记录
+    - finished_from / finished_to: 任务结束时间范围
+      （YYYY-MM-DD 扩成全天边界；KPI 聚合同过滤口径）
     - page: 页码（默认 1）
     - page_size: 每页条数（默认 20，上限 200）
 
@@ -183,6 +189,27 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     if agent:
         where.append("agent_type = %s")
         params.append(agent)
+    # 漏洞总数>0：只列出有漏洞的记录（无任务项目补的 0 行、0 漏洞任务排除）
+    if vuln_nonzero:
+        where.append("vuln_total > 0")
+
+    def _norm_day(value: str | None, end: bool = False) -> str:
+        """结束时间过滤值：日期（YYYY-MM-DD）扩成全天边界，含时刻则原样。"""
+        v = str(value or "").strip()
+        if not v:
+            return ""
+        if len(v) == 10:
+            return f"{v} 23:59:59" if end else f"{v} 00:00:00"
+        return v
+
+    fin_from = _norm_day(finished_from)
+    fin_to = _norm_day(finished_to, end=True)
+    if fin_from:
+        where.append("task_finished_at >= %s")
+        params.append(fin_from)
+    if fin_to:
+        where.append("task_finished_at <= %s")
+        params.append(fin_to)
 
     try:
         updated_at, total, rows, kpi = _db_query(_do)

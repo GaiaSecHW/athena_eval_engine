@@ -130,6 +130,12 @@ function renderReport(){
       <input id="f-proj" placeholder="按项目名过滤…" style="max-width:200px">
       <input id="f-task" placeholder="按任务名过滤…" style="max-width:200px">
       <select id="f-agent" style="width:auto;max-width:140px"><option value="">全部 Agent</option></select>
+      <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);white-space:nowrap"><input type="checkbox" id="f-vuln">漏洞总数&gt;0</label>
+      <span style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);white-space:nowrap">结束时间
+        <input type="date" id="f-fin-from" style="padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+        ~
+        <input type="date" id="f-fin-to" style="padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
+      </span>
       <select id="f-sort" style="width:auto;max-width:180px">
         <option value="started_at_desc">开始时间 ↓</option>
         <option value="started_at_asc">开始时间 ↑</option>
@@ -205,6 +211,12 @@ async function load(page){
   if(pj)params.set("keyword",pj);
   if(tk)params.set("keyword",tk);
   if(ag)params.set("agent",ag);
+  var fv=$("f-vuln");
+  if(fv&&fv.checked)params.set("vuln_nonzero","1");
+  var ff=($("f-fin-from")||{}).value||"";
+  if(ff)params.set("finished_from",ff);
+  var ft=($("f-fin-to")||{}).value||"";
+  if(ft)params.set("finished_to",ft);
   const li=sortVal.lastIndexOf("_");
   const sb=sortVal.slice(0,li);
   const sd=sortVal.slice(li+1);
