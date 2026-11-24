@@ -125,9 +125,14 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 - `negative`：助长误报/把判定引向错误（如宣称"internal=false 即对外可访问，
   无需核实可直接上报"的过时或错误条目）——**这类命中不得静默判 not_found**：
   它存在本身就是知识库缺陷（需修正/下架），与"知识缺失"（需补充）是两种不同问题
+- `conflict`：知识内容与**人工标注的误报前提直接矛盾**——若知识为真，该上报
+  不构成误报（如标注称"商用版本已关闭这些入口"，知识给出"入口并非默认关闭"的事实）。
+  这类命中不得判 positive：它揭示的是「人工标注与知识库必有一错」，需标注人对照
+  知识复核，复核结论决定改标注（上报不是误报）还是修正知识（误导性内容）
 - `neutral`：与该误报的判定方向无关
 
-整体 knowledge_direction：有 positive 无 negative → positive；有 negative 无
+整体 knowledge_direction：任一命中为 conflict → conflict（矛盾优先呈现，
+复核先于归因）；否则有 positive 无 negative → positive；有 negative 无
 positive → negative；两者皆有 → mixed；无命中 → none。
 
 # 边界（强制）
@@ -142,13 +147,13 @@ positive → negative；两者皆有 → mixed；无命中 → none。
 {
   "status": "found/not_found",
   "knowledge_exists": true/false,
-  "knowledge_direction": "positive/negative/mixed/none",
+  "knowledge_direction": "positive/negative/mixed/conflict/none",
   "matched_files": [
     {
       "path": "文件路径",
       "title": "文件标题",
       "relevance": "high/medium/low",
-      "direction": "positive/negative/neutral",
+      "direction": "positive/negative/conflict/neutral",
       "reason": "为什么这个文件能或不能消减误报（结合误报原因具体说明）"
     }
   ],
@@ -1093,11 +1098,21 @@ class KnowledgeVerifier:
             d = str(r.get("knowledge_direction") or "none")
             if d != "none":
                 directions.add(d)
+            # 逐篇 direction 也采集——不完全依赖 LLM 的批级汇总，
+            # 批级漏判 conflict 时逐篇兜底
+            for mf in (r.get("matched_files") or []):
+                fd = str((mf or {}).get("direction") or "")
+                if fd in ("positive", "negative", "conflict"):
+                    directions.add(fd)
             all_matched.extend(r.get("matched_files") or [])
             summaries.append(r.get("summary", ""))
 
         if not directions:
             direction = "none"
+        elif "conflict" in directions:
+            # 知识与人工标注前提矛盾——矛盾优先呈现：标注与知识库
+            # 必有一错，复核先于归因（改标注 or 修正知识）
+            direction = "conflict"
         elif directions == {"positive"}:
             direction = "positive"
         elif directions == {"negative"}:

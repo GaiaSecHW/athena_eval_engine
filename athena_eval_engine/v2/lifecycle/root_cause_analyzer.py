@@ -675,7 +675,9 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 # v3：fix_suggestion 元规则约束（压缩与 merge 两处 prompt：action 按
 # 缺陷类别写通用规则，禁止 case 专属规则；项目事实归知识库；
 # location 角色级定位，不伪装文件路径）。
-_RCA_CACHE_VERSION = 3
+# v4：L4 方向新增 conflict 态（知识与人工标注前提矛盾——标注与知识库
+# 必有一错，转标注复核，不建单）。
+_RCA_CACHE_VERSION = 4
 
 
 def _rca_cache_dir() -> str:
@@ -2257,6 +2259,8 @@ class RootCauseAnalyzer:
         dir_label = {
             "positive": "命中正向知识（能引导正确判定）",
             "negative": "命中负向知识（会把判定引向错误——知识库需修正/下架该内容）",
+            "conflict": "命中与人工标注矛盾的知识（若知识为真，该上报不构成误报）"
+                        "——人工标注与知识库必有一错，需标注人对照知识复核",
             "mixed": "正负向知识并存（既有引导正确判定的内容，也有误导内容）",
             "none": "未找到相关知识",
         }.get(direction, "方向未判定")
@@ -2297,13 +2301,19 @@ class RootCauseAnalyzer:
     ) -> None:
         """L4 闭环：用独立验证结果修正 A 类线索的归因方向。
 
-        闭环逻辑（与 _verify_l4_independently 的设计意图一致），三态：
+        闭环逻辑（与 _verify_l4_independently 的设计意图一致）：
         - 命中正向知识（l4=true，direction=positive/None）→ 查了就对了 →
           责任在 agent（该查没查），cause_code 保持 A，且必须
           agent_can_resolve=true、无 blocked_by。
         - 命中负向知识（l4=true，direction=negative）→ agent 即使查了也会
           被误导 → 首要修复是知识库**修正/下架**该内容（与"缺失→补充"
           是两种不同的知识问题）→ 责任在 knowledge。
+        - 命中与标注矛盾的知识（l4=true，direction=conflict）→ 知识内容
+          反驳人工标注的误报前提（agent 查到反而坐实自己的上报结论）→
+          **不改归因**（A 的事实成立，但「查了就能避免误报」不成立）——
+          建单层转**标注复核**（见 issue.is_kb_annotation_conflict）：
+          标注与知识库必有一错，复核结论决定改标注（上报不是误报）
+          还是修正知识（误导性内容）。
         - 没有知识（l4=false）→ 查了也没用 → 知识**供给缺口**（补充），
           cause_code 改 C/knowledge。
         - l4_knowledge_exists=None（未查/跳过/查询失败）→ 不修改。

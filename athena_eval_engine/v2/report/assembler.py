@@ -25,6 +25,7 @@ from ..dts.issue import (
     _annotation_category,
     _case_annotation,
     _has_actionable_fix,
+    is_kb_annotation_conflict,
     is_label_confirm_knowledge_gap,
     _NON_ISSUE_CATEGORIES,
 )
@@ -207,6 +208,15 @@ class ReportAssembler:
                 detail = ("分析声明标注前提无法从 session 材料验证（全链 "
                           "needs_label_confirmation），且顶层根因为知识缺失"
                           "（C）：先确认标注，再重新分析建单")
+            elif is_kb_annotation_conflict(case):
+                # 知识库证据与人工标注矛盾（L4 conflict，与 dts/issue.
+                # generate_dts_issues 跳过条件同一规则）：知识反驳标注前提，
+                # 标注与知识库必有一错——复核先于归因。
+                reason = "知识库证据与人工标注矛盾，未生成问题单"
+                detail = ("L4 独立验证命中的知识直接反驳人工标注的误报前提"
+                          "（agent 查到反而坐实自己的上报结论）：先由标注人"
+                          "对照知识库文章复核——标注错则基线更正，知识错则"
+                          "修正/下架该知识")
             elif no_session:
                 # 最可执行的原因：trace 里没有这个 case 的 session，
                 # 后面所有分析都无从谈起。

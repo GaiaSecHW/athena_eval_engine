@@ -163,6 +163,28 @@ def is_label_confirm_knowledge_gap(case: dict) -> bool:
     return bool(top and str(top.get("cause_code") or "") == "C")
 
 
+def is_kb_annotation_conflict(case: dict) -> bool:
+    """判定「知识库证据与人工标注矛盾」的应不建单 case（conflict 态）。
+
+    L4 独立验证命中知识且方向为 conflict——知识内容直接反驳人工标注的
+    误报前提（如标注称「商用版本已关闭这些入口」，知识给出「入口并非
+    默认关闭」的事实）。若知识为真，该上报不构成误报；agent 查到该知识
+    反而会坐实自己的上报结论——「该查没查」的修复对消除此误报无效。
+
+    标注与知识库必有一错，**复核先于归因**：先由标注人对照知识库文章
+    复核——标注错 → 上报不是误报（基线更正）；知识错 → 误导性知识
+    （修正/下架，负向知识路径）。复核前不建单（仍计报告统计）。
+    """
+    for chain_type in ("mining", "verification"):
+        l4 = (case.get(chain_type) or {}).get(
+            "l4_independent_verification") or {}
+        if (l4.get("l4_knowledge_exists") is True
+                and str(l4.get("l4_knowledge_direction") or "")
+                == "conflict"):
+            return True
+    return False
+
+
 def cleanup_stale_dts_issues(
     evaluation_id: str,
     root_cause_results: list[dict],
@@ -175,7 +197,8 @@ def cleanup_stale_dts_issues(
     ``{eid}_dts_stale_backup_{ts}.json`` 再删除（连带回归记录）：
     - 人工分类「其他非平台工具原因」（责任在平台之外，无修复方）；
     - 人工分类「模型幻觉」且线索全部无平台可落地修复方；
-    - 标注前提待确认且顶层根因知识缺失（is_label_confirm_knowledge_gap）。
+    - 标注前提待确认且顶层根因知识缺失（is_label_confirm_knowledge_gap）；
+    - 知识库证据与人工标注矛盾（is_kb_annotation_conflict，L4 conflict）。
 
     证据不足等其他「无单」原因的旧行**不删**（历史语义保留）。
     重跑评测与 /dts/regenerate 共用本函数——保证「重跑后按当前规则
@@ -210,6 +233,8 @@ def cleanup_stale_dts_issues(
             if not _has_actionable_fix(hyps):
                 stale_case_ids.add(cid)
         elif is_label_confirm_knowledge_gap(r):
+            stale_case_ids.add(cid)
+        elif is_kb_annotation_conflict(r):
             stale_case_ids.add(cid)
     result["stale_case_ids"] = sorted(stale_case_ids)
     if not stale_case_ids:
@@ -332,7 +357,9 @@ def generate_dts_issues(
       现象级粗标签，分析发现可修根因时照常生成）；
     - 标注前提待确认且顶层根因知识缺失（全部链 needs_label_confirmation
       + 顶层 C：补什么知识取决于未确认的标注前提，单不可落地——
-      见 is_label_confirm_knowledge_gap）。
+      见 is_label_confirm_knowledge_gap）；
+    - 知识库证据与人工标注矛盾（L4 conflict：知识反驳标注前提，标注与
+      知识库必有一错，先标注复核——见 is_kb_annotation_conflict）。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
@@ -552,6 +579,16 @@ def generate_dts_issues(
             log("DTS", f"case {cid}: 标注前提待确认（全链 "
                       f"needs_label_confirmation）且顶层根因为 C（知识"
                       f"缺失），先确认标注再分析，跳过问题单生成")
+            continue
+        # ── 知识库证据与人工标注矛盾（L4 conflict）→ 不建单 ──
+        # L4 查到的知识直接反驳标注的误报前提——agent 查到该知识反而
+        # 坐实自己的上报结论，「该查没查」的修复无法消除此误报。
+        # 标注与知识库必有一错：先标注复核（对照知识库文章），
+        # 标注错 → 基线更正；知识错 → 修正/下架。复核前不建单。
+        if is_kb_annotation_conflict(case):
+            skip_issue_cases.add(cid)
+            log("DTS", f"case {cid}: 知识库证据与人工标注矛盾"
+                      f"（L4 conflict），先标注复核，跳过问题单生成")
             continue
         # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
