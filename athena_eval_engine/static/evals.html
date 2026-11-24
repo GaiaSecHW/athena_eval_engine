@@ -106,6 +106,7 @@ async function renderEvals(){
       <button class="ef-btn${_evFilter==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
       <button class="ef-btn${_evFilter==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
       <button class="ef-btn${_evFilter==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
+      <button class="ef-btn${_evFilter==='CANCEL'?' active':''}" onclick="setEvFilter('CANCEL',this)">取消</button>
       <span id="ev-total-count" style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evTotal} 条</span>
       <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="refreshEvalsData()">🔄 刷新</button>
     </div>
@@ -162,7 +163,6 @@ function renderEvList(){
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
-    var badge=(e.status||'').replace('_WITH_WARNINGS','').replace('CANCEL_REQUESTED','FAILED').replace('CANCELLING','FAILED').replace('CANCELLED','FAILED');
     var isTerminal=e.status==='COMPLETED'||e.status==='COMPLETED_WITH_WARNINGS'||e.status==='FAILED'||e.status==='CANCELLED';
     var phaseLabel=_phaseLabel(e.status);
     if(e.status==='REPORTING'&&e.progress&&e.progress.indexOf('生成报告')<0){phaseLabel='知识与记忆分析';}
