@@ -165,17 +165,14 @@ function dtsSearchChanged(v){
 }
 
 function renderDtsTable(){
+  // 后端已按全部筛选条件（含 responsibility）SQL 过滤+分页，前端直接渲染当前页
   if(!_dtsData){return;}
-  var filtered=_dtsData.filter(function(i){
-    if(_dtsFilter.responsibility&&!dtsRespMatches(i.responsibility,_dtsFilter.responsibility))return false;
-    return true;
-  });
-  if(!filtered.length){
+  if(!_dtsData.length){
     $("dts-table").innerHTML='<div style="color:var(--sub);padding:20px;text-align:center">无匹配问题单</div>';
     return;
   }
   var html='<table><thead><tr><th>问题单 ID</th><th>漏洞名称</th><th>Case ID</th><th>评测名称</th><th>类型</th><th>Agent</th><th>责任方</th><th>级别</th><th>成因</th><th>状态</th><th>标注质量</th><th>创建时间</th><th>操作</th></tr></thead><tbody>';
-  filtered.forEach(function(i){
+  _dtsData.forEach(function(i){
     var lqPrecision='',lqColor='var(--gray)',lqLabel='-';
     try{
       var lqObj=typeof i.label_quality==='string'?JSON.parse(i.label_quality):i.label_quality;

@@ -208,8 +208,8 @@ async function load(page){
   const ag=($("f-agent")||{}).value||"";
   const sortVal=($("f-sort")||{}).value||"started_at_desc";
   const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE,alive:"0"});
-  if(pj)params.set("keyword",pj);
-  if(tk)params.set("keyword",tk);
+  if(pj)params.set("project_keyword",pj);
+  if(tk)params.set("task_keyword",tk);
   if(ag)params.set("agent",ag);
   var fv=$("f-vuln");
   if(fv&&fv.checked)params.set("vuln_nonzero","1");

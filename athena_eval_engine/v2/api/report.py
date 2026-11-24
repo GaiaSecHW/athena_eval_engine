@@ -63,7 +63,10 @@ def _source_exists(project_id: str, task_id: str,
 
 @router.get("/summary")
 def summary(project_id: str | None = None, task_id: str | None = None,
-            keyword: str | None = None, agent: str | None = None,
+            keyword: str | None = None,
+            project_keyword: str | None = None,
+            task_keyword: str | None = None,
+            agent: str | None = None,
             vuln_nonzero: bool = False,
             finished_from: str | None = None,
             finished_to: str | None = None,
@@ -71,10 +74,12 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             page: int = 1, page_size: int = 20, alive: bool = True):
     """从数据库读取项目/任务漏洞统计汇总（定时采集写入）。
 
-    支持按项目/任务/关键词过滤 + 分页：
+    支持按项目/任务/关键词过滤 + 分页（全部 SQL 层 WHERE + LIMIT）：
     - project_id: 按项目 ID 精确过滤
     - task_id: 按任务 ID 精确过滤
-    - keyword: 按项目名/任务名模糊搜索
+    - keyword: 按项目名/任务名模糊搜索（单框合并搜索）
+    - project_keyword / task_keyword: 项目名、任务名分开模糊搜索
+      （前端两个输入框各自传参，不再共用一个 keyword 互相覆盖）
     - vuln_nonzero: 只列出漏洞总数 > 0 的记录
     - finished_from / finished_to: 任务结束时间范围
       （YYYY-MM-DD 扩成全天边界；KPI 聚合同过滤口径）
@@ -187,6 +192,12 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         kw = f"%{keyword}%"
         where.append("(project_name LIKE %s OR task_name LIKE %s)")
         params.extend([kw, kw])
+    if project_keyword:
+        where.append("project_name LIKE %s")
+        params.append(f"%{project_keyword}%")
+    if task_keyword:
+        where.append("task_name LIKE %s")
+        params.append(f"%{task_keyword}%")
     if agent:
         where.append("agent_type = %s")
         params.append(agent)

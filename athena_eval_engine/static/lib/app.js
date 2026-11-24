@@ -135,14 +135,6 @@ function dtsRespLabel(resp){
   if(!resp)return '-';
   return resp.split(',').map(function(r){return DTS_RESP_LABELS[r]||r;}).join(', ');
 }
-function dtsRespMatches(resp,filter){
-  if(!resp)return false;
-  var parts=resp.split(',');
-  if(filter==='other'){
-    return ['knowledge','external_data_source','eval_process'].some(function(x){return parts.indexOf(x)>=0;});
-  }
-  return parts.indexOf(filter)>=0;
-}
 
 // 导航渲染：当前页高亮
 function renderNav(currentPath){
