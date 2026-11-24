@@ -71,24 +71,71 @@ def report_page():
     return _read_page("report.html")
 
 
+_TERMINAL_STATUSES = (
+    "COMPLETED", "COMPLETED_WITH_WARNINGS", "FAILED",
+    "CANCELLED", "CANCEL_REQUESTED", "CANCELLING",
+)
+
+
+def _build_eval_where(status_filter: str = "", eval_mode: str = "",
+                      keyword: str = "") -> tuple[list[str], list]:
+    """构造评测列表的 WHERE 子句（全部 SQL 层过滤，不拉全量到前端）。
+
+    - status_filter=RUNNING → 非终态（NOT IN 终态列表）
+    - status_filter=COMPLETED/FAILED 等 → status LIKE 'prefix%'
+    - eval_mode=dev/runtime → JSON_EXTRACT snapshot manifest（SQL 级）
+    - keyword → evaluation_name LIKE
+    """
+    where, params = [], []
+    if status_filter == "RUNNING":
+        ph = ",".join(["%s"] * len(_TERMINAL_STATUSES))
+        where.append(f"e.evaluation_status NOT IN ({ph})")
+        params.extend(_TERMINAL_STATUSES)
+    elif status_filter:
+        where.append("e.evaluation_status LIKE %s")
+        params.append(f"{status_filter}%")
+    if eval_mode in ("dev", "runtime"):
+        where.append(
+            "JSON_UNQUOTE(JSON_EXTRACT(s.config_json, "
+            "'$.manifest.eval_mode')) = %s")
+        params.append(eval_mode)
+    if keyword:
+        where.append("e.evaluation_name LIKE %s")
+        params.append(f"%{keyword}%")
+    return where, params
+
+
 def _list_evaluations_sync(page: int, page_size: int, offset: int,
-                           alive: bool = True) -> dict:
-    """同步逻辑：查 DB + 解析 config_json + 组装响应。
+                           alive: bool = True,
+                           status_filter: str = "",
+                           eval_mode: str = "",
+                           keyword: str = "") -> dict:
+    """同步逻辑：查 DB + 解析 config_json + 组装响应（后端筛选+分页）。
 
     alive=False 时跳过平台任务存活校验（逐项目网络调用），列表立即返回，
     由前端另行请求 /api/v1/eval-alive-status 异步补全 task_deleted。
+
+    全部筛选在 SQL 层完成（WHERE + LIMIT + COUNT），不拉全量到前端。
     """
+    where, params = _build_eval_where(status_filter, eval_mode, keyword)
+    where_clause = (" WHERE " + " AND ".join(where)) if where else ""
+
     conn = connect(autocommit=True)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT COUNT(*) FROM evaluation")
+        cur.execute(
+            "SELECT COUNT(*) FROM evaluation e "
+            "LEFT JOIN evaluation_snapshot s "
+            "ON e.evaluation_id = s.evaluation_id"
+            f"{where_clause}", params)
         total = cur.fetchone()[0]
         cur.execute("SELECT e.evaluation_id, e.evaluation_name, e.evaluation_status, "
                     "e.benchmark_set_id, e.created_at, s.config_json "
                     "FROM evaluation e "
                     "LEFT JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
+                    f"{where_clause} "
                     "ORDER BY e.created_at DESC LIMIT %s OFFSET %s",
-                    (page_size, offset))
+                    params + [page_size, offset])
         rows = cur.fetchall()
         evals = []
         task_pairs: list[tuple[str, str]] = []
@@ -222,12 +269,26 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
 
 
 @router.get("/api/v1/evaluations")
-async def list_evaluations(page: int = 1, page_size: int = 20, alive: bool = True):
+async def list_evaluations(page: int = 1, page_size: int = 20,
+                           alive: bool = True,
+                           status_filter: str = "",
+                           eval_mode: str = "",
+                           keyword: str = ""):
+    """列表（后端筛选+分页，不拉全量到前端）。
+
+    - status_filter=RUNNING → 非终态（SQL NOT IN）
+    - status_filter=COMPLETED/FAILED 等 → status 前缀匹配
+    - eval_mode=dev/runtime → JSON_EXTRACT manifest（SQL 级）
+    - keyword → evaluation_name LIKE
+    """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
     return await asyncio.to_thread(
-        _list_evaluations_sync, page, page_size, offset, alive)
+        _list_evaluations_sync, page, page_size, offset, alive,
+        status_filter=status_filter.strip(),
+        eval_mode=eval_mode.strip(),
+        keyword=keyword.strip())
 
 
 def _eval_alive_status_sync(eids: list[str]) -> dict[str, bool]:

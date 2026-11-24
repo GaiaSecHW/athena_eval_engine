@@ -43,9 +43,35 @@
 <script>
 renderNav('/evals');
 
-let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";
+let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";let _evTotal=0;let _evTotalPages=1;
 // 已查询过存活状态的评测 ID，避免重复请求
 let _evAliveChecked={};
+// 搜索防抖
+let _evSearchTimer=null;
+
+// 构建后端查询参数（筛选在 SQL 做，前端只发参数）
+function _evParams(){
+  var params={page:_evPage,page_size:16,alive:"0"};
+  if(_evFilter==="RUNNING")params.status_filter="RUNNING";
+  else if(_evFilter==="dev")params.eval_mode="dev";
+  else if(_evFilter==="runtime")params.eval_mode="runtime";
+  else if(_evFilter!=="all")params.status_filter=_evFilter;
+  if(_evQ)params.keyword=_evQ;
+  return params;
+}
+
+// 按条件分页查询（后端 WHERE + LIMIT，不拉全量）
+async function _evFetch(){
+  var params=_evParams();
+  var qs=Object.keys(params).map(function(k){
+    return k+"="+encodeURIComponent(params[k]);
+  }).join("&");
+  var d=await jget("/api/v1/evaluations?"+qs);
+  _evData=d.evaluations||[];
+  _evTotal=d.total||0;
+  _evTotalPages=d.total_pages||1;
+  return d;
+}
 
 // 列表秒回后，按当前可见页异步补全「平台任务已删除」置灰状态
 async function loadAliveFor(pageItems){
@@ -68,10 +94,11 @@ async function loadAliveFor(pageItems){
 
 async function renderEvals(){
   _evAliveChecked={};
-  _evData=await jgetAllEvaluations();_evPage=1;
+  _evPage=1;
+  await _evFetch();
   $("view").innerHTML=`<div class="page-body">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
-      <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:280px" value="${_evQ}">
+      <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="evSearchChanged(this.value)" style="max-width:280px" value="${_evQ}">
       <button class="ef-btn${_evFilter==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
       <button class="ef-btn${_evFilter==='RUNNING'?' active':''}" onclick="setEvFilter('RUNNING',this)">运行中</button>
       <button class="ef-btn${_evFilter==='dev'?' active':''}" onclick="setEvFilter('dev',this)">开发态</button>
@@ -79,16 +106,32 @@ async function renderEvals(){
       <button class="ef-btn${_evFilter==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
       <button class="ef-btn${_evFilter==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
       <button class="ef-btn${_evFilter==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
-      <span id="ev-total-count" style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evData.length} 条</span>
+      <span id="ev-total-count" style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evTotal} 条</span>
       <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="refreshEvalsData()">🔄 刷新</button>
     </div>
     <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>
   </div>`;
   renderEvList();
 }
-function setEvFilter(f,btn){_evFilter=f;_evPage=1;document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));btn.classList.add("active");renderEvList();}
-function filterEvals(){_evQ=$("ev-search").value.toLowerCase();_evPage=1;renderEvList();}
-function evPage(p){_evPage=p;renderEvList();}
+function setEvFilter(f,btn){
+  _evFilter=f;_evPage=1;
+  document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));
+  btn.classList.add("active");
+  _evFetch().then(renderEvList);
+}
+// 搜索走后端（防抖 300ms）：keyword 参数发给 SQL LIKE
+function evSearchChanged(v){
+  _evQ=v;_evPage=1;
+  if(_evSearchTimer)clearTimeout(_evSearchTimer);
+  _evSearchTimer=setTimeout(function(){
+    _evFetch().then(function(){
+      renderEvList();
+      var cnt=$("ev-total-count");
+      if(cnt)cnt.textContent="共 "+_evTotal+" 条";
+    });
+  },300);
+}
+function evPage(p){_evPage=p;_evFetch().then(renderEvList);}
 // 跳页：输入页码（或回车）直达，避免一页一页翻
 function evJumpPage(){
   var el=$("ev-page-jump");if(!el)return;
@@ -100,31 +143,22 @@ function evJumpPage(){
 async function refreshEvalsData(){
   try{
     _evAliveChecked={};
-    _evData=await jgetAllEvaluations();
-    const cnt=$("ev-total-count");
-    if(cnt)cnt.textContent="共 "+_evData.length+" 条";
+    await _evFetch();
     renderEvList();
   }catch(e){
     showAlert({title:'刷新失败',desc:(e&&e.message)?e.message:String(e)});
   }
 }
-const EV_PAGE_SIZE=16;
 
 function renderEvList(){
-  let filtered=_evData;
-  if(_evFilter==='RUNNING'){
-    // 运行中 = 非终态（排除 COMPLETED/FAILED/CANCELLED 系）
-    const TERMINAL=['COMPLETED','FAILED','CANCELLED'];
-    filtered=filtered.filter(e=>!TERMINAL.some(t=>(e.status||'').startsWith(t)));
-  }else if(_evFilter==='dev'||_evFilter==='runtime')filtered=filtered.filter(e=>(e.eval_mode||'dev')===_evFilter);
-  else if(_evFilter!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(_evFilter));
-  if(_evQ)filtered=filtered.filter(e=>(e.evaluation_id+e.name).toLowerCase().includes(_evQ));
-  const total=filtered.length;
-  const pages=Math.ceil(total/EV_PAGE_SIZE)||1;
+  // 后端已按条件筛选+分页，前端直接渲染当前页
+  const pageItems=_evData;
+  const total=_evTotal;
+  const pages=_evTotalPages||1;
   const page=Math.min(_evPage,pages);
-  _evPage=page;  // 数据变少时把页码收敛到有效范围，避免停留在空页
-  const start=(page-1)*EV_PAGE_SIZE;
-  const pageItems=filtered.slice(start,start+EV_PAGE_SIZE);
+  _evPage=page;
+  var cnt=$("ev-total-count");
+  if(cnt)cnt.textContent="共 "+total+" 条";
   const el=$("ev-list-body");
   if(!el)return;
   let html=pageItems.length?pageItems.map(function(e){
@@ -162,7 +196,7 @@ function renderEvList(){
     pgHtml+=`<button class="ef-btn" ${page>=pages?'disabled':''} onclick="evPage(${page+1})" style="padding:6px 12px">下一页 ›</button>`;
     pgHtml+=`<input id="ev-page-jump" type="number" min="1" placeholder="页码" style="width:64px;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace" onkeydown="if(event.key==='Enter')evJumpPage()">`;
     pgHtml+=`<button class="ef-btn" onclick="evJumpPage()" style="padding:6px 10px">跳转</button>`;
-    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:8px">${start+1}-${Math.min(start+EV_PAGE_SIZE,total)}/${total}</span></div>`;
+    pgHtml+=`<span style="font-size:13px;color:var(--sub);margin-left:8px">第 ${page}/${pages} 页 · 共 ${total} 条</span></div>`;
     html+=pgHtml;
   }
   el.innerHTML=html;
