@@ -78,13 +78,16 @@ _TERMINAL_STATUSES = (
 
 
 def _build_eval_where(status_filter: str = "", eval_mode: str = "",
-                      keyword: str = "") -> tuple[list[str], list]:
+                      keyword: str = "",
+                      annotation_changed: bool = False) -> tuple[list[str], list]:
     """构造评测列表的 WHERE 子句（全部 SQL 层过滤，不拉全量到前端）。
 
     - status_filter=RUNNING → 非终态（NOT IN 终态列表）
     - status_filter=COMPLETED/FAILED 等 → status LIKE 'prefix%'
     - eval_mode=dev/runtime → JSON_EXTRACT snapshot manifest（SQL 级）
     - keyword → evaluation_name LIKE
+    - annotation_changed → 该评测 FINALIZE 落库的基线标注计数
+      与当前 project_task_summary 计数不一致（评测后人工又改了标注）
     """
     where, params = [], []
     if status_filter == "RUNNING":
@@ -102,6 +105,19 @@ def _build_eval_where(status_filter: str = "", eval_mode: str = "",
     if keyword:
         where.append("e.evaluation_name LIKE %s")
         params.append(f"%{keyword}%")
+    if annotation_changed:
+        # 基线 NULL（未完成评测/老评测）= 未知，不算变化
+        where.append(
+            "EXISTS (SELECT 1 FROM evaluation_summary es "
+            "JOIN project_task_summary pts "
+            "ON pts.project_id = es.project_id AND pts.task_id = es.task_id "
+            "WHERE es.evaluation_id = e.evaluation_id "
+            "AND es.baseline_vuln_total IS NOT NULL "
+            "AND (pts.vuln_total <> es.baseline_vuln_total "
+            " OR pts.confirmed_vulnerable <> es.baseline_confirmed_vulnerable "
+            " OR pts.confirmed_fp <> es.baseline_confirmed_fp "
+            " OR pts.confirmed_not_vulnerable "
+            "    <> es.baseline_confirmed_not_vulnerable))")
     return where, params
 
 
@@ -109,7 +125,8 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
                            alive: bool = True,
                            status_filter: str = "",
                            eval_mode: str = "",
-                           keyword: str = "") -> dict:
+                           keyword: str = "",
+                           annotation_changed: bool = False) -> dict:
     """同步逻辑：查 DB + 解析 config_json + 组装响应（后端筛选+分页）。
 
     alive=False 时跳过平台任务存活校验（逐项目网络调用），列表立即返回，
@@ -117,7 +134,9 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
 
     全部筛选在 SQL 层完成（WHERE + LIMIT + COUNT），不拉全量到前端。
     """
-    where, params = _build_eval_where(status_filter, eval_mode, keyword)
+    where, params = _build_eval_where(
+        status_filter, eval_mode, keyword,
+        annotation_changed=annotation_changed)
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     conn = connect(autocommit=True)
@@ -273,13 +292,15 @@ async def list_evaluations(page: int = 1, page_size: int = 20,
                            alive: bool = True,
                            status_filter: str = "",
                            eval_mode: str = "",
-                           keyword: str = ""):
+                           keyword: str = "",
+                           annotation_changed: bool = False):
     """列表（后端筛选+分页，不拉全量到前端）。
 
     - status_filter=RUNNING → 非终态（SQL NOT IN）
     - status_filter=COMPLETED/FAILED 等 → status 前缀匹配
     - eval_mode=dev/runtime → JSON_EXTRACT manifest（SQL 级）
     - keyword → evaluation_name LIKE
+    - annotation_changed=true → 评测后人工标注已变化（SQL EXISTS）
     """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
@@ -288,7 +309,8 @@ async def list_evaluations(page: int = 1, page_size: int = 20,
         _list_evaluations_sync, page, page_size, offset, alive,
         status_filter=status_filter.strip(),
         eval_mode=eval_mode.strip(),
-        keyword=keyword.strip())
+        keyword=keyword.strip(),
+        annotation_changed=annotation_changed)
 
 
 def _eval_alive_status_sync(eids: list[str]) -> dict[str, bool]:

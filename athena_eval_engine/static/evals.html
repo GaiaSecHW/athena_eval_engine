@@ -44,6 +44,7 @@
 renderNav('/evals');
 
 let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";let _evTotal=0;let _evTotalPages=1;
+let _evChanged=false;  // 标注已变化过滤（独立开关，可与状态筛选叠加）
 // 已查询过存活状态的评测 ID，避免重复请求
 let _evAliveChecked={};
 // 搜索防抖
@@ -57,6 +58,7 @@ function _evParams(){
   else if(_evFilter==="runtime")params.eval_mode="runtime";
   else if(_evFilter!=="all")params.status_filter=_evFilter;
   if(_evQ)params.keyword=_evQ;
+  if(_evChanged)params.annotation_changed="1";
   return params;
 }
 
@@ -107,6 +109,7 @@ async function renderEvals(){
       <button class="ef-btn${_evFilter==='COMPLETED_WITH_WARNINGS'?' active':''}" onclick="setEvFilter('COMPLETED_WITH_WARNINGS',this)">警告</button>
       <button class="ef-btn${_evFilter==='FAILED'?' active':''}" onclick="setEvFilter('FAILED',this)">失败</button>
       <button class="ef-btn${_evFilter==='CANCEL'?' active':''}" onclick="setEvFilter('CANCEL',this)">取消</button>
+      <button class="ef-btn ev-changed-btn${_evChanged?' active':''}" onclick="setEvChanged(this)" title="评测完成后人工标注已变化（报告已过期）">标注已变化</button>
       <span id="ev-total-count" style="margin-left:auto;font-size:13px;color:var(--sub)">共 ${_evTotal} 条</span>
       <button class="btn g" style="font-size:13px;padding:6px 12px" onclick="refreshEvalsData()">🔄 刷新</button>
     </div>
@@ -116,9 +119,20 @@ async function renderEvals(){
 }
 function setEvFilter(f,btn){
   _evFilter=f;_evPage=1;
-  document.querySelectorAll(".ef-btn").forEach(b=>b.classList.remove("active"));
+  // 只清状态筛选按钮的 active；「标注已变化」是独立开关，不能被清掉
+  document.querySelectorAll(".ef-btn:not(.ev-changed-btn)").forEach(b=>b.classList.remove("active"));
   btn.classList.add("active");
   _evFetch().then(renderEvList);
+}
+// 标注已变化：独立开关，与状态筛选叠加（AND）
+function setEvChanged(btn){
+  _evChanged=!_evChanged;_evPage=1;
+  btn.classList.toggle("active",_evChanged);
+  _evFetch().then(function(){
+    renderEvList();
+    var cnt=$("ev-total-count");
+    if(cnt)cnt.textContent="共 "+_evTotal+" 条";
+  });
 }
 // 搜索走后端（防抖 300ms）：keyword 参数发给 SQL LIKE
 function evSearchChanged(v){
