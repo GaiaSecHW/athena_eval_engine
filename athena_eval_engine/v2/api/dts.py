@@ -809,30 +809,19 @@ def regenerate_issues(req: DTSRegenerateRequest):
     3. 定向清理：重生成后，该评测下 case 属于分类跳过（其他非平台工具原因 /
        模型幻觉且无可落地修复方 / 标注前提待确认且顶层根因知识缺失）而
        **不再生成**的旧行——先备份到
-       ``{eid}_dts_regenerate_backup_{ts}.json`` 再删除（连带回归记录）。
+       ``{eid}_dts_stale_backup_{ts}.json`` 再删除（连带回归记录）。
        证据不足等其他「无单」原因的旧行不删（历史语义保留）。
+       清理在 ``_run_causal_chain`` 内完成（``cleanup_stale_dts_issues``），
+       与重跑评测共用同一路径——重跑评测同样会清理这类旧行。
 
     注意：报告文件是冻结快照，重生成只更新 DB 与分析数据文件；生命周期报告
     段的 dts_case_ids / skipped 清单不随之刷新，需重跑评测才更新。
     """
     import json as _json
     import os as _os
-    from datetime import datetime as _dt
 
     from ...config_loader import get_reports_dir
-    from ..dts.issue import (
-        _NON_ISSUE_CATEGORIES,
-        _annotation_category,
-        _case_annotation,
-        _has_actionable_fix,
-        is_label_confirm_knowledge_gap,
-    )
-    from ..persistence.dts_repo import (
-        delete_dts_issues_by_ids,
-        get_dts_issue,
-        list_dts_issues,
-        list_regression_results,
-    )
+    from ..persistence.dts_repo import list_dts_issues
     from ..pipeline.orchestrator import Orchestrator
 
     evaluation_id = str(req.evaluation_id or "").strip()
@@ -864,6 +853,8 @@ def regenerate_issues(req: DTSRegenerateRequest):
     task_id = (existing_rows[0].get("task_id", "") if existing_rows else "") or ""
 
     # ── 重跑因果链 + 问题单生成（最新规则）──
+    # 定向清理在 _run_causal_chain 内完成（重跑评测共用同一路径），
+    # 结果挂在 causal_chain["dts_stale_cleanup"]。
     try:
         causal_chain = Orchestrator()._run_causal_chain(
             root_cause_results, evaluation_id=evaluation_id,
@@ -875,67 +866,16 @@ def regenerate_issues(req: DTSRegenerateRequest):
                              detail=f"重生成问题单失败: {e}") from e
     generated_case_ids = {
         str(c) for c in causal_chain.get("dts_case_ids", []) if c}
-
-    # ── 定向清理：按新规则跳过分类而不再生成的旧行 ──
-    stale_case_ids = set()
-    for r in root_cause_results:
-        cid = str(r.get("case_id") or "")
-        if not cid or cid in generated_case_ids:
-            continue
-        category = _annotation_category(_case_annotation(r))
-        if category in _NON_ISSUE_CATEGORIES:
-            stale_case_ids.add(cid)
-        elif category == "模型幻觉":
-            hyps = ((r.get("mining") or {}).get("hypotheses") or []) + \
-                ((r.get("verification") or {}).get("hypotheses") or [])
-            if not _has_actionable_fix(hyps):
-                stale_case_ids.add(cid)
-        elif is_label_confirm_knowledge_gap(r):
-            # 标注前提待确认 + 顶层根因知识缺失（与生成跳过同一规则）：
-            # 确认标注后重新分析再建单，旧的不可落地单备份后清理
-            stale_case_ids.add(cid)
-
-    deleted = {"deleted_issues": 0, "deleted_regression_results": 0,
-               "dts_ids": []}
-    backup_path = None
-    if stale_case_ids:
-        # 全行查询（list 精简列定位 → get 取全行），备份后删除
-        rows, _total = list_dts_issues(evaluation_id=evaluation_id,
-                                       limit=100000)
-        stale_rows = [i for i in rows
-                      if str(i.get("case_id", "")) in stale_case_ids]
-        if stale_rows:
-            backup = []
-            for i in stale_rows:
-                full = get_dts_issue(str(i.get("dts_id", ""))) or {}
-                full["regression_history"] = list_regression_results(
-                    str(i.get("dts_id", "")))
-                backup.append(full)
-            ts = _dt.now().strftime("%Y%m%d_%H%M%S")
-            backup_path = _os.path.join(
-                reports_dir, f"{evaluation_id}_dts_regenerate_backup_{ts}.json")
-            try:
-                with open(backup_path, "w", encoding="utf-8") as f:
-                    _json.dump(backup, f, ensure_ascii=False, indent=2)
-            except Exception as e:
-                raise HTTPException(
-                    status_code=500,
-                    detail=f"备份待删除问题单失败，已中止删除: {e}") from e
-            deleted = delete_dts_issues_by_ids(
-                [str(i.get("dts_id", "")) for i in stale_rows],
-                evaluation_id=evaluation_id,
-            )
-            log("DTS_API",
-                f"regenerate: eval={evaluation_id} 清理 {deleted['deleted_issues']}"
-                f" 条跳过分类旧行（备份 {backup_path}）")
+    cleanup = causal_chain.get("dts_stale_cleanup") or {}
 
     return {
         "evaluation_id": evaluation_id,
         "regenerated": len(generated_case_ids),
-        "deleted_issues": deleted["deleted_issues"],
-        "deleted_regression_results": deleted["deleted_regression_results"],
-        "stale_case_ids": sorted(stale_case_ids),
-        "backup_path": backup_path,
+        "deleted_issues": cleanup.get("deleted_issues", 0),
+        "deleted_regression_results": cleanup.get(
+            "deleted_regression_results", 0),
+        "stale_case_ids": cleanup.get("stale_case_ids", []),
+        "backup_path": cleanup.get("backup_path"),
     }
 
 

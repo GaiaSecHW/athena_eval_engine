@@ -163,6 +163,84 @@ def is_label_confirm_knowledge_gap(case: dict) -> bool:
     return bool(top and str(top.get("cause_code") or "") == "C")
 
 
+def cleanup_stale_dts_issues(
+    evaluation_id: str,
+    root_cause_results: list[dict],
+    generated_case_ids: set[str],
+    reports_dir: str,
+) -> dict:
+    """定向清理：按当前规则不再生成问题单的旧行（备份后删除）。
+
+    重跑/re-generate 后，case 属于跳过分类而不再生成——旧行先备份到
+    ``{eid}_dts_stale_backup_{ts}.json`` 再删除（连带回归记录）：
+    - 人工分类「其他非平台工具原因」（责任在平台之外，无修复方）；
+    - 人工分类「模型幻觉」且线索全部无平台可落地修复方；
+    - 标注前提待确认且顶层根因知识缺失（is_label_confirm_knowledge_gap）。
+
+    证据不足等其他「无单」原因的旧行**不删**（历史语义保留）。
+    重跑评测与 /dts/regenerate 共用本函数——保证「重跑后按当前规则
+    不应存在的单被删掉」，而不是只有 regenerate 才清理。
+
+    Returns:
+        {"deleted_issues", "deleted_regression_results", "dts_ids",
+         "stale_case_ids", "backup_path"}；备份写失败时抛异常并中止删除。
+    """
+    from datetime import datetime as _dt
+
+    from ..persistence.dts_repo import (
+        delete_dts_issues_by_ids,
+        get_dts_issue,
+        list_dts_issues,
+        list_regression_results,
+    )
+
+    result: dict = {"deleted_issues": 0, "deleted_regression_results": 0,
+                    "dts_ids": [], "stale_case_ids": [], "backup_path": None}
+    stale_case_ids: set[str] = set()
+    for r in root_cause_results:
+        cid = str(r.get("case_id") or "")
+        if not cid or cid in generated_case_ids:
+            continue
+        category = _annotation_category(_case_annotation(r))
+        if category in _NON_ISSUE_CATEGORIES:
+            stale_case_ids.add(cid)
+        elif category == "模型幻觉":
+            hyps = ((r.get("mining") or {}).get("hypotheses") or []) + \
+                ((r.get("verification") or {}).get("hypotheses") or [])
+            if not _has_actionable_fix(hyps):
+                stale_case_ids.add(cid)
+        elif is_label_confirm_knowledge_gap(r):
+            stale_case_ids.add(cid)
+    result["stale_case_ids"] = sorted(stale_case_ids)
+    if not stale_case_ids:
+        return result
+
+    # 全行查询（list 精简列定位 → get 取全行），备份后删除
+    rows, _total = list_dts_issues(evaluation_id=evaluation_id, limit=100000)
+    stale_rows = [i for i in rows
+                  if str(i.get("case_id", "")) in stale_case_ids]
+    if not stale_rows:
+        return result
+    backup = []
+    for i in stale_rows:
+        full = get_dts_issue(str(i.get("dts_id", ""))) or {}
+        full["regression_history"] = list_regression_results(
+            str(i.get("dts_id", "")))
+        backup.append(full)
+    ts = _dt.now().strftime("%Y%m%d_%H%M%S")
+    backup_path = os.path.join(
+        reports_dir, f"{evaluation_id}_dts_stale_backup_{ts}.json")
+    with open(backup_path, "w", encoding="utf-8") as f:
+        json.dump(backup, f, ensure_ascii=False, indent=2)
+    deleted = delete_dts_issues_by_ids(
+        [str(i.get("dts_id", "")) for i in stale_rows],
+        evaluation_id=evaluation_id,
+    )
+    result.update(deleted)
+    result["backup_path"] = backup_path
+    return result
+
+
 def _annotation_category(fp_reason: str) -> str:
     """从人工标注解析 FP 分类（下拉值）。
 

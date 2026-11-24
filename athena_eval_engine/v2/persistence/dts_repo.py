@@ -177,8 +177,11 @@ def upsert_dts_issues(issues: list[dict], evaluation_id: str,
     dts_id（PRIMARY KEY）不在 UPDATE 列表中，重跑时旧行的 dts_id 不变，
     dts_regression_result 通过 dts_id 的关联自动存活。
 
-    消失的 case（重跑后不再产生问题单）的旧行保留不动——UPSERT 不触发，
-    旧的分析数据、回归数据、人工标注全部保留。
+    消失的 case（重跑后不再产生问题单）的旧行 UPSERT 不触发、默认保留；
+    其中属于跳过分类（其他非平台工具原因 / 模型幻觉无可修复方 /
+    标注前提待确认且根因知识缺失）的旧行由 ``cleanup_stale_dts_issues``
+    在 ``_run_causal_chain`` 内备份后定向清理。
+    证据不足等其他「无单」原因的旧行保留（历史语义）。
 
     Args:
         issues: 问题单 dict 列表，每条含 dts_id、evaluation_id 等。

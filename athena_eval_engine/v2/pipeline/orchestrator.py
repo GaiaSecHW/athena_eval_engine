@@ -1295,6 +1295,27 @@ class Orchestrator:
         result["dts_case_ids"] = [
             str(i.get("case_id")) for i in dts_issues if i.get("case_id")]
 
+        # 定向清理：按当前规则不再生成的旧行（备份后删除）。
+        # 重跑评测与 /dts/regenerate 共用本路径——重跑后按当前规则
+        # 不应存在的单（跳过分类的旧行）也会被清理，不只 regenerate。
+        from ..dts.issue import cleanup_stale_dts_issues
+        try:
+            result["dts_stale_cleanup"] = cleanup_stale_dts_issues(
+                evaluation_id, root_cause_results,
+                set(result["dts_case_ids"]), reports_dir)
+        except Exception as e:
+            # 清理失败不阻断评测（旧行保留，可 regenerate 重触发），
+            # 但必须留下可见日志，不允许静默吞掉
+            log("DTS", f"eval={evaluation_id} 定向清理失败（旧行保留）: {e}")
+            result["dts_stale_cleanup"] = {
+                "deleted_issues": 0, "deleted_regression_results": 0,
+                "dts_ids": [], "stale_case_ids": [], "backup_path": None}
+        _cleanup = result["dts_stale_cleanup"]
+        if _cleanup.get("deleted_issues"):
+            log("DTS", f"eval={evaluation_id} 清理 "
+                      f"{_cleanup['deleted_issues']} 条不再生成的旧行"
+                      f"（备份 {_cleanup.get('backup_path')}）")
+
         return result
 
     def _calc_recall_precision(
