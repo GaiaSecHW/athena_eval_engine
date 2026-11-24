@@ -206,18 +206,23 @@ function renderEvList(){
 
 // 评测操作
 async function retryEval(eid){
+  function _doRetry(full){
+    F('/api/v1/evaluations/'+eid+'/retry?force=true'+(full?'&full=true':''),{method:'POST'}).then(function(r){return r.json().then(function(d){if(!r.ok)throw (d&&d.detail)||('HTTP '+r.status);return d;});}).then(function(){
+      refreshEvalsData();
+    }).catch(function(e){
+      showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+    });
+  }
   showConfirm({
     icon:'🔄',iconBg:'rgba(37,99,235,.12)',iconColor:'var(--acc)',
     title:'重跑评测',desc:`确认重跑评测 ${eid}？`,
-    risks:['重跑会重新执行全部阶段（解析→匹配→根因分析→报告）','已生成的报告将被覆盖'],
-    confirmText:'重跑',confirmColor:'var(--acc)',
-    onConfirm:function(){
-      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json().then(function(d){if(!r.ok)throw (d&&d.detail)||('HTTP '+r.status);return d;});}).then(function(){
-        refreshEvalsData();
-      }).catch(function(e){
-        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
-      });
-    }
+    risks:['两种都会重新执行全部阶段（解析→匹配→根因分析→报告），已生成的报告将被归档覆盖',
+      '增量重跑：标注未变的 case 复用既有根因结论，不重复消耗 LLM',
+      '全量重跑：先清空该任务的根因缓存，全部 case 重新 LLM 分析，成本高'],
+    confirmText:'增量重跑',confirmColor:'var(--acc)',
+    altText:'全量重跑',altColor:'var(--amber)',
+    onConfirm:function(){_doRetry(false);},
+    onAlt:function(){_doRetry(true);}
   });
 }
 async function cancelEval(eid){

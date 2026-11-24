@@ -451,21 +451,27 @@ function renderDtsSection(evalId,issues,stats){
 
 // ===== 通用操作 =====
 function retryEval(eid){
+  function _doRetry(full){
+    activeId=eid;
+    var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
+    F('/api/v1/evaluations/'+eid+'/retry?force=true'+(full?'&full=true':''),{method:'POST'}).then(function(r){return r.json()}).then(function(d){
+      if(d.status==='QUEUED'||d.status==='RUNNING'){
+        var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
+          jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
+        setTimeout(retryPoll,500);
+      }else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String((d&&d.detail)||JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
+    }).catch(function(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});});
+  }
   showConfirm({icon:'⚠️',iconBg:'rgba(251,191,36,.15)',iconColor:'var(--amber)',title:'重跑评测',
     desc:'重跑将清除该评测的全部数据，重新解析 trace 并调用 LLM。',
-    risks:['耗时可能较长（10-30 分钟）','重跑期间旧报告会被覆盖','LLM 不可用时评测会失败，不会降级出结果'],
-    confirmText:'重跑',confirmColor:'var(--acc)',
-    onConfirm:function(){
-      activeId=eid;
-      var rep=$("view");if(rep)rep.innerHTML='<div class="back-bar"><button class="back-btn" onclick="go(\'/evals\')">← 返回列表</button></div><div class="empty"><div class="ic" style="animation:spin 1s linear infinite">⏳</div><h3>正在重新启动评测…</h3><p style="font-size:14px;color:var(--sub)">清理旧数据并重新解析中</p></div>';
-      F('/api/v1/evaluations/'+eid+'/retry?force=true',{method:'POST'}).then(function(r){return r.json()}).then(function(d){
-        if(d.status==='QUEUED'||d.status==='RUNNING'){
-          var pollCnt=0;var retryPoll=function(){pollCnt++;if(pollCnt>30)return;if(activeId!==eid)return;
-            jget('/api/v1/evaluations/'+eid).then(function(s){if(s.status==='FAILED'){setTimeout(retryPoll,1000);}else{selEv(eid);}}).catch(function(){setTimeout(retryPoll,1000);});};
-          setTimeout(retryPoll,500);
-        }else{showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String((d&&d.detail)||JSON.stringify(d)),confirmText:'知道了',confirmColor:'var(--red)'});}
-      }).catch(function(e){showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'重跑失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});});
-    }
+    risks:['两种都会重新执行全部阶段，耗时可能较长（10-30 分钟）；重跑期间旧报告会被归档覆盖',
+      '增量重跑：标注未变的 case 复用既有根因结论，不重复消耗 LLM',
+      '全量重跑：先清空该任务的根因缓存，全部 case 重新 LLM 分析，成本高',
+      'LLM 不可用时评测会失败，不会降级出结果'],
+    confirmText:'增量重跑',confirmColor:'var(--acc)',
+    altText:'全量重跑',altColor:'var(--amber)',
+    onConfirm:function(){_doRetry(false);},
+    onAlt:function(){_doRetry(true);}
   });
 }
 function deleteEval(eid,name){

@@ -926,10 +926,14 @@ def delete_evaluation(evaluation_id: str):
 
 
 @app.post("/api/v1/evaluations/{evaluation_id}/retry")
-def retry_evaluation(evaluation_id: str, force: bool = False):
+def retry_evaluation(evaluation_id: str, force: bool = False,
+                     full: bool = False):
     """重试失败的评测：删除全部数据，重新解析+计算+报告。
 
     force=true: 跳过状态检查，强制重跑（用于任务挂了但状态卡在运行中的情况）。
+    full=true: 全量重跑——先清空该任务（manifest.kg_task_id）的 per-case
+    根因缓存，重跑时全部 case 走当前 prompt 重新 LLM 分析；默认（增量）
+    复用标注未变 case 的既有根因结论，只对缓存未命中的 case 跑 LLM。
     """
     try:
         from ...infrastructure.database import connect
@@ -964,6 +968,7 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
             snap_row = cur.fetchone()
         finally:
             conn.close()
+        manifest: dict = {}
         if snap_row:
             snap_cfg = _json.loads(snap_row[0]) if isinstance(snap_row[0], str) else snap_row[0]
             manifest = (snap_cfg or {}).get("manifest", {}) or {}
@@ -1126,6 +1131,17 @@ def retry_evaluation(evaluation_id: str, force: bool = False):
                                 ("CREATED", evaluation_id))
         finally:
             conn.close()
+
+        # Step 3b: 全量重跑——清空该任务的 per-case 根因缓存
+        # （默认增量重跑：标注未变的 case 复用既有根因结论，不重复跑 LLM；
+        #   full=true：全部 case 走当前 prompt 重新 LLM 分析。只清本任务
+        #   目录，其他任务的缓存不受影响）
+        if full:
+            from ...v2.lifecycle.root_cause_analyzer import purge_task_cache
+            _purged = purge_task_cache(manifest.get("kg_task_id") or "")
+            log("RETRY", f"{evaluation_id} 全量重跑: 清空任务根因缓存 "
+                      f"{_purged} 个文件"
+                      f"（task={manifest.get('kg_task_id') or '_unknown'}）")
 
         # Step 4: 通知旧线程取消（协作取消），提交新线程到线程池
         es.set_cancel(evaluation_id)  # 通知旧线程在下一个阶段边界退出

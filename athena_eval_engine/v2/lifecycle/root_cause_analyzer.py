@@ -778,6 +778,28 @@ def cleanup_case_cache(task_id: str, case_ids: list[str]) -> int:
     return removed
 
 
+def purge_task_cache(task_id: str) -> int:
+    """清空任务全部 per-case 根因缓存（全量重跑用），返回删除文件数。
+
+    增量重跑复用标注未变 case 的既有根因结论（不重复消耗 LLM）；
+    全量重跑先清空该任务缓存——重跑时全部 case 走当前 prompt 重新
+    LLM 分析。只清本任务目录，其他任务缓存不受影响。
+    """
+    import shutil
+    task_dir = _rca_task_cache_dir(task_id)
+    if not os.path.isdir(task_dir):
+        return 0
+    n = sum(len(files) for _, _, files in os.walk(task_dir))
+    try:
+        shutil.rmtree(task_dir)
+    except OSError as e:
+        log("ROOT_CAUSE", f"清空任务根因缓存失败 task={task_id or '_unknown'}: {e}")
+        return 0
+    log("ROOT_CAUSE", f"已清空任务 {task_id or '_unknown'} 根因缓存"
+                      f"（{n} 个文件，全量重跑）")
+    return n
+
+
 _cache_swept = False
 
 

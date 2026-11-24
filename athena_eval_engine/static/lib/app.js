@@ -192,7 +192,8 @@ function goBack(defaultPath){
   else{location.href=_INGRESS+(defaultPath||'/');}
 }
 
-// 确认框（opts: {icon,iconBg,iconColor,title,desc,risks:[],confirmText,confirmColor,onConfirm}）
+// 确认框（opts: {icon,iconBg,iconColor,title,desc,risks:[],confirmText,confirmColor,onConfirm,
+//               altText,altColor,onAlt}——alt* 为可选的第二个操作按钮）
 function showConfirm(opts){
   if(typeof opts==='string')opts={title:'确认',desc:opts};
   var ov=document.createElement("div");ov.className="modal-overlay";
@@ -201,9 +202,12 @@ function showConfirm(opts){
     +'<div class="modal-head"><div class="modal-icon" style="background:'+esc(opts.iconBg)+';color:'+esc(opts.iconColor)+'">'+esc(opts.icon||'⚠️')+'</div><h3>'+esc(opts.title||'确认')+'</h3></div>'
     +'<div class="modal-body"><p>'+esc(opts.desc||'')+'</p>'+(risksHtml?'<ul>'+risksHtml+'</ul>':'')+'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
+    +(opts.altText?'<button class="btn" style="font-size:15px;padding:8px 20px;background:'+esc(opts.altColor||'var(--amber)')+'" id="modal-confirm-alt">'+esc(opts.altText)+'</button>':'')
     +'<button class="btn" style="font-size:15px;padding:8px 20px;background:'+esc(opts.confirmColor||'var(--acc)')+'" id="modal-confirm">'+esc(opts.confirmText||'确认')+'</button></div></div>';
   document.body.appendChild(ov);
   ov.addEventListener("click",function(e){if(e.target===ov)ov.remove();});
+  var alt=document.getElementById("modal-confirm-alt");
+  if(alt)alt.onclick=function(){ov.remove();if(opts.onAlt)opts.onAlt();};
   document.getElementById("modal-confirm").onclick=function(){ov.remove();if(opts.onConfirm)opts.onConfirm();};
   return ov;
 }
