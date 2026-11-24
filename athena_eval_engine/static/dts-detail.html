@@ -271,7 +271,7 @@ async function renderDtsDetailPage(dtsId){
         insufficientChains.forEach(function(x){
           html+='<div style="font-size:14px;margin-bottom:8px"><b>'+esc(x.label)+'链：</b>'+esc(x.reason||'证据不足，无法判定根因')+'</div>';
         });
-        html+='<div style="font-size:13px;color:var(--sub)">该 case 不会自动生成问题单。</div></div>';
+        html+='<div style="font-size:13px;color:var(--sub)">该链未产出根因结论，不参与本单结论（结论来自另一条有结论的链）；只有所有链均证据不足时，该 case 才不生成问题单。</div></div>';
       }
     }
 
