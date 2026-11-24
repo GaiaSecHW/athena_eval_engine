@@ -782,10 +782,13 @@ _cache_swept = False
 
 
 def _sweep_old_cache_versions() -> None:
-    """清理旧版本缓存文件（当前版本永不读取它们），每进程只扫一次。
+    """清理死缓存文件，每进程只扫一次。
 
-    版本号递增（prompt/判定逻辑变更）后，旧版本文件全部成为死数据
-    （平均 126KB/case），不清理会在 reports PVC（5Gi）上持续累积。
+    两类死数据（当前代码永远不会读取）：
+    - 旧版本文件（版本号 < 当前）：prompt/判定逻辑变更后残留，
+      平均 126KB/case，不清理会在 reports PVC（5Gi）上持续累积；
+    - 缓存根目录下的平铺文件：新布局按任务 ID 分目录，根目录文件
+      无论版本号都已不可达（历史布局遗留）。
     """
     global _cache_swept
     if _cache_swept:
@@ -795,20 +798,21 @@ def _sweep_old_cache_versions() -> None:
     if not os.path.isdir(cache_dir):
         return
     removed = 0
-    # 按任务 ID 分目录的布局 + 历史平铺文件都要扫到
     for root, _dirs, files in os.walk(cache_dir):
+        at_root = os.path.abspath(root) == os.path.abspath(cache_dir)
         for name in files:
-            m = re.search(r"_v(\d+)_", name)
-            if not m or int(m.group(1)) >= _RCA_CACHE_VERSION:
-                continue
+            if not at_root:
+                m = re.search(r"_v(\d+)_", name)
+                if not m or int(m.group(1)) >= _RCA_CACHE_VERSION:
+                    continue
             try:
                 os.remove(os.path.join(root, name))
                 removed += 1
             except OSError:
                 pass
     if removed:
-        log("ROOT_CAUSE", f"清理旧版本根因缓存 {removed} 个文件"
-                          f"（当前版本 v{_RCA_CACHE_VERSION}）")
+        log("ROOT_CAUSE", f"清理死缓存 {removed} 个文件"
+                          f"（当前版本 v{_RCA_CACHE_VERSION}，含历史平铺布局）")
 
 
 class RootCauseAnalyzer:
