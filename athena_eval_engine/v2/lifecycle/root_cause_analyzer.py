@@ -299,7 +299,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
       "query_content": "agent 实际执行的查询命令或参数；非知识断点填问题总结",
       "kb_search_query": "breakpoint=L2/L4 时填一个方法论问题，否则空",
       "returned_content": "实际返回内容概括，无则空",
-      "fix_suggestion": "定位到本 session 的具体修复建议"
+      "fix_suggestion": "按缺陷类别给出的通用修复规则（元规则，非本 case 专属）"
     }
   ],
   "insufficient_evidence": false,
@@ -335,7 +335,7 @@ confidence >= 0.6 的线索展示；<0.6 的不展示（若没有任何一条 >=
   - query_content：知识访问填实际查询命令；非知识断点填问题总结
   - kb_search_query：L2/L4 时填一个检索问题（方法论或环境事实均可）
   - returned_content：知识/记忆返回内容；无则空
-  - fix_suggestion：本 session 的修复建议
+  - fix_suggestion：本 session 的修复建议（通用元规则，按缺陷类别写；不点名具体漏洞类型/参数/入口——case 专属事实属于知识库补充）
 - insufficient_evidence / insufficient_reason：整个 session 无法给出有证据的判定时使用。
 
 # 硬约束
@@ -516,7 +516,10 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
 # fix_suggestion 填写规则
 - target=agent_prompt/agent_code 时，agent_type 必填（turing/argo/secmate/dataflow/webvuln_verify/cvuln_verify）。
 - target=knowledge/memory 时，knowledge_source 必填（knowledge_base/memory_wiki）。
-- action 必须能定位到具体位置，禁止空泛建议。
+- **action 必须是通用元规则**：按缺陷类别写适用于全部同类 case 的规则（如证据分级、断言门槛、上报前必须核实的前提类别）。
+  禁止 case 专属规则——不得点名具体漏洞类型/参数/入口/文件名（每张单加一条专属规则，提示词会无限膨胀）。
+  本 case 的具体事实（如某入口在商用版本已裁剪、某方法实际做了转义）属于项目知识——写 target=knowledge 的建议：知识库补充该项目事实。
+- location 写角色级位置（如「挖掘 agent 上报前检查规则」）。agent 提示词/代码是外部产品，平台无法定位到具体文件——禁止伪装成已知文件路径。
 - 如果 agent_can_resolve=false，必须写 blocked_by 和 needed_external_data。
 
 # 输出格式
@@ -667,7 +670,10 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 # prompt 或判定逻辑变化时必须递增版本号，否则缓存仍是旧逻辑结果。
 # v2：A/H 归因漂移修复（漏做检查归属 + 后见之明防护 + A/H 一致性
 # 自检，改压缩与 merge 两处 prompt）。
-_RCA_CACHE_VERSION = 2
+# v3：fix_suggestion 元规则约束（压缩与 merge 两处 prompt：action 按
+# 缺陷类别写通用规则，禁止 case 专属规则；项目事实归知识库；
+# location 角色级定位，不伪装文件路径）。
+_RCA_CACHE_VERSION = 3
 
 
 def _rca_cache_dir() -> str:
