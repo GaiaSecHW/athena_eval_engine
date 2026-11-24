@@ -417,16 +417,26 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
     return _db_query(_do)
 
 
-def _cause_line(causes: dict, top: int = 3) -> str:
-    """根因分布紧凑行：top N 标签+计数 + 其他合计。"""
+def _cause_line(causes: dict, top: int | None = None) -> str:
+    """根因分布紧凑行：具体原因标签+计数，按数量降序。
+
+    top=None 列出全部原因（避免"其他"笼统）；指定 top 时余量合计为其他。
+    未知/空 cause_code 归入「未分类」，不丢数据也不显示裸码。
+    """
     items = sorted((c for c in causes.items() if c[1] > 0),
                    key=lambda x: -x[1])
     if not items:
         return ""
-    parts = [f"{CAUSE_PLAIN_LABELS.get(c, c)} {n}" for c, n in items[:top]]
+
+    def _label(code: str) -> str:
+        return CAUSE_PLAIN_LABELS.get(code) or "未分类"
+
+    if top is None or len(items) <= top:
+        return " · ".join(f"{_label(c)} {n} 处" for c, n in items)
+    parts = [f"{_label(c)} {n} 处" for c, n in items[:top]]
     rest = sum(n for _, n in items[top:])
     if rest:
-        parts.append(f"其他 {rest}")
+        parts.append(f"其他 {rest} 处")
     return " · ".join(parts)
 
 
@@ -486,7 +496,8 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
 
     if merged:
         lines.append(
-            f"🧭 按 Agent（本期新增：误报 {st['new_fp']} / 漏报 {st['new_fn']}）：")
+            f"🧭 按 Agent（本期新增：误报 {st['new_fp']} 个 / "
+            f"漏报 {st['new_fn']} 个）：")
 
         def _agent_rank(item):
             _, d = item
@@ -501,31 +512,32 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
             segs = []
             fp_ent = d.get("fp")
             if fp_ent:
-                causes = _cause_line(fp_ent["causes"], top=2)
+                causes = _cause_line(fp_ent["causes"])
                 segs.append(
-                    f"误报 {fp_ent['total']}（{causes}）")
+                    f"误报 {fp_ent['total']} 个（{causes}）")
             if d.get("fn"):
-                segs.append(f"漏报 {d['fn']}")
+                segs.append(f"漏报 {d['fn']} 个")
             reg = d.get("reg")
             if reg:
                 segs.append(
-                    f"验证 通过 {reg['passed']} / 不通过 {reg['failed']}")
+                    f"验证 通过 {reg['passed']} 条 / 不通过 {reg['failed']} 条")
             lines.append(f"{_span(name, bold=True)}：" + " · ".join(segs))
     elif st.get("open_fp_agents"):
         # 本期无新增（误报/漏报/验证全为 0）：未关闭存量根因（按 agent）
-        lines.append("🧭 误报根因（未关闭，按 Agent）：")
+        lines.append("🧭 按 Agent（未关闭误报根因）：")
         for a, ent in sorted(st["open_fp_agents"].items(),
                              key=lambda x: -x[1]["total"]):
-            causes = _cause_line(ent["causes"], top=2)
+            causes = _cause_line(ent["causes"])
             name = AGENT_SHORT_LABELS.get(a, a)
-            head = f"{name} {ent['total']}"
-            lines.append(f"{_span(head, bold=True)}：{causes}")
+            head = f"{name}：{ent['total']} 个误报"
+            lines.append(f"{_span(head, bold=True)}（{causes}）")
     open_dist = st.get("open_by_agent") or {}
     if open_dist:
         top = sorted(open_dist.items(), key=lambda x: -x[1])
-        segs = [f"{AGENT_SHORT_LABELS.get(a, a)} {n}" for a, n in top[:4]]
+        segs = [f"{AGENT_SHORT_LABELS.get(a, a)} {n} 个"
+                for a, n in top[:4]]
         more = f" 等 {len(top)} 项" if len(top) > 4 else ""
-        lines.append("👥 未关闭：" + " · ".join(segs) + more)
+        lines.append("👥 未关闭问题单：" + " · ".join(segs) + more)
     lines.append(f"🔗 {public_url}/dts")
     return "\n".join(lines)
 
