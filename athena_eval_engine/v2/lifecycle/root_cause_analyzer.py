@@ -656,10 +656,12 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 
 
 # ── per-case 根因缓存 ──
-# 场景：任务已结束、trace 冻结，人工标注只增不改——重跑（如标注变化后
-# 重新发起测评）时老 case 直接复用既有根因（断点/责任方/L4 判定原样
-# 保留，不翻案——已按旧根因修复误报的人不会看到根因变化），只对新增
-# 确认（缓存未命中）的 case 跑 LLM 分析。
+# 布局：{reports_dir}/_root_cause_cache/{任务 ID}/{case 文件}.json.gz
+# ——按平台任务 ID 分目录，不同任务的 case 互不干扰（同名 case_id 不
+# 会串到别的任务）；任务已结束、trace 冻结，人工标注只增不改——重跑
+# （如标注变化后重新发起测评）时老 case 直接复用既有根因（断点/责任方/
+# L4 判定原样保留，不翻案——已按旧根因修复误报的人不会看到根因变化），
+# 只对新增确认（缓存未命中）的 case 跑 LLM 分析。
 # key = case 标注输入指纹（case_id/outcome/标题/描述/摘要/人工确认
 # 摘要/验证否定标记/agent 类型）+ 分析器版本号。
 # prompt 或判定逻辑变化时必须递增版本号，否则缓存仍是旧逻辑结果。
@@ -673,8 +675,17 @@ def _rca_cache_dir() -> str:
     return os.path.join(get_reports_dir(), "_root_cause_cache")
 
 
-def _rca_cache_path(case: dict) -> str:
-    """缓存文件路径：{safe_case_id}_{outcome}_v{版本}_{指纹16}.json.gz
+def _safe_task_id(task_id: str) -> str:
+    """任务 ID → 子目录名（非法字符替换，空 → _unknown）。"""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(task_id or ""))[:120] or "_unknown"
+
+
+def _rca_task_cache_dir(task_id: str) -> str:
+    return os.path.join(_rca_cache_dir(), _safe_task_id(task_id))
+
+
+def _rca_cache_path(case: dict, task_id: str = "") -> str:
+    """缓存文件路径：{任务 ID}/{safe_case_id}_{outcome}_v{版本}_{指纹16}.json.gz
 
     gzip 存储：缓存内容是纯文本 JSON（压缩摘要/根因/断点/L4 明细），
     实测整体压缩率约 4 倍（126KB/case → ~30KB），reports PVC 只有
@@ -694,17 +705,17 @@ def _rca_cache_path(case: dict) -> str:
     digest = hashlib.md5(digest_input.encode("utf-8")).hexdigest()[:16]
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", case_id)[:120] or "nocase"
     return os.path.join(
-        _rca_cache_dir(),
+        _rca_task_cache_dir(task_id),
         f"{safe_id}_{outcome}_v{_RCA_CACHE_VERSION}_{digest}.json.gz")
 
 
-def _rca_cache_load(case: dict) -> dict | None:
+def _rca_cache_load(case: dict, task_id: str = "") -> dict | None:
     """命中返回缓存的分析结果；未命中/损坏返回 None（回退新分析）。
 
     优先读 gzip 新格式（.json.gz），回退旧明文格式（.json）——旧文件
     仍可复用，下次重算时才转成新格式。
     """
-    gz_path = _rca_cache_path(case)
+    gz_path = _rca_cache_path(case, task_id)
     for path, is_gz in ((gz_path, True), (gz_path[:-3], False)):
         if not os.path.isfile(path):
             continue
@@ -723,9 +734,9 @@ def _rca_cache_load(case: dict) -> dict | None:
     return None
 
 
-def _rca_cache_save(case: dict, result: dict) -> None:
+def _rca_cache_save(case: dict, result: dict, task_id: str = "") -> None:
     """写入 per-case 分析结果（gzip + 临时文件原子替换；失败不阻断）。"""
-    path = _rca_cache_path(case)
+    path = _rca_cache_path(case, task_id)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
@@ -741,19 +752,19 @@ def _safe_case_id(case_id: str) -> str:
     return re.sub(r"[^A-Za-z0-9_.-]", "_", str(case_id or ""))[:120] or "nocase"
 
 
-def cleanup_case_cache(case_ids: list[str]) -> int:
-    """删除指定 case 的根因缓存（所有版本/标注指纹），返回删除文件数。
+def cleanup_case_cache(task_id: str, case_ids: list[str]) -> int:
+    """删除指定任务下指定 case 的根因缓存（所有版本/标注指纹）。
 
-    用于评测真正删除后的孤儿回收——仅当这些 case_id 已不再被任何
-    问题单引用时调用。重跑（retry）不走这里，缓存继续复用。
+    返回删除文件数。用于评测真正删除后的孤儿回收——仅当这些 case_id
+    已不再被任何问题单引用时调用。重跑（retry）不走这里，缓存继续复用。
     """
-    cache_dir = _rca_cache_dir()
-    if not case_ids or not os.path.isdir(cache_dir):
+    task_dir = _rca_task_cache_dir(task_id)
+    if not case_ids or not os.path.isdir(task_dir):
         return 0
     removed = 0
     for case_id in case_ids:
         # *.json* 同时覆盖新 gzip 格式（.json.gz）与旧明文格式（.json）
-        pattern = os.path.join(cache_dir, f"{_safe_case_id(case_id)}_*.json*")
+        pattern = os.path.join(task_dir, f"{_safe_case_id(case_id)}_*.json*")
         for path in glob.glob(pattern):
             try:
                 os.remove(path)
@@ -762,7 +773,8 @@ def cleanup_case_cache(case_ids: list[str]) -> int:
                 pass
     if removed:
         log("ROOT_CAUSE", f"清理根因缓存 {removed} 个文件"
-                          f"（{len(case_ids)} 个已删除 case）")
+                          f"（任务 {task_id or '_unknown'}，"
+                          f"{len(case_ids)} 个已删除 case）")
     return removed
 
 
@@ -783,15 +795,17 @@ def _sweep_old_cache_versions() -> None:
     if not os.path.isdir(cache_dir):
         return
     removed = 0
-    for name in os.listdir(cache_dir):
-        m = re.search(r"_v(\d+)_", name)
-        if not m or int(m.group(1)) >= _RCA_CACHE_VERSION:
-            continue
-        try:
-            os.remove(os.path.join(cache_dir, name))
-            removed += 1
-        except OSError:
-            pass
+    # 按任务 ID 分目录的布局 + 历史平铺文件都要扫到
+    for root, _dirs, files in os.walk(cache_dir):
+        for name in files:
+            m = re.search(r"_v(\d+)_", name)
+            if not m or int(m.group(1)) >= _RCA_CACHE_VERSION:
+                continue
+            try:
+                os.remove(os.path.join(root, name))
+                removed += 1
+            except OSError:
+                pass
     if removed:
         log("ROOT_CAUSE", f"清理旧版本根因缓存 {removed} 个文件"
                           f"（当前版本 v{_RCA_CACHE_VERSION}）")
@@ -807,6 +821,7 @@ class RootCauseAnalyzer:
         data_packs: list[DataPack],
         cancel_cb=None,
         project_id: str = "",
+        task_id: str = "",
     ) -> list[dict]:
         """对每个 FP/FN case 的挖掘 agent session 和验证 agent session 各自做独立压缩 + 合并输出根因分析。
 
@@ -818,6 +833,7 @@ class RootCauseAnalyzer:
             data_packs: DataPack 列表
             cancel_cb: 取消回调
             project_id: 项目 ID（知识库主动验证用，空则跳过 Athena API 查询）
+            task_id: 平台任务 ID——per-case 根因缓存按任务 ID 分目录存放
 
         Returns:
             分析结果列表，每项含：
@@ -980,7 +996,7 @@ class RootCauseAnalyzer:
         # 只对新增确认（缓存未命中）的 case 跑 LLM。
         to_analyze: list[tuple[int, dict]] = []
         for i, case in enumerate(fp_cases):
-            hit = _rca_cache_load(case)
+            hit = _rca_cache_load(case, task_id)
             if hit is not None:
                 results[i] = hit
             else:
@@ -994,7 +1010,7 @@ class RootCauseAnalyzer:
 
         def _run_and_save(idx_case):
             idx, result = _run_case(idx_case)
-            _rca_cache_save(fp_cases[idx], result)
+            _rca_cache_save(fp_cases[idx], result, task_id)
             return idx, result
 
         max_workers = min(len(to_analyze), 10)
@@ -1002,7 +1018,7 @@ class RootCauseAnalyzer:
             if max_workers <= 1:
                 for i, case in to_analyze:
                     idx, result = _run_case((i, case))
-                    _rca_cache_save(fp_cases[idx], result)
+                    _rca_cache_save(fp_cases[idx], result, task_id)
                     results[idx] = result
             else:
                 with ThreadPoolExecutor(max_workers=max_workers) as pool:

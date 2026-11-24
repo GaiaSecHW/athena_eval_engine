@@ -607,6 +607,8 @@ class Orchestrator:
                 evaluation_id, root_cause_cases, data_packs,
                 cancel_cb=_cancel_cb,
                 project_id=root_cause_project_id,
+                # per-case 根因缓存按任务 ID 分目录（与 dts_issue.task_id 同源）
+                task_id=cfg.get("manifest", {}).get("kg_task_id", ""),
             )
 
             _dump_debug(reports_dir, evaluation_id, "root_cause", {

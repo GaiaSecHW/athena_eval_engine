@@ -857,14 +857,17 @@ def delete_evaluation(evaluation_id: str):
     from ...infrastructure.database import connect
     conn = connect(autocommit=True)
     _deleted_case_ids: list[str] = []
+    _deleted_pairs: list[tuple[str, str]] = []
     try:
         cur = conn.cursor()
         cur.execute("SET FOREIGN_KEY_CHECKS=0")
-        # 先记下该评测的问题单 case_id——删除后据此回收 per-case 根因缓存
+        # 先记下该评测的问题单 (case_id, task_id)——删除后据此回收
+        # per-case 根因缓存（缓存按任务 ID 分目录）
         cur.execute(
-            "SELECT DISTINCT case_id FROM dts_issue WHERE evaluation_id=%s",
-            (evaluation_id,))
-        _deleted_case_ids = [r[0] for r in cur.fetchall() if r[0]]
+            "SELECT DISTINCT case_id, task_id FROM dts_issue "
+            "WHERE evaluation_id=%s", (evaluation_id,))
+        _deleted_pairs = [(r[0], r[1] or "") for r in cur.fetchall() if r[0]]
+        _deleted_case_ids = sorted({c for c, _ in _deleted_pairs})
         # 用 evaluation_id 的表
         eid_tables = [
             "finding_benchmark_match", "outcome_fact", "knowledge_interaction_fact",
@@ -898,7 +901,7 @@ def delete_evaluation(evaluation_id: str):
     # 回收 per-case 根因缓存：只删已不再被任何问题单引用的 case
     # （同一 case 可能出现在其他评测中；重跑路径不经过这里，缓存照常复用）
     try:
-        if _deleted_case_ids:
+        if _deleted_pairs:
             _conn = connect(autocommit=True)
             try:
                 _cur = _conn.cursor()
@@ -909,10 +912,14 @@ def delete_evaluation(evaluation_id: str):
                 _still = {r[0] for r in _cur.fetchall()}
             finally:
                 _conn.close()
-            _orphans = [c for c in _deleted_case_ids if c not in _still]
-            if _orphans:
+            _by_task: dict[str, list[str]] = {}
+            for _cid, _tid in _deleted_pairs:
+                if _cid not in _still:
+                    _by_task.setdefault(_tid, []).append(_cid)
+            if _by_task:
                 from ...v2.lifecycle.root_cause_analyzer import cleanup_case_cache
-                cleanup_case_cache(_orphans)
+                for _tid, _cids in _by_task.items():
+                    cleanup_case_cache(_tid, _cids)
     except Exception as e:
         log("DELETE", f"清理根因缓存失败（不阻断）: {e}")
     return {"status": "ok", "evaluation_id": evaluation_id}
