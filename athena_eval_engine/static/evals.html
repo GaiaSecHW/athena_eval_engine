@@ -73,6 +73,7 @@ async function renderEvals(){
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="filterEvals()" style="max-width:280px" value="${_evQ}">
       <button class="ef-btn${_evFilter==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
+      <button class="ef-btn${_evFilter==='RUNNING'?' active':''}" onclick="setEvFilter('RUNNING',this)">运行中</button>
       <button class="ef-btn${_evFilter==='dev'?' active':''}" onclick="setEvFilter('dev',this)">开发态</button>
       <button class="ef-btn${_evFilter==='runtime'?' active':''}" onclick="setEvFilter('runtime',this)">运行态</button>
       <button class="ef-btn${_evFilter==='COMPLETED'?' active':''}" onclick="setEvFilter('COMPLETED',this)">完成</button>
@@ -111,7 +112,11 @@ const EV_PAGE_SIZE=16;
 
 function renderEvList(){
   let filtered=_evData;
-  if(_evFilter==='dev'||_evFilter==='runtime')filtered=filtered.filter(e=>(e.eval_mode||'dev')===_evFilter);
+  if(_evFilter==='RUNNING'){
+    // 运行中 = 非终态（排除 COMPLETED/FAILED/CANCELLED 系）
+    const TERMINAL=['COMPLETED','FAILED','CANCELLED'];
+    filtered=filtered.filter(e=>!TERMINAL.some(t=>(e.status||'').startsWith(t)));
+  }else if(_evFilter==='dev'||_evFilter==='runtime')filtered=filtered.filter(e=>(e.eval_mode||'dev')===_evFilter);
   else if(_evFilter!=="all")filtered=filtered.filter(e=>(e.status||"").startsWith(_evFilter));
   if(_evQ)filtered=filtered.filter(e=>(e.evaluation_id+e.name).toLowerCase().includes(_evQ));
   const total=filtered.length;
