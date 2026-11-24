@@ -23,6 +23,7 @@ session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不
 from __future__ import annotations
 
 import glob
+import gzip
 import hashlib
 import json
 import os
@@ -673,7 +674,12 @@ def _rca_cache_dir() -> str:
 
 
 def _rca_cache_path(case: dict) -> str:
-    """缓存文件路径：{safe_case_id}_{outcome}_v{版本}_{指纹16}.json"""
+    """缓存文件路径：{safe_case_id}_{outcome}_v{版本}_{指纹16}.json.gz
+
+    gzip 存储：缓存内容是纯文本 JSON（压缩摘要/根因/断点/L4 明细），
+    实测整体压缩率约 4 倍（126KB/case → ~30KB），reports PVC 只有
+    5Gi，不压缩在大规模 case 下会撑满。
+    """
     case_id = str(case.get("case_id") or "")
     outcome = str(case.get("outcome") or "")
     digest_input = "\x1f".join([
@@ -689,32 +695,41 @@ def _rca_cache_path(case: dict) -> str:
     safe_id = re.sub(r"[^A-Za-z0-9_.-]", "_", case_id)[:120] or "nocase"
     return os.path.join(
         _rca_cache_dir(),
-        f"{safe_id}_{outcome}_v{_RCA_CACHE_VERSION}_{digest}.json")
+        f"{safe_id}_{outcome}_v{_RCA_CACHE_VERSION}_{digest}.json.gz")
 
 
 def _rca_cache_load(case: dict) -> dict | None:
-    """命中返回缓存的分析结果；未命中/损坏返回 None（回退新分析）。"""
-    path = _rca_cache_path(case)
-    if not os.path.isfile(path):
-        return None
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        if isinstance(data, dict) and \
-                data.get("case_id") == str(case.get("case_id") or ""):
-            return data
-    except Exception:
-        pass
+    """命中返回缓存的分析结果；未命中/损坏返回 None（回退新分析）。
+
+    优先读 gzip 新格式（.json.gz），回退旧明文格式（.json）——旧文件
+    仍可复用，下次重算时才转成新格式。
+    """
+    gz_path = _rca_cache_path(case)
+    for path, is_gz in ((gz_path, True), (gz_path[:-3], False)):
+        if not os.path.isfile(path):
+            continue
+        try:
+            if is_gz:
+                with gzip.open(path, "rt", encoding="utf-8") as f:
+                    data = json.load(f)
+            else:
+                with open(path, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+            if isinstance(data, dict) and \
+                    data.get("case_id") == str(case.get("case_id") or ""):
+                return data
+        except Exception:
+            pass
     return None
 
 
 def _rca_cache_save(case: dict, result: dict) -> None:
-    """写入 per-case 分析结果（临时文件 + 原子替换；失败不阻断）。"""
+    """写入 per-case 分析结果（gzip + 临时文件原子替换；失败不阻断）。"""
     path = _rca_cache_path(case)
     try:
         os.makedirs(os.path.dirname(path), exist_ok=True)
         tmp = f"{path}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
+        with gzip.open(tmp, "wt", encoding="utf-8") as f:
             json.dump(result, f, ensure_ascii=False)
         os.replace(tmp, path)
     except Exception as e:
@@ -737,7 +752,8 @@ def cleanup_case_cache(case_ids: list[str]) -> int:
         return 0
     removed = 0
     for case_id in case_ids:
-        pattern = os.path.join(cache_dir, f"{_safe_case_id(case_id)}_*.json")
+        # *.json* 同时覆盖新 gzip 格式（.json.gz）与旧明文格式（.json）
+        pattern = os.path.join(cache_dir, f"{_safe_case_id(case_id)}_*.json*")
         for path in glob.glob(pattern):
             try:
                 os.remove(path)
