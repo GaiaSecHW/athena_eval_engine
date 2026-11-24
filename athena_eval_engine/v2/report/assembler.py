@@ -25,6 +25,7 @@ from ..dts.issue import (
     _annotation_category,
     _case_annotation,
     _has_actionable_fix,
+    is_label_confirm_knowledge_gap,
     _NON_ISSUE_CATEGORIES,
 )
 
@@ -198,6 +199,14 @@ class ReportAssembler:
                 detail = ("人工分类「模型幻觉」，且全部线索无平台可落地"
                           "修复点（agent prompt/code、知识库、数据供给、"
                           "评测流程），仅计入统计")
+            elif is_label_confirm_knowledge_gap(case):
+                # 标注前提待确认 + 顶层根因知识缺失（与 dts/issue.generate
+                # _dts_issues 跳过条件同一规则）：修复方向是补知识库，但补
+                # 什么知识取决于未确认的标注前提——确认标注后再重新分析。
+                reason = "标注前提待确认，未生成问题单"
+                detail = ("分析声明标注前提无法从 session 材料验证（全链 "
+                          "needs_label_confirmation），且顶层根因为知识缺失"
+                          "（C）：先确认标注，再重新分析建单")
             elif no_session:
                 # 最可执行的原因：trace 里没有这个 case 的 session，
                 # 后面所有分析都无从谈起。

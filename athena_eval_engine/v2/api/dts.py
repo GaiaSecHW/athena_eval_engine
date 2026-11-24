@@ -807,7 +807,8 @@ def regenerate_issues(req: DTSRegenerateRequest):
        + upsert_dts_issues）。UPSERT 按 (evaluation_id, case_id) 更新存活行，
        dts_id / 回归记录 / 人工确认保持不变。
     3. 定向清理：重生成后，该评测下 case 属于分类跳过（其他非平台工具原因 /
-       模型幻觉且无可落地修复方）而**不再生成**的旧行——先备份到
+       模型幻觉且无可落地修复方 / 标注前提待确认且顶层根因知识缺失）而
+       **不再生成**的旧行——先备份到
        ``{eid}_dts_regenerate_backup_{ts}.json`` 再删除（连带回归记录）。
        证据不足等其他「无单」原因的旧行不删（历史语义保留）。
 
@@ -824,6 +825,7 @@ def regenerate_issues(req: DTSRegenerateRequest):
         _annotation_category,
         _case_annotation,
         _has_actionable_fix,
+        is_label_confirm_knowledge_gap,
     )
     from ..persistence.dts_repo import (
         delete_dts_issues_by_ids,
@@ -888,6 +890,10 @@ def regenerate_issues(req: DTSRegenerateRequest):
                 ((r.get("verification") or {}).get("hypotheses") or [])
             if not _has_actionable_fix(hyps):
                 stale_case_ids.add(cid)
+        elif is_label_confirm_knowledge_gap(r):
+            # 标注前提待确认 + 顶层根因知识缺失（与生成跳过同一规则）：
+            # 确认标注后重新分析再建单，旧的不可落地单备份后清理
+            stale_case_ids.add(cid)
 
     deleted = {"deleted_issues": 0, "deleted_regression_results": 0,
                "dts_ids": []}

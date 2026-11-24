@@ -128,6 +128,41 @@ _FP_CATEGORIES = {
 }
 
 
+def is_label_confirm_knowledge_gap(case: dict) -> bool:
+    """判定「标注前提待确认 + 顶层根因知识缺失」的应不建单 case。
+
+    条件（两个都是，缺一不可）：
+    - 有 session 的链**全部** needs_label_confirmation——分析自己声明
+      「标注前提无法从 session 材料验证，需标注人先确认」；
+    - 顶层根因是 C（查了没得）：修复方向是补充知识库，但**补什么知识
+      取决于未确认的标注前提**（follow_up_questions 指向标注人）——
+      先有鸡还是先有蛋，单不可落地，确认标注后再重新分析建单。
+
+    与 generate_dts_issues 的跳过条件、报告 skipped 清单、
+    /dts/regenerate 的定向清理共用本函数（单一权威源）。
+    """
+    mining = case.get("mining") or {}
+    verify = case.get("verification") or {}
+    active = [c for c in (mining, verify) if c.get("session_chain")]
+    if not active:
+        return False
+    if not all((c.get("label_quality") or {}).get(
+            "needs_label_confirmation") for c in active):
+        return False
+    # 顶层线索候选池与问题单生成同规则：FP 只取挖掘链（验证链回答
+    # 「为什么没拦住」，不顶替 FP 根因）；FN 混池
+    mining_hyps = mining.get("hypotheses") or []
+    if (str(case.get("outcome") or "FP").upper() != "FN"
+            and mining_hyps):
+        pool = mining_hyps
+    else:
+        pool = mining_hyps + (verify.get("hypotheses") or [])
+    if not pool:
+        return False
+    top = _pick_primary_hypothesis(pool)
+    return bool(top and str(top.get("cause_code") or "") == "C")
+
+
 def _annotation_category(fp_reason: str) -> str:
     """从人工标注解析 FP 分类（下拉值）。
 
@@ -216,7 +251,10 @@ def generate_dts_issues(
     - 证据不足（有 session 的链全部 insufficient_evidence）；
     - 人工分类「其他非平台工具原因」（无条件：责任在平台之外，无修复方）；
     - 人工分类「模型幻觉」且线索全部无平台可落地修复方（条件：分类是
-      现象级粗标签，分析发现可修根因时照常生成）。
+      现象级粗标签，分析发现可修根因时照常生成）；
+    - 标注前提待确认且顶层根因知识缺失（全部链 needs_label_confirmation
+      + 顶层 C：补什么知识取决于未确认的标注前提，单不可落地——
+      见 is_label_confirm_knowledge_gap）。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
@@ -425,6 +463,17 @@ def generate_dts_issues(
             skip_issue_cases.add(cid)
             log("DTS", f"case {cid}: 人工分类「模型幻觉」且无线索含平台"
                       f"可落地修复方，跳过问题单生成")
+            continue
+        # ── 标注前提待确认 + 顶层根因知识缺失 → 不建单 ──
+        # 全部分析链声明「标注前提无法从 session 材料验证，需标注人先
+        # 确认」，且顶层根因是 C（查了没得）：修复方向是补知识库，但补
+        # 什么知识取决于未确认的标注前提（follow_up_questions 指向标注
+        # 人）——单不可落地。先确认标注，再重新分析建单。
+        if is_label_confirm_knowledge_gap(case):
+            skip_issue_cases.add(cid)
+            log("DTS", f"case {cid}: 标注前提待确认（全链 "
+                      f"needs_label_confirmation）且顶层根因为 C（知识"
+                      f"缺失），先确认标注再分析，跳过问题单生成")
             continue
         # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
