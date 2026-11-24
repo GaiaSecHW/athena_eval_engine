@@ -22,6 +22,7 @@ session 链直接用 PARSING 阶段建好的 session_graph（parent_map），不
 """
 from __future__ import annotations
 
+import glob
 import hashlib
 import json
 import os
@@ -720,6 +721,66 @@ def _rca_cache_save(case: dict, result: dict) -> None:
         log("ROOT_CAUSE", f"根因缓存写入失败（不阻断）: {e}")
 
 
+def _safe_case_id(case_id: str) -> str:
+    """缓存文件名前缀：非法字符替换 + 截断（与 _rca_cache_path 同一规则）。"""
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", str(case_id or ""))[:120] or "nocase"
+
+
+def cleanup_case_cache(case_ids: list[str]) -> int:
+    """删除指定 case 的根因缓存（所有版本/标注指纹），返回删除文件数。
+
+    用于评测真正删除后的孤儿回收——仅当这些 case_id 已不再被任何
+    问题单引用时调用。重跑（retry）不走这里，缓存继续复用。
+    """
+    cache_dir = _rca_cache_dir()
+    if not case_ids or not os.path.isdir(cache_dir):
+        return 0
+    removed = 0
+    for case_id in case_ids:
+        pattern = os.path.join(cache_dir, f"{_safe_case_id(case_id)}_*.json")
+        for path in glob.glob(pattern):
+            try:
+                os.remove(path)
+                removed += 1
+            except OSError:
+                pass
+    if removed:
+        log("ROOT_CAUSE", f"清理根因缓存 {removed} 个文件"
+                          f"（{len(case_ids)} 个已删除 case）")
+    return removed
+
+
+_cache_swept = False
+
+
+def _sweep_old_cache_versions() -> None:
+    """清理旧版本缓存文件（当前版本永不读取它们），每进程只扫一次。
+
+    版本号递增（prompt/判定逻辑变更）后，旧版本文件全部成为死数据
+    （平均 126KB/case），不清理会在 reports PVC（5Gi）上持续累积。
+    """
+    global _cache_swept
+    if _cache_swept:
+        return
+    _cache_swept = True
+    cache_dir = _rca_cache_dir()
+    if not os.path.isdir(cache_dir):
+        return
+    removed = 0
+    for name in os.listdir(cache_dir):
+        m = re.search(r"_v(\d+)_", name)
+        if not m or int(m.group(1)) >= _RCA_CACHE_VERSION:
+            continue
+        try:
+            os.remove(os.path.join(cache_dir, name))
+            removed += 1
+        except OSError:
+            pass
+    if removed:
+        log("ROOT_CAUSE", f"清理旧版本根因缓存 {removed} 个文件"
+                          f"（当前版本 v{_RCA_CACHE_VERSION}）")
+
+
 class RootCauseAnalyzer:
     """误报根因分析器 — 挖掘链 + 验证链各自独立压缩，最后合并输出。"""
 
@@ -748,6 +809,9 @@ class RootCauseAnalyzer:
             - mining: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
             - verification: {session_chain, root_cause, fix_suggestion, compressed_summaries, l0_l7_breakpoints, l4_independent_verification}
         """
+        # 旧版本缓存（prompt 变更前）永不再被读取，首次分析时一次性回收
+        _sweep_old_cache_versions()
+
         # 构建 session_id → events 索引 + session_id → agent_type 映射
         session_events: dict[str, list[RawEvent]] = defaultdict(list)
         session_agent_type: dict[str, str] = {}
