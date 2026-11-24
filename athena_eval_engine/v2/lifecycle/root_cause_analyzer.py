@@ -2313,9 +2313,10 @@ class RootCauseAnalyzer:
         - 命中与标注矛盾的知识（l4=true，direction=conflict）→ 知识内容
           反驳人工标注的误报前提（agent 查到反而坐实自己的上报结论）→
           **不改归因**（A 的事实成立，但「查了就能避免误报」不成立）——
-          建单层转**标注复核**（见 issue.is_kb_annotation_conflict）：
-          标注与知识库必有一错，复核结论决定改标注（上报不是误报）
-          还是修正知识（误导性内容）。
+          建单层顶层根因改为**「补充业务知识」的知识方向单**（见
+          issue._kb_conflict_hypothesis）：业务事实须由业务方提供说明
+          佐证并沉淀进知识库；复核默认方向：无业务说明支撑的误报前提
+          默认不成立（漏洞成立）。
         - 没有知识（l4=false）→ 查了也没用 → 知识**供给缺口**（补充），
           cause_code 改 C/knowledge。
         - l4_knowledge_exists=None（未查/跳过/查询失败）→ 不修改。

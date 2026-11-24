@@ -164,20 +164,18 @@ def is_label_confirm_knowledge_gap(case: dict) -> bool:
 
 
 def is_kb_annotation_conflict(case: dict) -> bool:
-    """判定「知识库证据与人工标注矛盾」的应不建单 case（conflict 态）。
+    """判定「知识库证据与人工标注矛盾」的 case（L4 conflict 态）。
 
     L4 独立验证命中知识且方向为 conflict——知识内容直接反驳人工标注的
     误报前提（如标注称「商用版本已关闭这些入口」，知识给出「入口并非
     默认关闭」的事实）。若知识为真，该上报不构成误报；agent 查到该知识
     反而会坐实自己的上报结论——「该查没查」的修复对消除此误报无效。
 
-    标注与知识库必有一错，**复核先于归因**：先由标注人对照知识库文章
-    复核——标注错 → 上报不是误报（基线更正）；知识错 → 误导性知识
-    （修正/下架，负向知识路径）。复核前不建单（仍计报告统计）。
-
-    复核默认方向（用户定稿）：业务事实类的误报前提必须有知识库/业务
-    说明支撑——**无支撑说明的默认不成立（漏洞成立）**，标注方需提供
-    业务说明佐证，否则撤回误报标注。
+    处理（用户定稿）：**建「补充业务知识」的知识方向单**——业务事实
+    必须有权威沉淀：要求业务方（标注方）提供业务说明佐证并沉淀进知识
+    库（与标注矛盾的现有内容一并修正）。复核默认方向：无业务说明支撑
+    的误报前提默认不成立（漏洞成立），举证责任在标注方——业务方提供
+    不了佐证就撤回误报标注。
     """
     for chain_type in ("mining", "verification"):
         l4 = (case.get(chain_type) or {}).get(
@@ -187,6 +185,75 @@ def is_kb_annotation_conflict(case: dict) -> bool:
                 == "conflict"):
             return True
     return False
+
+
+def _kb_conflict_hypothesis(case: dict) -> dict:
+    """合成「补充业务知识」线索（L4 conflict case 的顶层根因）。
+
+    顶层根因改为知识方向（cause_code=C/knowledge）：修复=业务方提供
+    业务说明佐证并沉淀进知识库——agent 提示词修复对本类误报无效
+    （agent 查到现有知识反而坐实自己的上报结论）。
+    带 ``_kb_conflict_primary`` 标记：顶层选取时确定性优先于按分排序
+    （见 _conflict_top）。
+    """
+    l4: dict = {}
+    for chain_type in ("mining", "verification"):
+        v = (case.get(chain_type) or {}).get(
+            "l4_independent_verification") or {}
+        if (v.get("l4_knowledge_exists") is True
+                and str(v.get("l4_knowledge_direction") or "") == "conflict"):
+            l4 = v
+            break
+    ann = _case_annotation(case)
+    kb_summary = str(l4.get("summary") or "").strip()
+    hit = ((l4.get("matched_files") or [{}]) or [{}])[0] or {}
+    kb_title = str(hit.get("title") or "").strip()
+    kb_side = (f"知识库命中「{kb_title}」称：{kb_summary}"
+               if (kb_title or kb_summary)
+               else "知识库内容与标注前提相反")
+    return {
+        "hypothesis": (
+            f"知识库证据与人工标注矛盾：人工标注称「{ann}」，{kb_side}"
+            "——标注与知识库必有一错。业务事实缺乏权威沉淀，要求业务方"
+            "提供业务说明佐证并沉淀进知识库；复核默认方向：无业务说明"
+            "支撑的误报前提默认不成立（漏洞成立），举证责任在标注方"),
+        "probability": 0.9,
+        "responsibility": "knowledge",
+        "cause_code": "C",
+        "confidence": 0.85,
+        "annotation_fit": 0.9,
+        "evidence_refs": [],
+        "counter_evidence": "",
+        "evidence": (f"L4 独立验证（评测系统代为检索知识库）：{kb_summary}"
+                     or "知识内容与人工标注前提矛盾"),
+        "session_id": "",
+        "supporting_breakpoints": [],
+        "agent_can_resolve": False,
+        "blocked_by": "业务事实（标注前提所依赖的部署/裁剪状态）须由业务方"
+                      "提供说明佐证",
+        "needed_external_data": ["标注前提所依赖的业务事实说明（业务方提供）"],
+        "fix_suggestion": {
+            "target": "knowledge",
+            "agent_type": "",
+            "knowledge_source": "knowledge_base",
+            "location": "知识库该项目的业务知识",
+            "action": "补充业务知识：标注前提所依赖的业务事实（如商用版本"
+                      "入口启停/裁剪状态）由业务方提供说明佐证后沉淀进知识库，"
+                      "与标注矛盾的现有内容一并修正",
+            "expected_effect": "知识库有权威业务事实后，agent 检索即可避免该类"
+                              "误报；业务方无法提供佐证时，按默认方向撤回误报"
+                              "标注（漏洞成立）",
+        },
+        "_kb_conflict_primary": True,
+    }
+
+
+def _conflict_top(pool: list) -> dict | None:
+    """conflict case 的确定性顶层：知识补充线索优先于按分排序。"""
+    for h in pool:
+        if isinstance(h, dict) and h.get("_kb_conflict_primary"):
+            return h
+    return None
 
 
 def cleanup_stale_dts_issues(
@@ -201,8 +268,7 @@ def cleanup_stale_dts_issues(
     ``{eid}_dts_stale_backup_{ts}.json`` 再删除（连带回归记录）：
     - 人工分类「其他非平台工具原因」（责任在平台之外，无修复方）；
     - 人工分类「模型幻觉」且线索全部无平台可落地修复方；
-    - 标注前提待确认且顶层根因知识缺失（is_label_confirm_knowledge_gap）；
-    - 知识库证据与人工标注矛盾（is_kb_annotation_conflict，L4 conflict）。
+    - 标注前提待确认且顶层根因知识缺失（is_label_confirm_knowledge_gap）。
 
     证据不足等其他「无单」原因的旧行**不删**（历史语义保留）。
     重跑评测与 /dts/regenerate 共用本函数——保证「重跑后按当前规则
@@ -237,8 +303,6 @@ def cleanup_stale_dts_issues(
             if not _has_actionable_fix(hyps):
                 stale_case_ids.add(cid)
         elif is_label_confirm_knowledge_gap(r):
-            stale_case_ids.add(cid)
-        elif is_kb_annotation_conflict(r):
             stale_case_ids.add(cid)
     result["stale_case_ids"] = sorted(stale_case_ids)
     if not stale_case_ids:
@@ -361,9 +425,11 @@ def generate_dts_issues(
       现象级粗标签，分析发现可修根因时照常生成）；
     - 标注前提待确认且顶层根因知识缺失（全部链 needs_label_confirmation
       + 顶层 C：补什么知识取决于未确认的标注前提，单不可落地——
-      见 is_label_confirm_knowledge_gap）；
-    - 知识库证据与人工标注矛盾（L4 conflict：知识反驳标注前提，标注与
-      知识库必有一错，先标注复核——见 is_kb_annotation_conflict）。
+      见 is_label_confirm_knowledge_gap）。
+
+    L4 conflict case（知识库证据与人工标注矛盾）**不跳过**：顶层根因
+    改为「补充业务知识」的知识方向单（见 _kb_conflict_hypothesis）——
+    业务事实须由业务方提供说明佐证并沉淀进知识库。
     """
     per_case_breakpoints = causal_chain_result.get("per_case_breakpoints", [])
     if not per_case_breakpoints:
@@ -573,26 +639,41 @@ def generate_dts_issues(
             log("DTS", f"case {cid}: 人工分类「模型幻觉」且无线索含平台"
                       f"可落地修复方，跳过问题单生成")
             continue
+        # ── 知识库证据与人工标注矛盾（L4 conflict）→ 建「补充业务知识」单 ──
+        # L4 查到的知识直接反驳标注的误报前提——标注与知识库必有一错。
+        # 业务事实必须有权威沉淀：顶层根因改为知识方向（补充业务知识），
+        # agent 提示词修复对本类误报无效（agent 查到现有知识反而坐实
+        # 自己的上报结论）。复核默认方向：无业务说明支撑的误报前提默认
+        # 不成立（漏洞成立），举证责任在标注方。
+        _conflict_hyp = None
+        if is_kb_annotation_conflict(case):
+            _conflict_hyp = _kb_conflict_hypothesis(case)
+            all_hypotheses.insert(0, _conflict_hyp)
+            mining_hypotheses.insert(0, _conflict_hyp)
+            case_hypotheses[cid] = all_hypotheses
+            case_mining_hypotheses[cid] = mining_hypotheses
+            _cfs = _conflict_hyp.get("fix_suggestion") or {}
+            fix_parts.append(" | ".join([
+                "[挖掘链]",
+                f"修复方: {_TARGET_LABELS.get('knowledge', 'knowledge')}",
+                f"位置: {_cfs.get('location', '')}",
+                f"修改: {_cfs.get('action', '')}",
+                f"预期: {_cfs.get('expected_effect', '')}",
+            ]))
+            log("DTS", f"case {cid}: 知识库证据与人工标注矛盾"
+                      f"（L4 conflict），顶层根因改为补充业务知识"
+                      f"（知识方向）")
         # ── 标注前提待确认 + 顶层根因知识缺失 → 不建单 ──
         # 全部分析链声明「标注前提无法从 session 材料验证，需标注人先
         # 确认」，且顶层根因是 C（查了没得）：修复方向是补知识库，但补
         # 什么知识取决于未确认的标注前提（follow_up_questions 指向标注
         # 人）——单不可落地。先确认标注，再重新分析建单。
-        if is_label_confirm_knowledge_gap(case):
+        # conflict case 豁免：其要补的知识是具体业务事实，不是循环缺失。
+        if not _conflict_hyp and is_label_confirm_knowledge_gap(case):
             skip_issue_cases.add(cid)
             log("DTS", f"case {cid}: 标注前提待确认（全链 "
                       f"needs_label_confirmation）且顶层根因为 C（知识"
                       f"缺失），先确认标注再分析，跳过问题单生成")
-            continue
-        # ── 知识库证据与人工标注矛盾（L4 conflict）→ 不建单 ──
-        # L4 查到的知识直接反驳标注的误报前提——agent 查到该知识反而
-        # 坐实自己的上报结论，「该查没查」的修复无法消除此误报。
-        # 标注与知识库必有一错：先标注复核（对照知识库文章），
-        # 标注错 → 基线更正；知识错 → 修正/下架。复核前不建单。
-        if is_kb_annotation_conflict(case):
-            skip_issue_cases.add(cid)
-            log("DTS", f"case {cid}: 知识库证据与人工标注矛盾"
-                      f"（L4 conflict），先标注复核，跳过问题单生成")
             continue
         # 兼容旧格式：如果没有线索但有 root_causes
         if all_hypotheses:
@@ -606,7 +687,8 @@ def generate_dts_issues(
             if (str(case.get("outcome") or "FP").upper() != "FN"
                     and mining_hypotheses):
                 top_pool = mining_hypotheses
-            top = _pick_primary_hypothesis(top_pool)
+            # conflict case：知识补充线索确定性优先于按分排序
+            top = _conflict_top(top_pool) or _pick_primary_hypothesis(top_pool)
             if top:
                 root_causes = {
                     "hypothesis": top.get("hypothesis", ""),
@@ -696,7 +778,9 @@ def generate_dts_issues(
             if (case_outcomes.get(case_id, "FP") != "FN"
                     and mining_hypotheses):
                 top_pool = mining_hypotheses
-            top_hyp = _pick_primary_hypothesis(top_pool)
+            # conflict case：知识补充线索确定性优先于按分排序
+            top_hyp = (_conflict_top(top_pool)
+                       or _pick_primary_hypothesis(top_pool))
             cause_code = (top_hyp or {}).get("cause_code", "") or primary_cause_code
             break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
         else:
