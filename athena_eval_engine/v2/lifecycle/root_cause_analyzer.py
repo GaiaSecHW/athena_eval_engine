@@ -519,6 +519,8 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
 - **action 必须是通用元规则**：按缺陷类别写适用于全部同类 case 的规则（如证据分级、断言门槛、上报前必须核实的前提类别）。
   禁止 case 专属规则——不得点名具体漏洞类型/参数/入口/文件名（每张单加一条专属规则，提示词会无限膨胀）。
   本 case 的具体事实（如某入口在商用版本已裁剪、某方法实际做了转义）属于项目知识——写 target=knowledge 的建议：知识库补充该项目事实。
+- **一个 fix_suggestion 只表达一个修复方向**。同一 case 既需要提示词元规则、又需要知识库补充项目事实时，
+  输出两条线索（各自带 fix_suggestion，分别指向 agent_prompt 与 knowledge），不要把业务事实塞进提示词规则里。
 - location 写角色级位置（如「挖掘 agent 上报前检查规则」）。agent 提示词/代码是外部产品，平台无法定位到具体文件——禁止伪装成已知文件路径。
 - 如果 agent_can_resolve=false，必须写 blocked_by 和 needed_external_data。
 
