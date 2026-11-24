@@ -653,12 +653,12 @@ def generate_dts_issues(
             log("DTS", f"case {cid}: 人工分类「模型幻觉」且无线索含平台"
                       f"可落地修复方，跳过问题单生成")
             continue
-        # ── 知识库证据与人工标注矛盾（L4 conflict）→ 建「补充业务知识」单 ──
+        # ── 知识库证据与人工标注矛盾（L4 conflict）→ 建矛盾裁决单 ──
         # L4 查到的知识直接反驳标注的误报前提——标注与知识库必有一错。
-        # 业务事实必须有权威沉淀：顶层根因改为知识方向（补充业务知识），
-        # agent 提示词修复对本类误报无效（agent 查到现有知识反而坐实
-        # 自己的上报结论）。复核默认方向：无业务说明支撑的误报前提默认
-        # 不成立（漏洞成立），举证责任在标注方。
+        # 业务事实必须有权威沉淀：顶层根因改为知识方向（三路裁决：
+        # 该查没查/知识有误/知识缺失），agent 提示词修复对本类误报
+        # 不是首要修复（agent 查到现有知识反而坐实自己的上报结论）。
+        # 复核默认方向：无业务说明支撑的误报前提默认不成立（漏洞成立）。
         _conflict_hyp = None
         if is_kb_annotation_conflict(case):
             _conflict_hyp = _kb_conflict_hypothesis(case)
@@ -666,8 +666,22 @@ def generate_dts_issues(
             mining_hypotheses.insert(0, _conflict_hyp)
             case_hypotheses[cid] = all_hypotheses
             case_mining_hypotheses[cid] = mining_hypotheses
+            # 写回 case（full_data）：分析文件/详情页读的是 case 的
+            # mining/verification 线索——不写回则详情页只看到原始
+            # A/H 线索，看不到裁决线索；primary 同步指向裁决线索
+            _m = case.setdefault("mining", {})
+            if isinstance(_m.get("hypotheses"), list):
+                _m["hypotheses"] = [
+                    h for h in _m["hypotheses"]
+                    if not (isinstance(h, dict)
+                            and h.get("_kb_conflict_primary"))]
+                _m["hypotheses"].insert(0, _conflict_hyp)
+                _m["primary_cause"] = "C"
+                _m["primary_hypothesis"] = \
+                    _conflict_hyp.get("hypothesis", "")
+            # 裁决修复排第一（solution 文本首条）——用户按修复建议第一条行动
             _cfs = _conflict_hyp.get("fix_suggestion") or {}
-            fix_parts.append(" | ".join([
+            fix_parts.insert(0, " | ".join([
                 "[挖掘链]",
                 f"修复方: {_TARGET_LABELS.get('knowledge', 'knowledge')}",
                 f"位置: {_cfs.get('location', '')}",

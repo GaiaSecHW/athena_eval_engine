@@ -385,6 +385,10 @@ async function renderDtsDetailPage(dtsId){
         // DTS_LEVEL_RANK 已在 config.js 中定义为全局常量，与后端 core/causal_levels.py 一致
         function hypFit(h){var d=h.data||{};var v=d.annotation_fit;return Number(v!==undefined&&v!==null?v:d.confidence)||0;}
         allHypotheses.sort(function(a,b){
+          // 矛盾裁决线索（L4 conflict 合成）确定性排第一——顶层根因
+          if(!!(b.data||{})._kb_conflict_primary !== !!(a.data||{})._kb_conflict_primary){
+            return (b.data||{})._kb_conflict_primary?1:-1;
+          }
           var fa=hypFit(a), fb=hypFit(b);
           if(fa!==fb) return fb-fa;
           var cfa=Number(a.data.confidence||0), cfb=Number(b.data.confidence||0);
@@ -441,6 +445,7 @@ async function renderDtsDetailPage(dtsId){
           html+='<details class="clue-item" style="margin-bottom:14px;border:1px solid var(--bd);border-radius:10px;overflow:hidden">'
             +'<summary style="padding:10px 12px;background:var(--p2);border-bottom:1px solid var(--bd);display:flex;align-items:center;gap:8px;flex-wrap:wrap">'
             +'<span style="font-weight:600;font-size:14px">线索 '+(vidx+1)+'</span>';
+          if((hdata||{})._kb_conflict_primary){html+=' <span class="knd" style="background:rgba(217,119,6,.15);color:var(--amber);font-weight:600">矛盾裁决</span>';}
           if(h.label){html+=' <span class="knd">'+h.label+'</span>';}
           var fit=hypFit(h);
           var fitColor=fit>=0.85?'var(--green)':fit>=0.7?'var(--amber)':'var(--gray)';
