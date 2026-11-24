@@ -25,7 +25,6 @@ from ..notify.daily_report import (
     get_env_name,
     get_public_url,
     invalidate_public_url_cache,
-    render_combined_text,
     render_text,
 )
 
@@ -402,9 +401,9 @@ def run_now(owner_key: str | None = None, period: str | None = None):
 def preview(owner_key: str | None = None):
     """返回当前会发送的 WeLink 内容预览（只构建，不实际发送）。
 
-    不传 owner_key：返回真实发送形态——全 owner（enabled）汇总的
-    单条消息（render_combined_text，窗口=当前周期全量）。
-    传 owner_key：返回该 owner 的分节形态。
+    不传 owner_key：返回真实发送形态——单条消息（领导视角：
+    误报率趋势 → 根因分布 → 修复进展 → 欠账）。
+    传 owner_key：返回该 owner 的分节形态（诊断用，不再发送）。
     空报告也会返回，但标记 empty=True（不会发送）。
     """
     try:
@@ -416,16 +415,32 @@ def preview(owner_key: str | None = None):
                 force=True, since=period_start.isoformat(),
                 channel="xiaoluban-report").get("agents", [])
             enabled = [r for r in reports if r.get("enabled")]
-            empty = (not enabled
-                     or all(scheduler._is_empty(r) for r in enabled))
+
+            # 判空口径与 run_report 相同：本周期无评测/新增/指标，
+            # 且未关闭问题单为 0 —— 有存量待办就发
+            def _no_data(r: dict) -> bool:
+                if not scheduler._is_empty(r):
+                    return False
+                om = r.get("open_issues") or {}
+                n = int(om.get("count", om.get("total", 0)) or 0)
+                return n <= 0
+
+            non_empty = [r for r in enabled if not _no_data(r)]
+            empty = not non_empty
+            from datetime import datetime, timezone
+            until = datetime.now(timezone.utc).replace(tzinfo=None)
+            from ..notify.daily_report import (
+                get_public_url, render_leader_text)
             return {
                 "mode": "combined",
                 "period": config["period"],
                 "receiver": (config.get("receivers") or {}).get(
                     config["period"], ""),
                 "empty": empty,
-                "window": (enabled[0].get("window") if enabled else None),
-                "text": render_combined_text(enabled, period_label=label),
+                "window": (non_empty[0].get("window")
+                           if non_empty else None),
+                "text": render_leader_text(
+                    label, period_start, until, get_public_url()),
             }
         reports = build_reports(owner_key=owner_key, force=True).get("agents", [])
         previews = []

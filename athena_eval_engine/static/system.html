@@ -619,14 +619,14 @@ async function loadNotifyPreview(){
     var url="/api/v2/notify/preview"+(owner?("?owner_key="+encodeURIComponent(owner)):"");
     var d=await jget(url);
     if(d.mode==='combined'){
-      // 单消息模式预览：全 owner 汇总一条（真实发送形态）
+      // 单条消息预览（真实发送形态：领导视角，误报率→根因→修复→欠账）
       var win=d.window||{};
       var badges='';
       if(d.empty)badges+='<span class="bdg" style="background:rgba(217,119,6,.15);color:var(--amber)">空报告，不会发送</span>';
-      if(!d.receiver)badges+='<span class="bdg" style="background:rgba(220,38,38,.12);color:var(--red)">当前周期接收群未配置，不会发送</span>';
+      if(!d.receiver)badges+='<span class="bdg" style="background:rgba(220,38,38,.12);color:var(--red)">接收群未配置，不会发送</span>';
       c.innerHTML='<div style="margin-bottom:16px">'
         +'<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:4px">'
-        +'<b style="font-size:14px">发送形态：单条汇总消息</b>'
+        +'<b style="font-size:14px">发送形态：单条消息（领导视角）</b>'
         +'<span class="knd">'+esc(d.period||'-')+'</span>'
         +'<span class="knd">接收群：'+esc(d.receiver||'未配置')+'</span>'
         +badges+'</div>'

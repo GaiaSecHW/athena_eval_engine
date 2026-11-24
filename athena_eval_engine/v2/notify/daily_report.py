@@ -35,8 +35,9 @@ from ..core.agents import (
     AGENT_SHORT_LABELS,
     ALL_AGENT_SET,
 )
-from ..core.causal_levels import ALL_LEVELS
+from ..core.causal_levels import CAUSE_PLAIN_LABELS
 from ..infra.db_utils import db_query as _db_query
+from ..infra.log_util import log
 
 # trace_kind → agent_type（与 v2/parsers 的别名表保持一致）
 _TRACE_KIND_TO_AGENT: dict[str, str] = {
@@ -58,9 +59,6 @@ _RESPONSIBILITY_LABELS: dict[str, str] = {
 }
 
 _OTHER_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
-
-# L 级别标准标签统一从 core.causal_levels 导入（单一权威源）
-from ..core.causal_levels import LEVEL_LABELS as _LEVEL_LABELS
 
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 _OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")
@@ -147,6 +145,30 @@ def _fmt_local(dt: datetime | None) -> str:
     return local.strftime("%Y-%m-%d %H:%M")
 
 
+def _fmt_date_short(dt: datetime | None) -> str:
+    """UTC naive → 北京时间短日期（M/D），WeLink 标题用。"""
+    if not dt:
+        return "-"
+    local = dt + timedelta(hours=8)
+    return local.strftime("%m/%d")
+
+
+def _level_counts(items: list[dict]) -> str:
+    """断点分布超紧凑形式：L2×12 L8×10（含义见问题单页图例）。"""
+    counts: dict[str, int] = {}
+    unknown = 0
+    for item in items or []:
+        level = str(item.get("breakpoint_level") or "").strip().upper()
+        if level:
+            counts[level] = counts.get(level, 0) + 1
+        else:
+            unknown += 1
+    parts = [f"{lv}×{n}" for lv, n in sorted(counts.items())]
+    if unknown:
+        parts.append(f"?×{unknown}")
+    return " ".join(parts)
+
+
 def _pct(value) -> str:
     if value is None:
         return "NA"
@@ -159,14 +181,19 @@ def _pct(value) -> str:
 _TASK_FINISHED_WINDOW_DAYS = 30
 
 
-def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dict]:
+def _task_confirmation_stats(
+        days: int = _TASK_FINISHED_WINDOW_DAYS,
+        as_of: datetime | None = None) -> list[dict]:
     """近 N 天结束的平台任务：确认率/误报率统计，按确认率从低到高排序。
 
     确认率 = 人工已确认（确认漏洞 + 确认非漏洞 + 确认误报）/ 漏洞总数；
     误报率 = 确认误报 /（确认漏洞 + 确认误报）（与 /eval/report 同口径）；
     只统计 vuln_total > 0、task_finished_at 在窗口内的任务。
+    as_of=None 锚定当前时刻；趋势对比传上期边界（滚动窗口锚点，
+    任务须 fin <= as_of，不能用"未来"任务虚增对比基数）。
     """
-    cutoff = _now_utc() - timedelta(days=days)
+    anchor = as_of or _now_utc()
+    cutoff = anchor - timedelta(days=days)
 
     def _do(cur):
         cur.execute(
@@ -192,7 +219,7 @@ def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dic
             fin = _parse_dt(finished)
         except (TypeError, ValueError):
             fin = None
-        if fin is None or fin < cutoff:
+        if fin is None or fin < cutoff or fin > anchor:
             continue
         vuln = int(vuln or 0)
         fp = int(fp or 0)
@@ -204,9 +231,28 @@ def _task_confirmation_stats(days: int = _TASK_FINISHED_WINDOW_DAYS) -> list[dic
             "confirmed": confirmed_cnt,
             "rate": confirmed_cnt / tot,
             "fpr": (fp / fpr_denom) if fpr_denom > 0 else None,
+            "tp": vuln,
+            "fp": fp,
         })
     tasks.sort(key=lambda t: (t["rate"], t["task_name"]))
     return tasks
+
+
+def _confirmation_snapshot(as_of: datetime | None = None) -> dict:
+    """近30天（锚点 as_of）结束任务的确认率/误报率聚合，供趋势对比。"""
+    tasks = _task_confirmation_stats(as_of=as_of)
+    total = sum(t["total"] for t in tasks)
+    confirmed = sum(t["confirmed"] for t in tasks)
+    tp = sum(t["tp"] for t in tasks)
+    fp = sum(t["fp"] for t in tasks)
+    return {
+        "n_tasks": len(tasks),
+        "rate": (confirmed / total) if total > 0 else None,
+        "fpr": (fp / (tp + fp)) if (tp + fp) > 0 else None,
+        "total": total,
+        "confirmed": confirmed,
+        "tasks": tasks,
+    }
 
 
 # 低确认率阈值（低于此值的任务计入"确认率偏低"计数）与
@@ -216,14 +262,13 @@ _HIGH_FPR_RATE = 0.7
 
 
 def _render_confirmation_section() -> list[str]:
-    """近一个月结束任务的人工确认率 + 低确认率计数 + 高误报率清单。"""
+    """近30天结束任务的人工确认率区块（x 报必含内容）。"""
     tasks = _task_confirmation_stats()
     total = sum(t["total"] for t in tasks)
     confirmed = sum(t["confirmed"] for t in tasks)
     if total <= 0:
-        return []
+        return ["📊 近30天无已结束任务（人工确认率暂无数据）"]
     lines = [
-        "",
         f"📊 一个月内结束任务 {len(tasks)} 个，人工确认率："
         f"{_span(_pct(confirmed / total), color='#16a34a', bold=True)}"
         f"（已确认 {confirmed} / 漏洞总数 {total}）",
@@ -237,20 +282,252 @@ def _render_confirmation_section() -> list[str]:
                 if t.get("fpr") is not None and t["fpr"] > _HIGH_FPR_RATE]
     if high_fpr:
         high_fpr.sort(key=lambda t: -(t["fpr"] or 0))
-        shown = high_fpr[:5]
         parts = [
             f"{t['task_name']} "
             f"{_span(_pct(t['fpr']), color='#dc2626', bold=True)}"
-            for t in shown
-        ]
+            for t in high_fpr[:5]]
         more = (f" 等 {len(high_fpr)} 个" if len(high_fpr) > 5 else "")
         lines.append(
             f"🚨 误报率高于 {_pct(_HIGH_FPR_RATE)} 的任务（需重点关注）："
             + "、".join(parts) + more)
-    lines.append(
-        f"🔗 查看全部任务（按确认率升序）："
-        f"{get_public_url()}/report?sort=confirm_rate_asc")
     return lines
+
+
+def _pct_diff(cur, prev) -> str:
+    """本期 vs 上期百分点差（含箭头；改善绿、恶化红、持平灰）。"""
+    if cur is None or prev is None:
+        return "（上期 暂无数据）"
+    diff = (cur - prev) * 100
+    if diff < -0.05:
+        return (f"（上期 {_pct(prev)}，"
+                f"{_span(f'↓{abs(diff):.1f} 个百分点', color='#16a34a', bold=True)}）")
+    if diff > 0.05:
+        return (f"（上期 {_pct(prev)}，"
+                f"{_span(f'↑{diff:.1f} 个百分点', color='#dc2626', bold=True)}）")
+    return f"（上期 {_pct(prev)}，持平）"
+
+
+def _leader_window_stats(since: datetime, until: datetime) -> dict:
+    """领导摘要的本期窗口统计：回归验证 / 根因分布（按 agent）/ 评测 / 未关闭。
+
+    agent_type 是逗号分隔多值：每条按行汇总（总数不重复计），分 agent
+    明细在 Python 侧拆分累计（多 agent 问题单计入每个 agent 的明细）。
+    """
+    def _split_agents(raw) -> list[str]:
+        return [a.strip() for a in str(raw or "").split(",") if a.strip()]
+
+    def _do(cur):
+        out: dict = {
+            "reg_passed": 0, "reg_failed": 0,
+            "new_fp": 0, "new_fn": 0, "evals": 0,
+            "new_fp_agents": {},   # agent -> {total, causes{cc: n}}
+            "new_fn_agents": {},   # agent -> n
+            "reg_agents": {},      # agent -> {passed, failed}
+            "open_fp_agents": {},  # agent -> {total, causes{cc: n}}
+            "open_by_agent": {},
+        }
+        try:
+            # 回归验证（总量 + 按 agent）：join dts_issue 取 agent_type
+            cur.execute(
+                "SELECT i.agent_type, r.status, COUNT(*) "
+                "FROM dts_regression_result r "
+                "JOIN dts_issue i ON r.dts_id = i.dts_id "
+                "WHERE r.submitted_at >= %s AND r.submitted_at <= %s "
+                "GROUP BY i.agent_type, r.status",
+                (since, until))
+            for at, st_, n in cur.fetchall():
+                n = int(n or 0)
+                if st_ == "passed":
+                    out["reg_passed"] += n
+                elif st_ == "failed":
+                    out["reg_failed"] += n
+                for a in _split_agents(at):
+                    ent = out["reg_agents"].setdefault(
+                        a, {"passed": 0, "failed": 0})
+                    if st_ == "passed":
+                        ent["passed"] += n
+                    elif st_ == "failed":
+                        ent["failed"] += n
+        except Exception as e:
+            log("REPORT", f"领导摘要-回归统计失败: {e}")
+        try:
+            # 本期新增问题单：按 case_type + agent + cause 分组——
+            # 根因分布（按 agent）是领导核心关注
+            cur.execute(
+                "SELECT case_type, agent_type, cause_code, COUNT(*) "
+                "FROM dts_issue "
+                "WHERE created_at >= %s AND created_at <= %s "
+                "GROUP BY case_type, agent_type, cause_code",
+                (since, until))
+            for ct, at, cause, n in cur.fetchall():
+                n = int(n or 0)
+                cc = str(cause or "").strip().upper()
+                if ct == "FN":
+                    out["new_fn"] += n
+                    for a in _split_agents(at):
+                        out["new_fn_agents"][a] = (
+                            out["new_fn_agents"].get(a, 0) + n)
+                else:
+                    out["new_fp"] += n
+                    for a in _split_agents(at):
+                        ent = out["new_fp_agents"].setdefault(
+                            a, {"total": 0, "causes": {}})
+                        ent["total"] += n
+                        ent["causes"][cc] = ent["causes"].get(cc, 0) + n
+        except Exception as e:
+            log("REPORT", f"领导摘要-新增问题单统计失败: {e}")
+        try:
+            # 未关闭误报的根因分布（本期无新增时回答"存量为什么高"）
+            cur.execute(
+                "SELECT agent_type, cause_code, COUNT(*) FROM dts_issue "
+                "WHERE status NOT IN ('passed','not_issue') "
+                "AND case_type='FP' "
+                "GROUP BY agent_type, cause_code")
+            for at, cause, n in cur.fetchall():
+                n = int(n or 0)
+                cc = str(cause or "").strip().upper()
+                for a in _split_agents(at):
+                    ent = out["open_fp_agents"].setdefault(
+                        a, {"total": 0, "causes": {}})
+                    ent["total"] += n
+                    ent["causes"][cc] = ent["causes"].get(cc, 0) + n
+        except Exception as e:
+            log("REPORT", f"领导摘要-未关闭根因统计失败: {e}")
+        try:
+            cur.execute(
+                "SELECT COUNT(*) FROM evaluation "
+                "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') "
+                "AND finished_at >= %s AND finished_at <= %s",
+                (since, until))
+            out["evals"] = int(cur.fetchone()[0] or 0)
+        except Exception as e:
+            log("REPORT", f"领导摘要-完成评测统计失败: {e}")
+        try:
+            cur.execute(
+                "SELECT agent_type, COUNT(*) FROM dts_issue "
+                "WHERE status NOT IN ('passed','not_issue') "
+                "GROUP BY agent_type")
+            for at, n in cur.fetchall():
+                for a in _split_agents(at):
+                    out["open_by_agent"][a] = (
+                        out["open_by_agent"].get(a, 0) + int(n or 0))
+        except Exception as e:
+            log("REPORT", f"领导摘要-未关闭分布统计失败: {e}")
+        return out
+    return _db_query(_do)
+
+
+def _cause_line(causes: dict, top: int = 3) -> str:
+    """根因分布紧凑行：top N 标签+计数 + 其他合计。"""
+    items = sorted((c for c in causes.items() if c[1] > 0),
+                   key=lambda x: -x[1])
+    if not items:
+        return ""
+    parts = [f"{CAUSE_PLAIN_LABELS.get(c, c)} {n}" for c, n in items[:top]]
+    rest = sum(n for _, n in items[top:])
+    if rest:
+        parts.append(f"其他 {rest}")
+    return " · ".join(parts)
+
+
+def render_leader_text(period_label: str, since: datetime, until: datetime,
+                       public_url: str) -> str:
+    """x 报正文（领导视角，单条消息）。
+
+    按领导的问题链组织：误报率多高（趋势）→ 人工确认率/任务风险 →
+    根因是什么 → 修复进展 → 谁欠账。
+    """
+    env = get_env_name()
+    env_prefix = f"【{env}】" if env else ""
+    lines = [
+        _span(f"🧪 {env_prefix}奇美拉测评{period_label}",
+              color="#2563eb", bold=True, size=16),
+        f"🕒 统计窗口：{_fmt_local(since)} ~ {_fmt_local(until)}",
+    ]
+
+    # ① 误报率 + 趋势（近30天滚动，本期锚点=现在，上期锚点=周期起点）
+    cur_snap = _confirmation_snapshot()
+    prev_snap = _confirmation_snapshot(as_of=since)
+    if cur_snap.get("fpr") is not None:
+        lines.append(
+            f"📉 误报率（近30天）："
+            f"{_span(_pct(cur_snap['fpr']), color='#16a34a', bold=True)}"
+            f"{_pct_diff(cur_snap['fpr'], prev_snap.get('fpr'))}")
+    else:
+        lines.append("📉 误报率（近30天）：暂无数据")
+
+    # ② 人工确认率区块（必含：确认率 / 低确认率计数 / 高误报率清单）
+    lines += _render_confirmation_section()
+
+    # ③ 总览：修复验证 + 完成评测
+    st = _leader_window_stats(since, until)
+    verified = st["reg_passed"] + st["reg_failed"]
+    overview = []
+    if verified > 0:
+        overview.append(
+            f"修复验证通过率 {_pct(st['reg_passed'] / verified)}"
+            f"（通过 {st['reg_passed']} / 不通过 {st['reg_failed']}）")
+    if st["evals"] > 0:
+        overview.append(f"完成评测 {st['evals']} 个")
+    if overview:
+        lines.append("🔄 " + " · ".join(overview))
+
+    # ④ 按 Agent 汇总：一个 agent 的数据集中一行
+    # （误报根因 + 漏报 + 修复验证），不再按指标分开各列全部 agent
+    merged: dict[str, dict] = {}
+    for a, ent in (st.get("new_fp_agents") or {}).items():
+        merged.setdefault(a, {})["fp"] = ent
+    for a, n in (st.get("new_fn_agents") or {}).items():
+        if n > 0:
+            merged.setdefault(a, {})["fn"] = n
+    for a, ent in (st.get("reg_agents") or {}).items():
+        if (ent.get("passed") or 0) + (ent.get("failed") or 0) > 0:
+            merged.setdefault(a, {})["reg"] = ent
+
+    if merged:
+        lines.append(
+            f"🧭 按 Agent（本期新增：误报 {st['new_fp']} / 漏报 {st['new_fn']}）：")
+
+        def _agent_rank(item):
+            _, d = item
+            fp = (d.get("fp") or {}).get("total", 0)
+            fn = d.get("fn") or 0
+            reg = ((d.get("reg") or {}).get("passed", 0)
+                   + (d.get("reg") or {}).get("failed", 0))
+            return -(fp * 1000 + fn * 100 + reg)
+
+        for a, d in sorted(merged.items(), key=_agent_rank):
+            name = AGENT_SHORT_LABELS.get(a, a)
+            segs = []
+            fp_ent = d.get("fp")
+            if fp_ent:
+                causes = _cause_line(fp_ent["causes"], top=2)
+                segs.append(
+                    f"误报 {fp_ent['total']}（{causes}）")
+            if d.get("fn"):
+                segs.append(f"漏报 {d['fn']}")
+            reg = d.get("reg")
+            if reg:
+                segs.append(
+                    f"验证 通过 {reg['passed']} / 不通过 {reg['failed']}")
+            lines.append(f"{_span(name, bold=True)}：" + " · ".join(segs))
+    elif st.get("open_fp_agents"):
+        # 本期无新增（误报/漏报/验证全为 0）：未关闭存量根因（按 agent）
+        lines.append("🧭 误报根因（未关闭，按 Agent）：")
+        for a, ent in sorted(st["open_fp_agents"].items(),
+                             key=lambda x: -x[1]["total"]):
+            causes = _cause_line(ent["causes"], top=2)
+            name = AGENT_SHORT_LABELS.get(a, a)
+            head = f"{name} {ent['total']}"
+            lines.append(f"{_span(head, bold=True)}：{causes}")
+    open_dist = st.get("open_by_agent") or {}
+    if open_dist:
+        top = sorted(open_dist.items(), key=lambda x: -x[1])
+        segs = [f"{AGENT_SHORT_LABELS.get(a, a)} {n}" for a, n in top[:4]]
+        more = f" 等 {len(top)} 项" if len(top) > 4 else ""
+        lines.append("👥 未关闭：" + " · ".join(segs) + more)
+    lines.append(f"🔗 {public_url}/dts")
+    return "\n".join(lines)
 
 
 def _split_owner_key(owner_key: str) -> tuple[str, str]:
@@ -588,7 +865,7 @@ def _build_responsibility_report(owner: dict, since: datetime,
                     or _RESPONSIBILITY_LABELS.get(responsibility, responsibility))
 
     new_issues = _load_new_issues("responsibility", responsibility, since, until)
-    open_total, _ = _load_open_issues("responsibility", responsibility)
+    open_total, open_issues = _load_open_issues("responsibility", responsibility)
 
     # 不再按 agent 细分组：责任方段只有一个负责人，按 agent 分组没有
     # 对应读者（各 agent 的视角由各 agent 段承载）——只呈现汇总 + 链接
@@ -603,7 +880,10 @@ def _build_responsibility_report(owner: dict, since: datetime,
         "enabled": bool(owner.get("enabled")),
         "window": {"start": _iso(since), "end": _iso(until)},
         "new_issues": [_issue_item(i, public_url) for i in new_issues],
-        "open_issues": {"total": open_total},
+        "open_issues": {
+            "total": open_total,
+            "items": [_issue_item(i, public_url) for i in open_issues],
+        },
         "totals": {"new": len(new_issues), "open": open_total},
         "urls": {
             "issue_list": (f"{public_url}/dts?"
@@ -698,25 +978,13 @@ def _env_prefix(report: dict) -> str:
 
 
 def _compact_levels(items: list[dict]) -> str:
-    """按 L2-L8 统计新增问题单，输出一行紧凑分布。"""
-    counts = {level: 0 for level in ALL_LEVELS}
-    unknown = 0
-    for item in items:
-        level = str(item.get("breakpoint_level") or "").strip().upper()
-        if level in counts:
-            counts[level] += 1
-        else:
-            unknown += 1
-    parts = [f"{level} {_LEVEL_LABELS.get(level, '')}根因问题:"
-             f"{counts[level]} 条"
-             for level in ALL_LEVELS if counts[level] > 0]
-    if unknown:
-        parts.append(f"未知根因问题:{unknown} 条")
-    return "  ".join(parts)
+    """按 L2-L8 统计问题单，输出一行紧凑分布。"""
+    return _level_counts(items)
 
 
 def render_agent_text(report: dict, period_label: str = "日报",
                      header: bool = True) -> str:
+    """owner 分节（WeLink 短消息形态：每分节 ≤4 行）。"""
     ev = report.get("evaluations") or {}
     new_issues = report.get("new_issues") or []
     open_issues = report.get("open_issues") or {}
@@ -724,116 +992,81 @@ def render_agent_text(report: dict, period_label: str = "日报",
     short = AGENT_SHORT_LABELS.get(report.get("agent_type", ""),
                                    report.get("agent_type", ""))
     owner = report.get("owner_name") or "未配置负责人"
-    start = _fmt_local(_parse_dt(window.get("start")))
-    end = _fmt_local(_parse_dt(window.get("end")))
     urls = report.get("urls") or {}
 
-    lines = []
     if header:
-        lines += [
-            _span(f"🧪 {_env_prefix(report)}奇美拉测评{period_label} · {short}",
-                  color="#2563eb", bold=True, size=16),
-            f"👤 负责人：{owner}",
-            f"🕒 统计窗口：{start} ~ {end}",
+        s = _fmt_date_short(_parse_dt(window.get("start")))
+        lines = [
+            _span(f"🧪 {_env_prefix(report)}奇美拉测评{period_label} · {short}"
+                  f"（{s}）", color="#2563eb", bold=True, size=16),
+            f"👤 {owner}",
         ]
     else:
-        # 汇总消息分节：无全局标题/窗口（由汇总头统一展示），保留负责人
-        lines += [
-            _span(f"🧩 {short}", bold=True),
-            f"👤 负责人：{owner}",
-        ]
+        lines = [_span(f"🧩 {short}（{owner}）", bold=True)]
 
     total = int(ev.get("total") or 0)
     if total > 0:
-        lines += ["", _span(f"📊 评测（{total} 个）", bold=True)]
-        # 不显示「完成/进行中/失败」状态：完成/进行中是过期信息
-        # （评测约 1 小时内到达终态）；失败只有平台维护者本人关注，
-        # 在评测列表页看，x 报读者不关心——只展示结果指标
+        # 一行评测指标：只展示结果（状态是过期信息，失败在列表页看）
         metric_parts = []
-        for key, label, icon, color in (
-                ("tp", "真阳性", "🎯", "#16a34a"),
-                ("fp", "误报", "🚨", "#dc2626"),
-                ("fn", "漏报", "🕳️", "#d97706"),
-                ("tn", "真阴性", "✅", "#16a34a")):
+        for key, label in (("tp", "TP"), ("fp", "FP"),
+                           ("fn", "FN"), ("tn", "TN")):
             value = int(ev.get(key) or 0)
             if value > 0:
-                metric_parts.append(
-                    f"{icon} {label} {_span(value, color=color, bold=True)}")
-        if metric_parts:
-            lines.append(" · ".join(metric_parts))
-
-        # 评测报告里的 fpr/precision 只反映单次基线匹配，不代表平台整体，
-        # 日报统一展示「回归后误报率」（FP 问题单回归验证口径）。
+                metric_parts.append(f"{label} {value}")
         reg = report.get("regression") or {}
         post_fpr = reg.get("post_fpr")
-        if post_fpr is not None:
-            lines.append(
-                f"📉 回归后误报率 {_span(_pct(post_fpr), color='#d97706', bold=True)}"
-                f"（已验证 {int(reg.get('verified') or 0)} 条："
-                f"通过 {int(reg.get('passed') or 0)} / "
-                f"不通过 {int(reg.get('failed') or 0)}）")
-        else:
-            lines.append("📉 回归后误报率 暂无（未回归验证）")
-
-        tasks = [e.get("task_name") for e in (ev.get("items") or [])
-                 if e.get("task_name")]
-        if tasks:
-            lines.append("📁 任务：" + "、".join(dict.fromkeys(tasks)))
-
-    if new_issues:
-        lines += ["", _span(f"🆕 新增问题单（{len(new_issues)}）", bold=True),
-                  f"🧩 {_compact_levels(new_issues)}"]
+        tail = (f"｜回归后误报率 {_pct(post_fpr)}"
+                if post_fpr is not None else "")
+        lines.append(f"📊 评测 {total} 个：" + " · ".join(metric_parts) + tail)
 
     open_total = int(open_issues.get("total") or 0)
-    if open_total > 0:
-        lines += ["", _span(f"⚠️ 未关闭问题单（{open_total}）", bold=True)]
-
-    if new_issues or open_total > 0:
-        lines += ["", f"🔗 查看全部：{urls.get('issue_list', '')}"]
-
+    if open_total > 0 or new_issues:
+        label = f"⚠️ 未关闭 {open_total}"
+        if new_issues:
+            label += f"（+{len(new_issues)}）"
+        levels = _level_counts(open_issues.get("items") or [])
+        if levels:
+            label += f"｜{levels}"
+        lines.append(label)
+    url = urls.get("issue_list", "")
+    if url:
+        lines.append(f"🔗 {url}")
     return "\n".join(lines)
 
 
 def render_responsibility_text(report: dict,
                                period_label: str = "日报",
                                header: bool = True) -> str:
+    """责任方分节（WeLink 短消息形态：≤3 行）。"""
     window = report.get("window") or {}
     owner = report.get("owner_name") or "未配置负责人"
-    start = _fmt_local(_parse_dt(window.get("start")))
-    end = _fmt_local(_parse_dt(window.get("end")))
     totals = report.get("totals") or {}
 
     if header:
+        s = _fmt_date_short(_parse_dt(window.get("start")))
         lines = [
             _span(f"🧪 {_env_prefix(report)}奇美拉测评{period_label} · "
-                  f"{report.get('display_name', '')}",
+                  f"{report.get('display_name', '')}（{s}）",
                   color="#2563eb", bold=True, size=16),
-            f"👤 负责人：{owner}",
-            f"🕒 统计窗口：{start} ~ {end}",
+            f"👤 {owner}",
         ]
     else:
-        # 汇总消息分节：无全局标题/窗口（由汇总头统一展示），保留负责人
-        lines = [
-            _span(f"🧩 {report.get('display_name', '')}", bold=True),
-            f"👤 负责人：{owner}",
-        ]
-    summary_parts = []
-    if int(totals.get("new") or 0) > 0:
-        summary_parts.append(f"新增 {totals['new']}")
-    if int(totals.get("open") or 0) > 0:
-        summary_parts.append(f"未关闭 {totals['open']}")
-    if summary_parts:
-        lines.append("📌 汇总：" + " · ".join(summary_parts))
-
-    # 不按 agent 细分组（责任方段只有一个负责人，agent 视角由各
-    # agent 段承载）——只呈现新增问题单的级别汇总 + 查看链接
-    new_items = report.get("new_issues") or []
-    if new_items:
-        lines += ["", f"🧩 {_compact_levels(new_items)}"]
+        lines = [_span(f"🧩 {report.get('display_name', '')}（{owner}）",
+                       bold=True)]
+    open_total = int(totals.get("open") or 0)
+    new_cnt = int(totals.get("new") or 0)
+    if open_total > 0 or new_cnt > 0:
+        label = f"⚠️ 未关闭 {open_total}"
+        if new_cnt:
+            label += f"（+{new_cnt}）"
+        levels = _level_counts(
+            (report.get("open_issues") or {}).get("items") or [])
+        if levels:
+            label += f"｜{levels}"
+        lines.append(label)
     url = (report.get("urls") or {}).get("issue_list", "")
     if url:
-        lines += ["", f"🔗 查看全部：{url}"]
-
+        lines.append(f"🔗 {url}")
     return "\n".join(lines)
 
 
@@ -848,34 +1081,14 @@ def render_text(report: dict, period_label: str = "日报",
 
 def render_combined_text(reports: list[dict],
                          period_label: str = "周报") -> str:
-    """全 owner 汇总成一条消息（x 报单消息模式）。
+    """（已废弃：责任明细改为 per-owner 定向发送，不再合并成一条消息。）
 
-    结构：全局标题（周期/环境/窗口）→ 各 owner 分节（无各自的
-    标题/窗口行，保留负责人）→ 查看链接。发送到该周期单独配置的
-    接收群，替代 per-owner 各发一条的模式。
+    保留占位避免外部调用方 AttributeError；返回各分节拼接。
     """
     reports = [r for r in (reports or []) if r]
-    if not reports:
-        return ""
-    first = reports[0]
-    window = first.get("window") or {}
-    start = _fmt_local(_parse_dt(window.get("start")))
-    end = _fmt_local(_parse_dt(window.get("end")))
-    env_prefix = _env_prefix(first)
-    lines = [
-        _span(f"🧪 {env_prefix}奇美拉测评{period_label} · 汇总",
-              color="#2563eb", bold=True, size=16),
-        f"🕒 统计窗口：{start} ~ {end}",
-    ]
-    lines += _render_confirmation_section()
-    for report in reports:
-        section = render_text(report, period_label=period_label,
-                              header=False)
-        if section:
-            lines += ["", section]
-    # 不追加全局「查看问题单」链接：各分节已带「查看全部」
-    # （含该分节的过滤参数，直达更有用），全局裸链与之重复
-    return "\n".join(lines)
+    return "\n".join(
+        render_text(r, period_label=period_label, header=False)
+        for r in reports if r)
 
 
 def content_hash(text: str) -> str:

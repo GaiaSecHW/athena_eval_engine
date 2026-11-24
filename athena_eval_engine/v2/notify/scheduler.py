@@ -19,12 +19,13 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 from . import xiaoluban
 from .daily_report import (
     _CHANNEL_REPORT,
+    _parse_dt,
     build_reports,
     content_hash,
+    get_public_url,
     last_sent_at,
     record_send,
-    render_combined_text,
-    render_text,
+    render_leader_text,
 )
 from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
@@ -313,9 +314,14 @@ def run_report(force: bool = False, owner_key: str | None = None,
         log("NOTIFY", f"{label}全部 owner 空报告，跳过发送")
         return {"sent": 0, "skipped": 1, "failed": 0, "error": "empty"}
 
-    text = render_combined_text(non_empty_reports, period_label=label)
-    ok, detail = xiaoluban.send_message(receiver, text, token=token)
+    # x 报只发一条（领导视角：误报率趋势 → 根因分布 → 修复进展 → 欠账）。
+    # 不再发责任明细：owner 看板自行处理，日报/周报/月报不打扰责任人。
     window = non_empty_reports[0].get("window") or {}
+    until = (_parse_dt(window.get("end"))
+             or datetime.now(timezone.utc).replace(tzinfo=None))
+    text = render_leader_text(
+        label, period_start, until, get_public_url())
+    ok, detail = xiaoluban.send_message(receiver, text, token=token)
     record_send(
         _REPORT_OWNER_KEY, receiver,
         window.get("start", ""), window.get("end", ""),
@@ -325,8 +331,7 @@ def run_report(force: bool = False, owner_key: str | None = None,
         channel=_CHANNEL_REPORT,
     )
     if ok:
-        log("NOTIFY", f"{label}发送成功（汇总 {len(non_empty_reports)} 个 owner）"
-                      f" -> {receiver}")
+        log("NOTIFY", f"{label}发送成功 -> {receiver}")
         return {"sent": 1, "skipped": 0, "failed": 0}
     log("NOTIFY", f"{label}发送失败 -> {receiver}: {detail}")
     return {"sent": 0, "skipped": 0, "failed": 1, "error": detail}
