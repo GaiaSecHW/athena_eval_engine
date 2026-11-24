@@ -36,6 +36,11 @@ _TARGET_LABELS = {
 # ── fix_suggestion.agent_type → 中文标签（集中配置见 v2/core/agents.py）──
 from ..core.agents import AGENT_DISPLAY_NAMES as _AGENT_TYPE_LABELS
 
+# 生成期合成线索的确定性标记（机制级结论，不参与 LLM 评分竞争）：
+# - _kb_conflict_primary：L4 冲突裁决线索（知识库证据与人工标注矛盾）
+# - _synthesized_from_fn_miss：FN 漏报程序判定合成的线索
+_SYNTHESIS_MARKERS = ("_kb_conflict_primary", "_synthesized_from_fn_miss")
+
 # ── fix_suggestion.knowledge_source → 中文标签 ──
 _KNOWLEDGE_SOURCE_LABELS = {
     "knowledge_base": "知识库",
@@ -68,12 +73,19 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
     线索不是结论：每个 case 可以有多条并存的假定线索，各自带置信度，
     详情页按置信度降序逐条展示。这里取第一条只是为了填充单值字段
     （cause_code / breakpoint_level），不代表其他线索被否定。
+
+    确定性标记优先（通用规则）：带 ``_SYNTHESIS_MARKERS`` 标记的
+    生成期合成线索（机制级结论）优先于按分排序——不参与 LLM 评分
+    竞争，避免按分排序把机制结论挤到次要位置。
     """
     if not hypotheses:
         return None
     valid = [h for h in hypotheses if isinstance(h, dict)]
     if not valid:
         return None
+    for h in valid:
+        if any(h.get(m) for m in _SYNTHESIS_MARKERS):
+            return h
     eligible = [h for h in valid
                 if float(h.get("confidence", 0.7) or 0) >= 0.7]
     pool = eligible or valid
@@ -262,12 +274,57 @@ def _kb_conflict_hypothesis(case: dict) -> dict:
     }
 
 
-def _conflict_top(pool: list) -> dict | None:
-    """conflict case 的确定性顶层：知识补充线索优先于按分排序。"""
-    for h in pool:
-        if isinstance(h, dict) and h.get("_kb_conflict_primary"):
-            return h
-    return None
+def _hyp_fix_line(h: dict, chain_label: str) -> str:
+    """从线索的 fix_suggestion 构建单条修复行（通用构建器）。
+
+    链内 LLM 线索与生成期合成线索（冲突裁决/FN 漏报）共用同一
+    构建器——修复行格式统一，链归属由调用方给出。
+    """
+    fs = h.get("fix_suggestion")
+    if not isinstance(fs, dict):
+        return ""
+    target = fs.get("target", "")
+    location = fs.get("location", "")
+    action = fs.get("action", "")
+    expected = fs.get("expected_effect", "")
+    if not (target or location or action):
+        return ""
+    parts = [f"[{chain_label}链]"]
+    if target:
+        parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
+    if location:
+        parts.append(f"位置: {location}")
+    if action:
+        parts.append(f"修改: {action}")
+    if expected:
+        parts.append(f"预期: {expected}")
+    hyp_desc = h.get("hypothesis", "")
+    prob = h.get("probability", 0)
+    resp = h.get("responsibility", "")
+    if hyp_desc:
+        parts.append(f"线索(P={prob}, {resp}): {hyp_desc}")
+    return " | ".join(parts)
+
+
+def _persist_synthesized_hypotheses(case: dict, synthesized: list[dict]) -> None:
+    """生成期合成线索写回 case 分析数据——单一权威源规则。
+
+    详情页/分析文件消费者读 case 链内 hypotheses；合成线索不写回则
+    消费者看不到（曾导致 L4 冲突裁决线索只在 issue.hypotheses 列里，
+    详情页只显示原始链线索的 agent 提示词修复）。写回挖掘链
+    （FP/FN 顶层候选池都从挖掘链选取）。幂等：按对象身份去重。
+    """
+    _m = case.setdefault("mining", {})
+    hyps = _m.get("hypotheses")
+    if not isinstance(hyps, list):
+        hyps = []
+    have = {id(h) for h in hyps}
+    for h in synthesized:
+        if id(h) in have:
+            continue
+        hyps.insert(0, h)
+        have.add(id(h))
+    _m["hypotheses"] = hyps
 
 
 def cleanup_stale_dts_issues(
@@ -498,7 +555,9 @@ def generate_dts_issues(
         all_hypotheses = []
         mining_hypotheses = []
         root_causes = {}
-        fix_parts = []
+        fix_items: list[tuple[dict, str]] = []   # (线索, 修复行)——顺序在顶层选定后统一排
+        fix_parts = []                          # 旧格式链级修复（无线索对象，不参与排序）
+        synthesized_hyps: list[dict] = []        # 生成期合成线索（统一写回 case 数据）
         label_quality = {"precision": "precise", "reason": "", "follow_up_questions": []}
         for chain_type, chain_data in (("挖掘", mining), ("验证", verify)):
             # 兼容旧格式：如果没有 hypotheses，从 root_cause 构建
@@ -509,30 +568,9 @@ def generate_dts_issues(
                     mining_hypotheses.extend(chain_hypotheses)
                 # 从线索提取 fix_suggestion
                 for h in chain_hypotheses:
-                    fs = h.get("fix_suggestion")
-                    if isinstance(fs, dict):
-                        target = fs.get("target", "")
-                        location = fs.get("location", "")
-                        action = fs.get("action", "")
-                        expected = fs.get("expected_effect", "")
-                        if not (target or location or action):
-                            continue
-                        parts = [f"[{chain_type}链]"]
-                        if target:
-                            parts.append(f"修复方: {_TARGET_LABELS.get(target, target)}")
-                        if location:
-                            parts.append(f"位置: {location}")
-                        if action:
-                            parts.append(f"修改: {action}")
-                        if expected:
-                            parts.append(f"预期: {expected}")
-                        # 附加线索信息
-                        hyp_desc = h.get("hypothesis", "")
-                        prob = h.get("probability", 0)
-                        resp = h.get("responsibility", "")
-                        if hyp_desc:
-                            parts.append(f"线索(P={prob}, {resp}): {hyp_desc}")
-                        fix_parts.append(" | ".join(parts))
+                    _line = _hyp_fix_line(h, chain_type)
+                    if _line:
+                        fix_items.append((h, _line))
             else:
                 # 兼容旧格式：从 root_cause + fix_suggestion 构建
                 rc = chain_data.get("root_cause", {})
@@ -638,6 +676,12 @@ def generate_dts_issues(
                     },
                     "_synthesized_from_fn_miss": True,
                 })
+                # FN 合成线索同样进修复收集与写回（与冲突裁决线索同一机制）
+                _fn_hyp = all_hypotheses[-1]
+                synthesized_hyps.append(_fn_hyp)
+                _fn_line = _hyp_fix_line(_fn_hyp, "挖掘")
+                if _fn_line:
+                    fix_items.append((_fn_hyp, _fn_line))
 
         case_hypotheses[cid] = all_hypotheses
         case_mining_hypotheses[cid] = mining_hypotheses
@@ -666,28 +710,10 @@ def generate_dts_issues(
             mining_hypotheses.insert(0, _conflict_hyp)
             case_hypotheses[cid] = all_hypotheses
             case_mining_hypotheses[cid] = mining_hypotheses
-            # 写回 case（full_data）：分析文件/详情页读的是 case 的
-            # mining/verification 线索——不写回则详情页只看到原始
-            # A/H 线索，看不到裁决线索；primary 同步指向裁决线索
-            _m = case.setdefault("mining", {})
-            if isinstance(_m.get("hypotheses"), list):
-                _m["hypotheses"] = [
-                    h for h in _m["hypotheses"]
-                    if not (isinstance(h, dict)
-                            and h.get("_kb_conflict_primary"))]
-                _m["hypotheses"].insert(0, _conflict_hyp)
-                _m["primary_cause"] = "C"
-                _m["primary_hypothesis"] = \
-                    _conflict_hyp.get("hypothesis", "")
-            # 裁决修复排第一（solution 文本首条）——用户按修复建议第一条行动
-            _cfs = _conflict_hyp.get("fix_suggestion") or {}
-            fix_parts.insert(0, " | ".join([
-                "[挖掘链]",
-                f"修复方: {_TARGET_LABELS.get('knowledge', 'knowledge')}",
-                f"位置: {_cfs.get('location', '')}",
-                f"修改: {_cfs.get('action', '')}",
-                f"预期: {_cfs.get('expected_effect', '')}",
-            ]))
+            synthesized_hyps.append(_conflict_hyp)
+            _conflict_line = _hyp_fix_line(_conflict_hyp, "挖掘")
+            if _conflict_line:
+                fix_items.append((_conflict_hyp, _conflict_line))
             log("DTS", f"case {cid}: 知识库证据与人工标注矛盾"
                       f"（L4 conflict），顶层根因改为矛盾裁决单"
                       f"（该查没查/知识有误/知识缺失三路裁决，知识方向）")
@@ -704,6 +730,7 @@ def generate_dts_issues(
                       f"缺失），先确认标注再分析，跳过问题单生成")
             continue
         # 兼容旧格式：如果没有线索但有 root_causes
+        top = None
         if all_hypotheses:
             # 顶层摘要按置信度最高的一条线索选取，不看 probability；
             # primary_cause 缺失时选证据最多者，并列按 cause_code 字母序。
@@ -715,8 +742,7 @@ def generate_dts_issues(
             if (str(case.get("outcome") or "FP").upper() != "FN"
                     and mining_hypotheses):
                 top_pool = mining_hypotheses
-            # conflict case：知识补充线索确定性优先于按分排序
-            top = _conflict_top(top_pool) or _pick_primary_hypothesis(top_pool)
+            top = _pick_primary_hypothesis(top_pool)
             if top:
                 root_causes = {
                     "hypothesis": top.get("hypothesis", ""),
@@ -725,6 +751,26 @@ def generate_dts_issues(
                     "evidence": top.get("evidence", ""),
                     "cause_code": top.get("cause_code", ""),
                 }
+                # 顶层是合成线索时，链 primary 字段同步（详情页据此标主线索）
+                if any(top.get(m) for m in _SYNTHESIS_MARKERS):
+                    _pm = case.setdefault("mining", {})
+                    _pm["primary_cause"] = top.get("cause_code", "")
+                    _pm["primary_hypothesis"] = top.get("hypothesis", "")
+
+        # ── 统一收尾（通用规则，对所有 case 生效）──
+        # 1. 合成线索写回 case 分析数据——单一权威源：详情页/分析文件
+        #    消费者读链内 hypotheses，不写回则只看到原始链线索。
+        if synthesized_hyps:
+            _persist_synthesized_hypotheses(case, synthesized_hyps)
+        # 2. 修复建议顺序 = 最终线索优先级：顶层根因的修复第一，
+        #    其余按链序；旧格式链级修复排最后。
+        if fix_items:
+            _fix_map = {id(h): line for h, line in fix_items}
+            _ordered = ([top] if top else []) + [
+                h for h in all_hypotheses if h is not top]
+            fix_parts = [
+                _fix_map[id(h)] for h in _ordered if id(h) in _fix_map
+            ] + fix_parts
         case_root_cause[cid] = root_causes
         case_fix[cid] = "\n".join(fix_parts) if fix_parts else ""
 
@@ -806,9 +852,7 @@ def generate_dts_issues(
             if (case_outcomes.get(case_id, "FP") != "FN"
                     and mining_hypotheses):
                 top_pool = mining_hypotheses
-            # conflict case：知识补充线索确定性优先于按分排序
-            top_hyp = (_conflict_top(top_pool)
-                       or _pick_primary_hypothesis(top_pool))
+            top_hyp = _pick_primary_hypothesis(top_pool)
             cause_code = (top_hyp or {}).get("cause_code", "") or primary_cause_code
             break_level = CAUSE_TO_LEVEL.get(cause_code, "") or primary_break_level
         else:
