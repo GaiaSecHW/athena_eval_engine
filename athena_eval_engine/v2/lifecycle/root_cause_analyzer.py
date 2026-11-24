@@ -661,7 +661,9 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 # key = case 标注输入指纹（case_id/outcome/标题/描述/摘要/人工确认
 # 摘要/验证否定标记/agent 类型）+ 分析器版本号。
 # prompt 或判定逻辑变化时必须递增版本号，否则缓存仍是旧逻辑结果。
-_RCA_CACHE_VERSION = 1
+# v2：A/H 归因漂移修复（漏做检查归属 + 后见之明防护 + A/H 一致性
+# 自检，改压缩与 merge 两处 prompt）。
+_RCA_CACHE_VERSION = 2
 
 
 def _rca_cache_dir() -> str:
