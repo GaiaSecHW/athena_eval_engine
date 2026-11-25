@@ -101,6 +101,8 @@ async function renderHome(){
   var dtsOpen=dtsByStatus.open||0;
   var dtsPassed=dtsByStatus.passed||0;
   var dtsFailed=dtsByStatus.failed||0;
+  // 无法归因：全部线索被人工否定且标注信息不全——等标注方补充后重新分析
+  var dtsUnattr=dtsByStatus.unattributable||0;
 
   var overall=dash.overall||{};
   var rtOverall=overall.runtime||{};
@@ -127,6 +129,7 @@ async function renderHome(){
     +renderKPICard('运行中',running,'⚡','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('失败',failed,'✗','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('问题单',dtsTotal,'📋','linear-gradient(135deg,#8b5cf6,#a78bfa)')
+    +renderKPICard('无法归因',dtsUnattr,'🚫','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('误报',((dtsStats.by_case_type||{}).FP||0),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('漏报',((dtsStats.by_case_type||{}).FN||0),'○','linear-gradient(135deg,#d97706,#f59e0b)')
     +'</div>'
