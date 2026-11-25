@@ -749,6 +749,16 @@ MIGRATIONS = [
             "ALTER TABLE evaluation_summary ADD INDEX idx_es_task (task_id)",
         ],
     },
+    {
+        "id": "050_system_config_value_text",
+        "desc": "system_config.config_value 扩容到 TEXT——auto_eval_last_run 等"
+                "运行记录 JSON（含逐任务跳过原因）超 VARCHAR(512)，"
+                "写入 1406 Data too long 导致运行记录无法固化",
+        "sql": [
+            "ALTER TABLE system_config "
+            "MODIFY COLUMN config_value TEXT NOT NULL",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

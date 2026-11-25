@@ -926,7 +926,7 @@ ALTER TABLE outcome_fact ADD CONSTRAINT outcome_fact_resolver_status_chk CHECK (
 -- ===== System Config (运行时参数持久化) =====
 CREATE TABLE IF NOT EXISTS system_config (
     config_key   VARCHAR(64) PRIMARY KEY,
-    config_value VARCHAR(512) NOT NULL,
+    config_value TEXT NOT NULL,
     updated_at   DATETIME(3) NOT NULL DEFAULT CURRENT_TIMESTAMP(3) ON UPDATE CURRENT_TIMESTAMP(3)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
