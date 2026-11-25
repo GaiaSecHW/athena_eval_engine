@@ -770,6 +770,18 @@ MIGRATIONS = [
             "CHECK (status IN ('open','passed','failed','unattributable'))",
         ],
     },
+    {
+        "id": "052_dts_issue_no_regression_close",
+        "desc": "dts_issue 状态新增 no_regression（无回归关单：不经回归验证"
+                "直接关闭），新增 close_reason 列（关单原因，无回归关单必填）",
+        "sql": [
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_status_chk",
+            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_status_chk "
+            "CHECK (status IN "
+            "('open','passed','failed','unattributable','no_regression'))",
+            "ALTER TABLE dts_issue ADD COLUMN close_reason TEXT NULL",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

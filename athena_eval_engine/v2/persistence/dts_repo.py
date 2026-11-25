@@ -58,7 +58,7 @@ _SELECT_COLUMNS = (
     " d.root_cause, d.solution, d.hypotheses, d.label_quality, d.analysis_data_path,"
     " d.session_chains,"
     " d.replay_eval_id, d.replay_result, d.replay_data,"
-    " d.status, d.responsibility, d.hypothesis_confirmations,"
+    " d.status, d.responsibility, d.hypothesis_confirmations, d.close_reason,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
 )
@@ -102,7 +102,7 @@ def _row_to_dict(row) -> dict:
         "root_cause", "solution", "hypotheses", "label_quality", "analysis_data_path",
         "session_chains",
         "replay_eval_id", "replay_result", "replay_data",
-        "status", "responsibility", "hypothesis_confirmations",
+        "status", "responsibility", "hypothesis_confirmations", "close_reason",
         "created_at", "updated_at", "closed_at",
         "evaluation_name",
     )
@@ -505,10 +505,11 @@ def _build_issue_where(
         where_parts.append("FIND_IN_SET(%s, d.responsibility) > 0")
         params.append(responsibility)
     if status == "open":
-        # 未关闭 = 尚未回归通过/判定非问题/无法归因（无法归因视为关闭：
-        # 退出修复队列，等标注方补充后重新开启）
+        # 未关闭 = 尚未回归通过/判定非问题/无法归因/无回归关单
+        # （无法归因与无回归关单均视为关闭：退出修复队列）
         where_parts.append(
-            "d.status NOT IN ('passed','not_issue','unattributable')")
+            "d.status NOT IN "
+            "('passed','not_issue','unattributable','no_regression')")
     elif status:
         where_parts.append("d.status = %s")
         params.append(status)
@@ -594,7 +595,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
         False 表示记录不存在或无更新字段。
     """
     allowed = {
-        "root_cause", "solution", "status",
+        "root_cause", "solution", "status", "close_reason",
         "replay_eval_id", "replay_result", "replay_data",
         "hypotheses", "label_quality", "hypothesis_confirmations",
     }
@@ -639,7 +640,7 @@ def update_dts_issues_by_case_id(case_id: str, updates: dict) -> list[str]:
         被更新的 dts_id 列表（供写回归历史用）。空列表表示无匹配行。
     """
     allowed = {
-        "root_cause", "solution", "status",
+        "root_cause", "solution", "status", "close_reason",
         "replay_eval_id", "replay_result", "replay_data",
         "hypotheses", "label_quality", "hypothesis_confirmations",
     }

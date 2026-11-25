@@ -64,7 +64,9 @@ _OTHER_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
 # 未关闭问题单口径：排除已关闭状态。无法归因（unattributable）视为关闭
 # （用户定稿）：全部线索被否定+标注不全，退出修复队列等标注方补充。
-_OPEN_ISSUE_EXCLUDED = ("passed", "not_issue", "unattributable")
+# 无回归关单（no_regression）同视为关闭（不经回归验证直接关闭）。
+_OPEN_ISSUE_EXCLUDED = ("passed", "not_issue", "unattributable",
+                        "no_regression")
 _CHANNEL = "xiaoluban"
 # 定期报告通道：独立于日报的发送记录（窗口/去重按周期，标题=日报/周报/月报）
 _CHANNEL_REPORT = "xiaoluban-report"
@@ -384,7 +386,7 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
             # 无法归因（unattributable）视为关闭：退出未关闭口径
             cur.execute(
                 "SELECT agent_type, cause_code, COUNT(*) FROM dts_issue "
-                "WHERE status NOT IN ('passed','not_issue','unattributable') "
+                "WHERE status NOT IN ('passed','not_issue','unattributable','no_regression') "
                 "AND case_type='FP' "
                 "GROUP BY agent_type, cause_code")
             for at, cause, n in cur.fetchall():
@@ -409,7 +411,7 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
         try:
             cur.execute(
                 "SELECT agent_type, COUNT(*) FROM dts_issue "
-                "WHERE status NOT IN ('passed','not_issue','unattributable') "
+                "WHERE status NOT IN ('passed','not_issue','unattributable','no_regression') "
                 "GROUP BY agent_type")
             for at, n in cur.fetchall():
                 for a in _split_agents(at):

@@ -178,10 +178,16 @@ async function renderDtsDetailPage(dtsId){
       +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span>'
       +(d.status==='unattributable'
         ?' <button class="btn g" style="font-size:12px;padding:2px 10px" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',false)">重新开启</button>'
-        :(d.status==='open'
-          ?' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
-          :''))
+        :(d.status==='no_regression'
+          ?' <button class="btn g" style="font-size:12px;padding:2px 10px" onclick="reopenIssue(\''+esc(d.dts_id)+'\')">重新开启</button>'
+          :(d.status==='open'
+            ?' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
+              +' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--acc)" onclick="showCloseReasonDialog(\''+esc(d.dts_id)+'\')">无回归关单</button>'
+            :'')))
       +'</div>'
+      +(d.close_reason
+        ?'<div style="grid-column:1/-1"><span style="color:var(--gray)">关单原因：</span><b>'+esc(d.close_reason)+'</b></div>'
+        :'')
       +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.task_id||'-')+'</b></div>'
       +'<div><span style="color:var(--gray)">类型：</span><b>'+esc(caseTypeLabel)+'</b></div>'
       +'<div><span style="color:var(--gray)">Agent：</span><b>'+esc(agentLabel)+'</b></div>'
@@ -835,6 +841,73 @@ async function renderDtsDetailPage(dtsId){
 }
 
 // 假定线索根因确认
+// 无回归关单预设原因（可自定义，原因必填）
+const DTS_CLOSE_REASONS = [
+  '由项目经理补充相关业务知识（补齐后 agent 检索自然规避）',
+  '与已有问题单重复（已在其他单处理）',
+  '业务方确认接受风险（暂不修复）'
+];
+
+// 无回归关单对话框：必选/必填关单原因（预设单选 + 自定义文本）
+function showCloseReasonDialog(dtsId){
+  if(!dtsId)return;
+  var ov=document.createElement('div');ov.className='modal-overlay';
+  var radios=DTS_CLOSE_REASONS.map(function(r,i){
+    return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:14px;margin-bottom:8px;cursor:pointer">'
+      +'<input type="radio" name="dts-close-reason" value="'+esc(r)+'"'+(i===0?' checked':'')+'>'
+      +'<span>'+esc(r)+'</span></label>';
+  }).join('');
+  ov.innerHTML='<div class="modal">'
+    +'<div class="modal-head"><div class="modal-icon" style="background:rgba(37,99,235,.12);color:var(--acc)">🚪</div><h3>无回归关单</h3></div>'
+    +'<div class="modal-body">'
+    +'<p style="font-size:14px;margin-bottom:10px">不经回归验证直接关闭本问题单——<b>必须选择或填写关单原因</b>：</p>'
+    +radios
+    +'<label style="display:flex;gap:8px;align-items:flex-start;font-size:14px;margin-bottom:8px;cursor:pointer">'
+      +'<input type="radio" name="dts-close-reason" value="__custom__">'
+      +'<span style="flex:1">自定义：<input id="dts-close-custom" placeholder="填写关单原因…" style="width:80%;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-size:13px"></span></label>'
+    +'</div>'
+    +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
+    +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-close-confirm">确认关单</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+  document.getElementById('dts-close-confirm').onclick=function(){
+    var sel=ov.querySelector('input[name="dts-close-reason"]:checked');
+    var reason='';
+    if(sel&&sel.value==='__custom__'){
+      var el=document.getElementById('dts-close-custom');
+      reason=(el&&el.value||'').trim();
+    }else if(sel){
+      reason=sel.value;
+    }
+    if(!reason){
+      alert('必须选择或填写关单原因');return;
+    }
+    ov.remove();
+    jput('/api/v2/dts/'+encodeURIComponent(dtsId),{status:'no_regression',close_reason:reason})
+      .then(function(){renderDtsDetailPage(dtsId);})
+      .catch(function(e){
+        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'关单失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+      });
+  };
+}
+
+// 重新开启无回归关单的问题单（清除旧关单原因）
+function reopenIssue(dtsId){
+  if(!dtsId)return;
+  showConfirm({
+    icon:'🔄',iconBg:'rgba(37,99,235,.12)',iconColor:'var(--acc)',
+    title:'重新开启',desc:'确认重新开启？关单原因将被清除，单回到未关闭队列。',
+    confirmText:'重新开启',confirmColor:'var(--acc)',
+    onConfirm:function(){
+      jput('/api/v2/dts/'+encodeURIComponent(dtsId),{status:'open'})
+        .then(function(){renderDtsDetailPage(dtsId);})
+        .catch(function(e){
+          showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'操作失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+        });
+    }
+  });
+}
+
 // 标记/解除「无法归因」：全部线索被人工否定且标注信息不全时，
 // 当前材料无法确定根因——标记后等待标注方补充信息，再重新开启分析
 async function toggleUnattributable(dtsId,mark){

@@ -49,6 +49,7 @@ class DTSUpdate(BaseModel):
     root_cause: str | None = None
     solution: str | None = None
     status: str | None = None
+    close_reason: str | None = None
     replay_eval_id: str | None = None
     replay_result: str | None = None
 
@@ -783,7 +784,8 @@ def update_issue(dts_id: str, update: DTSUpdate):
 
     status 合法值：open（未关闭）/ passed（回归通过）/ failed（回归不通过）/
     unattributable（无法归因：全部线索被人工否定且标注信息不全——
-    补标注后重新分析再重新开启）。
+    补标注后重新分析再重新开启）/ no_regression（无回归关单：不经回归
+    验证直接关闭，**必须**携带 close_reason 关单原因）。
     """
     existing = get_dts_issue(dts_id)
     if existing is None:
@@ -793,11 +795,19 @@ def update_issue(dts_id: str, update: DTSUpdate):
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
     if "status" in updates and updates["status"] not in (
-            "open", "passed", "failed", "unattributable"):
+            "open", "passed", "failed", "unattributable", "no_regression"):
         raise HTTPException(
             status_code=400,
             detail=f"非法状态 '{updates['status']}'，"
-                   f"合法值：open/passed/failed/unattributable")
+                   f"合法值：open/passed/failed/unattributable/no_regression")
+    if updates.get("status") == "no_regression":
+        if not str(updates.get("close_reason") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="无回归关单必须填写关单原因（close_reason）")
+    if updates.get("status") == "open":
+        # 重新开启时清除旧关单原因（避免遗留误导），显式传入则尊重
+        updates.setdefault("close_reason", None)
 
     success = _safe_update_dts_issue(dts_id, updates)
     if not success:
