@@ -14,7 +14,8 @@ Owner 两类：
 - 误报率：**只展示回归后误报率**（FP 问题单 ``failed/(passed+failed)``），
   与首页看板同口径；评测报告里的单次 fpr/precision 不代表平台整体，不展示。
 - 新增问题单：``dts_issue.created_at`` 落在窗口内。
-- 未关闭问题单：``status NOT IN ('passed','not_issue')`` 的存量。
+- 未关闭问题单：``status NOT IN ('passed','not_issue','unattributable')`` 的存量
+  （无法归因视为关闭——全部线索被否定+标注不全，等标注方补充后重新开启）。
 - 责任方过滤：``responsibility`` 是逗号分隔多值，用 FIND_IN_SET 精确匹配；
   agent 日报只列含 ``agent`` 责任的单，知识库/外部数据源/评测流程各自只列自己的。
 - 多责任方问题单会同时出现在 agent 日报和对应责任方日报里。
@@ -61,7 +62,9 @@ _RESPONSIBILITY_LABELS: dict[str, str] = {
 _OTHER_RESPONSIBILITIES = ("knowledge", "external_data_source", "eval_process")
 
 _TERMINAL_OK = ("COMPLETED", "COMPLETED_WITH_WARNINGS")
-_OPEN_ISSUE_EXCLUDED = ("passed", "not_issue")
+# 未关闭问题单口径：排除已关闭状态。无法归因（unattributable）视为关闭
+# （用户定稿）：全部线索被否定+标注不全，退出修复队列等标注方补充。
+_OPEN_ISSUE_EXCLUDED = ("passed", "not_issue", "unattributable")
 _CHANNEL = "xiaoluban"
 # 定期报告通道：独立于日报的发送记录（窗口/去重按周期，标题=日报/周报/月报）
 _CHANNEL_REPORT = "xiaoluban-report"
@@ -378,9 +381,10 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
             log("REPORT", f"领导摘要-新增问题单统计失败: {e}")
         try:
             # 未关闭误报的根因分布（本期无新增时回答"存量为什么高"）
+            # 无法归因（unattributable）视为关闭：退出未关闭口径
             cur.execute(
                 "SELECT agent_type, cause_code, COUNT(*) FROM dts_issue "
-                "WHERE status NOT IN ('passed','not_issue') "
+                "WHERE status NOT IN ('passed','not_issue','unattributable') "
                 "AND case_type='FP' "
                 "GROUP BY agent_type, cause_code")
             for at, cause, n in cur.fetchall():
@@ -405,7 +409,7 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
         try:
             cur.execute(
                 "SELECT agent_type, COUNT(*) FROM dts_issue "
-                "WHERE status NOT IN ('passed','not_issue') "
+                "WHERE status NOT IN ('passed','not_issue','unattributable') "
                 "GROUP BY agent_type")
             for at, n in cur.fetchall():
                 for a in _split_agents(at):
@@ -413,6 +417,14 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
                         out["open_by_agent"].get(a, 0) + int(n or 0))
         except Exception as e:
             log("REPORT", f"领导摘要-未关闭分布统计失败: {e}")
+        try:
+            # 无法归因存量（视为关闭、等标注方补充——领导侧单独体现）
+            cur.execute(
+                "SELECT COUNT(*) FROM dts_issue "
+                "WHERE status='unattributable'")
+            out["unattributable"] = int(cur.fetchone()[0] or 0)
+        except Exception as e:
+            log("REPORT", f"领导摘要-无法归因统计失败: {e}")
         return out
     return _db_query(_do)
 
@@ -538,6 +550,12 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
                 for a, n in top[:4]]
         more = f" 等 {len(top)} 项" if len(top) > 4 else ""
         lines.append("👥 未关闭问题单：" + " · ".join(segs) + more)
+    # 无法归因存量（视为关闭但欠标注方补充——单独体现，有数据才显示）
+    unattr = int(st.get("unattributable") or 0)
+    if unattr > 0:
+        lines.append(
+            f"🚫 无法归因 {unattr} 条：全部线索被否定+标注不全，"
+            f"待标注方补充后重新开启")
     lines.append(f"🔗 {public_url}/dts")
     return "\n".join(lines)
 

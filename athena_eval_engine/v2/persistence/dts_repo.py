@@ -505,8 +505,10 @@ def _build_issue_where(
         where_parts.append("FIND_IN_SET(%s, d.responsibility) > 0")
         params.append(responsibility)
     if status == "open":
-        # 未关闭 = 尚未回归通过/判定非问题
-        where_parts.append("d.status NOT IN ('passed','not_issue')")
+        # 未关闭 = 尚未回归通过/判定非问题/无法归因（无法归因视为关闭：
+        # 退出修复队列，等标注方补充后重新开启）
+        where_parts.append(
+            "d.status NOT IN ('passed','not_issue','unattributable')")
     elif status:
         where_parts.append("d.status = %s")
         params.append(status)
