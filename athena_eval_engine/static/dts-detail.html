@@ -855,9 +855,12 @@ function showCloseReasonDialog(dtsId){
   var ov=document.createElement('div');ov.className='modal-overlay';
   // 布局：预设原因 = 普通单选行（无卡片框，不浪费宽度）；
   // 自定义 = 最后一行单选 + 独立整宽输入框（不与文字挤一行）
+  // 注意：全局 CSS input{width:100%} 会把单选框撑满整行——
+  // 必须显式 width/height:16px 覆盖，否则圆点占用整行宽度
+  var _radioStyle='width:16px;height:16px;flex:none;margin:0;padding:0;accent-color:var(--acc)';
   var radios=DTS_CLOSE_REASONS.map(function(r,i){
     return '<label style="display:flex;gap:10px;align-items:center;font-size:14px;margin:0 0 10px;cursor:pointer">'
-      +'<input type="radio" name="dts-close-reason" value="'+esc(r)+'" style="margin:0;flex:none"'+(i===0?' checked':'')+'>'
+      +'<input type="radio" name="dts-close-reason" value="'+esc(r)+'" style="'+_radioStyle+'"'+(i===0?' checked':'')+'>'
       +'<span>'+esc(r)+'</span></label>';
   }).join('');
   ov.innerHTML='<div class="modal">'
@@ -866,9 +869,9 @@ function showCloseReasonDialog(dtsId){
     +'<p style="font-size:14px;margin-bottom:12px">不经回归验证直接关闭本问题单——<b>必须选择或填写关单原因</b>：</p>'
     +radios
     +'<label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer;margin-bottom:8px">'
-      +'<input type="radio" name="dts-close-reason" value="__custom__" style="margin:0;flex:none">'
+      +'<input type="radio" name="dts-close-reason" value="__custom__" style="'+_radioStyle+'">'
       +'<span>自定义原因</span></label>'
-    +'<input id="dts-close-custom" placeholder="选「自定义原因」后填写…" style="display:block;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px;margin-bottom:4px">'
+    +'<input id="dts-close-custom" placeholder="选「自定义原因」后填写…" style="display:block;width:calc(100% - 26px);box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px;margin-bottom:4px">'
     +'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
     +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-close-confirm">确认关单</button></div></div>';
