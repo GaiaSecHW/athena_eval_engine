@@ -21,8 +21,9 @@ const EVAL_STATUS_LABELS = {
 };
 
 // DTS 问题单状态/常量
-const DTS_STATUS_LABELS = {"open":"未关闭","passed":"回归通过","failed":"回归不通过"};
-const DTS_STATUS_COLORS = {"open":"var(--gray)","passed":"var(--green)","failed":"var(--red)"};
+// unattributable=无法归因：全部线索被人工否定且标注信息不全——补标注后重新分析
+const DTS_STATUS_LABELS = {"open":"未关闭","passed":"回归通过","failed":"回归不通过","unattributable":"无法归因"};
+const DTS_STATUS_COLORS = {"open":"var(--gray)","passed":"var(--green)","failed":"var(--red)","unattributable":"var(--amber)"};
 const DTS_RESP_LABELS = {"agent":"Agent","knowledge":"知识库","knowledge_base":"知识库","memory":"记忆","external_data_source":"外部数据源","eval_process":"评测流程"};
 const DTS_CASE_TYPE_LABELS = {"FP":"误报","FN":"漏报"};
 // ── L 级别 / 成因 标准标签（唯一来源，与后端 core/causal_levels.py 一致）──

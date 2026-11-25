@@ -759,6 +759,17 @@ MIGRATIONS = [
             "MODIFY COLUMN config_value TEXT NOT NULL",
         ],
     },
+    {
+        "id": "051_dts_issue_status_unattributable",
+        "desc": "dts_issue 状态新增 unattributable（无法归因：全部线索被人工"
+                "否定且标注信息不全——补标注后重新分析，标注方补充信息后"
+                "重新开启）",
+        "sql": [
+            "ALTER TABLE dts_issue DROP CHECK dts_issue_status_chk",
+            "ALTER TABLE dts_issue ADD CONSTRAINT dts_issue_status_chk "
+            "CHECK (status IN ('open','passed','failed','unattributable'))",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

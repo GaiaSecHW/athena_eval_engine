@@ -71,6 +71,7 @@ async function renderDtsList(){
           <option value="open">未关闭</option>
           <option value="passed">回归通过</option>
           <option value="failed">回归不通过</option>
+          <option value="unattributable">无法归因</option>
         </select>
         <select id="dts-f-agent" onchange="_dtsFilter.agent_type=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:140px">
           <option value="">全部 Agent</option>

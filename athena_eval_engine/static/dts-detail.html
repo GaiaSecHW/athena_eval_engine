@@ -173,7 +173,13 @@ async function renderDtsDetailPage(dtsId){
       +'<h3>基本信息</h3>'
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
       +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+esc(d.dts_id)+'</b></div>'
-      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span></div>'
+      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span>'
+      +(d.status==='unattributable'
+        ?' <button class="btn g" style="font-size:12px;padding:2px 10px" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',false)">重新开启</button>'
+        :(d.status==='open'
+          ?' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
+          :''))
+      +'</div>'
       +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.task_id||'-')+'</b></div>'
       +'<div><span style="color:var(--gray)">类型：</span><b>'+esc(caseTypeLabel)+'</b></div>'
       +'<div><span style="color:var(--gray)">Agent：</span><b>'+esc(agentLabel)+'</b></div>'
@@ -813,6 +819,33 @@ async function renderDtsDetailPage(dtsId){
 }
 
 // 假定线索根因确认
+// 标记/解除「无法归因」：全部线索被人工否定且标注信息不全时，
+// 当前材料无法确定根因——标记后等待标注方补充信息，再重新开启分析
+async function toggleUnattributable(dtsId,mark){
+  if(!dtsId)return;
+  showConfirm({
+    icon:mark?'🚫':'🔄',
+    iconBg:mark?'rgba(251,191,36,.12)':'rgba(37,99,235,.12)',
+    iconColor:mark?'var(--amber)':'var(--acc)',
+    title:mark?'标记无法归因':'重新开启',
+    desc:mark
+      ?'确认标记为「无法归因」？适用于：全部线索已被人工否定为非真根因，且人工标注信息不全（无法区分线索/标注待确认）——当前材料无法确定根因。'
+      :'确认重新开启？适用于：标注方已补充标注信息，可重新分析归因。',
+    risks:mark
+      ?['标记后该单退出常规修复队列（仍计入未关闭统计）','退出路径：标注方补充完整标注信息后重新开启/重新分析']
+      :['重新开启后该单回到常规修复队列'],
+    confirmText:mark?'标记无法归因':'重新开启',
+    confirmColor:mark?'var(--amber)':'var(--acc)',
+    onConfirm:function(){
+      jput('/api/v2/dts/'+encodeURIComponent(dtsId),{status:mark?'unattributable':'open'})
+        .then(function(){renderDtsDetailPage(dtsId);})
+        .catch(function(e){
+          showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'操作失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+        });
+    }
+  });
+}
+
 async function confirmHypothesis(dtsId,hypKey,isRoot,causeCode,agentType,projectId,projectName,btn){
   if(!dtsId||!hypKey)return;
   var body={hypothesis_key:hypKey,is_root:isRoot,cause_code:causeCode||'',agent_type:agentType||'',project_id:projectId||'',project_name:projectName||''};

@@ -779,7 +779,12 @@ def get_issue(dts_id: str):
 
 @router.put("/{dts_id}")
 def update_issue(dts_id: str, update: DTSUpdate):
-    """更新问题单（root_cause / solution / status 等）。"""
+    """更新问题单（root_cause / solution / status 等）。
+
+    status 合法值：open（未关闭）/ passed（回归通过）/ failed（回归不通过）/
+    unattributable（无法归因：全部线索被人工否定且标注信息不全——
+    补标注后重新分析再重新开启）。
+    """
     existing = get_dts_issue(dts_id)
     if existing is None:
         raise HTTPException(status_code=404, detail=f"问题单 '{dts_id}' 不存在")
@@ -787,6 +792,12 @@ def update_issue(dts_id: str, update: DTSUpdate):
     updates = update.model_dump(exclude_none=True)
     if not updates:
         raise HTTPException(status_code=400, detail="No fields to update")
+    if "status" in updates and updates["status"] not in (
+            "open", "passed", "failed", "unattributable"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"非法状态 '{updates['status']}'，"
+                   f"合法值：open/passed/failed/unattributable")
 
     success = _safe_update_dts_issue(dts_id, updates)
     if not success:
