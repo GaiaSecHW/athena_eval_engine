@@ -18,6 +18,7 @@ from datetime import date, datetime, time as dt_time, timedelta, timezone
 
 from . import xiaoluban
 from .daily_report import (
+    _CHANNEL,
     _CHANNEL_REPORT,
     _parse_dt,
     build_reports,
@@ -26,6 +27,7 @@ from .daily_report import (
     last_sent_at,
     record_send,
     render_leader_text,
+    render_text,
 )
 from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
@@ -250,13 +252,71 @@ def is_running() -> bool:
     return _running
 
 
+def _send_owner_reports(force: bool, owner_key: str | None,
+                       period_start: datetime, token: str,
+                       label: str) -> dict:
+    """按 owner 发送责任人报告（通道 xiaoluban）。
+
+    旧日报机制：每个 agent/责任方 owner 收到自己接收群的责任明细
+    （render_text）。x 报统一重构时被误删（notification_log 实证
+    agent:* 发送停在 2026-11-20）——恢复：与领导单条 x 报并行，
+    责任人照常收各自的报告。
+
+    - 窗口按 owner 增量跟踪（从该 owner 上次成功发送起）——
+      中断期间的数据在恢复后的首条补齐；
+    - 按 owner+周期去重：本周期已发过则跳过（force 可重发）；
+    - 空报告 / 未配置接收群（target_id）/ 未启用 跳过。
+    """
+    sent = skipped = failed = 0
+    try:
+        reports = build_reports(owner_key=owner_key).get("agents", [])
+    except Exception as e:
+        log("NOTIFY", f"{label}责任人报告构建失败: {e}")
+        return {"sent": 0, "skipped": 0, "failed": 0, "error": str(e)}
+    for report in reports:
+        owner = report.get("owner_key", "")
+        receiver = report.get("target_id") or ""
+        if not report.get("enabled") or not receiver:
+            skipped += 1
+            continue
+        if not force:
+            last = last_sent_at(owner, _CHANNEL)
+            if last is not None and last >= period_start:
+                skipped += 1
+                continue
+        if _is_empty(report):
+            skipped += 1
+            continue
+        text = render_text(report, period_label=label)
+        ok, detail = xiaoluban.send_message(receiver, text, token=token)
+        window = report.get("window") or {}
+        record_send(
+            owner, receiver,
+            window.get("start", ""), window.get("end", ""),
+            content_hash(text),
+            "sent" if ok else "failed",
+            None if ok else detail,
+        )
+        if ok:
+            sent += 1
+            log("NOTIFY", f"{label}责任人报告发送成功: {owner} -> {receiver}")
+        else:
+            failed += 1
+            log("NOTIFY", f"{label}责任人报告发送失败: {owner} -> {receiver}: {detail}")
+    log("NOTIFY", f"{label}责任人报告发送完成: "
+                  f"sent={sent} skipped={skipped} failed={failed}")
+    return {"sent": sent, "skipped": skipped, "failed": failed}
+
+
 def run_report(force: bool = False, owner_key: str | None = None,
                period: str | None = None) -> dict:
     """构建并发送定期报告（日报/周报/月报），返回统计。
 
-    单消息模式：全 owner（enabled）汇总成一条消息，发送到**当前周期
-    单独配置的接收群**（notify_report_receiver_daily/weekly/monthly）——
-    不是每个 owner 各发一条。
+    双通道并行：
+    - **责任人单**（旧日报机制，通道 xiaoluban）：每个 owner 的责任
+      明细发到各自接收群（target_id），按 owner+周期独立去重；
+    - **x 报**（领导单条汇总，通道 xiaoluban-report，接收群按周期
+      配置 notify_report_receiver_*）：全 owner（enabled）汇总一条。
 
     - 周期可配置（notify_report_period：daily/weekly/monthly），
       标题按周期（日报/周报/月报）；传 ``period`` 可临时覆盖（手动触发某一期）；
@@ -276,18 +336,28 @@ def run_report(force: bool = False, owner_key: str | None = None,
         log("NOTIFY", "小鲁班 token 未配置，跳过定期报告发送")
         return {"sent": 0, "skipped": 0, "failed": 0, "error": "no_token"}
 
+    period_start = _period_start_utc(period)
+
+    # 责任人单（agent/责任方各自接收群，通道 xiaoluban）：
+    # 恢复旧日报的按 owner 发送（x 报统一重构时被误删，
+    # notification_log 实证 agent:* 发送停在 2026-11-20）——
+    # 与领导单条 x 报并行；独立去重（owner+周期），空报告跳过，
+    # 不受 x 报接收群未配置/空/去重影响。
+    owners = _send_owner_reports(
+        force=force, owner_key=owner_key,
+        period_start=period_start, token=token, label=label)
+
     receiver = (config.get("receivers") or {}).get(period, "")
     if not receiver:
         log("NOTIFY", f"{label}接收群未配置"
                       f"（notify_report_receiver_{period}），跳过发送")
-        return {"sent": 0, "skipped": 0, "failed": 0, "error": "no_receiver"}
-
-    period_start = _period_start_utc(period)
+        return {**owners, "error": "no_receiver"}
     if not force:
         last = last_sent_at(_REPORT_OWNER_KEY, _CHANNEL_REPORT)
         if last is not None and last >= period_start:
             log("NOTIFY", f"{label}本周期已发送过，跳过")
-            return {"sent": 0, "skipped": 1, "failed": 0, "error": "dedup"}
+            return {**owners, "skipped": owners.get("skipped", 0) + 1,
+                    "error": "dedup"}
 
     # 内容=该周期的全量汇总（日报=当天全部、周报=本周全部、月报=本月全部），
     # 不是「上次发送以来的增量」——显式 since 覆盖 build_reports 的
@@ -312,10 +382,11 @@ def run_report(force: bool = False, owner_key: str | None = None,
                          if not _no_data_at_all(r)]
     if not non_empty_reports:
         log("NOTIFY", f"{label}全部 owner 空报告，跳过发送")
-        return {"sent": 0, "skipped": 1, "failed": 0, "error": "empty"}
+        return {**owners, "skipped": owners.get("skipped", 0) + 1,
+                "error": "empty"}
 
     # x 报只发一条（领导视角：误报率趋势 → 根因分布 → 修复进展 → 欠账）。
-    # 不再发责任明细：owner 看板自行处理，日报/周报/月报不打扰责任人。
+    # 责任明细由上方 _send_owner_reports 定向发到各责任人接收群。
     window = non_empty_reports[0].get("window") or {}
     until = (_parse_dt(window.get("end"))
              or datetime.now(timezone.utc).replace(tzinfo=None))
@@ -332,9 +403,13 @@ def run_report(force: bool = False, owner_key: str | None = None,
     )
     if ok:
         log("NOTIFY", f"{label}发送成功 -> {receiver}")
-        return {"sent": 1, "skipped": 0, "failed": 0}
+        return {"sent": owners.get("sent", 0) + 1,
+                "skipped": owners.get("skipped", 0),
+                "failed": owners.get("failed", 0)}
     log("NOTIFY", f"{label}发送失败 -> {receiver}: {detail}")
-    return {"sent": 0, "skipped": 0, "failed": 1, "error": detail}
+    return {"sent": owners.get("sent", 0),
+            "skipped": owners.get("skipped", 0),
+            "failed": owners.get("failed", 0) + 1, "error": detail}
 
 
 def trigger_report(owner_key: str | None = None,
