@@ -171,20 +171,23 @@ async function renderDtsDetailPage(dtsId){
     var html='';
     // 「无法归因」引导统计：可见线索总数 vs 已否定为非根因数
     var uaVisible=0,uaRejected=0;
+    // 状态操作按钮：独立一行（不放 2 列网格内，避免撑乱对齐）
+    var statusActions='';
+    if(d.status==='unattributable'){
+      statusActions='<button class="btn g" style="font-size:12px;padding:4px 12px" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',false)">重新开启</button>';
+    }else if(d.status==='no_regression'){
+      statusActions='<button class="btn g" style="font-size:12px;padding:4px 12px" onclick="reopenIssue(\''+esc(d.dts_id)+'\')">重新开启</button>';
+    }else if(d.status==='open'){
+      statusActions='<button class="btn" style="font-size:12px;padding:4px 12px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
+        +' <button class="btn" style="font-size:12px;padding:4px 12px;background:var(--acc)" onclick="showCloseReasonDialog(\''+esc(d.dts_id)+'\')">无回归关单</button>';
+    }
     html+='<div class="card" style="margin-bottom:16px">'
-      +'<h3>基本信息</h3>'
-      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
-      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+esc(d.dts_id)+'</b></div>'
-      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span>'
-      +(d.status==='unattributable'
-        ?' <button class="btn g" style="font-size:12px;padding:2px 10px" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',false)">重新开启</button>'
-        :(d.status==='no_regression'
-          ?' <button class="btn g" style="font-size:12px;padding:2px 10px" onclick="reopenIssue(\''+esc(d.dts_id)+'\')">重新开启</button>'
-          :(d.status==='open'
-            ?' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
-              +' <button class="btn" style="font-size:12px;padding:2px 10px;background:var(--acc)" onclick="showCloseReasonDialog(\''+esc(d.dts_id)+'\')">无回归关单</button>'
-            :'')))
+      +'<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap"><h3 style="margin:0">基本信息</h3>'
+      +(statusActions?'<span style="flex:1"></span><span style="display:inline-flex;gap:6px;align-items:center">'+statusActions+'</span>':'')
       +'</div>'
+      +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px;margin-top:12px">'
+      +'<div><span style="color:var(--gray)">问题单 ID：</span><b style="font-family:monospace;font-size:13px">'+esc(d.dts_id)+'</b></div>'
+      +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span></div>'
       +(d.close_reason
         ?'<div style="grid-column:1/-1"><span style="color:var(--gray)">关单原因：</span><b>'+esc(d.close_reason)+'</b></div>'
         :'')
@@ -850,19 +853,23 @@ const DTS_CLOSE_REASONS = [
 function showCloseReasonDialog(dtsId){
   if(!dtsId)return;
   var ov=document.createElement('div');ov.className='modal-overlay';
+  // 选项行：圆点固定列宽对齐，文本与输入框占满余宽——各行左边对齐
+  function _opt(value,checked,content){
+    return '<label style="display:flex;gap:10px;align-items:center;font-size:14px;margin-bottom:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2)">'
+      +'<input type="radio" name="dts-close-reason" value="'+esc(value)+'" style="margin:0;flex:none"'+(checked?' checked':'')+'>'
+      +'<span style="flex:1;min-width:0">'+content+'</span></label>';
+  }
   var radios=DTS_CLOSE_REASONS.map(function(r,i){
-    return '<label style="display:flex;gap:8px;align-items:flex-start;font-size:14px;margin-bottom:8px;cursor:pointer">'
-      +'<input type="radio" name="dts-close-reason" value="'+esc(r)+'"'+(i===0?' checked':'')+'>'
-      +'<span>'+esc(r)+'</span></label>';
+    return _opt(r,i===0,esc(r));
   }).join('');
+  var customOpt=_opt('__custom__',false,'自定义原因'
+    +'<input id="dts-close-custom" placeholder="选此项后填写关单原因…" style="display:block;width:100%;margin-top:6px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-size:13px;font-family:inherit">');
   ov.innerHTML='<div class="modal">'
     +'<div class="modal-head"><div class="modal-icon" style="background:rgba(37,99,235,.12);color:var(--acc)">🚪</div><h3>无回归关单</h3></div>'
     +'<div class="modal-body">'
-    +'<p style="font-size:14px;margin-bottom:10px">不经回归验证直接关闭本问题单——<b>必须选择或填写关单原因</b>：</p>'
+    +'<p style="font-size:14px;margin-bottom:12px">不经回归验证直接关闭本问题单——<b>必须选择或填写关单原因</b>：</p>'
     +radios
-    +'<label style="display:flex;gap:8px;align-items:flex-start;font-size:14px;margin-bottom:8px;cursor:pointer">'
-      +'<input type="radio" name="dts-close-reason" value="__custom__">'
-      +'<span style="flex:1">自定义：<input id="dts-close-custom" placeholder="填写关单原因…" style="width:80%;padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-size:13px"></span></label>'
+    +customOpt
     +'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
     +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-close-confirm">确认关单</button></div></div>';
