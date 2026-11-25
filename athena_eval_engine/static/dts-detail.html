@@ -853,28 +853,31 @@ const DTS_CLOSE_REASONS = [
 function showCloseReasonDialog(dtsId){
   if(!dtsId)return;
   var ov=document.createElement('div');ov.className='modal-overlay';
-  // 选项行：圆点固定列宽对齐，文本与输入框占满余宽——各行左边对齐
-  function _opt(value,checked,content){
-    return '<label style="display:flex;gap:10px;align-items:center;font-size:14px;margin-bottom:10px;cursor:pointer;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2)">'
-      +'<input type="radio" name="dts-close-reason" value="'+esc(value)+'" style="margin:0;flex:none"'+(checked?' checked':'')+'>'
-      +'<span style="flex:1;min-width:0">'+content+'</span></label>';
-  }
+  // 布局：预设原因 = 普通单选行（无卡片框，不浪费宽度）；
+  // 自定义 = 最后一行单选 + 独立整宽输入框（不与文字挤一行）
   var radios=DTS_CLOSE_REASONS.map(function(r,i){
-    return _opt(r,i===0,esc(r));
+    return '<label style="display:flex;gap:10px;align-items:center;font-size:14px;margin:0 0 10px;cursor:pointer">'
+      +'<input type="radio" name="dts-close-reason" value="'+esc(r)+'" style="margin:0;flex:none"'+(i===0?' checked':'')+'>'
+      +'<span>'+esc(r)+'</span></label>';
   }).join('');
-  var customOpt=_opt('__custom__',false,'自定义原因'
-    +'<input id="dts-close-custom" placeholder="选此项后填写关单原因…" style="display:block;width:100%;margin-top:6px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-size:13px;font-family:inherit">');
   ov.innerHTML='<div class="modal">'
     +'<div class="modal-head"><div class="modal-icon" style="background:rgba(37,99,235,.12);color:var(--acc)">🚪</div><h3>无回归关单</h3></div>'
     +'<div class="modal-body">'
     +'<p style="font-size:14px;margin-bottom:12px">不经回归验证直接关闭本问题单——<b>必须选择或填写关单原因</b>：</p>'
     +radios
-    +customOpt
+    +'<label style="display:flex;gap:10px;align-items:center;font-size:14px;cursor:pointer;margin-bottom:8px">'
+      +'<input type="radio" name="dts-close-reason" value="__custom__" style="margin:0;flex:none">'
+      +'<span>自定义原因</span></label>'
+    +'<input id="dts-close-custom" placeholder="选「自定义原因」后填写…" style="display:block;width:100%;box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px;margin-bottom:4px">'
     +'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
     +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-close-confirm">确认关单</button></div></div>';
   document.body.appendChild(ov);
   ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+  document.getElementById('dts-close-custom').onclick=function(){
+    var r=ov.querySelector('input[name="dts-close-reason"][value="__custom__"]');
+    if(r)r.checked=true;
+  };
   document.getElementById('dts-close-confirm').onclick=function(){
     var sel=ov.querySelector('input[name="dts-close-reason"]:checked');
     var reason='';
