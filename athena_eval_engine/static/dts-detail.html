@@ -169,6 +169,8 @@ async function renderDtsDetailPage(dtsId){
     var agentLabel=dtsAgentLabel(d.agent_type);
 
     var html='';
+    // 「无法归因」引导统计：可见线索总数 vs 已否定为非根因数
+    var uaVisible=0,uaRejected=0;
     html+='<div class="card" style="margin-bottom:16px">'
       +'<h3>基本信息</h3>'
       +'<div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 20px;font-size:14px;margin-bottom:12px">'
@@ -435,6 +437,10 @@ async function renderDtsDetailPage(dtsId){
           var causeCode=hdata.cause_code||'';
           var chainType=h.chainType||h.label||'chain';
           var agentType=h.agentType||'';
+          // 「无法归因」引导统计：与根因确认按钮同一 key 口径
+          uaVisible++;
+          var _hcUa=(d.hypothesis_confirmations||{})[(chainType||'chain')+':hyp'+(idx+1)]||{};
+          if(_hcUa.is_root===false)uaRejected++;
           var hypDesc=hdata.hypothesis||'';
           var evidence=hdata.evidence||'';
           var canResolve=hdata.agent_can_resolve;
@@ -810,6 +816,16 @@ async function renderDtsDetailPage(dtsId){
           +'</tr>';
       });
       html+='</tbody></table></div>';
+    }
+
+    // 「无法归因」现场引导：全部可见线索已被否定为非根因且未关闭时，
+    // 顶部横幅引导标记——总得有个界面在现场确认，而不是只能去状态行找按钮
+    if(uaVisible>0&&uaRejected===uaVisible&&d.status==='open'){
+      html='<div class="card" style="margin-bottom:16px;border-left:3px solid var(--amber)">'
+        +'<h3>全部线索已确认为非根因</h3>'
+        +'<div style="font-size:14px;color:var(--sub);margin-bottom:10px">共 '+uaVisible+' 条线索全部被人工否定为非真根因。若人工标注信息也不全（无法对照区分线索），当前材料无法确定根因——建议标记「无法归因」，待标注方补充标注信息后重新开启分析。</div>'
+        +'<button class="btn" style="font-size:13px;padding:6px 14px;background:var(--amber)" onclick="toggleUnattributable(\''+esc(d.dts_id)+'\',true)">标记无法归因</button>'
+        +'</div>'+html;
     }
 
     $("dts-detail-body").innerHTML=html;
