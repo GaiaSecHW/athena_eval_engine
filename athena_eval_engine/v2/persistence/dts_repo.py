@@ -474,6 +474,7 @@ def _build_issue_where(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    label_quality: str | None = None,
     q: str | None = None,
 ) -> tuple[str, list]:
     """构造问题单查询的 WHERE 子句；列表和统计共用同一套过滤口径。"""
@@ -515,6 +516,13 @@ def _build_issue_where(
     if case_type:
         where_parts.append("d.case_type = %s")
         params.append(case_type)
+    if label_quality in ("precise", "imprecise"):
+        # 标注质量：label_quality 列存 JSON（{"precision": ...}），
+        # SQL 层 JSON_EXTRACT 过滤（保分页/统计口径一致）；
+        # 旧数据 NULL（未知）不匹配任一值
+        where_parts.append(
+            "JSON_UNQUOTE(JSON_EXTRACT(d.label_quality, '$.precision')) = %s")
+        params.append(label_quality)
 
     where_clause = (" WHERE " + " AND ".join(where_parts)) if where_parts else ""
     return where_clause, params
@@ -527,6 +535,7 @@ def list_dts_issues(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    label_quality: str | None = None,
     q: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -536,6 +545,7 @@ def list_dts_issues(
     Args:
         q: 搜索关键词（模糊匹配 dts_id / vuln_title / case_id /
            evaluation_name / evaluation_id / task_id）。
+        label_quality: 标注质量（precise=精确 / imprecise=不精确）。
 
     Returns:
         (问题单 dict 列表, 匹配总数)
@@ -547,6 +557,7 @@ def list_dts_issues(
         cause_code=cause_code,
         case_type=case_type,
         responsibility=responsibility,
+        label_quality=label_quality,
         q=q,
     )
 
@@ -773,6 +784,7 @@ def get_dts_stats(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    label_quality: str | None = None,
     q: str | None = None,
 ) -> dict:
     """聚合统计问题单（口径与列表过滤一致）。
@@ -796,6 +808,7 @@ def get_dts_stats(
         cause_code=cause_code,
         case_type=case_type,
         responsibility=responsibility,
+        label_quality=label_quality,
         q=q,
     )
     params = tuple(params)

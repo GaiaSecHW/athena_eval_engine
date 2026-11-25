@@ -113,6 +113,7 @@ def list_issues(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    label_quality: str | None = None,
     q: str | None = None,
     limit: int = 100,
     offset: int = 0,
@@ -121,6 +122,7 @@ def list_issues(
 
     q：搜索关键词，模糊匹配 dts_id / vuln_title / case_id /
     evaluation_name / evaluation_id / task_id（后端查询，非前端过滤）。
+    label_quality：标注质量（precise=精确 / imprecise=不精确，SQL 层过滤）。
     stats 与 issues 使用同一套过滤条件。
     """
     try:
@@ -131,6 +133,7 @@ def list_issues(
             cause_code=cause_code,
             case_type=case_type,
             responsibility=responsibility,
+            label_quality=label_quality,
             q=q,
             limit=limit,
             offset=offset,
@@ -142,6 +145,7 @@ def list_issues(
             cause_code=cause_code,
             case_type=case_type,
             responsibility=responsibility,
+            label_quality=label_quality,
             q=q,
         )
     except Exception as e:
@@ -159,6 +163,7 @@ def get_stats(
     cause_code: str | None = None,
     case_type: str | None = None,
     responsibility: str | None = None,
+    label_quality: str | None = None,
     q: str | None = None,
 ):
     """获取问题单统计（过滤口径与列表一致）。"""
@@ -170,6 +175,7 @@ def get_stats(
             cause_code=cause_code,
             case_type=case_type,
             responsibility=responsibility,
+            label_quality=label_quality,
             q=q,
         )
     except Exception as e:

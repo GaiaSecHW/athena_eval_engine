@@ -40,7 +40,7 @@
 <script>
 renderNav('/dts');
 
-let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',q:''};
+let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',label_quality:'',q:''};
 // 支持从日报链接直接带过滤条件：/dts?agent_type=argo&status=open
 (function(){
   try{
@@ -49,6 +49,7 @@ let _dtsFilter={status:'',agent_type:'',case_type:'',responsibility:'',q:''};
     var st=qs.get('status');if(st)_dtsFilter.status=st;
     var ct=qs.get('case_type');if(ct)_dtsFilter.case_type=ct;
     var rs=qs.get('responsibility');if(rs)_dtsFilter.responsibility=rs;
+    var lq=qs.get('label_quality');if(lq)_dtsFilter.label_quality=lq;
   }catch(e){}
 })();
 let _dtsPage=1;
@@ -87,6 +88,11 @@ async function renderDtsList(){
           <option value="external_data_source">外部数据源</option>
           <option value="eval_process">评测流程</option>
         </select>
+        <select id="dts-f-lq" onchange="_dtsFilter.label_quality=this.value;_dtsPage=1;loadDtsPage()" style="width:auto;max-width:120px">
+          <option value="">全部标注质量</option>
+          <option value="precise">精确</option>
+          <option value="imprecise">不精确</option>
+        </select>
         <button class="btn g" style="font-size:14px;padding:6px 14px" onclick="loadDtsPage()">🔄 刷新</button>
       </div>
       <div id="dts-stats" style="margin-bottom:12px"></div>
@@ -104,6 +110,7 @@ async function renderDtsList(){
   var _stSel=$('dts-f-status');if(_stSel&&_dtsFilter.status)_stSel.value=_dtsFilter.status;
   var _ctSel=$('dts-f-case');if(_ctSel&&_dtsFilter.case_type)_ctSel.value=_dtsFilter.case_type;
   var _rsSel=$('dts-f-resp');if(_rsSel&&_dtsFilter.responsibility)_rsSel.value=_dtsFilter.responsibility;
+  var _lqSel=$('dts-f-lq');if(_lqSel&&_dtsFilter.label_quality)_lqSel.value=_dtsFilter.label_quality;
   loadDtsPage();
 }
 
@@ -114,6 +121,7 @@ async function loadDtsPage(){
   if(_dtsFilter.agent_type)params.push('agent_type='+encodeURIComponent(_dtsFilter.agent_type));
   if(_dtsFilter.case_type)params.push('case_type='+encodeURIComponent(_dtsFilter.case_type));
   if(_dtsFilter.responsibility)params.push('responsibility='+encodeURIComponent(_dtsFilter.responsibility));
+  if(_dtsFilter.label_quality)params.push('label_quality='+encodeURIComponent(_dtsFilter.label_quality));
   var url='/api/v2/dts?'+params.join('&');
   try{
     var d=await jget(url);
