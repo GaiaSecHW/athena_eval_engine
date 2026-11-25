@@ -283,22 +283,20 @@ def run_after_sync() -> None:
 
 
 def trigger_async() -> dict:
-    """手动触发一次（异步线程），返回启动状态。"""
-    global _running
-    with _run_guard:
-        if _running:
-            return {"status": "running"}
-        _running = True
+    """手动触发一次（异步线程），返回启动状态。
+
+    并发防护只由 run_once 入口的 _running 门禁承担——此处不再预置
+    _running（曾导致双重加锁：预置 True 后 worker 调 run_once 被
+    入口门禁直接拒绝，手动触发变成空操作，无日志无记录）。
+    """
+    if _running:
+        return {"status": "running"}
 
     def _worker():
-        global _running
         try:
             run_once(force=True)
         except Exception as e:
             log("AUTO_EVAL", f"手动自动创建异常: {e}")
-        finally:
-            with _run_guard:
-                _running = False
 
     threading.Thread(target=_worker, name="auto-eval-manual",
                      daemon=True).start()
