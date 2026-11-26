@@ -141,7 +141,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         total = cur.fetchone()[0]
         # 分页数据
         sql = (
-            "SELECT s.project_id, s.task_id, s.project_name, s.task_name, s.project_owner, "
+            "SELECT s.project_id, s.task_id, s.project_name, s.department_name, "
+            "s.task_name, s.project_owner, "
             "s.task_type, s.agent_type, s.task_created_at, s.task_updated_at, "
             "s.task_started_at, s.task_finished_at, "
             "s.vuln_total, s.unconfirmed_count, s.confirmed_vulnerable, "
@@ -173,7 +174,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             sql += " ORDER BY project_name, task_name"
         sql += " LIMIT %s OFFSET %s"
         cur.execute(sql, tuple(params) + (page_size, (page - 1) * page_size))
-        cols = ["project_id", "task_id", "project_name", "task_name", "project_owner",
+        cols = ["project_id", "task_id", "project_name", "department_name",
+                "task_name", "project_owner",
                 "task_type", "agent_type", "task_created_at", "task_updated_at",
                 "task_started_at", "task_finished_at",
                 "vuln_total", "unconfirmed_count", "confirmed_vulnerable",

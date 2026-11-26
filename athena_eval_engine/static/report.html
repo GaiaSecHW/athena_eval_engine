@@ -304,7 +304,7 @@ function render(d){
     // 未确认 = 总数 - 确认漏洞 - 误报 - 非误报（用户定义口径）
     const unconf=Math.max(0,(i.vuln_total||0)-(i.confirmed_vulnerable||0)-(i.confirmed_fp||0)-(i.confirmed_not_vulnerable||0));
     return `<tr${deleted?' style="opacity:.55;filter:grayscale(1)"':''}>
-    <td class="proj">${i.project_name||i.project_id}</td>
+    <td class="proj">${i.project_name||i.project_id}${i.department_name?'<div style="font-size:11px;color:var(--sub);font-weight:400">'+esc(i.department_name)+'</div>':''}</td>
     <td class="task" title="${(i.task_name||i.task_id).replace(/"/g,'&quot;')}">${i.task_name||i.task_id}</td>
     <td><span class="pt-badge">${i.agent_type||"unknown"}</span></td>
     <td>${ev}</td>

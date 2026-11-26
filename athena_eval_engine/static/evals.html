@@ -195,6 +195,7 @@ function renderEvList(){
       '<div class="ev-meta">'+statusHtml+'<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
+        (e.department?'<div><span style="color:var(--gray)">组织：</span><b>'+e.department+'</b></div>':'')+
         '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
         (e.eval_mode==='runtime'?'':'<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>')+
       '</div>'+

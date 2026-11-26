@@ -805,6 +805,17 @@ MIGRATIONS = [
             "ADD COLUMN adjudication VARCHAR(32) NULL AFTER close_reason",
         ],
     },
+    {
+        "id": "055_project_task_summary_department",
+        "desc": "project_task_summary 增加 department_name（项目所属组织/"
+                "部门，来自平台项目接口）——评测列表与平台任务详情展示"
+                "项目归属组织；存量行随下一轮采集回填",
+        "sql": [
+            "ALTER TABLE project_task_summary "
+            "ADD COLUMN department_name VARCHAR(128) NOT NULL DEFAULT '' "
+            "AFTER project_name",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

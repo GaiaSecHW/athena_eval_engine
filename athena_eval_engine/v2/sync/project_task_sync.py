@@ -134,14 +134,16 @@ def sync_all() -> dict:
             for r in rows_summary:
                 cur.execute(
                     "INSERT INTO project_task_summary "
-                    "(project_id, task_id, project_name, task_name, project_owner, "
+                    "(project_id, task_id, project_name, department_name, "
+                    " task_name, project_owner, "
                     " task_type, agent_type, task_created_at, task_updated_at, "
                     " task_started_at, task_finished_at,"
                     " vuln_total, unconfirmed_count, confirmed_vulnerable, "
                     " confirmed_not_vulnerable, confirmed_fp, "
                     " updated_at) "
-                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(3))",
-                    (r["project_id"], r["task_id"], r["project_name"], r["task_name"],
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,%s,NOW(3))",
+                    (r["project_id"], r["task_id"], r["project_name"],
+                     r.get("department_name", ""), r["task_name"],
                      r["project_owner"], r.get("task_type", ""), r.get("agent_type", ""),
                      r.get("task_created_at", ""), r.get("task_updated_at", ""),
                      r.get("task_started_at", ""), r.get("task_finished_at", ""),
@@ -160,6 +162,8 @@ def sync_all() -> dict:
     tasks_all: list[dict] = []
     proj_name_map = {p["id"]: p["name"] for p in projects}
     proj_owner_map = {p["id"]: p.get("owner_name") or "" for p in projects}
+    # 项目所属组织/部门（平台项目接口 department_name）
+    proj_dept_map = {p["id"]: p.get("department_name") or "" for p in projects}
     total_proj = len(projects)
 
     def _fetch_proj_tasks(p: dict) -> list[dict]:
@@ -228,6 +232,7 @@ def sync_all() -> dict:
                 "project_id": pid,
                 "task_id": tid,
                 "project_name": proj_name_map.get(pid, ""),
+                "department_name": proj_dept_map.get(pid, ""),
                 "task_name": item.get("name") or "",
                 "project_owner": proj_owner_map.get(pid, ""),
                 "task_type": task_type,
@@ -266,6 +271,7 @@ def sync_all() -> dict:
                 "project_id": pid,
                 "task_id": "",
                 "project_name": p.get("name") or "",
+                "department_name": p.get("department_name") or "",
                 "task_name": "",
                 "project_owner": p.get("owner_name") or "",
                 "task_type": "",

@@ -160,10 +160,18 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
             "ON e.evaluation_id = s.evaluation_id"
             f"{where_clause}", params)
         total = cur.fetchone()[0]
+        # 组织：按评测的项目 ID JOIN 采集汇总（项目→所属组织/部门）。
+        # 汇总表同项目多行（每任务一行），派生子表按项目去重。
         cur.execute("SELECT e.evaluation_id, e.evaluation_name, e.evaluation_status, "
-                    "e.benchmark_set_id, e.created_at, s.config_json "
+                    "e.benchmark_set_id, e.created_at, s.config_json, "
+                    "pts.department_name "
                     "FROM evaluation e "
                     "LEFT JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
+                    "LEFT JOIN (SELECT project_id, MAX(department_name) "
+                    "           AS department_name FROM project_task_summary "
+                    "           GROUP BY project_id) pts "
+                    "  ON pts.project_id = JSON_UNQUOTE(JSON_EXTRACT("
+                    "       s.config_json, '$.manifest.kg_project_id')) "
                     f"{where_clause} "
                     "ORDER BY e.created_at DESC LIMIT %s OFFSET %s",
                     params + [page_size, offset])
@@ -203,6 +211,7 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
                           "benchmark_set_id": r[3],
                           "created_at": r[4].isoformat() if r[4] else "",
                           "kg_project": kg_proj_name, "kg_task": kg_task_name,
+                          "department": r[6] or "",
                           "benchmark_source": bm_source,
                           "eval_mode": eval_mode,
                           "vbench_project_name": vbench_project_name,
