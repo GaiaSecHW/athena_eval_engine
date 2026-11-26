@@ -59,6 +59,7 @@ _SELECT_COLUMNS = (
     " d.session_chains,"
     " d.replay_eval_id, d.replay_result, d.replay_data,"
     " d.status, d.responsibility, d.hypothesis_confirmations, d.close_reason,"
+    " d.adjudication,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
 )
@@ -104,6 +105,7 @@ def _row_to_dict(row) -> dict:
         "session_chains",
         "replay_eval_id", "replay_result", "replay_data",
         "status", "responsibility", "hypothesis_confirmations", "close_reason",
+        "adjudication",
         "created_at", "updated_at", "closed_at",
         "evaluation_name",
     )
@@ -620,6 +622,9 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
         "root_cause", "solution", "status", "close_reason",
         "replay_eval_id", "replay_result", "replay_data",
         "hypotheses", "label_quality", "hypothesis_confirmations",
+        # 冲突裁决：裁决结论 + 按结论联动更新的责任归属
+        # （仅 update_issue API 的裁决路径传入，见 dts.py update_issue）
+        "adjudication", "cause_code", "responsibility",
     }
     update_fields = {k: v for k, v in updates.items() if k in allowed}
     if not update_fields:

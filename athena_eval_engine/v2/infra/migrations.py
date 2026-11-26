@@ -794,6 +794,17 @@ MIGRATIONS = [
             "'由项目经理补充相关业务知识（补齐后 agent 检索自然规避）')",
         ],
     },
+    {
+        "id": "054_dts_issue_adjudication",
+        "desc": "dts_issue 增加 adjudication（冲突裁决结论：agent_should_have_"
+                "queried 该查没查 / knowledge_wrong 知识有误 / knowledge_missing "
+                "知识缺失 / vuln_stands 漏洞成立）——冲突裁决单关闭时必填，"
+                "防止「单上写须裁决却被直接关掉」跳过裁决流程",
+        "sql": [
+            "ALTER TABLE dts_issue "
+            "ADD COLUMN adjudication VARCHAR(32) NULL AFTER close_reason",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

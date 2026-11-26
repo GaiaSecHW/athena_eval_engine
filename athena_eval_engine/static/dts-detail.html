@@ -54,6 +54,7 @@ renderNav('/dts/'+DTS_ID);
 
 // ── 长文本展示：列表只显示截断摘要，点击弹窗看全文 ──
 var _dtsTextStore=[];
+var _dtsCurrent=null;  // 当前详情数据（关单对话框判断冲突裁决单用）
 function dtsTextRef(text,label){
   var i=_dtsTextStore.length;
   _dtsTextStore.push({t:String(text||''),l:String(label||'详情')});
@@ -160,6 +161,7 @@ async function renderDtsDetailPage(dtsId){
   view.innerHTML='<div style="padding:20px;height:100%;overflow-y:auto"><div style="display:flex;align-items:center;gap:12px;margin-bottom:20px;flex-wrap:wrap"><button class="btn" style="font-size:14px;padding:6px 16px;white-space:nowrap" onclick="location.href=\''+_back.url+'\'">← 返回'+esc(_back.label)+'</button><h2 style="font-size:20px">问题单详情</h2></div><div id="dts-detail-body" style="color:var(--sub)">加载中…</div></div>';
   try{
     var d=await jget(`/api/v2/dts/${dtsId}`);
+    _dtsCurrent=d;
     var caseData=d.analysis_data||null;
     var causeLabel=DTS_CAUSE_DESCRIPTIONS[d.cause_code]||DTS_CAUSE_LABELS[d.cause_code]||d.cause_code||'-';
     var respLabel=dtsRespLabel(d.responsibility);
@@ -190,6 +192,9 @@ async function renderDtsDetailPage(dtsId){
       +'<div><span style="color:var(--gray)">状态：</span><span class="bdg" style="background:rgba(107,114,128,.15);color:'+statusColor+'">'+esc(statusLabel)+'</span></div>'
       +(d.close_reason
         ?'<div style="grid-column:1/-1"><span style="color:var(--gray)">关单原因：</span><b>'+esc(d.close_reason)+'</b></div>'
+        :'')
+      +(d.adjudication
+        ?'<div style="grid-column:1/-1"><span style="color:var(--gray)">裁决结论：</span><b>'+esc(DTS_ADJ_LABELS[d.adjudication]||d.adjudication)+'</b></div>'
         :'')
       +'<div><span style="color:var(--gray)">任务 ID：</span><b style="font-family:monospace;font-size:12px">'+esc(d.task_id||'-')+'</b></div>'
       +'<div><span style="color:var(--gray)">类型：</span><b>'+esc(caseTypeLabel)+'</b></div>'
@@ -849,9 +854,26 @@ const DTS_CLOSE_REASONS = [
   '需要项目经理去知识库上传相关业务知识'
 ];
 
-// 无回归关单对话框：必选/必填关单原因（预设单选 + 自定义文本）
+// 冲突裁决结论标签（知识矛盾裁决单关闭时四选一）
+const DTS_ADJ_LABELS = {
+  agent_should_have_queried: '① 该查没查（责任：Agent）',
+  knowledge_wrong: '② 知识库知识有误（修正/下架）',
+  knowledge_missing: '③ 知识库无相关知识（补充）',
+  vuln_stands: '④ 漏洞成立（默认方向，待改标注）'
+};
+
+// 无回归关单对话框：必选/必填关单原因（预设单选 + 自定义文本）。
+// 冲突裁决单（知识证据与人工标注矛盾）走专用裁决对话框——先裁决再关单。
 function showCloseReasonDialog(dtsId){
   if(!dtsId)return;
+  var cur=_dtsCurrent;
+  if(cur&&cur.dts_id===dtsId){
+    var hyps=typeof cur.hypotheses==='string'
+      ?(function(){try{return JSON.parse(cur.hypotheses||'[]');}catch(e){return [];}})()
+      :(cur.hypotheses||[]);
+    var isConflict=(hyps||[]).some(function(h){return h&&h._kb_conflict_primary;});
+    if(isConflict){showConflictAdjudicationDialog(dtsId);return;}
+  }
   var ov=document.createElement('div');ov.className='modal-overlay';
   // 布局：预设原因 = 普通单选行（无卡片框，不浪费宽度）；
   // 自定义 = 最后一行单选 + 独立整宽输入框（不与文字挤一行）
@@ -898,6 +920,54 @@ function showCloseReasonDialog(dtsId){
       .then(function(){renderDtsDetailPage(dtsId);})
       .catch(function(e){
         showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'关单失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
+      });
+  };
+}
+
+// 矛盾裁决关单对话框：四选一裁决 + 业务佐证（①②③必填；④默认方向可不填）
+// 知识库证据与人工标注矛盾的单——先裁决（该查没查/知识有误/知识缺失/
+// 漏洞成立）再关单；裁决结论联动更新责任归属（后端处理）
+function showConflictAdjudicationDialog(dtsId){
+  if(!dtsId)return;
+  var ov=document.createElement('div');ov.className='modal-overlay';
+  var _rs='width:16px;height:16px;flex:none;margin:0;padding:0;accent-color:var(--acc)';
+  var opts=[
+    {v:'agent_should_have_queried',t:'① 该查没查——库内知识正确且完备，Agent 当时查了就能避免误报（责任：Agent）'},
+    {v:'knowledge_wrong',t:'② 知识库知识有误——业务佐证支持标注前提，命中知识内容错误（需修正/下架）'},
+    {v:'knowledge_missing',t:'③ 知识库无相关知识——命中知识与该业务无关，正确知识未入库（需补充）'},
+    {v:'vuln_stands',t:'④ 漏洞成立（默认方向）——无人提供业务佐证，误报前提默认不成立（请到漏洞中心改标注）'}
+  ];
+  var radios=opts.map(function(o,i){
+    return '<label style="display:flex;gap:10px;align-items:flex-start;font-size:14px;margin:0 0 10px;cursor:pointer;line-height:1.5">'
+      +'<input type="radio" name="dts-adj" value="'+o.v+'" style="'+_rs+';margin-top:3px"'+(i===0?' checked':'')+'>'
+      +'<span>'+esc(o.t)+'</span></label>';
+  }).join('');
+  ov.innerHTML='<div class="modal">'
+    +'<div class="modal-head"><div class="modal-icon" style="background:rgba(217,119,6,.12);color:var(--amber)">⚖️</div><h3>矛盾裁决关单</h3></div>'
+    +'<div class="modal-body">'
+    +'<p style="font-size:14px;margin-bottom:12px">该单为<b>知识矛盾裁决单</b>（知识库证据与人工标注矛盾）——关闭前<b>必须完成裁决</b>（四选一）：</p>'
+    +radios
+    +'<p style="font-size:13px;color:var(--gray);margin:4px 0 6px">业务佐证说明（①②③必填；④可不填，自动填默认结论）：</p>'
+    +'<input id="dts-adj-reason" placeholder="提供支持裁决结论的业务事实/佐证…" style="display:block;width:calc(100% - 26px);box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px">'
+    +'</div>'
+    +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
+    +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-adj-confirm">确认裁决并关单</button></div></div>';
+  document.body.appendChild(ov);
+  ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+  document.getElementById('dts-adj-confirm').onclick=function(){
+    var sel=ov.querySelector('input[name="dts-adj"]:checked');
+    var adj=sel?sel.value:'';
+    if(!adj){alert('必须选择裁决结论');return;}
+    var reason=(document.getElementById('dts-adj-reason').value||'').trim();
+    if(adj!=='vuln_stands'&&!reason){
+      alert('该裁决结论必须填写业务佐证说明');return;
+    }
+    ov.remove();
+    jput('/api/v2/dts/'+encodeURIComponent(dtsId),
+         {status:'no_regression',adjudication:adj,close_reason:reason})
+      .then(function(){renderDtsDetailPage(dtsId);})
+      .catch(function(e){
+        showConfirm({icon:'❌',iconBg:'rgba(220,38,38,.12)',iconColor:'var(--red)',title:'裁决关单失败',desc:String(e),confirmText:'知道了',confirmColor:'var(--red)'});
       });
   };
 }

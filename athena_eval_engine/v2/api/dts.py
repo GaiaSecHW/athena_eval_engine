@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import json
 import re
 import socket
 import threading
@@ -52,6 +53,10 @@ class DTSUpdate(BaseModel):
     close_reason: str | None = None
     replay_eval_id: str | None = None
     replay_result: str | None = None
+    # 冲突裁决单（知识证据与人工标注矛盾）关闭时必填——四选一：
+    # agent_should_have_queried（该查没查）/ knowledge_wrong（知识有误）/
+    # knowledge_missing（知识缺失）/ vuln_stands（漏洞成立——无佐证默认方向）
+    adjudication: str | None = None
 
 
 class RegressionVerifyRequest(BaseModel):
@@ -778,6 +783,30 @@ def get_issue(dts_id: str):
     return issue
 
 
+# 冲突裁决四选一 → (cause_code, responsibility) 联动。
+# vuln_stands（漏洞成立·默认方向）不改暂记 cause——裁决结论本身即含义。
+_ADJUDICATION_LINK = {
+    "agent_should_have_queried": ("A", "agent"),
+    "knowledge_wrong": ("G", "knowledge"),
+    "knowledge_missing": ("C", "knowledge"),
+    "vuln_stands": (None, None),
+}
+
+
+def _is_conflict_adjudication_issue(issue: dict) -> bool:
+    """该单是否为 L4 冲突裁决合成单（hypotheses 含 _kb_conflict_primary 标记）。"""
+    raw = issue.get("hypotheses")
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except (ValueError, TypeError):
+            return False
+    if not isinstance(raw, list):
+        return False
+    return any(isinstance(h, dict) and h.get("_kb_conflict_primary")
+               for h in raw)
+
+
 @router.put("/{dts_id}")
 def update_issue(dts_id: str, update: DTSUpdate):
     """更新问题单（root_cause / solution / status 等）。
@@ -786,6 +815,14 @@ def update_issue(dts_id: str, update: DTSUpdate):
     unattributable（无法归因：全部线索被人工否定且标注信息不全——
     补标注后重新分析再重新开启）/ no_regression（无回归关单：不经回归
     验证直接关闭，**必须**携带 close_reason 关单原因）。
+
+    冲突裁决单（知识证据与人工标注矛盾，hypotheses 含 _kb_conflict_primary）
+    关闭（passed / no_regression / unattributable）时**必须先完成裁决**：
+    adjudication 四选一 + 业务佐证 close_reason——否则单上写着「须裁决」
+    却被直接关掉，裁决流程被跳过。裁决结论联动更新 cause_code/responsibility：
+    ①该查没查→A/agent；②知识有误→G/knowledge；③知识缺失→C/knowledge；
+    ④漏洞成立（无佐证默认方向，举证责任在标注方）不改暂记 cause。
+    回归验证端点（regression-verify）不受此门禁——回归通过自带 replay 证据。
     """
     existing = get_dts_issue(dts_id)
     if existing is None:
@@ -800,14 +837,49 @@ def update_issue(dts_id: str, update: DTSUpdate):
             status_code=400,
             detail=f"非法状态 '{updates['status']}'，"
                    f"合法值：open/passed/failed/unattributable/no_regression")
+
+    # 冲突裁决单：关闭前必须完成裁决（四选一 + 业务佐证）。
+    # 在通用 no_regression 关单原因校验之前执行——冲突单的关单原因
+    # 由裁决规则约束（①②③必填佐证；④默认方向自动填结论）。
+    if updates.get("status") in ("passed", "no_regression", "unattributable") \
+            and _is_conflict_adjudication_issue(existing):
+        adj = str(updates.get("adjudication") or "").strip()
+        if not adj:
+            raise HTTPException(
+                status_code=400,
+                detail="该单为知识矛盾裁决单，关闭前必须先完成裁决"
+                       "（adjudication：agent_should_have_queried 该查没查 / "
+                       "knowledge_wrong 知识有误 / knowledge_missing 知识缺失 / "
+                       "vuln_stands 漏洞成立）并提供业务佐证（close_reason）")
+        if adj not in _ADJUDICATION_LINK:
+            raise HTTPException(
+                status_code=400, detail=f"非法裁决结论 '{adj}'，"
+                f"合法值：{'/'.join(_ADJUDICATION_LINK)}")
+        if adj != "vuln_stands" and \
+                not str(updates.get("close_reason") or "").strip():
+            raise HTTPException(
+                status_code=400,
+                detail="冲突裁决关闭必须填写业务佐证（close_reason）")
+        if adj == "vuln_stands" and \
+                not str(updates.get("close_reason") or "").strip():
+            # 默认方向也要落结论，避免空关单原因
+            updates["close_reason"] = (
+                "无业务佐证支持误报前提——默认漏洞成立，请到漏洞中心改标注")
+        cause, resp = _ADJUDICATION_LINK[adj]
+        if cause:
+            updates["cause_code"] = cause
+            updates["responsibility"] = resp
+        updates["adjudication"] = adj
+
     if updates.get("status") == "no_regression":
         if not str(updates.get("close_reason") or "").strip():
             raise HTTPException(
                 status_code=400,
                 detail="无回归关单必须填写关单原因（close_reason）")
     if updates.get("status") == "open":
-        # 重新开启时清除旧关单原因（避免遗留误导），显式传入则尊重
+        # 重新开启时清除旧关单原因与裁决结论（避免遗留误导），显式传入则尊重
         updates.setdefault("close_reason", None)
+        updates.setdefault("adjudication", None)
 
     success = _safe_update_dts_issue(dts_id, updates)
     if not success:
