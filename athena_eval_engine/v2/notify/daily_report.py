@@ -324,7 +324,7 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
     def _do(cur):
         out: dict = {
             "reg_passed": 0, "reg_failed": 0,
-            "new_fp": 0, "new_fn": 0, "evals": 0,
+            "new_fp": 0, "new_fn": 0, "evals": 0, "eval_projects": 0,
             "new_fp_agents": {},   # agent -> {total, causes{cc: n}}
             "new_fn_agents": {},   # agent -> n
             "reg_agents": {},      # agent -> {passed, failed}
@@ -403,12 +403,20 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
         except Exception as e:
             log("REPORT", f"领导摘要-未关闭根因统计失败: {e}")
         try:
+            # 完成评测数 + 涉及项目数（项目维度看本期测评覆盖面）
             cur.execute(
-                "SELECT COUNT(*) FROM evaluation "
-                "WHERE evaluation_status IN ('COMPLETED','COMPLETED_WITH_WARNINGS') "
-                "AND finished_at >= %s AND finished_at <= %s",
+                "SELECT COUNT(*), "
+                "COUNT(DISTINCT NULLIF(s.project_id, '')) "
+                "FROM evaluation e "
+                "LEFT JOIN evaluation_summary s "
+                "ON s.evaluation_id = e.evaluation_id "
+                "WHERE e.evaluation_status IN "
+                "('COMPLETED','COMPLETED_WITH_WARNINGS') "
+                "AND e.finished_at >= %s AND e.finished_at <= %s",
                 (since, until))
-            out["evals"] = int(cur.fetchone()[0] or 0)
+            _row = cur.fetchone()
+            out["evals"] = int((_row[0] if _row else 0) or 0)
+            out["eval_projects"] = int((_row[1] if _row else 0) or 0)
         except Exception as e:
             log("REPORT", f"领导摘要-完成评测统计失败: {e}")
         try:
@@ -514,8 +522,13 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
         overview.append(
             f"修复验证通过率 {_pct(st['reg_passed'] / verified)}"
             f"（通过 {st['reg_passed']} / 不通过 {st['reg_failed']}）")
-    if st["evals"] > 0:
-        overview.append(f"完成评测 {st['evals']} 个")
+    # 项目维度：本期新增测评的项目数（完成评测数不展示）
+    try:
+        _proj = int(st.get("eval_projects") or 0)
+    except Exception:
+        _proj = 0
+    if _proj > 0:
+        overview.append(f"新增测评项目 {_proj} 个")
     if overview:
         lines.append("🔄 " + " · ".join(overview))
 
