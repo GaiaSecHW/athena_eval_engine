@@ -24,51 +24,63 @@ def _read_page(name: str) -> str:
     return (STATIC / name).read_text(encoding="utf-8")
 
 
+def _page(name: str) -> HTMLResponse:
+    """页面响应：no-store 防浏览器启发式缓存旧页面。
+
+    页面 HTML 引用的 config.js/app.js 无缓存指纹——若浏览器缓存了
+    旧 HTML，新增的状态/筛选/按钮在发布后仍不可见（曾出现「新状态
+    在筛选和表格里不全」的误报）。页面统一 no-store，每次重新取。
+    """
+    return HTMLResponse(
+        _read_page(name),
+        headers={"Cache-Control": "no-store, must-revalidate"})
+
+
 @router.get("/", response_class=HTMLResponse)
 def index():
-    return _read_page("index.html")
+    return _page("index.html")
 
 
 @router.get("/evals", response_class=HTMLResponse)
 def evals_page():
     """评测列表页。"""
-    return _read_page("evals.html")
+    return _page("evals.html")
 
 
 @router.get("/evals/{evaluation_id}", response_class=HTMLResponse)
 def eval_detail_page(evaluation_id: str):
     """评测详情页。"""
-    return _read_page("eval-detail.html")
+    return _page("eval-detail.html")
 
 
 @router.get("/dts", response_class=HTMLResponse)
 def dts_page():
     """问题单列表页。"""
-    return _read_page("dts.html")
+    return _page("dts.html")
 
 
 @router.get("/dts/{dts_id}", response_class=HTMLResponse)
 def dts_detail_page(dts_id: str):
     """问题单详情页。"""
-    return _read_page("dts-detail.html")
+    return _page("dts-detail.html")
 
 
 @router.get("/create", response_class=HTMLResponse)
 def create_page():
     """新建评测页。"""
-    return _read_page("create.html")
+    return _page("create.html")
 
 
 @router.get("/system", response_class=HTMLResponse)
 def system_page():
     """系统设置页。"""
-    return _read_page("system.html")
+    return _page("system.html")
 
 
 @router.get("/report", response_class=HTMLResponse)
 def report_page():
     """平台任务详情页（误报率查询独立页面：选项目/任务 → 漏洞中心人工确认 → 误报率）。"""
-    return _read_page("report.html")
+    return _page("report.html")
 
 
 _TERMINAL_STATUSES = (

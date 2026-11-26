@@ -582,6 +582,27 @@ def list_dts_issues(
     return [_row_to_list_dict(r) for r in rows], total
 
 
+# 关闭状态：进入后视为「已关闭」（退出未关闭口径）。
+# closed_at 记录关闭时间——x 报「本期关闭了多少」依赖它；
+# 历史数据 closed_at 为 NULL 时报表用 updated_at 兜底（近似）。
+_CLOSED_STATUSES = ("passed", "no_regression", "unattributable")
+
+
+def _append_closed_at(set_parts: list[str], update_fields: dict) -> None:
+    """状态更新时同步维护 closed_at。
+
+    - 进入关闭状态：首次关闭记 NOW(3)（COALESCE 保证重复更新不覆盖原时间）
+    - 回到 open/failed：清空（failed=回归未通过，不算关闭）
+    """
+    if "status" not in update_fields:
+        return
+    st = str(update_fields.get("status") or "")
+    if st in _CLOSED_STATUSES:
+        set_parts.append("closed_at = COALESCE(closed_at, NOW(3))")
+    elif st in ("open", "failed"):
+        set_parts.append("closed_at = NULL")
+
+
 def update_dts_issue(dts_id: str, updates: dict) -> bool:
     """更新问题单（root_cause / solution / status 等）。
 
@@ -606,6 +627,7 @@ def update_dts_issue(dts_id: str, updates: dict) -> bool:
     set_parts = [f"{k} = %s" for k in update_fields]
     params = list(update_fields.values())
     params.append(dts_id)
+    _append_closed_at(set_parts, update_fields)
 
     sql = f"UPDATE dts_issue SET {', '.join(set_parts)} WHERE dts_id = %s"
 
@@ -650,6 +672,7 @@ def update_dts_issues_by_case_id(case_id: str, updates: dict) -> list[str]:
 
     set_parts = [f"{k} = %s" for k in update_fields]
     params = list(update_fields.values())
+    _append_closed_at(set_parts, update_fields)
 
     def _do_update(cur):
         # 先查出全部 dts_id（供写回归历史用）
