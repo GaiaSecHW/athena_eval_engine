@@ -85,9 +85,9 @@ async function renderSystem(){
     </div>
     </div>
     <div class="card" style="margin-top:20px" data-sys-tab="ds"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
-    <div class="card" style="margin-top:20px" data-sys-tab="auto"><h3>自动创建测评</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">满足全部条件的任务自动发起运行态测评：<b>人工确认率 100%</b> + <b>误报率 ≥30%</b>（与手动启动门槛一致）+ <b>任务结束 1.5 个月内</b> + 源码存在。随每轮数据采集（6:00/12:00/17:00）后触发；走与手动启动完全相同的门禁（每任务每模式一条等），不会重复创建。</div>
+    <div class="card" style="margin-top:20px" data-sys-tab="auto"><h3>自动创建测评</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">满足全部条件的任务自动发起运行态测评：<b>人工确认率 100%</b> + <b>误报率 ≥30%</b>（与手动启动门槛一致）+ <b>任务结束 1.5 个月内</b> + 源码存在。随每轮数据采集（6:00/12:00/17:00）后触发；走与手动启动完全相同的门禁（每任务每模式一条等），不会重复创建。<br>同一开关还控制：<b>标注变化自动增量重跑</b>——评测完成后人工标注又变化时，自动重跑该评测（标注未变的 case 复用既有结论，只重分析变化的 case）。</div>
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
-        <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--txt);cursor:pointer"><input id="auto_eval_enabled" type="checkbox" style="width:auto"> 开启自动创建</label>
+        <label style="display:flex;align-items:center;gap:6px;font-size:14px;color:var(--txt);cursor:pointer"><input id="auto_eval_enabled" type="checkbox" style="width:auto"> 开启自动化</label>
         <span style="display:flex;align-items:center;gap:6px;font-size:13px;color:var(--sub)">确认率 ≥
           <input id="auto_eval_rate" type="number" min="0" max="100" step="1" style="width:70px;padding:6px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace"> %
         </span>

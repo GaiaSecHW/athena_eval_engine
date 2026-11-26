@@ -325,4 +325,12 @@ def schedule_loop(stop_event: threading.Event | None = None) -> None:
                         run_after_sync()
                     except Exception as e:
                         log("AUTO_EVAL", f"采集后自动创建触发失败: {e}")
+                    # 标注变化 → 主动发起增量测评（同一开关；按标注签名
+                    # 去重，同一变化只触发一次）
+                    try:
+                        from .annotation_retrigger import (
+                            run_after_sync as run_retrigger)
+                        run_retrigger()
+                    except Exception as e:
+                        log("RETRIGGER", f"采集后标注变化重触发失败: {e}")
         time.sleep(_SCHEDULE_CHECK_SECONDS)
