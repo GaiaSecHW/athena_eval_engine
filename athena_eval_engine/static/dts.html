@@ -211,7 +211,9 @@ function renderDtsTable(){
       +'<td style="font-size:14px">'+esc(dtsRespLabel(i.responsibility))+'</td>'
       +'<td style="font-size:13px;white-space:nowrap" title="'+esc((function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return LEVEL_DESCRIPTIONS[lv]||'';})())+'">'+esc((function(){var lv=DTS_CAUSE_TO_LEVEL[i.cause_code]||'';return lv?(lv+' '+(LEVEL_LABELS[lv]||'')):'-';})())+'</td>'
       +'<td style="font-size:13px;max-width:340px">'+esc(DTS_CAUSE_DESCRIPTIONS[i.cause_code]||DTS_CAUSE_LABELS[i.cause_code]||i.cause_code||'-')+'</td>'
-      +'<td><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+esc(DTS_STATUS_LABELS[i.status])+'</span></td>'
+      +'<td style="max-width:220px"><span class="bdg" style="background:rgba(107,114,128,.15);color:'+(DTS_STATUS_COLORS[i.status]||'var(--gray)')+'">'+esc(DTS_STATUS_LABELS[i.status])+'</span>'
+      +(i.close_reason?'<div style="font-size:12px;color:var(--sub);margin-top:3px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="关单原因：'+esc(i.close_reason)+'">原因：'+esc(i.close_reason)+'</div>':'')
+      +'</td>'
       +'<td>'+(lqPrecision?'<span class="bdg" style="background:rgba(107,114,128,.15);color:'+lqColor+'">'+esc(lqLabel)+'</span>':'-')+'</td>'
       +'<td style="font-size:13px;color:var(--sub)">'+esc(fmtDate(i.created_at))+'</td>'
       +'<td><button class="btn g" style="font-size:12px;padding:3px 10px" onclick="dtsOpenDetail(\''+esc(i.dts_id)+'\')">详情</button></td>'

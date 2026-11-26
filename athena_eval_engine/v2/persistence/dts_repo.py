@@ -71,7 +71,7 @@ _FROM_JOIN = " dts_issue d LEFT JOIN evaluation e ON d.evaluation_id = e.evaluat
 _LIST_COLUMNS = (
     "d.dts_id, d.evaluation_id, d.task_id, d.case_id, d.vuln_title, d.agent_type,"
     " d.case_type, d.cause_code, d.breakpoint_level, d.label_quality,"
-    " d.status, d.responsibility,"
+    " d.status, d.responsibility, d.close_reason,"
     " d.created_at, d.updated_at, d.closed_at,"
     " e.evaluation_name"
 )
@@ -79,7 +79,8 @@ _LIST_COLUMNS = (
 _LIST_KEYS = (
     "dts_id", "evaluation_id", "task_id", "case_id", "vuln_title", "agent_type",
     "case_type", "cause_code", "breakpoint_level", "label_quality",
-    "status", "responsibility", "created_at", "updated_at", "closed_at",
+    "status", "responsibility", "close_reason",
+    "created_at", "updated_at", "closed_at",
     "evaluation_name",
 )
 

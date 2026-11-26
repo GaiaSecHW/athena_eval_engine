@@ -782,6 +782,18 @@ MIGRATIONS = [
             "ALTER TABLE dts_issue ADD COLUMN close_reason TEXT NULL",
         ],
     },
+    {
+        "id": "053_close_reason_preset_rename",
+        "desc": "无回归关单预设原因文案统一：「由项目经理补充相关业务知识」"
+                "→「需要项目经理去知识库上传相关业务知识」（存量关单原因"
+                "同步更新，含带括号说明的历史变体）",
+        "sql": [
+            "UPDATE dts_issue SET close_reason='需要项目经理去知识库上传"
+            "相关业务知识' WHERE close_reason IN ("
+            "'由项目经理补充相关业务知识',"
+            "'由项目经理补充相关业务知识（补齐后 agent 检索自然规避）')",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过
