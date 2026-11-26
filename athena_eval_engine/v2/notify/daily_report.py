@@ -330,6 +330,8 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
             "reg_agents": {},      # agent -> {passed, failed}
             "open_fp_agents": {},  # agent -> {total, causes{cc: n}}
             "open_by_agent": {},
+            "closed_total": 0,     # 本期关闭（回归通过/无回归关单/无法归因）
+            "closed_by_status": {},
         }
         try:
             # 回归验证（总量 + 按 agent）：join dts_issue 取 agent_type
@@ -420,6 +422,23 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
         except Exception as e:
             log("REPORT", f"领导摘要-未关闭分布统计失败: {e}")
         try:
+            # 本期关闭（问题修复情况）：进入关闭状态的条数，按状态分。
+            # closed_at 由状态更新维护；历史数据为 NULL 时用 updated_at 兜底
+            # （近似——老数据无法精确还原关闭时刻）。
+            cur.execute(
+                "SELECT status, COUNT(*) FROM dts_issue "
+                "WHERE status IN ('passed','no_regression','unattributable') "
+                "AND COALESCE(closed_at, updated_at) >= %s "
+                "AND COALESCE(closed_at, updated_at) <= %s "
+                "GROUP BY status",
+                (since, until))
+            for st_, n in cur.fetchall():
+                n = int(n or 0)
+                out["closed_total"] += n
+                out["closed_by_status"][str(st_)] = n
+        except Exception as e:
+            log("REPORT", f"领导摘要-本期关闭统计失败: {e}")
+        try:
             # 无法归因存量（视为关闭、等标注方补充——领导侧单独体现）
             cur.execute(
                 "SELECT COUNT(*) FROM dts_issue "
@@ -496,6 +515,26 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
     if overview:
         lines.append("🔄 " + " · ".join(overview))
 
+    # 问题修复情况：本期新增 / 关闭 / 净增减（领导最关心的"问题在收敛吗"）
+    new_total = st["new_fp"] + st["new_fn"]
+    closed_total = int(st.get("closed_total") or 0)
+    if new_total or closed_total:
+        parts = [f"本期新增 {new_total} 条"]
+        if closed_total:
+            detail = []
+            for key, label in (("passed", "回归通过"),
+                               ("no_regression", "无回归关单"),
+                               ("unattributable", "无法归因")):
+                n = int((st.get("closed_by_status") or {}).get(key) or 0)
+                if n:
+                    detail.append(f"{label} {n}")
+            parts.append(
+                f"关闭 {closed_total} 条"
+                + (f"（{' / '.join(detail)}）" if detail else ""))
+        net = new_total - closed_total
+        parts.append(f"净增 {net} 条" if net >= 0 else f"净减 {abs(net)} 条")
+        lines.append("🛠 问题修复情况：" + " · ".join(parts))
+
     # ④ 按 Agent 汇总：一个 agent 的数据集中一行
     # （误报根因 + 漏报 + 修复验证），不再按指标分开各列全部 agent
     merged: dict[str, dict] = {}
@@ -509,9 +548,7 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
             merged.setdefault(a, {})["reg"] = ent
 
     if merged:
-        lines.append(
-            f"🧭 按 Agent（本期新增：误报 {st['new_fp']} 个 / "
-            f"漏报 {st['new_fn']} 个）：")
+        lines.append("🧭 按 Agent（本期新增明细）：")
 
         def _agent_rank(item):
             _, d = item
