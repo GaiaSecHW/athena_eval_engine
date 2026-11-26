@@ -377,15 +377,100 @@ def _hypothesis_fit(h: dict) -> float:
         return 0.5
 
 
+_ANNOTATION_LIST_RE = re.compile(r"[①②③④⑤⑥⑦⑧⑨⑩]|\d+\s*[、.．)）]")
+
+
+def _split_annotation_reasons(fp_reason) -> list[str]:
+    """把人工标注的误报原因拆成编号理由列表（全链路结构化引用的键）。
+
+    编号形态（1、/1./（1）)/①）且序号从 1 起连续递增 → 按序拆分；
+    无编号/不连续/单条 → 整段作为单条理由；空 → 空列表。
+    序号连续性校验避免把正文里的数字（如"1024 上限"）误当序号。
+    """
+    text = str(fp_reason or "").strip()
+    if not text:
+        return []
+    marks = list(_ANNOTATION_LIST_RE.finditer(text))
+    seq = 0
+    for m in marks:
+        frag = m.group()
+        dm = re.search(r"\d+", frag)
+        n = int(dm.group()) if dm else "①②③④⑤⑥⑦⑧⑨⑩".index(frag) + 1
+        if n != seq + 1:
+            return [text]
+        seq = n
+    if len(marks) < 2:
+        return [text]
+    reasons: list[str] = []
+    for i, m in enumerate(marks):
+        tail = marks[i + 1].start() if i + 1 < len(marks) else len(text)
+        piece = text[m.end():tail].strip(" ；;，,。.")
+        if piece:
+            reasons.append(piece)
+    return reasons or [text]
+
+
+def _validate_fit_reasons(hypotheses: list, n_reasons: int, *,
+                          case_id: str = "", chain_type: str = "",
+                          evaluation_id: str = "") -> None:
+    """校验线索的 fit_reasons（人工理由编号引用，原地修改）。
+
+    - 非法/越界编号丢弃（LLM 编造的编号不进报告）；去重排序。
+    - 无标注（n_reasons=0，如 FN）→ 全部清空。
+    - annotation_fit≥0.7 但 fit_reasons 为空 → 日志告警
+      （高匹配度却说不清对应哪条人工理由——矛盾形态，人工复核提示）。
+    """
+    for h in hypotheses or []:
+        raw = h.get("fit_reasons")
+        if raw is None:
+            raw = []
+        if not isinstance(raw, list):
+            raw = [raw]
+        valid: list[int] = []
+        dropped = 0
+        for v in raw:
+            try:
+                n = int(v)
+            except (TypeError, ValueError):
+                dropped += 1
+                continue
+            if 1 <= n <= n_reasons and n not in valid:
+                valid.append(n)
+            else:
+                dropped += 1
+        if dropped:
+            log("ROOT_CAUSE",
+                f"case {case_id}: {chain_type} 线索 fit_reasons 丢弃 "
+                f"{dropped} 个非法/越界编号", eval_id=evaluation_id)
+        h["fit_reasons"] = sorted(valid)
+        if n_reasons > 0:
+            try:
+                fit_v = float(h.get("annotation_fit") or 0)
+            except (TypeError, ValueError):
+                fit_v = 0.0
+            if fit_v >= 0.7 and not valid:
+                log("ROOT_CAUSE",
+                    f"case {case_id}: {chain_type} 线索 "
+                    f"annotation_fit={fit_v} 但 fit_reasons 为空"
+                    f"（高匹配度却无对应人工理由）", eval_id=evaluation_id)
+
+
 def _annotation_line(fp_reason: str, outcome: str) -> str:
-    """人工标注提示行。
+    """人工标注提示行（编号理由列表——供 LLM 用编号引用 fit_reasons）。
 
     FP（误报）才有人工标注；FN（漏报）来自开发态基线，
     不存在"漏报原因"的人工标注，分析以基线漏洞描述为依据。
     """
     if str(outcome or "FP").upper() == "FN":
         return "人工标注：无（漏报没有人工标注；以基线漏洞描述为分析依据）"
-    return f"人工标注的误报原因：{fp_reason or '（未给出）'}"
+    text = str(fp_reason or "").strip()
+    if not text:
+        return "人工标注的误报原因：（未给出）"
+    reasons = _split_annotation_reasons(text)
+    if len(reasons) == 1:
+        return f"人工标注的误报原因（理由1）：{reasons[0]}"
+    body = "；".join(f"理由{i}：{r}" for i, r in enumerate(reasons, 1))
+    return f"人工标注的误报原因（共 {len(reasons)} 条理由）：{body}"
 
 
 _MERGE_PROMPT = """你是漏洞根因分析专家。输入是一条漏洞链涉及的多个 session 摘要、证据卡和 L0-L7 断点。输出根因假定线索和修复建议。
@@ -546,6 +631,7 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
       "cause_code": "A/B/C/D/E/F/G/H/I/J/K",
       "confidence": 0.9,
       "annotation_fit": 0.8,
+      "fit_reasons": [1],
       "evidence_refs": ["E-..."],
       "counter_evidence": "反证，或检查范围",
       "evidence": "逐条对应 evidence_refs 的原文依据（单个字符串；多条依据用分号分隔，禁止输出数组）",
@@ -610,6 +696,7 @@ confidence：证据对线索的支撑程度，用于展示门槛与排序（>=0.
   - cause_code：A-K
   - confidence：**证据支撑度**（引用的证据卡对该线索的支撑程度；<0.6 不展示、<0.5 丢弃——过滤用）
   - annotation_fit：**标注匹配度**（该线索解释人工标注的程度：FP=解释误报的真实成因，FN=解释漏报的真实缺口；**排序用**。复述标注原文不算匹配——要解释成因；与标注无关的过程线索（如验证侧事故）匹配度应低）
+  - fit_reasons：该线索解释的**人工理由编号**（1-based，来自输入中「理由N：…」的编号）。解释多条理由→列出全部编号；与标注无关的线索→空数组 []。标注无编号理由（单条）→ 对应解释它的线索为 [1]，其余为 []。
   - evidence_refs：引用的证据卡 ID
   - counter_evidence：反证或检查范围
   - evidence：逐条对应 evidence_refs 的依据
@@ -648,6 +735,7 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 - 每个线索都有 evidence_refs 和 counter_evidence？
 - 每条线索的 confidence 是否与证据强度一致？
 - annotation_fit 是否按「解释人工标注的程度」打分？与标注成因无关的过程线索（如验证侧事故）匹配度应低；只复述标注原文不算匹配。
+- 每条线索的 fit_reasons 是否只引用存在的理由编号？与标注无关的线索 fit_reasons 是否为空 []？标注的多条理由是否每条都至少被一条线索的 fit_reasons 覆盖（漏覆盖的编号无法被人发现）？
 - 是否有 L2/A 线索却只输出了 H？
 - **A/H 一致性**：压缩阶段已判 L2/A 断点的 session，merge 顶层是否为 A？若为 H，H 线索的关键事实是否真的在 session 材料中？凭后见之明构造的"本可推出正确结论"事实链，若关键事实不在材料中，应改判 A。
 - **「漏做检查」归属**：H 线索中的"漏做检查"，检查所需信息是否已在 session 材料中？不在材料中（需查知识库获取框架行为/部署配置）→ 属 A 不属 H。
@@ -677,7 +765,9 @@ precision 评估的是**标注文本本身**的质量，不是分析方能否验
 # location 角色级定位，不伪装文件路径）。
 # v4：L4 方向新增 conflict 态（知识与人工标注前提矛盾——标注与知识库
 # 必有一错，转标注复核，不建单）。
-_RCA_CACHE_VERSION = 4
+# v5：merge schema 新增 fit_reasons（线索↔人工理由编号引用）+ case 结果
+# 新增 annotation_reasons——老缓存无此字段，必须重分析。
+_RCA_CACHE_VERSION = 5
 
 
 def _rca_cache_dir() -> str:
@@ -934,6 +1024,9 @@ class RootCauseAnalyzer:
             # 没有"漏报原因"这种人工标注，以基线漏洞描述为分析依据。
             fp_reason = (case.get("human_confirmation_summary", "")
                          if str(outcome).upper() == "FP" else "")
+            # 人工理由结构化（编号拆分）：全链路（merge prompt 引用 /
+            # 线索 fit_reasons 校验 / DTS 详情页对应展示）共用的唯一键源
+            annotation_reasons = _split_annotation_reasons(fp_reason)
 
             log("ROOT_CAUSE",
                 f"case {case_id}: 开始分析 (outcome={outcome}, "
@@ -1020,6 +1113,9 @@ class RootCauseAnalyzer:
                 "summary": summary,
                 "outcome": case.get("outcome", ""),
                 "human_confirmation_summary": fp_reason,
+                # 编号理由列表（结构化人工理由；FN/无标注为空列表）。
+                # 详情页据此渲染「理由N：…」+ 线索对应徽标 + 覆盖缺口
+                "annotation_reasons": annotation_reasons,
                 "fn_miss": case.get("fn_miss") or {},
                 "mining": {**mining_result, "agent_type": mining_agent_type},
                 "verification": {**verification_result, "agent_type": verify_agent_type},
@@ -1380,6 +1476,12 @@ class RootCauseAnalyzer:
 
         merge_summary = merge_result.get("summary", "")
         merge_hypotheses = merge_result.get("hypotheses") or []
+        # ── 校验 fit_reasons（人工理由编号引用）──
+        # 越界/非法编号丢弃；高匹配度却无对应理由 → 日志告警
+        _validate_fit_reasons(
+            merge_hypotheses, len(_split_annotation_reasons(fp_reason)),
+            case_id=case_id, chain_type=chain_type,
+            evaluation_id=evaluation_id)
         # 漏报没有人工标注，quality 评估无依据，不输出也不进统计。
         merge_label_quality = (merge_result.get("label_quality", {
             "precision": "precise",

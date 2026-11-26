@@ -214,8 +214,27 @@ async function renderDtsDetailPage(dtsId){
           +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(caseData.summary)+'</div>';
       }
       if(caseData.human_confirmation_summary){
-        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>'
-          +'<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+esc(caseData.human_confirmation_summary)+'</div>';
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>';
+        // 编号理由列表（结构化拆分）：每条理由标注被哪些线索解释（fit_reasons
+        // 并集），无线索对应的理由标红——分析没解释到人工某条理由是最强信号
+        var _adjReasons=caseData.annotation_reasons||[];
+        if(_adjReasons.length>1){
+          var _covered={};
+          ['mining','verification'].forEach(function(k){
+            (((caseData[k]||{}).hypotheses)||[]).forEach(function(h){
+              (((h||{}).fit_reasons)||[]).forEach(function(n){_covered[n]=true;});
+            });
+          });
+          html+=_adjReasons.map(function(r,i){
+            var n=i+1,cov=_covered[n];
+            return '<div style="font-size:14px;padding:6px 10px;margin-bottom:4px;border-radius:6px;'
+              +(cov?'background:rgba(220,38,38,.08)':'background:rgba(220,38,38,.06);border:1px solid rgba(220,38,38,.35)')
+              +'"><b>理由'+n+'：</b>'+esc(r)
+              +(cov?'':' <span style="color:var(--red);font-weight:600">⚠ 无线索对应</span>')
+              +'</div>';
+          }).join('');
+        }
+        html+='<div style="font-size:14px;padding:8px 10px;background:rgba(220,38,38,.08);border-radius:6px;white-space:pre-wrap">'+esc(caseData.human_confirmation_summary)+'</div>';
       }
       html+='</div>';
     }
@@ -476,8 +495,11 @@ async function renderDtsDetailPage(dtsId){
           var fit=hypFit(h);
           var fitColor=fit>=0.85?'var(--green)':fit>=0.7?'var(--amber)':'var(--gray)';
           if(fit===_maxFit){html+=' <span class="knd" style="background:rgba(220,38,38,.18);color:var(--red);font-weight:600">标注匹配最高</span>';}
-          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+fitColor+'">标注匹配 '+fit.toFixed(2)+'</span>'
-            +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">证据支撑 '+conf.toFixed(2)+'</span>'
+          html+=' <span class="knd" style="background:rgba(220,38,38,.12);color:'+fitColor+'">标注匹配 '+fit.toFixed(2)+'</span>';
+          if((hdata||{}).fit_reasons&&hdata.fit_reasons.length){
+            html+=' <span class="knd" style="background:rgba(16,185,129,.12);color:var(--green)">人工理由 '+hdata.fit_reasons.map(function(n){return '#'+n;}).join(' ')+'</span>';
+          }
+          html+=' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">证据支撑 '+conf.toFixed(2)+'</span>'
             +' <span class="knd" style="background:rgba(37,99,235,.12);color:var(--acc)">'+respLabel+'</span>'
             +' <span class="knd">'+causeLabel+'</span>';
           if(hypSid){

@@ -92,6 +92,8 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
     # 排序：标注匹配度（annotation_fit）降序优先，缺省回退证据支撑度
     # （旧数据兼容）；同级按证据支撑度、最早断裂 L、证据数、cause_code
     # 做确定性 tie-break。展示/过滤门槛仍在证据支撑度（confidence）。
+    # fit_reasons 数量也做 tie-break（同分时解释更多人工理由者优先；
+    # 老数据无此字段 → 长度 0，排序行为不变）。
     def _fit(h):
         try:
             return float(h.get("annotation_fit",
@@ -103,6 +105,7 @@ def _pick_primary_hypothesis(hypotheses: list) -> dict | None:
         key=lambda h: (
             -_fit(h),
             -float(h.get("confidence", 0) or 0),
+            -len(h.get("fit_reasons") or []),
             _LEVEL_RANK.get(
                 CAUSE_TO_LEVEL.get(str(h.get("cause_code") or ""), ""), 99),
             -len(h.get("evidence_refs") or []),
