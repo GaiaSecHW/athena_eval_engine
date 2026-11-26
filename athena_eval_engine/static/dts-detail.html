@@ -937,9 +937,9 @@ function showConflictAdjudicationDialog(dtsId){
     {v:'knowledge_missing',t:'③ 知识库无相关知识——命中知识与该业务无关，正确知识未入库（需补充）'},
     {v:'vuln_stands',t:'④ 漏洞成立（默认方向）——无人提供业务佐证，误报前提默认不成立（请到漏洞中心改标注）'}
   ];
-  var radios=opts.map(function(o,i){
+  var radios=opts.map(function(o){
     return '<label style="display:flex;gap:10px;align-items:flex-start;font-size:14px;margin:0 0 10px;cursor:pointer;line-height:1.5">'
-      +'<input type="radio" name="dts-adj" value="'+o.v+'" style="'+_rs+';margin-top:3px"'+(i===0?' checked':'')+'>'
+      +'<input type="radio" name="dts-adj" value="'+o.v+'" style="'+_rs+';margin-top:3px"'+(o.v==='knowledge_missing'?' checked':'')+'>'
       +'<span>'+esc(o.t)+'</span></label>';
   }).join('');
   ov.innerHTML='<div class="modal">'
@@ -947,13 +947,33 @@ function showConflictAdjudicationDialog(dtsId){
     +'<div class="modal-body">'
     +'<p style="font-size:14px;margin-bottom:12px">该单为<b>知识矛盾裁决单</b>（知识库证据与人工标注矛盾）——关闭前<b>必须完成裁决</b>（四选一）：</p>'
     +radios
-    +'<p style="font-size:13px;color:var(--gray);margin:4px 0 6px">业务佐证说明（①②③必填；④可不填，自动填默认结论）：</p>'
-    +'<input id="dts-adj-reason" placeholder="提供支持裁决结论的业务事实/佐证…" style="display:block;width:calc(100% - 26px);box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px">'
+    +'<p style="font-size:13px;color:var(--gray);margin:4px 0 6px">业务佐证说明（①②③必填，可修改预设或自定义填写；④可不填，自动填默认结论）：</p>'
+    +'<input id="dts-adj-reason" placeholder="可直接修改预设佐证，或填写自定义业务佐证…" style="display:block;width:calc(100% - 26px);box-sizing:border-box;padding:8px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--p2);color:var(--txt);font-size:14px;font-family:inherit;margin-left:26px">'
     +'</div>'
     +'<div class="modal-foot"><button class="btn g" style="font-size:15px;padding:8px 20px" onclick="this.closest(\'.modal-overlay\').remove()">取消</button>'
     +'<button class="btn" style="font-size:15px;padding:8px 20px;background:var(--acc)" id="dts-adj-confirm">确认裁决并关单</button></div></div>';
   document.body.appendChild(ov);
   ov.addEventListener('click',function(e){if(e.target===ov)ov.remove();});
+  // 预设佐证（与普通关单对话框的预设原因一致）：默认裁决③（知识缺失）
+  // 预填「需要项目经理去知识库上传相关业务知识」；切到①②清掉预设让用户
+  // 填真实佐证；切到④清空（无需佐证，后端自动填默认结论）
+  var _adjPreset='需要项目经理去知识库上传相关业务知识';
+  var _adjReason=document.getElementById('dts-adj-reason');
+  _adjReason.value=_adjPreset;
+  var _adjPh=_adjReason.placeholder;
+  ov.querySelectorAll('input[name="dts-adj"]').forEach(function(r){
+    r.addEventListener('change',function(){
+      if(r.value==='knowledge_missing'&&!_adjReason.value.trim()){
+        _adjReason.value=_adjPreset;
+      }else if(r.value==='vuln_stands'){
+        _adjReason.value='';
+        _adjReason.placeholder='④ 无需佐证——将自动填默认结论（漏洞成立，待改标注）';
+      }else if(_adjReason.value===_adjPreset){
+        _adjReason.value='';
+        _adjReason.placeholder=_adjPh;
+      }
+    });
+  });
   document.getElementById('dts-adj-confirm').onclick=function(){
     var sel=ov.querySelector('input[name="dts-adj"]:checked');
     var adj=sel?sel.value:'';
