@@ -96,6 +96,11 @@ _VERIFY_PROMPT = """你是知识库内容判定专家。
 1. 漏洞类型
 2. 人工标注的误报原因（仅 FP 提供；FN 漏报没有人工标注）
 3. 从知识库检索到的候选内容列表（来源 + 路径 + 标题 + 摘要 + 内容预览）
+4. 检索系统的完整原始返回（每查询一份，全部字段）：
+   content（综合回答）、references（引用来源及范围 memory/history/project）、
+   mode（检索模式）、recall_judge（检索系统证据判定：verdict/reason/
+   evidence_sources 各来源的命中数）、recall（结构化命中列表，如有）——
+   **判定时必须综合使用全部字段，不得只看 content**。
 
 请判断这些候选内容中，是否有能帮助 agent 避免误报/漏报的知识。
 
@@ -141,6 +146,13 @@ positive → negative；两者皆有 → mixed；无命中 → none。
 - 候选只是通用方法论、与本次误报原因不直接相关 → 判 `not_found`。
 - **不得**把"存在一篇泛化方法论文章"当作"agent 已访问的具体知识/记忆内容是正确的"。
 - 候选为空或没有相关内容时，输出 `not_found`，不要猜测。
+- **证据充分性边界**：候选可能带「检索系统证据判定: insufficient」（证据不足）。
+  证据不足 ≠ 知识给出相反事实——**只有内容里出现明确的相反事实**（如标注称
+  "默认关闭"，内容明确写"默认并未关闭/仅某条件下才关闭"）才可判 `conflict`；
+  仅"无法确认/没有记录/证据不足"而无相反事实 → 判 `not_found` 或 `neutral`。
+- **口径边界**：「默认配置/默认场景」不等于「特定版本（如商用/量产版本）」。
+  若知识只说"默认未启用/默认未置位"，而未证明目标版本（商用版本）的实际
+  状态 → 属**证据不足**，不得判 `conflict`。
 
 # 输出格式
 只返回 JSON：
@@ -648,6 +660,16 @@ class KnowledgeVerifier:
             content = poll_data.get("content", "")
             recall = poll_data.get("recall") or {}
             retrieve_results = recall.get("results", []) if isinstance(recall, dict) else []
+            # 检索系统自身的证据充分性判定（sufficient/insufficient…）：
+            # 证据不足 ≠ 知识库给出了相反事实——必须一并传给 LLM
+            # 判定并落日志，否则会把"证据不足"误判成"与人工标注矛盾"。
+            recall_judge = poll_data.get("recall_judge") or {}
+            judge_verdict = str(
+                recall_judge.get("verdict") or "").strip() if isinstance(
+                recall_judge, dict) else ""
+            judge_reason = str(
+                recall_judge.get("reason") or "").strip() if isinstance(
+                recall_judge, dict) else ""
 
             new_docs: list[str] = []
             # 本次检索新增的候选文档名（title 优先，无 title 用文件名），
@@ -673,6 +695,12 @@ class KnowledgeVerifier:
                         "keywords": kw,
                         "content_preview": snippet,
                         "hit_fields": ["retrieve"],
+                        "athena_verdict": judge_verdict,
+                        "athena_reason": judge_reason,
+                        # 检索完整原始返回（全部字段）：判定必须综合使用，
+                        # 不得只看 content（recall_judge/references 等
+                        # 同样承载证据信息）
+                        "athena_response": poll_data,
                     })
 
                     if len(candidates) >= _MAX_CANDIDATES:
@@ -690,13 +718,28 @@ class KnowledgeVerifier:
                     "keywords": kw,
                     "content_preview": content,
                     "hit_fields": ["retrieve"],
+                    "athena_verdict": judge_verdict,
+                    "athena_reason": judge_reason,
+                    # 检索完整原始返回（全部字段），同上
+                    "athena_response": poll_data,
                 })
 
             match_count = len(retrieve_results) if retrieve_results else (1 if content else 0)
+            # 检索正文与检索系统的证据判定一并落日志：只显示「命中 1 个
+            # 文档」会让读者误以为没有对检索内容做分析（实际 LLM 判定用
+            # 的就是这段 content）；recall_judge=insufficient（证据不足）
+            # 与「知识给出相反事实」是两回事，必须让读者看到。
+            _detail = f"关键词: {kw}, task_id={task_id}"
+            if content:
+                _detail += f"\n检索内容: {content}"
+            if judge_verdict:
+                _detail += f"\n检索系统证据判定: {judge_verdict}"
+                if judge_reason:
+                    _detail += f"（{judge_reason}）"
             log_entries.append({
                 "step": "Athena API 搜索",
                 "action": f"POST {submit_url} → GET {poll_url}",
-                "detail": f"关键词: {kw}, task_id={task_id}",
+                "detail": _detail,
                 "result": (f"检索完成，返回 {match_count} 个结果，"
                            f"命中 {len(new_names)} 个文档"
                            + (f": {', '.join(new_names)}" if new_names else "")),
@@ -1013,7 +1056,7 @@ class KnowledgeVerifier:
             for i, c in enumerate(batch):
                 hit_str = "、".join(c.get("hit_fields", [])) or "无"
                 source_label = "知识库API" if c.get("source") == "athena_api" else "记忆Wiki"
-                files_desc.append(
+                desc = (
                     f"文章{i+1}:\n"
                     f"  来源: {source_label}\n"
                     f"  路径: {c.get('path', '')}\n"
@@ -1021,8 +1064,38 @@ class KnowledgeVerifier:
                     f"  摘要: {c.get('abstract', '')}\n"
                     f"  关键词: {c.get('keywords', '')}\n"
                     f"  匹配方式: {hit_str}\n"
-                    f"  内容预览:\n{c.get('content_preview', '')}\n"
                 )
+                # 检索系统自身的证据判定（不足/充分）——证据不足不能当
+                # 成"知识给出相反事实"，交给 LLM 按边界规则权衡
+                if c.get("athena_verdict"):
+                    desc += f"  检索系统证据判定: {c['athena_verdict']}"
+                    if c.get("athena_reason"):
+                        desc += f"（{c['athena_reason']}）"
+                    desc += "\n"
+                desc += f"  内容预览:\n{c.get('content_preview', '')}\n"
+                files_desc.append(desc)
+
+            # 检索完整原始返回（按查询去重）：全部字段交给 LLM 综合
+            # 判定——不得只看 content（recall_judge/references/mode
+            # 等同样承载证据信息）。同查询多个候选共享一份返回，去重
+            # 后只渲染一次，避免重复占上下文。
+            _seen_tids: set[str] = set()
+            raw_sections: list[str] = []
+            for c in batch:
+                resp = c.get("athena_response")
+                if not isinstance(resp, dict):
+                    continue
+                tid = str(resp.get("retrieval_task_id") or "")
+                if tid and tid in _seen_tids:
+                    continue
+                if tid:
+                    _seen_tids.add(tid)
+                raw_sections.append(
+                    json.dumps(resp, ensure_ascii=False, indent=1))
+            raw_block = ""
+            if raw_sections:
+                raw_block = ("\n\n检索完整原始返回（每查询一份，全部字段）:\n"
+                             + "\n---\n".join(raw_sections))
             annotation_line = (
                 f"人工标注的误报原因: {fp_reason}\n\n" if fp_reason
                 else "人工标注: 无（未提供；以漏洞标题/描述为分析依据）\n\n")
@@ -1030,8 +1103,9 @@ class KnowledgeVerifier:
                 f"漏洞标题: {vuln_title}\n\n"
                 + annotation_line
                 + f"知识库候选文章 ({len(batch)} 个):\n\n"
-                f"{''.join(files_desc)}\n\n"
-                f"请判断这些文章中是否有能支撑正确判定的知识"
+                + "".join(files_desc)
+                + raw_block
+                + "\n\n请判断这些文章中是否有能支撑正确判定的知识"
                 f"（误报：消减误报；漏报：帮助识别该漏洞）。"
                 f"重点关注：文章内容是否直接涉及该漏洞的判定/验证维度。"
             )
