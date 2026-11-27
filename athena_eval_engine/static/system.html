@@ -286,6 +286,12 @@ function renderAutoEvalLast(r){
   if(r.skipped_run){lines.push('<span style="color:var(--amber)">开关关闭，未运行</span>');}
   else{lines.push('候选 <b>'+esc(r.candidates??0)+'</b> 个 · 创建 <b style="color:var(--green)">'+esc(r.created??0)+'</b> 个 · 跳过 <b style="color:var(--amber)">'+esc(r.skipped??0)+'</b> 个');
     if(r.created_ids&&r.created_ids.length){lines.push('创建评测：'+r.created_ids.map(esc).join('、'));}
+    if(r.retrigger){
+      var rt=r.retrigger;
+      if(rt.skipped){lines.push('<span style="color:var(--sub)">标注变化重跑：'+esc(rt.skipped)+'</span>');}
+      else if(rt.error){lines.push('<span style="color:var(--red)">标注变化重跑失败：'+esc(rt.error)+'</span>');}
+      else{lines.push('标注变化 <b>'+esc(rt.changed??0)+'</b> 个 · 增量重跑 <b style="color:var(--green)">'+esc(rt.triggered??0)+'</b> 个');}
+    }
     if(r.skip_reasons){for(var k in r.skip_reasons){lines.push('<div style="color:var(--sub);font-size:12px">跳过 '+esc(k)+'：'+esc(r.skip_reasons[k])+'</div>');}}}
   return lines.join('<br>');
 }

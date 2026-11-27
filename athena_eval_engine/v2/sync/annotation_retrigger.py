@@ -142,15 +142,19 @@ def _trigger_retry(evaluation_id: str) -> bool:
         return False
 
 
-def run_after_sync() -> dict:
+def run_after_sync(force: bool = False) -> dict:
     """采集线程每轮采集完成后调用：标注变化的已完成评测主动增量重跑。
 
     开关与自动创建共用 auto_eval_enabled；按标注签名去重（同一变化
     只触发一次）；单轮最多触发 _MAX_PER_ROUND 个。
+
+    ``force=True`` 供 system 页「立即执行一轮」使用：忽略开关与签名去重，
+    让手动触发能真正重跑当前已变化的评测（同任务运行中仍会跳过）。
     """
-    from .auto_eval import is_enabled
-    if not is_enabled():
-        return {"skipped": "disabled"}
+    if not force:
+        from .auto_eval import is_enabled
+        if not is_enabled():
+            return {"skipped": "disabled"}
     changed = _changed_evaluations()
     state = _load_state()
     if not changed:
@@ -174,7 +178,7 @@ def run_after_sync() -> dict:
         # 固定不变，去重会把真实的新变化永久挡掉。）
         sig = ",".join(str(x) for x in (
             item.get("current") or item["baseline"]))
-        if state.get(eid) == sig:
+        if not force and state.get(eid) == sig:
             continue
         if considered >= _MAX_PER_ROUND:
             log("RETRIGGER", f"单轮触发上限 {_MAX_PER_ROUND}，剩余顺延")

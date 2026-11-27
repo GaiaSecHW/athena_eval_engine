@@ -267,6 +267,18 @@ def _run_once_inner(force: bool) -> dict:
         "skipped": len(skip_reasons),
         "skip_reasons": dict(list(skip_reasons.items())[:20]),
     }
+    # 手动触发（force）同时执行「标注变化增量重跑」——system 页的
+    # 「立即执行一轮」按钮承诺同一开关控制该能力。定时采集路径由
+    # project_task_sync 单独调用 retrigger，此处仅 force=True 时执行，
+    # 避免同一轮重复触发。
+    if force:
+        try:
+            from .annotation_retrigger import run_after_sync as run_retrigger
+            summary["retrigger"] = run_retrigger(force=True)
+        except Exception as e:
+            summary["retrigger"] = {"error": str(e)[:200]}
+            log("AUTO_EVAL", f"标注变化增量重跑异常: {e}")
+
     log("AUTO_EVAL", f"运行完成: 候选 {summary['candidates']}, "
                      f"创建 {summary['created']}, 跳过 {summary['skipped']}")
     return summary
