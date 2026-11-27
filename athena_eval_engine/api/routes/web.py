@@ -91,7 +91,9 @@ _TERMINAL_STATUSES = (
 
 def _build_eval_where(status_filter: str = "", eval_mode: str = "",
                       keyword: str = "",
-                      annotation_changed: bool = False) -> tuple[list[str], list]:
+                      annotation_changed: bool = False,
+                      department_ids: list[int] | None = None
+                      ) -> tuple[list[str], list]:
     """构造评测列表的 WHERE 子句（全部 SQL 层过滤，不拉全量到前端）。
 
     - status_filter=RUNNING → 非终态（NOT IN 终态列表）
@@ -117,6 +119,16 @@ def _build_eval_where(status_filter: str = "", eval_mode: str = "",
     if keyword:
         where.append("e.evaluation_name LIKE %s")
         params.append(f"%{keyword}%")
+    if department_ids:
+        # 部门筛选（含子部门）：评测的项目 ID 落在该部门子树的任一组项目。
+        # 统计（COUNT）查询同样 JOIN 了 snapshot s，条件两边一致。
+        ph = ",".join(["%s"] * len(department_ids))
+        where.append(
+            "JSON_UNQUOTE(JSON_EXTRACT(s.config_json, "
+            "'$.manifest.kg_project_id')) IN ("
+            "SELECT project_id FROM project_task_summary "
+            f"WHERE department_id IN ({ph}))")
+        params.extend(department_ids)
     if annotation_changed:
         # 基线 NULL（未完成评测/老评测）= 未知，不算变化
         where.append(
@@ -138,17 +150,20 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
                            status_filter: str = "",
                            eval_mode: str = "",
                            keyword: str = "",
-                           annotation_changed: bool = False) -> dict:
+                           annotation_changed: bool = False,
+                           department_ids: list[int] | None = None) -> dict:
     """同步逻辑：查 DB + 解析 config_json + 组装响应（后端筛选+分页）。
 
     alive=False 时跳过平台任务存活校验（逐项目网络调用），列表立即返回，
     由前端另行请求 /api/v1/eval-alive-status 异步补全 task_deleted。
 
     全部筛选在 SQL 层完成（WHERE + LIMIT + COUNT），不拉全量到前端。
+    department_ids：部门筛选（调用方已展开为「自身 + 子部门」id 集合）。
     """
     where, params = _build_eval_where(
         status_filter, eval_mode, keyword,
-        annotation_changed=annotation_changed)
+        annotation_changed=annotation_changed,
+        department_ids=department_ids)
     where_clause = (" WHERE " + " AND ".join(where)) if where else ""
 
     conn = connect(autocommit=True)
@@ -160,18 +175,21 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
             "ON e.evaluation_id = s.evaluation_id"
             f"{where_clause}", params)
         total = cur.fetchone()[0]
-        # 组织：按评测的项目 ID JOIN 采集汇总（项目→所属组织/部门）。
+        # 组织：按评测的项目 ID JOIN 采集汇总（项目→部门 id/名称），
+        # 再按部门 id 关联平台部门树取层级路径（org_department.path）。
         # 汇总表同项目多行（每任务一行），派生子表按项目去重。
         cur.execute("SELECT e.evaluation_id, e.evaluation_name, e.evaluation_status, "
                     "e.benchmark_set_id, e.created_at, s.config_json, "
-                    "pts.department_name "
+                    "pts.department_name, od.path AS department_path "
                     "FROM evaluation e "
                     "LEFT JOIN evaluation_snapshot s ON e.evaluation_id = s.evaluation_id "
                     "LEFT JOIN (SELECT project_id, MAX(department_name) "
-                    "           AS department_name FROM project_task_summary "
+                    "           AS department_name, MAX(department_id) "
+                    "           AS department_id FROM project_task_summary "
                     "           GROUP BY project_id) pts "
                     "  ON pts.project_id = JSON_UNQUOTE(JSON_EXTRACT("
                     "       s.config_json, '$.manifest.kg_project_id')) "
+                    "LEFT JOIN org_department od ON od.id = pts.department_id "
                     f"{where_clause} "
                     "ORDER BY e.created_at DESC LIMIT %s OFFSET %s",
                     params + [page_size, offset])
@@ -212,6 +230,7 @@ def _list_evaluations_sync(page: int, page_size: int, offset: int,
                           "created_at": r[4].isoformat() if r[4] else "",
                           "kg_project": kg_proj_name, "kg_task": kg_task_name,
                           "department": r[6] or "",
+                          "department_path": r[7] or "",
                           "benchmark_source": bm_source,
                           "eval_mode": eval_mode,
                           "vbench_project_name": vbench_project_name,
@@ -314,7 +333,8 @@ async def list_evaluations(page: int = 1, page_size: int = 20,
                            status_filter: str = "",
                            eval_mode: str = "",
                            keyword: str = "",
-                           annotation_changed: bool = False):
+                           annotation_changed: bool = False,
+                           department_id: int | None = None):
     """列表（后端筛选+分页，不拉全量到前端）。
 
     - status_filter=RUNNING → 非终态（SQL NOT IN）
@@ -322,16 +342,29 @@ async def list_evaluations(page: int = 1, page_size: int = 20,
     - eval_mode=dev/runtime → JSON_EXTRACT manifest（SQL 级）
     - keyword → evaluation_name LIKE
     - annotation_changed=true → 评测后人工标注已变化（SQL EXISTS）
+    - department_id → 按部门过滤（含全部子部门；树形筛选）
     """
     page = max(1, page)
     page_size = max(1, min(page_size, 100))
     offset = (page - 1) * page_size
+    department_ids = None
+    if department_id:
+        from ...v2.persistence.org_repo import subtree_ids
+        department_ids = await asyncio.to_thread(subtree_ids, department_id)
     return await asyncio.to_thread(
         _list_evaluations_sync, page, page_size, offset, alive,
         status_filter=status_filter.strip(),
         eval_mode=eval_mode.strip(),
         keyword=keyword.strip(),
-        annotation_changed=annotation_changed)
+        annotation_changed=annotation_changed,
+        department_ids=department_ids)
+
+
+@router.get("/api/v1/org/departments")
+async def list_org_departments():
+    """平台部门树（扁平列表按层级路径排序；筛选下拉树形展示用）。"""
+    from ...v2.persistence.org_repo import list_departments
+    return {"departments": await asyncio.to_thread(list_departments)}
 
 
 def _eval_alive_status_sync(eids: list[str]) -> dict[str, bool]:

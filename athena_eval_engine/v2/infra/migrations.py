@@ -816,6 +816,27 @@ MIGRATIONS = [
             "AFTER project_name",
         ],
     },
+    {
+        "id": "056_org_department_tree",
+        "desc": "新增 org_department（平台部门树：id/parent_id/name/path/"
+                "depth，采集轮登录 auth 服务同步）+ project_task_summary."
+                "department_id（项目所属部门 ID，用于关联部门树路径）",
+        "sql": [
+            "CREATE TABLE IF NOT EXISTS org_department ("
+            " id INT PRIMARY KEY,"
+            " parent_id INT NULL,"
+            " name VARCHAR(255) NOT NULL DEFAULT '',"
+            " path VARCHAR(1024) NOT NULL DEFAULT '',"
+            " depth INT NOT NULL DEFAULT 0,"
+            " description VARCHAR(255) NOT NULL DEFAULT '',"
+            " updated_at DATETIME(3) NOT NULL "
+            "   DEFAULT CURRENT_TIMESTAMP(3) "
+            "   ON UPDATE CURRENT_TIMESTAMP(3)"
+            ") ENGINE=InnoDB DEFAULT CHARSET=utf8mb4",
+            "ALTER TABLE project_task_summary "
+            "ADD COLUMN department_id INT NULL AFTER department_name",
+        ],
+    },
 ]
 
 # 幂等错误关键词：这些错误表示 SQL 已应用过，可安全跳过

@@ -70,6 +70,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
             vuln_nonzero: bool = False,
             finished_from: str | None = None,
             finished_to: str | None = None,
+            department_id: int | None = None,
             sort_by: str = "created_at", sort_dir: str = "desc",
             page: int = 1, page_size: int = 20, alive: bool = True):
     """从数据库读取项目/任务漏洞统计汇总（定时采集写入）。
@@ -83,6 +84,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     - vuln_nonzero: 只列出漏洞总数 > 0 的记录
     - finished_from / finished_to: 任务结束时间范围
       （YYYY-MM-DD 扩成全天边界；KPI 聚合同过滤口径）
+    - department_id: 按部门过滤（含全部子部门；子树 id 集合在 SQL 层展开）
     - page: 页码（默认 1）
     - page_size: 每页条数（默认 20，上限 200）
 
@@ -105,6 +107,13 @@ def summary(project_id: str | None = None, task_id: str | None = None,
     page_size = max(1, min(page_size, 200))
     where = []
     params: list = []
+    if department_id:
+        # 部门筛选（含全部子部门）：子树 id 集合在 SQL 层过滤
+        from ..persistence.org_repo import subtree_ids
+        _dept_ids = subtree_ids(int(department_id))
+        _ph = ",".join(["%s"] * len(_dept_ids))
+        where.append(f"department_id IN ({_ph})")
+        params.extend(_dept_ids)
 
     def _do(cur):
         cur.execute("SELECT MAX(updated_at) FROM project_task_summary")
@@ -142,6 +151,8 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         # 分页数据
         sql = (
             "SELECT s.project_id, s.task_id, s.project_name, s.department_name, "
+            "(SELECT od.path FROM org_department od "
+            " WHERE od.id = s.department_id) AS department_path, "
             "s.task_name, s.project_owner, "
             "s.task_type, s.agent_type, s.task_created_at, s.task_updated_at, "
             "s.task_started_at, s.task_finished_at, "
@@ -175,7 +186,7 @@ def summary(project_id: str | None = None, task_id: str | None = None,
         sql += " LIMIT %s OFFSET %s"
         cur.execute(sql, tuple(params) + (page_size, (page - 1) * page_size))
         cols = ["project_id", "task_id", "project_name", "department_name",
-                "task_name", "project_owner",
+                "department_path", "task_name", "project_owner",
                 "task_type", "agent_type", "task_created_at", "task_updated_at",
                 "task_started_at", "task_finished_at",
                 "vuln_total", "unconfirmed_count", "confirmed_vulnerable",

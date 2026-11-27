@@ -60,8 +60,8 @@ def _changed_evaluations() -> list[dict]:
 
     口径与评测列表「标注已变化」一致：baseline 四项计数（vuln_total/
     confirmed_vulnerable/confirmed_fp/confirmed_not_vulnerable）与当前
-    project_task_summary 同任务计数比较；baseline 任一项为 NULL（老数据，
-    未知）不参与判定。
+    project_task_summary 同任务计数**不一致**才算变化；baseline 任一项
+    为 NULL（老数据，未知）或任务行缺失（已删除/未同步）不参与判定。
     """
     def _do(cur):
         cur.execute(
@@ -92,9 +92,17 @@ def _changed_evaluations() -> list[dict]:
         current = {r[0]: (int(r[1] or 0), int(r[2] or 0),
                           int(r[3] or 0), int(r[4] or 0))
                    for r in cur.fetchall()}
-        return [{"evaluation_id": r[0], "task_id": r[1],
-                 "baseline": (int(r[2]), int(r[3]), int(r[4]), int(r[5]))}
-                for r in rows]
+        # 只返回 baseline 与当前计数不一致的评测（真变化）。
+        # 此前这里漏了比较——所有有基线的评测都被当作"已变化"触发重跑，
+        # 无谓重跑占满每轮上限，真正变化的评测反而触发不到。
+        out = []
+        for r in rows:
+            baseline = (int(r[2]), int(r[3]), int(r[4]), int(r[5]))
+            cur_counts = current.get(r[1])
+            if cur_counts is not None and cur_counts != baseline:
+                out.append({"evaluation_id": r[0], "task_id": r[1],
+                            "baseline": baseline, "current": cur_counts})
+        return out
 
     return _db_query(_do) or []
 
@@ -144,18 +152,28 @@ def run_after_sync() -> dict:
     if not is_enabled():
         return {"skipped": "disabled"}
     changed = _changed_evaluations()
+    state = _load_state()
     if not changed:
+        # 无变化也剪枝：重跑完成/标注回退的评测要从 state 清除——
+        # 否则陈旧签名残留，"计数回退到旧状态"时会误判为已触发而漏跑
+        if state:
+            try:
+                _save_state({})
+            except Exception as e:
+                log("RETRIGGER", f"状态固化失败（不阻断）: {e}")
         return {"changed": 0, "triggered": 0}
 
-    state = _load_state()
     triggered = 0
     considered = 0
     for item in changed:
         eid = item["evaluation_id"]
-        sig = ",".join(str(x) for x in item["baseline"])
-        # 当前计数与 baseline 的差异签名：baseline 本身固定，变化即
-        # 当前计数的函数；state 里记录上次触发时 baseline（同值），
-        # 用于跨轮去重——评测完成写回新 baseline 后该 eid 不再出现。
+        # 差异签名 = 当前计数（baseline 固定，差异是当前计数的函数）：
+        # 同一当前标注状态只触发一次；重跑完成 FINALIZE 写回新 baseline
+        # 后 baseline == 当前计数 → 不再进 changed 列表；当前计数再变
+        # → 新签名 → 再次触发。（此前误用 baseline 做签名——baseline
+        # 固定不变，去重会把真实的新变化永久挡掉。）
+        sig = ",".join(str(x) for x in (
+            item.get("current") or item["baseline"]))
         if state.get(eid) == sig:
             continue
         if considered >= _MAX_PER_ROUND:
@@ -169,7 +187,7 @@ def run_after_sync() -> dict:
             state[eid] = sig
             triggered += 1
             log("RETRIGGER",
-                f"{eid}: 标注已变化（baseline {sig}），已触发增量测评")
+                f"{eid}: 标注已变化（当前计数 {sig}），已触发增量测评")
         else:
             state[eid] = sig  # 触发失败也记签名，避免每轮反复重试
     # 清理已不再变化的评测记录（重跑完成或标注回退）

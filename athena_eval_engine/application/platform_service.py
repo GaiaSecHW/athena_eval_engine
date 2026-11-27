@@ -95,6 +95,7 @@ def get_projects(page_size: int = 1000):
             break
         page += 1
     return [{"id": p["id"], "name": p.get("name"),
+             "department_id": p.get("department_id"),
              "department_name": p.get("department_name"),
              "product_path": p.get("category_path") or p.get("category_node_name"),
              "category": p.get("category"),

@@ -45,6 +45,8 @@ renderNav('/evals');
 
 let _evData=[];let _evPage=1;let _evFilter="all";let _evQ="";let _evTotal=0;let _evTotalPages=1;
 let _evChanged=false;  // 标注已变化过滤（独立开关，可与状态筛选叠加）
+let _evDept="";        // 部门筛选（选父部门含全部子部门，后端展开子树）
+let _evDepts=null;     // 部门树扁平列表缓存
 // 已查询过存活状态的评测 ID，避免重复请求
 let _evAliveChecked={};
 // 搜索防抖
@@ -59,7 +61,26 @@ function _evParams(){
   else if(_evFilter!=="all")params.status_filter=_evFilter;
   if(_evQ)params.keyword=_evQ;
   if(_evChanged)params.annotation_changed="1";
+  if(_evDept)params.department_id=_evDept;
   return params;
+}
+
+// 部门树下拉：扁平列表按 path 排序，用全角空格按深度缩进成树形
+async function loadEvDepts(){
+  try{
+    if(!_evDepts){var d=await jget("/api/v1/org/departments");_evDepts=d.departments||[];}
+    var sel=$("ev-dept");if(!sel)return;
+    var opts='<option value="">全部部门</option>'+_evDepts.map(function(dp){
+      var pad=new Array((dp.depth||0)+1).join("\u3000");
+      return '<option value="'+dp.id+'">'+esc(pad+dp.name)+'</option>';
+    }).join("");
+    sel.innerHTML=opts;
+    sel.value=_evDept||"";
+  }catch(e){}
+}
+function setEvDept(v){
+  _evDept=v;_evPage=1;
+  _evFetch().then(function(){renderEvList();});
 }
 
 // 按条件分页查询（后端 WHERE + LIMIT，不拉全量）
@@ -101,6 +122,9 @@ async function renderEvals(){
   $("view").innerHTML=`<div class="page-body">
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap">
       <input id="ev-search" placeholder="搜索 ID / 名称…" oninput="evSearchChanged(this.value)" style="max-width:280px" value="${_evQ}">
+      <select id="ev-dept" onchange="setEvDept(this.value)" style="width:auto;max-width:260px;padding:6px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--panel);color:var(--txt);font-size:13px">
+        <option value="">全部部门</option>
+      </select>
       <button class="ef-btn${_evFilter==='all'?' active':''}" onclick="setEvFilter('all',this)">全部</button>
       <button class="ef-btn${_evFilter==='RUNNING'?' active':''}" onclick="setEvFilter('RUNNING',this)">运行中</button>
       <button class="ef-btn${_evFilter==='dev'?' active':''}" onclick="setEvFilter('dev',this)">开发态</button>
@@ -116,6 +140,7 @@ async function renderEvals(){
     <div style="flex:1;overflow-y:auto"><div class="ev-grid" id="ev-list-body"></div></div>
   </div>`;
   renderEvList();
+  loadEvDepts();
 }
 function setEvFilter(f,btn){
   _evFilter=f;_evPage=1;
@@ -195,7 +220,7 @@ function renderEvList(){
       '<div class="ev-meta">'+statusHtml+'<span style="font-size:11px;padding:1px 6px;border-radius:4px;background:'+(e.eval_mode==='runtime'?'rgba(245,158,11,.15)':'rgba(91,156,246,.15)')+';color:'+(e.eval_mode==='runtime'?'var(--amber)':'var(--acc)')+'">'+(e.eval_mode==='runtime'?'运行态':'开发态')+'</span><span>'+fmtDate(e.created_at)+'</span>'+btns+'</div>'+
       '<div style="font-size:12px;color:var(--gray);font-family:monospace;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">'+e.evaluation_id+'</div>'+
       '<div style="font-size:13px;line-height:1.5;margin-top:4px">'+
-        (e.department?'<div><span style="color:var(--gray)">组织：</span><b>'+e.department+'</b></div>':'')+
+        ((e.department_path||e.department)?'<div><span style="color:var(--gray)">组织：</span><b>'+esc(e.department_path||e.department)+'</b></div>':'')+
         '<div><span style="color:var(--gray)">项目：</span><b>'+(e.kg_project||'-')+'</b> / '+(e.kg_task||'-')+'</div>'+
         (e.eval_mode==='runtime'?'':'<div><span style="color:var(--gray)">基线：</span><b>'+(e.benchmark_source==='vuln_center'?('漏洞中心 · '+(e.vc_source_project_name||'-')+' / '+(e.vc_source_task_name||'-')):(e.vbench_project_name||'无 GT'))+'</b></div>')+
       '</div>'+

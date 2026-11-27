@@ -61,6 +61,23 @@ renderNav('/report');
 const PAGE_SIZE=20;
 let _data=null;
 let curPage=1;
+let _dept="";        // 部门筛选（选父部门含全部子部门，后端展开子树）
+let _depts=null;     // 部门树扁平列表缓存
+
+// 部门树下拉：扁平列表按 path 排序，用全角空格按 depth 缩进成树形
+async function loadDepts(){
+  try{
+    if(!_depts){var d=await jget("/api/v1/org/departments");_depts=d.departments||[];}
+    var sel=$("f-dept");if(!sel)return;
+    var opts='<option value="">全部部门</option>'+_depts.map(function(dp){
+      var pad=new Array((dp.depth||0)+1).join("\u3000");
+      return '<option value="'+dp.id+'">'+esc(pad+dp.name)+'</option>';
+    }).join("");
+    sel.innerHTML=opts;
+    sel.value=_dept||"";
+  }catch(e){}
+}
+function setDept(v){_dept=v;load(1);}
 
 // 格式化采集时间：MySQL UTC → 北京时间，年月日时分
 function fmtUpdated(t){
@@ -130,6 +147,9 @@ function renderReport(){
       <input id="f-proj" placeholder="按项目名过滤…" style="max-width:200px">
       <input id="f-task" placeholder="按任务名过滤…" style="max-width:200px">
       <select id="f-agent" style="width:auto;max-width:140px"><option value="">全部 Agent</option></select>
+      <select id="f-dept" onchange="setDept(this.value)" style="width:auto;max-width:220px">
+        <option value="">全部部门</option>
+      </select>
       <label style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);white-space:nowrap"><input type="checkbox" id="f-vuln">漏洞总数&gt;0</label>
       <span style="display:flex;align-items:center;gap:4px;font-size:13px;color:var(--sub);white-space:nowrap">结束时间
         <input type="date" id="f-fin-from" style="padding:5px 8px;border:1px solid var(--bd);border-radius:6px;background:var(--panel);color:var(--txt);font-family:monospace">
@@ -206,11 +226,13 @@ async function load(page){
   const pj=($("f-proj")||{}).value?$("f-proj").value.trim():"";
   const tk=($("f-task")||{}).value?$("f-task").value.trim():"";
   const ag=($("f-agent")||{}).value||"";
+  const dp=($("f-dept")||{}).value||"";
   const sortVal=($("f-sort")||{}).value||"started_at_desc";
   const params=new URLSearchParams({page:curPage,page_size:PAGE_SIZE,alive:"0"});
   if(pj)params.set("project_keyword",pj);
   if(tk)params.set("task_keyword",tk);
   if(ag)params.set("agent",ag);
+  if(dp)params.set("department_id",dp);
   var fv=$("f-vuln");
   if(fv&&fv.checked)params.set("vuln_nonzero","1");
   var ff=($("f-fin-from")||{}).value||"";
@@ -304,7 +326,7 @@ function render(d){
     // 未确认 = 总数 - 确认漏洞 - 误报 - 非误报（用户定义口径）
     const unconf=Math.max(0,(i.vuln_total||0)-(i.confirmed_vulnerable||0)-(i.confirmed_fp||0)-(i.confirmed_not_vulnerable||0));
     return `<tr${deleted?' style="opacity:.55;filter:grayscale(1)"':''}>
-    <td class="proj">${i.project_name||i.project_id}${i.department_name?'<div style="font-size:11px;color:var(--sub);font-weight:400">'+esc(i.department_name)+'</div>':''}</td>
+    <td class="proj">${i.project_name||i.project_id}${(i.department_path||i.department_name)?'<div style="font-size:11px;color:var(--sub);font-weight:400">'+esc(i.department_path||i.department_name)+'</div>':''}</td>
     <td class="task" title="${(i.task_name||i.task_id).replace(/"/g,'&quot;')}">${i.task_name||i.task_id}</td>
     <td><span class="pt-badge">${i.agent_type||"unknown"}</span></td>
     <td>${ev}</td>
@@ -403,6 +425,7 @@ async function startEval(projectId, taskId, taskName){
 }
 
 renderReport();
+loadDepts();
 // 支持外部链接带排序参数（如日报里的 /report?sort=confirm_rate_asc）：
 // 先按 URL 覆盖排序下拉，再执行首次加载。
 (function applySortFromUrl(){

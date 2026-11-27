@@ -450,3 +450,44 @@ def vuln_center_benchmark(project_id: str, task_id: str):
     """漏洞中心基线：按项目+任务拉取人工确认漏洞（VULNERABLE）。"""
     from ...infrastructure.vuln_center_client import get_vuln_center_benchmark
     return get_vuln_center_benchmark(project_id, task_id)
+
+
+class OrgSyncRequest(BaseModel):
+    """手动拉取部门树的账号。密码仅本次请求使用，不保存。"""
+    username: str
+    password: str
+
+
+@sys_r.post("/org-sync")
+def org_sync_pull(req: OrgSyncRequest):
+    """手动拉取平台部门树（system 页输入账号密码，密码不保存）。
+
+    登录 secflow-platform-auth → GET /api/auth/org/departments →
+    全量重建 org_department（id/parent_id/name/path/depth）。
+    凭据只在本次请求内存中使用，不写 system_config、不写文件、不写日志。
+    """
+    from fastapi import HTTPException
+    from ...v2.sync.org_sync import sync_departments
+    try:
+        return {"status": "ok", **sync_departments(req.username, req.password)}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    except RuntimeError as e:
+        raise HTTPException(status_code=502, detail=str(e)) from e
+
+
+@sys_r.get("/org-sync")
+def org_sync_status():
+    """当前库中部门树状态（数量 / 根节点数 / 最大深度）。"""
+    conn = connect(autocommit=True)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT COUNT(*), SUM(parent_id IS NULL), MAX(depth) "
+            "FROM org_department")
+        r = cur.fetchone()
+        return {"departments": int(r[0] or 0),
+                "roots": int(r[1] or 0),
+                "max_depth": int(r[2] or 0)}
+    finally:
+        conn.close()

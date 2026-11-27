@@ -84,6 +84,15 @@ async function renderSystem(){
       <div style="border-top:1px solid var(--bd);padding-top:16px"><div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button class="btn g" style="font-size:13px;padding:8px 20px" onclick="testLlmConnection()">测试连通性</button><span id="llm_test_status" style="font-size:13px;color:var(--sub)"></span></div><div id="llm_test_result" style="font-size:13px"></div></div>
     </div>
     </div>
+    <div class="card" style="margin-top:20px" data-sys-tab="ds"><h3>部门/组织树同步</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">手动拉取平台部门树（auth 服务，需用户管理权限的账号）。输入用户名与密码后点击拉取——<b>密码仅本次请求使用，不保存</b>；拉取的部门树（id/父级/名称/层级路径）存入数据库，评测列表与平台任务详情按层级路径展示组织。</div>
+      <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px">
+        <input id="org_sync_user" placeholder="用户名" autocomplete="username" style="width:180px;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--panel);color:var(--txt);font-size:14px">
+        <input id="org_sync_pass" type="password" placeholder="密码（不保存）" autocomplete="new-password" style="width:200px;padding:7px 10px;border:1px solid var(--bd);border-radius:8px;background:var(--panel);color:var(--txt);font-size:14px">
+        <button class="btn" style="font-size:13px;padding:7px 16px" onclick="pullOrgTree()">拉取部门</button>
+        <span id="org_sync_msg" style="font-size:13px"></span>
+      </div>
+      <div id="org_sync_cur" style="padding:12px;border:1px solid var(--bd);border-radius:10px;background:var(--p2);font-size:13px;color:var(--sub)">加载中...</div>
+    </div>
     <div class="card" style="margin-top:20px" data-sys-tab="ds"><h3>Agent 数据源配置</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">各 Agent 的数据库连接配置。密码脱敏显示，修改时留空或 *** 表示不更新。</div><div id="ds-container"><div style="color:var(--sub)">加载中...</div></div></div>
     <div class="card" style="margin-top:20px" data-sys-tab="auto"><h3>自动创建测评</h3><div style="font-size:13px;color:var(--sub);margin-bottom:16px">满足全部条件的任务自动发起运行态测评：<b>人工确认率 100%</b> + <b>误报率 ≥30%</b>（与手动启动门槛一致）+ <b>任务结束 1.5 个月内</b> + 源码存在。随每轮数据采集（6:00/12:00/17:00）后触发；走与手动启动完全相同的门禁（每任务每模式一条等），不会重复创建。<br>同一开关还控制：<b>标注变化自动增量重跑</b>——评测完成后人工标注又变化时，自动重跑该评测（标注未变的 case 复用既有结论，只重分析变化的 case）。</div>
       <div style="display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:14px">
@@ -216,6 +225,31 @@ async function renderSystem(){
   loadNotifyStatus();
   loadNotifyPreview();
   loadAutoEval();
+  loadOrgStatus();
+}
+
+// ── 部门树：手动拉取（密码不保存）──
+async function loadOrgStatus(){
+  try{
+    var d=await jget("/api/v1/system/org-sync");
+    var el=$("org_sync_cur");
+    if(el)el.textContent="当前库中部门："+(d.departments||0)+" 个（根 "+(d.roots||0)+" 个，最大深度 "+(d.max_depth||0)+" 层）";
+  }catch(e){}
+}
+async function pullOrgTree(){
+  var u=($("org_sync_user").value||"").trim();
+  var p=$("org_sync_pass").value||"";
+  var msg=$("org_sync_msg");
+  if(!u||!p){msg.innerHTML='<span style="color:var(--red)">请填写用户名和密码</span>';return;}
+  msg.innerHTML='<span style="color:var(--sub)">拉取中…</span>';
+  try{
+    var d=await jpost("/api/v1/system/org-sync",{username:u,password:p});
+    msg.innerHTML='<span style="color:var(--green)">✓ 已同步 '+(d.departments||0)+' 个部门（根 '+(d.roots||0)+' 个，最大深度 '+(d.max_depth||0)+' 层）</span>';
+    $("org_sync_pass").value="";   // 密码不保存
+    loadOrgStatus();
+  }catch(e){
+    msg.innerHTML='<span style="color:var(--red)">拉取失败：'+String(e&&e.message?e.message:e)+'</span>';
+  }
 }
 
 // 分 tab 展示：只显示当前类别的卡片（data-sys-tab），按钮高亮跟随

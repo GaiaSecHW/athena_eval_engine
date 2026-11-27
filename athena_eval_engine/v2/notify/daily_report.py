@@ -469,11 +469,11 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
     prev_snap = _confirmation_snapshot(as_of=prev_as_of) if prev_as_of else {}
     if cur_snap.get("fpr") is not None:
         lines.append(
-            f"📉 误报率（近30天）："
+            f"📉 采集项目误报率（近30天）："
             f"{_span(_pct(cur_snap['fpr']), color='#16a34a', bold=True)}"
             f"{_pct_diff(cur_snap['fpr'], prev_snap.get('fpr'))}")
     else:
-        lines.append("📉 误报率（近30天）：暂无数据")
+        lines.append("📉 采集项目误报率（近30天）：暂无数据")
 
     # ② 人工确认率区块（必含：确认率+上期对比 / 低确认率计数 / 高误报率清单）
     #    上期锚点 = 上次发送时间（同上，真·上期报告口径）
