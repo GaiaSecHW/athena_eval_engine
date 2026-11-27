@@ -817,11 +817,13 @@ def update_issue(dts_id: str, update: DTSUpdate):
     验证直接关闭，**必须**携带 close_reason 关单原因）。
 
     冲突裁决单（知识证据与人工标注矛盾，hypotheses 含 _kb_conflict_primary）
-    关闭（passed / no_regression / unattributable）时**必须先完成裁决**：
+    关闭（passed / no_regression）时**必须先完成裁决**：
     adjudication 四选一 + 业务佐证 close_reason——否则单上写着「须裁决」
     却被直接关掉，裁决流程被跳过。裁决结论联动更新 cause_code/responsibility：
     ①该查没查→A/agent；②知识有误→G/knowledge；③知识缺失→C/knowledge；
     ④漏洞成立（无佐证默认方向，举证责任在标注方）不改暂记 cause。
+    unattributable（无法归因）不在门禁内——其语义即「标注信息不全、待
+    标注方补充后重新开启」，标注不足正是入口条件，不得被裁决要求堵死。
     回归验证端点（regression-verify）不受此门禁——回归通过自带 replay 证据。
     """
     existing = get_dts_issue(dts_id)
@@ -838,10 +840,13 @@ def update_issue(dts_id: str, update: DTSUpdate):
             detail=f"非法状态 '{updates['status']}'，"
                    f"合法值：open/passed/failed/unattributable/no_regression")
 
-    # 冲突裁决单：关闭前必须完成裁决（四选一 + 业务佐证）。
-    # 在通用 no_regression 关单原因校验之前执行——冲突单的关单原因
-    # 由裁决规则约束（①②③必填佐证；④默认方向自动填结论）。
-    if updates.get("status") in ("passed", "no_regression", "unattributable") \
+    # 冲突裁决单：关闭（passed / no_regression）前必须完成裁决（四选一
+    # + 业务佐证）。在通用 no_regression 关单原因校验之前执行——冲突单的
+    # 关单原因由裁决规则约束（①②③必填佐证；④默认方向自动填结论）。
+    # unattributable（无法归因）**不在门禁内**：它的语义就是"人工确认信息
+    # 不全、待标注方补充后重新开启"——标注不足恰是其入口条件，此时要求
+    # 裁决（需要业务佐证）会把它堵死，无法标记待补充。
+    if updates.get("status") in ("passed", "no_regression") \
             and _is_conflict_adjudication_issue(existing):
         adj = str(updates.get("adjudication") or "").strip()
         if not adj:
