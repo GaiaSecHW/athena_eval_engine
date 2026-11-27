@@ -440,7 +440,11 @@ def preview(owner_key: str | None = None):
                 "window": (non_empty[0].get("window")
                            if non_empty else None),
                 "text": render_leader_text(
-                    label, period_start, until, get_public_url()),
+                    label, period_start, until, get_public_url(),
+                    # 上期锚点=上次实际发送时间（与 run_report 同口径）
+                    prev_as_of=scheduler.last_sent_at(
+                        scheduler._REPORT_OWNER_KEY,
+                        scheduler._CHANNEL_REPORT)),
             }
         reports = build_reports(owner_key=owner_key, force=True).get("agents", [])
         previews = []

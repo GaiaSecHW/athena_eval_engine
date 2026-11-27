@@ -442,11 +442,18 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
 
 
 def render_leader_text(period_label: str, since: datetime, until: datetime,
-                       public_url: str) -> str:
+                       public_url: str,
+                       prev_as_of: datetime | None = None) -> str:
     """x 报正文（领导视角，单条消息）。
 
     按领导的问题链组织：误报率多高（趋势）→ 人工确认率/任务风险 →
     根因是什么 → 修复进展 → 谁欠账。
+
+    prev_as_of：上期对比锚点 = **上一次成功发送报告的时间**（调用方
+    从 notification_log 取）。不能用周期起点——日报的周期起点是今天
+    0 点，滚动 30 天指标在 0 点和当前只差几小时，对比值≈同一份数据
+    （曾误把当天废弃的那版发送当成"上期"）。无历史发送时传 None →
+    显示「上期 暂无数据」。
     """
     env = get_env_name()
     env_prefix = f"【{env}】" if env else ""
@@ -456,9 +463,10 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
         f"🕒 统计窗口：{_fmt_local(since)} ~ {_fmt_local(until)}",
     ]
 
-    # ① 误报率 + 趋势（近30天滚动，本期锚点=现在，上期锚点=周期起点）
+    # ① 误报率 + 趋势（近30天滚动，本期锚点=现在，
+    #    上期锚点=上次发送时间——真·上期报告的数据）
     cur_snap = _confirmation_snapshot()
-    prev_snap = _confirmation_snapshot(as_of=since)
+    prev_snap = _confirmation_snapshot(as_of=prev_as_of) if prev_as_of else {}
     if cur_snap.get("fpr") is not None:
         lines.append(
             f"📉 误报率（近30天）："
@@ -468,7 +476,8 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
         lines.append("📉 误报率（近30天）：暂无数据")
 
     # ② 人工确认率区块（必含：确认率+上期对比 / 低确认率计数 / 高误报率清单）
-    lines += _render_confirmation_section(since)
+    #    上期锚点 = 上次发送时间（同上，真·上期报告口径）
+    lines += _render_confirmation_section(prev_as_of)
 
     # ③ 总览：修复验证 + 完成评测
     st = _leader_window_stats(since, until)

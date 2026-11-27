@@ -352,9 +352,12 @@ def run_report(force: bool = False, owner_key: str | None = None,
         log("NOTIFY", f"{label}接收群未配置"
                       f"（notify_report_receiver_{period}），跳过发送")
         return {**owners, "error": "no_receiver"}
+    # 上次成功发送时间：既用于周期级去重，也作为「上期对比」的锚点
+    # （上期 = 上一次报告的数据，不能用周期起点——日报起点与当前只差
+    # 几小时，会把当天早上的发送误当"上期"）。
+    prev_sent = last_sent_at(_REPORT_OWNER_KEY, _CHANNEL_REPORT)
     if not force:
-        last = last_sent_at(_REPORT_OWNER_KEY, _CHANNEL_REPORT)
-        if last is not None and last >= period_start:
+        if prev_sent is not None and prev_sent >= period_start:
             log("NOTIFY", f"{label}本周期已发送过，跳过")
             return {**owners, "skipped": owners.get("skipped", 0) + 1,
                     "error": "dedup"}
@@ -391,7 +394,8 @@ def run_report(force: bool = False, owner_key: str | None = None,
     until = (_parse_dt(window.get("end"))
              or datetime.now(timezone.utc).replace(tzinfo=None))
     text = render_leader_text(
-        label, period_start, until, get_public_url())
+        label, period_start, until, get_public_url(),
+        prev_as_of=prev_sent)
     ok, detail = xiaoluban.send_message(receiver, text, token=token)
     record_send(
         _REPORT_OWNER_KEY, receiver,
