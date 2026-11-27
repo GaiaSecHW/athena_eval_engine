@@ -137,7 +137,7 @@ async function renderHome(){
     +renderKPICard('运行态·测评项目误报率',fmtPct(rtOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
     +renderKPICard('运行态·回归后误报率',fmtPct(rtOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
     +renderKPICard('开发态·测评项目误报率',fmtPct(devOverall.total_fpr),'⚠','linear-gradient(135deg,#dc2626,#ef4444)')
-    +renderKPICard('开发态·总体漏报率',fmtPct(devOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
+    +renderKPICard('开发态·测评项目漏报率',fmtPct(devOverall.total_fnr),'○','linear-gradient(135deg,#d97706,#f59e0b)')
     +renderKPICard('开发态·回归后误报率',fmtPct(devOverall.post_fpr),'✓','linear-gradient(135deg,#16a34a,#22c55e)')
     +renderKPICard('开发态·回归后漏报率',fmtPct(devOverall.post_fnr),'✗','linear-gradient(135deg,#d97706,#f59e0b)')
     +'</div>'
