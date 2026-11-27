@@ -548,11 +548,13 @@ class Orchestrator:
         fn_cases = ([r for r in case_session_matches if r["outcome"] == "FN"]
                     if eval_mode == "dev" else [])
 
-        # 补充人工标注误报原因
+        # 补充人工标注误报原因 + 终审者（DTS 详情展示标注者）
         for fc in fp_cases + fn_cases:
             cd = case_details.get(fc.get("case_id", ""), {})
             fc["human_confirmation_summary"] = cd.get(
                 "human_confirmation_summary", "")
+            fc["human_confirmation_operator"] = cd.get(
+                "human_confirmation_operator", "")
             fc["summary"] = cd.get("summary", "")
         # FN 漏报原因分析结果按 case_id 附加
         fn_miss_by_case: dict[str, dict] = {
@@ -799,6 +801,8 @@ class Orchestrator:
                         "false_positive_group": bm.get("false_positive_group") or "",
                         "false_positive_reason": bm.get("false_positive_reason") or "",
                         "human_confirmation_summary": bm.get("human_confirmation_summary") or "",
+                        "human_confirmation_operator": bm.get("human_confirmation_operator") or "",
+                        "human_confirmation_confirmed_at": bm.get("human_confirmation_confirmed_at") or "",
                     }
             if runtime_baseline:
                 log("INGEST", f"运行态基线(人工确认 finished 且非 non_fp): "

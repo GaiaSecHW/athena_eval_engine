@@ -1113,6 +1113,10 @@ class RootCauseAnalyzer:
                 "summary": summary,
                 "outcome": case.get("outcome", ""),
                 "human_confirmation_summary": fp_reason,
+                # 终审者（人工确认操作账号，真人确认为工号）——
+                # 详情页「人工确认信息」卡展示标注者
+                "human_confirmation_operator": str(
+                    case.get("human_confirmation_operator") or ""),
                 # 编号理由列表（结构化人工理由；FN/无标注为空列表）。
                 # 详情页据此渲染「理由N：…」+ 线索对应徽标 + 覆盖缺口
                 "annotation_reasons": annotation_reasons,

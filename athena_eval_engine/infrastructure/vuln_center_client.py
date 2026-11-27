@@ -55,6 +55,31 @@ def get_case_raw_report(case_id: str, evaluation_id: str = "") -> str:
     return ""
 
 
+def get_case_confirmation(case_id: str) -> dict:
+    """获取单条 case 的人工确认信息（终审者 + 确认时间）。
+
+    调用漏洞中心 API ``GET /api/vuln/cases/{case_id}``，返回
+    ``human_confirmation`` 中的 operator / confirmed_at。失败返回空 dict
+    （终审者是补充信息，不阻塞主流程——DTS 历史数据回填用）。
+    """
+    if not case_id:
+        return {}
+    try:
+        data = _get(
+            f"{VULN_CENTER_API_URL}/{case_id}",
+            retries=1,
+        )
+        hc = (data or {}).get("human_confirmation") or {} \
+            if isinstance(data, dict) else {}
+        return {
+            "operator": hc.get("operator") or "",
+            "confirmed_at": hc.get("confirmed_at") or "",
+        }
+    except Exception as e:
+        log("VULN_CENTER", f"获取人工确认信息失败 case={case_id}: {e}")
+        return {}
+
+
 def list_stats(project_id: str, source_task_id: str | None = None,
                confirmation_status: str | None = None,
                false_positive_group: str | None = None) -> dict:
@@ -414,6 +439,10 @@ def _case_to_benchmark(c: dict, expected_label: str) -> dict:
         "false_positive_group": c.get("false_positive_group") or "",
         "false_positive_reason": c.get("false_positive_reason") or "",
         "human_confirmation_summary": hc.get("summary") or "",
+        # 终审者（人工确认操作账号）：真人确认为工号（如 l00471486），
+        # 扫描账号批量确认为服务账号（如 f30039859_scan）——DTS 详情展示用
+        "human_confirmation_operator": hc.get("operator") or "",
+        "human_confirmation_confirmed_at": hc.get("confirmed_at") or "",
     }
 
 

@@ -248,6 +248,21 @@ def get_dts_issue(dts_id: str) -> dict | None:
             log("DTS_REPO", f"读取完整分析数据失败 dts_id={dts_id} path={analysis_data_path}: {e}")
             result["analysis_data"] = None
 
+    # 历史数据回填终审者：老分析文件没有 human_confirmation_operator/
+    # confirmed_at 字段——实时查漏洞中心单 case 接口补上（新数据已有则跳过）。
+    # 纯展示回填，不回写冻结的分析文件。
+    ad = result.get("analysis_data")
+    if isinstance(ad, dict) and not ad.get("human_confirmation_operator"):
+        try:
+            from ...infrastructure.vuln_center_client import get_case_confirmation
+            conf = get_case_confirmation(result.get("case_id") or "")
+            if conf:
+                ad["human_confirmation_operator"] = conf.get("operator") or ""
+                ad["human_confirmation_confirmed_at"] = \
+                    conf.get("confirmed_at") or ""
+        except Exception as e:
+            log("DTS_REPO", f"终审者回填失败 dts_id={dts_id}: {e}")
+
     # 解析 hypothesis_confirmations JSON（假定线索根因确认状态）
     hc_raw = result.get("hypothesis_confirmations")
     if hc_raw:

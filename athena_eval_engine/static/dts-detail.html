@@ -214,7 +214,25 @@ async function renderDtsDetailPage(dtsId){
           +'<div style="font-size:14px;padding:10px 12px;background:var(--p2);border-radius:8px;white-space:pre-wrap">'+esc(caseData.summary)+'</div>';
       }
       if(caseData.human_confirmation_summary){
-        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息</div>';
+        var _adjOp=caseData.human_confirmation_operator||'';
+        var _adjAt=caseData.human_confirmation_confirmed_at||'';
+        // ISO 时间（UTC）转北京时间显示到分钟
+        if(_adjAt){
+          var _d=new Date(String(_adjAt));
+          if(!isNaN(_d.getTime())){
+            var _p=function(n){return String(n).padStart(2,'0');};
+            var _h=_d.getUTCHours()+8,_dy=_d.getUTCDate(),_dm=_d.getUTCMonth(),_dyy=_d.getUTCFullYear();
+            if(_h>=24){_h-=24;_dy+=1;}
+            _adjAt=_dyy+'-'+_p(_dm+1)+'-'+_p(_dy)+' '+_p(_h)+':'+_p(_d.getUTCMinutes());
+          }
+        }
+        html+='<div style="margin-top:8px;font-size:14px;color:var(--sub);margin-bottom:4px">人工确认信息'
+          +((_adjOp||_adjAt)
+            ?'（终审者：<b>'+esc(_adjOp||'-')+'</b>'
+              +(_adjAt?' · 确认时间：<b>'+esc(_adjAt)+'</b>':'')
+              +'）'
+            :'')
+          +'</div>';
         // 编号理由列表（结构化拆分）：每条理由标注被哪些线索解释（fit_reasons
         // 并集），无线索对应的理由标红——分析没解释到人工某条理由是最强信号
         var _adjReasons=caseData.annotation_reasons||[];
