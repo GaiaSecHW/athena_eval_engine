@@ -36,7 +36,6 @@ from ..core.agents import (
     AGENT_SHORT_LABELS,
     ALL_AGENT_SET,
 )
-from ..core.causal_levels import CAUSE_PLAIN_LABELS
 from ..infra.db_utils import db_query as _db_query
 from ..infra.log_util import log
 
@@ -266,16 +265,28 @@ _LOW_CONFIRM_RATE = 0.2
 _HIGH_FPR_RATE = 0.7
 
 
-def _render_confirmation_section() -> list[str]:
-    """近30天结束任务的人工确认率区块（x 报必含内容）。"""
+def _render_confirmation_section(as_of: datetime | None = None) -> list[str]:
+    """近30天结束任务的人工确认率区块（x 报必含内容）。
+
+    确认率带与上期的对比（与误报率同一锚点口径：当前 vs 周期起点，
+    `_task_confirmation_stats(as_of=...)` 滚动窗口，上期任务须
+    fin <= as_of，不能用"未来"任务虚增对比基数）。
+    """
     tasks = _task_confirmation_stats()
     total = sum(t["total"] for t in tasks)
     confirmed = sum(t["confirmed"] for t in tasks)
     if total <= 0:
         return ["📊 近30天无已结束任务（人工确认率暂无数据）"]
+    # 上期确认率：同一滚动窗口锚定周期起点
+    prev_tasks = _task_confirmation_stats(as_of=as_of) if as_of else []
+    prev_total = sum(t["total"] for t in prev_tasks)
+    prev_confirmed = sum(t["confirmed"] for t in prev_tasks)
+    prev_rate = (prev_confirmed / prev_total) if prev_total > 0 else None
+    rate = confirmed / total
     lines = [
         f"📊 一个月内结束任务 {len(tasks)} 个，人工确认率："
-        f"{_span(_pct(confirmed / total), color='#16a34a', bold=True)}"
+        f"{_span(_pct(rate), color='#16a34a', bold=True)}"
+        f"{_pct_diff(rate, prev_rate)}"
         f"（已确认 {confirmed} / 漏洞总数 {total}）",
     ]
     low_confirm = [t for t in tasks if t["rate"] < _LOW_CONFIRM_RATE]
@@ -325,17 +336,13 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
         out: dict = {
             "reg_passed": 0, "reg_failed": 0,
             "new_fp": 0, "new_fn": 0, "evals": 0, "eval_projects": 0,
-            "new_fp_agents": {},   # agent -> {total, causes{cc: n}}
-            "new_fn_agents": {},   # agent -> n
-            "reg_agents": {},      # agent -> {passed, failed}
-            "open_fp_agents": {},  # agent -> {total, causes{cc: n}}
             "open_by_agent": {},
             "closed_total": 0,     # 本期关闭（回归通过/无回归关单/无法归因）
             "closed_by_status": {},
             "closed_cum_by_status": {},  # 累计已关闭（同口径，不分窗口）
         }
         try:
-            # 回归验证（总量 + 按 agent）：join dts_issue 取 agent_type
+            # 回归验证总量：join dts_issue 取 agent（仅总量统计）
             cur.execute(
                 "SELECT i.agent_type, r.status, COUNT(*) "
                 "FROM dts_regression_result r "
@@ -343,65 +350,29 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
                 "WHERE r.submitted_at >= %s AND r.submitted_at <= %s "
                 "GROUP BY i.agent_type, r.status",
                 (since, until))
-            for at, st_, n in cur.fetchall():
+            for _at, st_, n in cur.fetchall():
                 n = int(n or 0)
                 if st_ == "passed":
                     out["reg_passed"] += n
                 elif st_ == "failed":
                     out["reg_failed"] += n
-                for a in _split_agents(at):
-                    ent = out["reg_agents"].setdefault(
-                        a, {"passed": 0, "failed": 0})
-                    if st_ == "passed":
-                        ent["passed"] += n
-                    elif st_ == "failed":
-                        ent["failed"] += n
         except Exception as e:
             log("REPORT", f"领导摘要-回归统计失败: {e}")
         try:
-            # 本期新增问题单：按 case_type + agent + cause 分组——
-            # 根因分布（按 agent）是领导核心关注
+            # 本期新增问题单总量（按类型）
             cur.execute(
-                "SELECT case_type, agent_type, cause_code, COUNT(*) "
-                "FROM dts_issue "
+                "SELECT case_type, COUNT(*) FROM dts_issue "
                 "WHERE created_at >= %s AND created_at <= %s "
-                "GROUP BY case_type, agent_type, cause_code",
+                "GROUP BY case_type",
                 (since, until))
-            for ct, at, cause, n in cur.fetchall():
+            for ct, n in cur.fetchall():
                 n = int(n or 0)
-                cc = str(cause or "").strip().upper()
                 if ct == "FN":
                     out["new_fn"] += n
-                    for a in _split_agents(at):
-                        out["new_fn_agents"][a] = (
-                            out["new_fn_agents"].get(a, 0) + n)
                 else:
                     out["new_fp"] += n
-                    for a in _split_agents(at):
-                        ent = out["new_fp_agents"].setdefault(
-                            a, {"total": 0, "causes": {}})
-                        ent["total"] += n
-                        ent["causes"][cc] = ent["causes"].get(cc, 0) + n
         except Exception as e:
             log("REPORT", f"领导摘要-新增问题单统计失败: {e}")
-        try:
-            # 未关闭误报的根因分布（本期无新增时回答"存量为什么高"）
-            # 无法归因（unattributable）视为关闭：退出未关闭口径
-            cur.execute(
-                "SELECT agent_type, cause_code, COUNT(*) FROM dts_issue "
-                "WHERE status NOT IN ('passed','not_issue','unattributable','no_regression') "
-                "AND case_type='FP' "
-                "GROUP BY agent_type, cause_code")
-            for at, cause, n in cur.fetchall():
-                n = int(n or 0)
-                cc = str(cause or "").strip().upper()
-                for a in _split_agents(at):
-                    ent = out["open_fp_agents"].setdefault(
-                        a, {"total": 0, "causes": {}})
-                    ent["total"] += n
-                    ent["causes"][cc] = ent["causes"].get(cc, 0) + n
-        except Exception as e:
-            log("REPORT", f"领导摘要-未关闭根因统计失败: {e}")
         try:
             # 完成评测数 + 涉及项目数（项目维度看本期测评覆盖面）
             cur.execute(
@@ -458,31 +429,16 @@ def _leader_window_stats(since: datetime, until: datetime) -> dict:
                 out["closed_cum_by_status"][str(st_)] = int(n or 0)
         except Exception as e:
             log("REPORT", f"领导摘要-累计关闭统计失败: {e}")
+        try:
+            # 无法归因存量（视为关闭、等标注方补充——单独体现）
+            cur.execute(
+                "SELECT COUNT(*) FROM dts_issue "
+                "WHERE status='unattributable'")
+            out["unattributable"] = int(cur.fetchone()[0] or 0)
+        except Exception as e:
+            log("REPORT", f"领导摘要-无法归因统计失败: {e}")
         return out
     return _db_query(_do)
-
-
-def _cause_line(causes: dict, top: int | None = None) -> str:
-    """根因分布紧凑行：具体原因标签+计数，按数量降序。
-
-    top=None 列出全部原因（避免"其他"笼统）；指定 top 时余量合计为其他。
-    未知/空 cause_code 归入「未分类」，不丢数据也不显示裸码。
-    """
-    items = sorted((c for c in causes.items() if c[1] > 0),
-                   key=lambda x: -x[1])
-    if not items:
-        return ""
-
-    def _label(code: str) -> str:
-        return CAUSE_PLAIN_LABELS.get(code) or "未分类"
-
-    if top is None or len(items) <= top:
-        return " · ".join(f"{_label(c)} {n} 处" for c, n in items)
-    parts = [f"{_label(c)} {n} 处" for c, n in items[:top]]
-    rest = sum(n for _, n in items[top:])
-    if rest:
-        parts.append(f"其他 {rest} 处")
-    return " · ".join(parts)
 
 
 def render_leader_text(period_label: str, since: datetime, until: datetime,
@@ -511,8 +467,8 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
     else:
         lines.append("📉 误报率（近30天）：暂无数据")
 
-    # ② 人工确认率区块（必含：确认率 / 低确认率计数 / 高误报率清单）
-    lines += _render_confirmation_section()
+    # ② 人工确认率区块（必含：确认率+上期对比 / 低确认率计数 / 高误报率清单）
+    lines += _render_confirmation_section(since)
 
     # ③ 总览：修复验证 + 完成评测
     st = _leader_window_stats(since, until)
@@ -568,55 +524,6 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
             f"📦 历史累计已关闭 {cum_total} 条"
             + (f"（{cum_detail}）" if cum_detail else ""))
 
-    # ④ 按 Agent 汇总：一个 agent 的数据集中一行
-    # （误报根因 + 漏报 + 修复验证），不再按指标分开各列全部 agent
-    merged: dict[str, dict] = {}
-    for a, ent in (st.get("new_fp_agents") or {}).items():
-        merged.setdefault(a, {})["fp"] = ent
-    for a, n in (st.get("new_fn_agents") or {}).items():
-        if n > 0:
-            merged.setdefault(a, {})["fn"] = n
-    for a, ent in (st.get("reg_agents") or {}).items():
-        if (ent.get("passed") or 0) + (ent.get("failed") or 0) > 0:
-            merged.setdefault(a, {})["reg"] = ent
-
-    if merged:
-        lines.append(
-            f"🧭 按 Agent（本期新发现 {new_total} 条："
-            f"误报 {st['new_fp']} 个 / 漏报 {st['new_fn']} 个）：")
-
-        def _agent_rank(item):
-            _, d = item
-            fp = (d.get("fp") or {}).get("total", 0)
-            fn = d.get("fn") or 0
-            reg = ((d.get("reg") or {}).get("passed", 0)
-                   + (d.get("reg") or {}).get("failed", 0))
-            return -(fp * 1000 + fn * 100 + reg)
-
-        for a, d in sorted(merged.items(), key=_agent_rank):
-            name = AGENT_SHORT_LABELS.get(a, a)
-            segs = []
-            fp_ent = d.get("fp")
-            if fp_ent:
-                causes = _cause_line(fp_ent["causes"])
-                segs.append(
-                    f"误报 {fp_ent['total']} 个（{causes}）")
-            if d.get("fn"):
-                segs.append(f"漏报 {d['fn']} 个")
-            reg = d.get("reg")
-            if reg:
-                segs.append(
-                    f"验证 通过 {reg['passed']} 条 / 不通过 {reg['failed']} 条")
-            lines.append(f"{_span(name, bold=True)}：" + " · ".join(segs))
-    elif st.get("open_fp_agents"):
-        # 本期无新增（误报/漏报/验证全为 0）：未关闭存量根因（按 agent）
-        lines.append("🧭 按 Agent（未关闭误报根因）：")
-        for a, ent in sorted(st["open_fp_agents"].items(),
-                             key=lambda x: -x[1]["total"]):
-            causes = _cause_line(ent["causes"])
-            name = AGENT_SHORT_LABELS.get(a, a)
-            head = f"{name}：{ent['total']} 个误报"
-            lines.append(f"{_span(head, bold=True)}（{causes}）")
     open_dist = st.get("open_by_agent") or {}
     if open_dist:
         top = sorted(open_dist.items(), key=lambda x: -x[1])
@@ -624,6 +531,12 @@ def render_leader_text(period_label: str, since: datetime, until: datetime,
                 for a, n in top[:4]]
         more = f" 等 {len(top)} 项" if len(top) > 4 else ""
         lines.append("👥 未关闭问题单：" + " · ".join(segs) + more)
+    # 无法归因存量（视为关闭但欠标注方补充——单独体现，有数据才显示）
+    unattr = int(st.get("unattributable") or 0)
+    if unattr > 0:
+        lines.append(
+            f"🚫 无法归因 {unattr} 条：全部线索被否定+标注不全，"
+            f"待标注方补充后重新开启")
     lines.append(f"🔗 {public_url}/dts")
     return "\n".join(lines)
 
